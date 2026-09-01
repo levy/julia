@@ -48,6 +48,14 @@ typedef struct {
     struct {
         jl_gc_pool_t pools[JL_GC_N_MAX_POOLS];
         struct _jl_gc_pagemeta_t *pages;   // chained through region_next
+        struct _jl_gc_pagemeta_t *fresh_pages; // wholly dead pages, ready for
+                                           // reuse; their metadata is stale -
+                                           // gc_add_page resets a page when it
+                                           // claims it, so nobody resets one here
+        struct _jl_gc_pagemeta_t *pages_tail; // last link of `pages`, so a reset
+                                           // parks the whole chain in O(1)
+        uint32_t n_pages;                  // pages on `pages`
+        uint32_t n_fresh;                  // pages on `fresh_pages`
         uint8_t initialized;
         uint32_t overflow_pages;           // pages beyond one per pool at reset
     } regions[JL_GC_MAX_REGIONS];

@@ -705,6 +705,29 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     // Do not pass in `ptls` as argument. This slows down the fast path
     // in small_alloc significantly
     jl_ptls_t ptls = jl_current_task->ptls;
+    // A region reuses its own wholly-dead pages (reset by the scoped
+    // sweep) before claiming new ones; the page is already mapped, tagged,
+    // and in the allocd stack.
+    {
+        int cr = ptls->gc_tls.heap.current_region;
+        if (cr != 0) {
+            jl_gc_pagemeta_t *fp = ptls->gc_tls.heap.regions[cr].fresh_pages;
+            if (fp != NULL) {
+                ptls->gc_tls.heap.regions[cr].fresh_pages = fp->region_next;
+                fp->osize = p->osize;
+                fp->thread_n = ptls->tid;
+                fp->region_next = ptls->gc_tls.heap.regions[cr].pages;
+                ptls->gc_tls.heap.regions[cr].pages = fp;
+                if (fp->region_next == NULL)
+                    ptls->gc_tls.heap.regions[cr].pages_tail = fp;
+                ptls->gc_tls.heap.regions[cr].n_fresh--;
+                ptls->gc_tls.heap.regions[cr].n_pages++;
+                jl_taggedvalue_t *fl = gc_reset_page(ptls, p, fp);
+                p->newpages = fl;
+                return fl;
+            }
+        }
+    }
     jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
     pg->osize = p->osize;
     pg->thread_n = ptls->tid;
@@ -714,6 +737,9 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     if (pg->region_n) {
         pg->region_next = ptls->gc_tls.heap.regions[pg->region_n].pages;
         ptls->gc_tls.heap.regions[pg->region_n].pages = pg;
+        if (pg->region_next == NULL)
+            ptls->gc_tls.heap.regions[pg->region_n].pages_tail = pg;
+        ptls->gc_tls.heap.regions[pg->region_n].n_pages++;
     }
     // ----------------------------------------------------------------
     set_page_metadata(pg);
@@ -3560,6 +3586,10 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
             heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
         }
         heap->regions[n].pages = NULL;
+        heap->regions[n].fresh_pages = NULL;
+        heap->regions[n].pages_tail = NULL;
+        heap->regions[n].n_pages = 0;
+        heap->regions[n].n_fresh = 0;
         heap->regions[n].overflow_pages = 0;
         heap->regions[n].initialized = 1;
     }
@@ -3567,6 +3597,39 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
     heap->current_region = (uint8_t)n;
     return old;
+}
+
+// Reset a region that is NOT current: every object in it ceases to exist, in
+// O(pages). Each page becomes the fresh bump page of its pool; a second page
+// of the same pool cannot chain through `newpages` (the allocator holds one
+// bump page), so it is counted and parked until the next use of its pool.
+JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    assert(n > 0 && n < JL_GC_MAX_REGIONS && n != heap->current_region);
+    if (!heap->regions[n].initialized)
+        return 0;
+    // The reset walks nothing. Every page of the region hangs on one chain,
+    // the chain has a tail, and a fresh page's metadata is allowed to be
+    // stale because gc_add_page resets a page when it claims it. So: clear
+    // the pool cursors, park the chain on the fresh list in O(1), and
+    // return the page count from the counters the claim path maintains.
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        heap->regions[n].pools[i].freelist = NULL;
+        heap->regions[n].pools[i].newpages = NULL;
+    }
+    uint64_t pages = (uint64_t)heap->regions[n].n_pages + heap->regions[n].n_fresh;
+    jl_gc_pagemeta_t *head = heap->regions[n].pages;
+    if (head != NULL) {
+        heap->regions[n].pages_tail->region_next = heap->regions[n].fresh_pages;
+        heap->regions[n].fresh_pages = head;
+        heap->regions[n].pages = NULL;
+        heap->regions[n].pages_tail = NULL;
+        heap->regions[n].n_fresh += heap->regions[n].n_pages;
+        heap->regions[n].n_pages = 0;
+    }
+    return pages;
 }
 
 JL_DLLEXPORT int jl_gc_region_current(void)
