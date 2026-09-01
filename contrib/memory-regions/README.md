@@ -107,6 +107,24 @@ The first is the yardstick — what ordinary Julia does. The second is the
 best any lifetime discipline can reach, done by hand with no runtime change.
 The regions have to reach the second line without the hand work.
 
+## The tail bound, paced, and over thirty minutes
+
+`stage3_model.jl` is the disciplined model: pooled messages, isbits result
+columns, and an Event-region window around the sink's ordinary allocating
+scratch. `stage3_run.jl` runs it with the window on or off — the two runs
+differ by one `Bool`:
+
+```
+../../julia stage3_run.jl baseline 20000000
+../../julia stage3_run.jl regions  20000000
+```
+
+`stage4_paced.jl` runs one event per 100 µs wall-clock slot and counts the
+slot misses and their lateness — the hardware-in-the-loop question.
+`stage4_endurance.jl` runs the paced loop for thirty minutes with the
+collector off, sampling RSS every ten seconds, and answers whether memory
+stays flat or a maintenance collection has to come back.
+
 ## Files
 
 | file | role |
@@ -119,3 +137,6 @@ The regions have to reach the second line without the hand work.
 | `kernel.jl` | a small discrete-event kernel with a measured run loop |
 | `model_alloc.jl`, `model_pooled.jl` | the model, allocating per event and pooled by hand |
 | `harness.jl` | the vanilla-Julia yardstick and the hand-pooled upper bound |
+| `stage3_model.jl`, `stage3_run.jl` | the disciplined model and the tail bound: `baseline` against `regions` |
+| `stage4_paced.jl` | one event per 100 µs slot: latency and slot misses |
+| `stage4_endurance.jl` | memory over time, paced, thirty minutes |
