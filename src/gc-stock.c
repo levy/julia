@@ -708,6 +708,14 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
     pg->osize = p->osize;
     pg->thread_n = ptls->tid;
+    // --- region prototype: remember which region claimed the page ---
+    pg->region_n = ptls->gc_tls.heap.current_region;
+    pg->region_next = NULL;
+    if (pg->region_n) {
+        pg->region_next = ptls->gc_tls.heap.regions[pg->region_n].pages;
+        ptls->gc_tls.heap.regions[pg->region_n].pages = pg;
+    }
+    // ----------------------------------------------------------------
     set_page_metadata(pg);
     push_lf_back(&ptls->gc_tls.page_metadata_allocd, pg);
     jl_taggedvalue_t *fl = gc_reset_page(ptls, p, pg);
@@ -3549,6 +3557,16 @@ JL_DLLEXPORT uint64_t jl_gc_region_overflow(int n)
     return jl_current_task->ptls->gc_tls.heap.regions[n].overflow_pages;
 }
 
+// The region of an object, read from its page tag in constant time. NULL
+// metadata means the object is not a pool object (big, malloc'd, permanent,
+// or foreign); those all belong to region 0 in v1.
+JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
+{
+    jl_gc_pagemeta_t *meta = page_metadata((char*)jl_astaggedvalue(v));
+    if (meta == NULL)
+        return 0;
+    return (int)meta->region_n;
+}
 // ------------------------------------------------------------------------------
 
 JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
