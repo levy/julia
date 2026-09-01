@@ -1001,6 +1001,15 @@ done:
 // the actual sweeping over all allocated pages in a memory pool
 STATIC_INLINE void gc_sweep_pool_page(gc_page_profiler_serializer_t *s, jl_gc_page_stack_t *allocd, jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
+    // --- region prototype: a region's pages are INVISIBLE to the sweeper.
+    // Reset is their only collector. Sweeping one links its cells into the
+    // CURRENT pools, while the region still owns them through its saved
+    // cursors -- double ownership, and corruption surfaces much later.
+    if (pg->region_n != 0) {
+        push_lf_back(allocd, pg);
+        return;
+    }
+    // ----------------------------------------------------------------------
     int p_n = pg->pool_n;
     int t_n = pg->thread_n;
     jl_ptls_t ptls2 = gc_all_tls_states[t_n];
@@ -3520,9 +3529,18 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
 }
 
 // --- region prototype ---------------------------------------------------------
-// Swap the current allocation region. Every region's pool cursors live in its
-// own array, so the switch is one pointer store; the allocation fast path
-// decodes its stable offset through active_pools. Returns the previous region.
+// Swap the current allocation region. Saves the live pool heads into the old
+// region's slot and loads the new region's; the allocation fast path reads
+// the same norm_pools it always read. Returns the previous region.
+// The global window count: how many mutator threads currently sit in a
+// region window (current_region != 0). A collection must not run while ANY
+// window is open: the sweep would rebuild that thread's norm_pools -- which
+// hold the REGION's cursors at that moment -- and free pages that the parked
+// region-0 cursors still reference. The per-thread defer guard cannot see
+// another thread's window, so the count is global.
+static _Atomic(int) region_windows_open = 0;
+
+
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
@@ -3530,6 +3548,10 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     int old = heap->current_region;
     if (n == old)
         return old;
+    if (old == 0 && n != 0)
+        jl_atomic_fetch_add_relaxed(&region_windows_open, 1);
+    else if (n == 0 && old != 0)
+        jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
     assert(n >= 0 && n < JL_GC_MAX_REGIONS);
     if (!heap->regions[n].initialized) {
         for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
@@ -3569,6 +3591,29 @@ JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
 }
 // ------------------------------------------------------------------------------
 
+// A DEFERRED COLLECTION MUST RE-ARM THE TRIGGER. maybe_collect fires on
+// heap_size >= heap_target, and a deferral that only resets the thread's
+// allocation counter leaves the target where it is: the very next
+// allocation walks back in here and defers again. Measured on a region run
+// with the collector disabled - about 20 ns per allocation, 10 % of the
+// run's samples, most of the 20 ns by which the region median trailed the
+// stock one at light garbage. Grant what a real collection grants at least:
+// 5 % of the heap, or default_collect_interval/8 while the heap is small.
+// The owed collection then runs when that allowance is spent, and
+// deferred_alloc keeps the bytes it postponed.
+static void gc_defer_collection(jl_ptls_t ptls) JL_NOTSAFEPOINT
+{
+    size_t localbytes = jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd) + gc_num.interval;
+    jl_atomic_store_relaxed(&ptls->gc_tls_common.gc_num.allocd, -(int64_t)gc_num.interval);
+    static_assert(sizeof(_Atomic(uint64_t)) == sizeof(gc_num.deferred_alloc), "");
+    jl_atomic_fetch_add_relaxed((_Atomic(uint64_t)*)&gc_num.deferred_alloc, localbytes);
+    uint64_t heap_size = jl_atomic_load_relaxed(&gc_heap_stats.heap_size);
+    uint64_t grant = heap_size / 20;
+    if (grant < default_collect_interval / 8)
+        grant = default_collect_interval / 8;
+    jl_atomic_store_relaxed(&gc_heap_stats.heap_target, heap_size + grant);
+}
+
 JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 {
     JL_PROBE_GC_BEGIN(collection);
@@ -3576,13 +3621,23 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
     if (jl_atomic_load_acquire(&jl_gc_disable_counter)) {
-        size_t localbytes = jl_atomic_load_relaxed(&ptls->gc_tls_common.gc_num.allocd) + gc_num.interval;
-        jl_atomic_store_relaxed(&ptls->gc_tls_common.gc_num.allocd, -(int64_t)gc_num.interval);
-        static_assert(sizeof(_Atomic(uint64_t)) == sizeof(gc_num.deferred_alloc), "");
-        jl_atomic_fetch_add_relaxed((_Atomic(uint64_t)*)&gc_num.deferred_alloc, localbytes);
+        gc_defer_collection(ptls);
         return;
     }
+    // --- region prototype: NO collection while a region is current. ---
+    // The sweep operates on norm_pools, which at that moment are the REGION's
+    // pools: the prologue syncs region cursors, and the freelist merge threads
+    // region-0 pages into the region's pool structs. Everything cross-links,
+    // and the corruption surfaces at the next quiesced collection. Defer,
+    // exactly like the disable counter.
+    if (ptls->gc_tls.heap.current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0) {
+        gc_defer_collection(ptls);
+        return;
+    }
+    // ------------------------------------------------------------------
     jl_gc_debug_print();
+
 
     int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
     jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
@@ -3694,6 +3749,13 @@ void jl_init_thread_heap(jl_ptls_t ptls)
     heap->current_region = 0;
     heap->active_pools = heap->norm_pools;
     memset(heap->regions, 0, sizeof(heap->regions));
+    // Region 0 is born initialized: its live state IS norm_pools, and its
+    // slot only ever holds parked copies. Without this flag the first
+    // region_set(0) from a region runs the lazy init on slot 0 and wipes
+    // the parked region-0 cursors -- abandoning every partially filled
+    // page with its young marks intact, which a later quick sweep then
+    // skips, and the stale marks break the next full mark.
+    heap->regions[0].initialized = 1;
     // ------------------------------------------------------------------
     small_arraylist_new(&common_heap->weak_refs, 0);
     small_arraylist_new(&common_heap->live_tasks, 0);
