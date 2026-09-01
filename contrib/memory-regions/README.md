@@ -88,6 +88,25 @@ Two batteries, both printing `ALL PASS`; `./run.sh` runs them:
   idioms a test of region machinery needs against the optimizer
   (`Base.donotdelete`, `GC.@preserve`, an opaque callee).
 
+## The examples, and the vanilla-Julia yardstick
+
+Every example runs one small discrete-event kernel (`kernel.jl`): a
+gate-as-action design whose run loop records every event's wall time into
+preallocated vectors, so the harness itself allocates nothing per event.
+The model is a self-ticking source, a relay chain, and a recording sink that
+keeps one record per delivery — the kept records give a collector real work.
+
+`harness.jl` runs two variants of that model on any julia, regions or not:
+
+```
+../../julia harness.jl alloc  20000000     # allocates per event: the stock collector's tail
+../../julia harness.jl pooled 20000000     # one reused packet, preallocated columns: the upper bound by hand
+```
+
+The first is the yardstick — what ordinary Julia does. The second is the
+best any lifetime discipline can reach, done by hand with no runtime change.
+The regions have to reach the second line without the hand work.
+
 ## Files
 
 | file | role |
@@ -97,3 +116,6 @@ Two batteries, both printing `ALL PASS`; `./run.sh` runs them:
 | `regions.jl` | the Julia face: the calls above |
 | `v2_regression.jl`, `stage3_safety.jl` | the correctness batteries |
 | `run.sh` | runs the batteries |
+| `kernel.jl` | a small discrete-event kernel with a measured run loop |
+| `model_alloc.jl`, `model_pooled.jl` | the model, allocating per event and pooled by hand |
+| `harness.jl` | the vanilla-Julia yardstick and the hand-pooled upper bound |
