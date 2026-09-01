@@ -332,10 +332,35 @@ STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o,
 #endif
 }
 
+// --- region prototype: name the corpse instead of faulting on it ----------
+static NOINLINE void gc_region_corpse_report(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
+{
+    char *data = gc_page_data(o);
+    uintptr_t addr = (uintptr_t)data;
+    int state = -1;   // -1: no table level exists for this address
+    pagetable1_t *r1 = alloc_map.meta1[REGION_INDEX(addr)];
+    if (r1 != NULL) {
+        pagetable0_t *r0 = r1->meta0[REGION1_INDEX(addr)];
+        if (r0 != NULL)
+            state = r0->meta[REGION0_INDEX(addr)];
+    }
+    uintptr_t tag = o->header;
+    jl_safe_printf("CORPSE o=%p page=%p map_state=%d tag=%p\n",
+                   (void*)o, (void*)data, state, (void*)tag);
+    jl_datatype_t *vt = (jl_datatype_t*)(tag & ~(uintptr_t)15);
+    if (vt != NULL)
+        jl_safe_printf("CORPSE type=%s\n", jl_symbol_name(vt->name->name));
+    abort();
+}
+// ---------------------------------------------------------------------------
+
 STATIC_INLINE void gc_setmark_pool(jl_ptls_t ptls, jl_taggedvalue_t *o,
                                    uint8_t mark_mode) JL_NOTSAFEPOINT
 {
-    gc_setmark_pool_(ptls, o, mark_mode, page_metadata((char*)o));
+    jl_gc_pagemeta_t *meta = page_metadata((char*)o);
+    if (__unlikely(meta == NULL))
+        gc_region_corpse_report(o);
+    gc_setmark_pool_(ptls, o, mark_mode, meta);
 }
 
 STATIC_INLINE void gc_setmark(jl_ptls_t ptls, jl_taggedvalue_t *o,
@@ -3722,6 +3747,105 @@ JL_DLLEXPORT int jl_gc_region_current(void)
 JL_DLLEXPORT uint64_t jl_gc_region_overflow(int n)
 {
     return jl_current_task->ptls->gc_tls.heap.regions[n].overflow_pages;
+}
+
+// The v2 hunt: the address of the alloc-map state byte for a page, so a
+// debugger can set a hardware watchpoint on it.
+JL_DLLEXPORT uint8_t *jl_gc_map_addr(void *page)
+{
+    uintptr_t data = (uintptr_t)page;
+    pagetable1_t *r1 = alloc_map.meta1[REGION_INDEX(data)];
+    if (r1 == NULL)
+        return NULL;
+    pagetable0_t *r0 = r1->meta0[REGION1_INDEX(data)];
+    if (r0 == NULL)
+        return NULL;
+    return &r0->meta[REGION0_INDEX(data)];
+}
+
+// Integrity walker for the v2 hunt. Checks, for region n: every chained page
+// carries tag n and an intact alloc-map entry; the pool cursors point into
+// tagged pages; no region pool ever holds a freelist; and the allocd stack
+// sees the same tagged pages as the chain. Returns the error count.
+JL_DLLEXPORT int jl_gc_region_verify(int n)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (!heap->regions[n].initialized)
+        return 0;
+    int errors = 0;
+    uint64_t chain_len = 0;
+    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+        chain_len++;
+        if (pg->region_n != n) {
+            jl_safe_printf("REGION-VERIFY: chained page %p tag %d, expected %d\n",
+                           (void*)pg->data, (int)pg->region_n, n);
+            errors++;
+        }
+        jl_gc_pagemeta_t *meta = page_metadata(pg->data);
+        if (meta != pg) {
+            jl_safe_printf("REGION-VERIFY: page %p map meta %p != chained %p\n",
+                           (void*)pg->data, (void*)meta, (void*)pg);
+            errors++;
+        }
+        if (chain_len > 1000000) {
+            jl_safe_printf("REGION-VERIFY: chain does not terminate\n");
+            errors++;
+            break;
+        }
+    }
+    uint64_t fresh_len = 0;
+    for (jl_gc_pagemeta_t *fp = heap->regions[n].fresh_pages; fp != NULL; fp = fp->region_next) {
+        fresh_len++;
+        if (fp->region_n != n) {
+            jl_safe_printf("REGION-VERIFY: fresh page %p tag %d, expected %d\n",
+                           (void*)fp->data, (int)fp->region_n, n);
+            errors++;
+        }
+        if (fresh_len > 1000000) {
+            jl_safe_printf("REGION-VERIFY: fresh chain does not terminate\n");
+            errors++;
+            break;
+        }
+    }
+    const jl_gc_pool_t *pools = heap->regions[n].pools;
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        jl_taggedvalue_t *fl = pools[i].newpages;
+        if (fl != NULL) {
+            jl_gc_pagemeta_t *meta = page_metadata((char*)fl - 1);
+            if (meta == NULL || meta->region_n != n) {
+                jl_safe_printf("REGION-VERIFY: pool %d newpages %p on page tag %d\n",
+                               i, (void*)fl, meta ? (int)meta->region_n : -1);
+                errors++;
+            }
+        }
+        if (pools[i].freelist != NULL) {
+            jl_gc_pagemeta_t *meta = page_metadata((char*)pools[i].freelist);
+            if (meta == NULL || meta->region_n != n) {
+                jl_safe_printf("REGION-VERIFY: pool %d freelist head %p on page tag %d\n",
+                               i, (void*)pools[i].freelist,
+                               meta ? (int)meta->region_n : -1);
+                errors++;
+            }
+        }
+    }
+    uint64_t in_allocd = 0;
+    for (jl_gc_pagemeta_t *pg = jl_atomic_load_relaxed(&ptls->gc_tls.page_metadata_allocd.bottom);
+         pg != NULL; pg = pg->next) {
+        if (pg->region_n == n)
+            in_allocd++;
+    }
+    // overflow pages stay tagged but leave the chain, so allocd can see MORE;
+    // fewer than the chain is definite corruption.
+    if (in_allocd != chain_len + fresh_len + heap->regions[n].overflow_pages) {
+        jl_safe_printf("REGION-VERIFY: chain %llu + fresh %llu + overflow %llu pages, allocd sees %llu tagged\n",
+                       (unsigned long long)chain_len,
+                       (unsigned long long)fresh_len,
+                       (unsigned long long)heap->regions[n].overflow_pages,
+                       (unsigned long long)in_allocd);
+        errors++;
+    }
+    return errors;
 }
 
 // Rule 5 debug check: a region may reset only when NO execution root still

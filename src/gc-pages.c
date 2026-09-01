@@ -168,6 +168,9 @@ exit:
 void jl_gc_free_page(jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
     void *p = pg->data;
+    if (pg->region_n != 0)
+        jl_safe_printf("FREEPAGE-TAGGED page %p region %d - a tagged page must never free\n",
+                       p, (int)pg->region_n);
     gc_alloc_map_set((char*)p, GC_PAGE_FREED);
     // tell the OS we don't need these pages right now
     size_t decommit_size = GC_PAGE_SZ;
