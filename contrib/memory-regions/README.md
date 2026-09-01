@@ -73,6 +73,21 @@ region_set(0)
 region_reset(EVENT)          # after the extent: no stack can still point in
 ```
 
+## Tests
+
+Two batteries, both printing `ALL PASS`; `./run.sh` runs them:
+
+- `v2_regression.jl` — the reproducer of the two collector-interplay defects
+  the prototype found and fixed: reset every iteration, three million
+  cycles, an explicit collection after quiesce, plus the swap-only and the
+  live-object variants.
+- `stage3_safety.jl` — the rule-5 check: with the debug scan armed, a reset
+  while a live reference still points into the region is refused and the
+  offender is named by type; the reset succeeds once the reference dies; an
+  explicit check reports zero afterwards. The file documents the pinning
+  idioms a test of region machinery needs against the optimizer
+  (`Base.donotdelete`, `GC.@preserve`, an opaque callee).
+
 ## Files
 
 | file | role |
@@ -80,3 +95,5 @@ region_reset(EVENT)          # after the extent: no stack can still point in
 | the commits before this one, `src/gc-*.c` and `src/gf.c` | the runtime |
 | `DESIGN.md` | the goal and the semantic design |
 | `regions.jl` | the Julia face: the calls above |
+| `v2_regression.jl`, `stage3_safety.jl` | the correctness batteries |
+| `run.sh` | runs the batteries |
