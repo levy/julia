@@ -150,6 +150,30 @@ reset per event, a census every N events. Its variants:
 the census frontier with the full-collection reference, the slice throughput
 matrix, and the endurance sampler.
 
+## The discipline checker, and the barrier trap
+
+Rule 3 is enforced at development time by a compiler pass. `hook_patch.py`
+builds a working copy of the Compiler with one hook — the optimized IR of
+every method passes through an installed function — and `region_check.jl`
+installs the instrumentation: every `:new` registers the object and checks
+its embedded references, `memorynew` registers the fresh `Memory`, and
+`setfield!` and `memoryrefset!` check the parent against the child.
+`checker_run.jl` drives a model under it and prints a ranked list of
+violations by (site, parent type, child type); `model_clean.jl` is the
+disciplined model that yields none.
+
+```
+python3 hook_patch.py /tmp/regionck ../../julia
+JULIA_LOAD_PATH=/tmp/regionck/env:@stdlib ../../julia checker_run.jl alloc 5000
+JULIA_LOAD_PATH=/tmp/regionck/env:@stdlib ../../julia checker_run.jl clean 5000
+JULIA_LOAD_PATH=/tmp/regionck/env:@stdlib ../../julia stage4_trap.jl
+```
+
+`stage4_trap.jl` proves the barrier with the runtime-backed check: the store
+of a region-1 vector into a region-0 holder traps, and the legal direction
+passes. The trap ends the process, so exit code 1 is the pass and exit
+code 2 the failure.
+
 ## Files
 
 | file | role |
@@ -166,3 +190,6 @@ matrix, and the endurance sampler.
 | `stage4_endurance.jl` | memory over time, paced, thirty minutes |
 | `stage5_scoped.jl` | census, throughput, slices — all knobs |
 | `run.sh` | the batteries and every measurement, in order |
+| `hook_patch.py`, `region_check.jl`, `checker_run.jl` | the discipline checker |
+| `model_clean.jl` | the disciplined model: zero violations |
+| `stage4_trap.jl` | the barrier trap |
