@@ -3786,6 +3786,75 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
     return freed;
 }
 
+// The cooperative census: jl_gc_region_collect without the stop-the-world.
+// The ENGINE calls it at an event boundary it owns -- the capability the
+// kernel loop enables for hardware-in-the-loop. Sound under the
+// single-mutator contract: the caller is the only thread that references
+// the region, so only the caller's execution roots are scanned, and the
+// region window counter excludes any concurrent collection without a lock
+// or a syscall (a triggered collection defers, exactly as during a region
+// window). Every other thread must sit in a GC-safe state (parked in C);
+// a thread running managed code refuses the cooperative path, and the
+// caller falls back to the stop-the-world entry.
+JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
+        return -1;
+    if (heap->current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return -2;
+
+    uint64_t t0 = jl_hrtime();
+    // Exclude concurrent collections: any jl_gc_collect defers while the
+    // counter is nonzero.
+    jl_atomic_fetch_add_relaxed(&region_windows_open, 1);
+
+    // Every other thread must be GC-safe (parked outside managed code).
+    int nthreads = jl_atomic_load_acquire(&jl_n_threads);
+    jl_ptls_t *all = jl_atomic_load_relaxed(&jl_all_tls_states);
+    for (int t_i = 0; t_i < nthreads; t_i++) {
+        jl_ptls_t ptls2 = all[t_i];
+        if (ptls2 == NULL || ptls2 == ptls)
+            continue;
+        if (jl_atomic_load_relaxed(&ptls2->gc_state) == JL_GC_STATE_UNSAFE) {
+            jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
+            return -4;   // another thread runs managed code; use the STW entry
+        }
+    }
+    uint64_t t_stw = jl_hrtime();
+
+    region_scoped_extra_n = 0;
+    region_scoped_extra_overflow = 0;
+    jl_atomic_store_relaxed(&region_scoped_target, n);
+
+    // The caller's execution roots only -- the single-mutator contract.
+    jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
+    gc_queue_thread_local(mq, ptls);
+    gc_queue_bt_buf(mq, ptls);
+    gc_mark_loop_serial(ptls);
+
+    for (int i = 0; i < region_scoped_extra_n; i++)
+        region_scoped_extra[i]->header &= ~(uintptr_t)GC_MARKED;
+    if (region_scoped_extra_overflow)
+        jl_safe_printf("REGION-COLLECT: task record overflow; stale marks remain\n");
+    uint64_t t_mark = jl_hrtime();
+
+    int64_t freed = region_scoped_sweep(heap, n);
+    uint64_t t_sweep = jl_hrtime();
+
+    jl_atomic_store_relaxed(&region_scoped_target, 0);
+    jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
+
+    region_collect_stats[0] = t_sweep - t0;
+    region_collect_stats[1] = t_stw - t0;
+    region_collect_stats[2] = t_mark - t_stw;
+    region_collect_stats[3] = t_sweep - t_mark;
+    return freed;
+}
+
 // Scoped collection of one region: mark from the execution roots with the
 // region filter (see gc_try_claim_and_push), then sweep ONLY this region's
 // pages -- dead cells go to the region's per-pool freelists, survivors get
