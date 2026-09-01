@@ -1,0 +1,218 @@
+== the real-world loop: one window per slice, the kept record in the Simulation region,
+   the cooperative census at a slice boundary - against the stock collector ==
+kept (switches=0): logs/realworld_auto_W200.log
+kept (switches=0): logs/realworld_real_census_W200_B100.log
+kept (switches=0): logs/realworld_real_nocensus_W200_B100.log
+kept (switches=0): logs/realworld_auto_W3.log
+kept (switches=0): logs/realworld_real_census_W3_B1000.log
+kept (switches=0): logs/realworld_real_nocensus_W3_B1000.log
+=== summary
+-- logs/realworld_auto_W200.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+stock collections during the run: 299
+wall time          0.704 s (7.11 M events/s)
+=== auto: 0 collections ===
+max at event      2203559 (slice boundary: false, census boundary: false); events over 200us: 274
+=== per-event wall time, 5000000 events ===
+p50               60 ns
+p99               371 ns
+p99.9             521 ns
+p99.99            651 ns
+max               4008105 ns
+max, no preemption 4008105 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 299 events (0.00598 %)
+peak RSS           1244.0 MB
+-- logs/realworld_auto_W3.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+stock collections during the run: 35
+wall time          0.291 s (17.18 M events/s)
+=== auto: 0 collections ===
+max at event      4136060 (slice boundary: false, census boundary: false); events over 200us: 35
+=== per-event wall time, 5000000 events ===
+p50               30 ns
+p99               50 ns
+p99.9             130 ns
+p99.99            290 ns
+max               3635421 ns
+max, no preemption 3635421 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 35 events (0.0007 %)
+peak RSS           1244.0 MB
+-- logs/realworld_real_census_W200_B100.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.317 s (15.76 M events/s)
+=== phase means over 50 collections ===
+=== real: 50 collections ===
+pause p50          0.036 ms
+pause max          0.054 ms
+max at event      100000 (slice boundary: true, census boundary: true); events over 200us: 0
+=== per-event wall time, 5000000 events ===
+p50               40 ns
+p99               70 ns
+p99.9             80 ns
+p99.99            200 ns
+max               55114 ns
+max, no preemption 55114 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 0 events (0.0 %)
+peak RSS           1204.4 MB
+-- logs/realworld_real_census_W3_B1000.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.278 s (17.99 M events/s)
+=== phase means over 50 collections ===
+=== real: 50 collections ===
+pause p50          0.036 ms
+pause max          0.051 ms
+max at event      100000 (slice boundary: true, census boundary: true); events over 200us: 0
+=== per-event wall time, 5000000 events ===
+p50               40 ns
+p99               41 ns
+p99.9             60 ns
+p99.99            80 ns
+max               52229 ns
+max, no preemption 52229 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 0 events (0.0 %)
+peak RSS           1212.7 MB
+-- logs/realworld_real_nocensus_W200_B100.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.316 s (15.82 M events/s)
+=== real: 0 collections ===
+max at event      235368 (slice boundary: false, census boundary: false); events over 200us: 0
+=== per-event wall time, 5000000 events ===
+p50               40 ns
+p99               70 ns
+p99.9             230 ns
+p99.99            390 ns
+max               16451 ns
+max, no preemption 16451 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 0 events (0.0 %)
+peak RSS           1204.3 MB
+-- logs/realworld_real_nocensus_W3_B1000.log
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.274 s (18.27 M events/s)
+=== real: 0 collections ===
+max at event      189785 (slice boundary: false, census boundary: false); events over 200us: 0
+=== per-event wall time, 5000000 events ===
+p50               31 ns
+p99               41 ns
+p99.9             210 ns
+p99.99            311 ns
+max               14086 ns
+max, no preemption 14086 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 0 events (0.0 %)
+peak RSS           1204.2 MB
+== correctness batteries ==
+reset loop + GC after quiesce: pass
+swap-only windows + GC: pass
+live region object across GCs: pass
+V2 REGRESSION: ALL PASS
+REGION-RESET-CHECK: live reference into region 1: 0x72b27dcb0010 type=RefValue
+REGION-RESET refused: 1 live references into region 1
+finalizer on a region object throws: pass
+reset after the finalizer test: pass
+finalizer on a root object works: pass
+the object lives in the region: pass
+reset refused while referenced: pass
+object intact after the refusal: pass
+reset succeeds once the reference dies: pass
+explicit check reports zero afterwards: pass
+STAGE3 SAFETY: ALL PASS
+== the tail bound (20 M events, unpaced) ==
+=== baseline ===
+events            20000000
+p50               50 ns
+p99               71 ns
+p99.9             251 ns
+p99.99            1313 ns
+max               4783628 ns
+over 100us target 17 events (8.5e-5 %)
+gc events         17
+gc total          19.9 ms
+live heap         566.6 MB
+overflow pages    0
+=== regions ===
+events            20000000
+p50               60 ns
+p99               91 ns
+p99.9             130 ns
+p99.99            1282 ns
+max               9929 ns
+over 100us target 0 events (0.0 %)
+gc events         0
+gc total          0.0 ms
+live heap         1118.3 MB
+== the census: pause vs live-set size (cooperative entry) ==
+-- 10000 live records --
+stop-the-world     0.1 us
+mark               32.4 us
+sweep              4.6 us
+pause p50          0.036 ms
+pause max          0.046 ms
+-- 1000 live records --
+stop-the-world     0.1 us
+mark               4.6 us
+sweep              1.4 us
+pause p50          0.005 ms
+pause max          0.016 ms
+-- 300 live records --
+stop-the-world     0.1 us
+mark               2.7 us
+sweep              1.1 us
+pause p50          0.003 ms
+pause max          0.012 ms
+-- the full-sweep reference --
+pause p50          2.598 ms
+pause max          9.105 ms
+== throughput: slice-batched resets vs the stock collector ==
+-- 24 B of garbage per event --
+wall time          0.257 s (19.45 M events/s)
+=== per-event wall time, 5000000 events ===
+B=1  wall time          0.36 s (13.87 M events/s)
+=== per-event wall time, 5000000 events ===
+B=100  wall time          0.241 s (20.78 M events/s)
+=== per-event wall time, 5000000 events ===
+B=1000  wall time          0.24 s (20.86 M events/s)
+=== per-event wall time, 5000000 events ===
+-- 1600 B of garbage per event --
+wall time          0.363 s (13.77 M events/s)
+=== per-event wall time, 5000000 events ===
+B=1  wall time          0.39 s (12.8 M events/s)
+=== per-event wall time, 5000000 events ===
+B=100  wall time          0.279 s (17.91 M events/s)
+=== per-event wall time, 5000000 events ===
+B=1000  wall time          0.292 s (17.1 M events/s)
+=== per-event wall time, 5000000 events ===
+== memory over time (1 minute paced at 100 us/event; 30 min with 18000000) ==
+=== endurance result ===
+events            600000
+duration          60.0 s
+latency p50       <= 64 ns (log2 bucket)
+latency p99.9     <= 128 ns (log2 bucket)
+latency max       1362 ns
+lateness max      1400 ns
+slot misses       0 events (0.0 %)
+rss growth 2nd half     0.0 MB
+alloc throughput        29.3 bytes/event (recycled by reset; accounting slope)
+RUN_SH EXIT=0

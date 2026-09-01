@@ -1,0 +1,10 @@
+=== region (payload 3 floats, census every 100000) ===
+wall time          0.061 s (82.55 M events/s)
+sent/received      833335 / 833331
+checksum           6.9444805554e11
+censuses           50
+census p50         3.2 us
+census max         6.6 us
+cells freed        7499977
+live at last census: 36 cells, 6 pages walked, 404 wholesale
+live heap counter  336.8 MB

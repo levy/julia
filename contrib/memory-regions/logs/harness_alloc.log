@@ -1,0 +1,11 @@
+=== alloc ===
+events            20000000
+kept bytes        104670976
+p50               60 ns
+p99               90 ns
+p99.9             581 ns
+p99.99            881 ns
+max               13662523 ns
+over 100us target 24 events (0.00012 %)
+gc events         12
+gc total          18.7 ms

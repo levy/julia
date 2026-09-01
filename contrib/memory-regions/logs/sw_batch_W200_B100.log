@@ -1,0 +1,12 @@
+full GC reference (startup): 6.11 ms
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.103 s (48.5 M events/s)
+collection total   0.0 ms (0.0 % of wall)
+table checksum     correct
+=== batch: 0 collections ===
+cells freed        0 (turnover was 4990000 records + scratch)
+live heap counter  8339.5 MB
+peak RSS           626.7 MB

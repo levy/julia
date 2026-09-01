@@ -1,0 +1,5 @@
+=== stock (payload 3 floats, census every 100000) ===
+wall time          0.086 s (58.28 M events/s)
+sent/received      833335 / 833331
+checksum           6.9444805554e11
+live heap counter  12.9 MB

@@ -1,0 +1,51 @@
+full GC reference (startup): 6.09 ms
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+stock collections during the run: 305
+wall time          0.737 s (6.79 M events/s)
+collection total   0.0 ms (0.0 % of wall)
+table checksum     correct
+=== auto: 0 collections ===
+max at event      990385 (slice boundary: false, census boundary: false); events over 200us: 274
+  over 200us: event 9937  3243 us
+  over 200us: event 19503  796 us
+  over 200us: event 27119  2514 us
+  over 200us: event 35285  227 us
+  over 200us: event 41561  214 us
+  over 200us: event 46697  214 us
+  over 200us: event 51103  212 us
+  over 200us: event 151881  200 us
+  over 200us: event 155587  202 us
+  over 200us: event 174527  201 us
+  over 200us: event 178463  201 us
+  over 200us: event 182459  201 us
+  over 200us: event 186525  203 us
+  over 200us: event 190651  205 us
+  over 200us: event 194837  207 us
+  over 200us: event 199103  210 us
+  over 200us: event 203429  212 us
+  over 200us: event 207845  216 us
+  over 200us: event 212347  219 us
+  over 200us: event 216933  223 us
+  over 200us: event 221619  225 us
+  over 200us: event 226395  229 us
+  over 200us: event 231281  232 us
+  over 200us: event 236267  239 us
+  over 200us: event 241373  243 us
+  over 200us: event 246579  241 us
+  over 200us: event 251885  241 us
+  over 200us: event 257291  243 us
+  over 200us: event 262787  242 us
+  over 200us: event 268393  242 us
+=== per-event wall time, 5000000 events ===
+p50               60 ns
+p99               390 ns
+p99.9             531 ns
+p99.99            671 ns
+max               4008495 ns
+max, no preemption 4008495 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 305 events (0.0061 %)
+live heap counter  81.1 MB
+peak RSS           706.8 MB

@@ -1,0 +1,11 @@
+=== pooled ===
+events            20000000
+kept bytes        68571552
+p50               60 ns
+p99               71 ns
+p99.9             100 ns
+p99.99            1774 ns
+max               325064 ns
+over 100us target 7 events (3.5e-5 %)
+gc events         0
+gc total          0.0 ms

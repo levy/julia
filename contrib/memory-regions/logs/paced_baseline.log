@@ -1,0 +1,11 @@
+=== baseline (paced, one event per 100 us slot) ===
+events            1000000
+latency p50       60 ns
+latency p99.9     732 ns
+latency max       1258836 ns
+lateness p99.9    795 ns
+lateness max      1258885 ns
+slot misses       20 events (0.002 %)
+gc events         1
+gc total          1.2 ms
+live heap         54.2 MB

@@ -1,0 +1,22 @@
+full GC reference (startup): 5.59 ms
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+involuntary context switches during the run: 0
+page faults during the run: 0
+wall time          0.246 s (20.34 M events/s)
+collection total   1.8 ms (0.73 % of wall)
+table checksum     correct
+=== phase means over 50 collections ===
+stop-the-world     0.1 us
+mark               31.6 us
+sweep              4.3 us
+live cells kept    10002
+cells freed        100400
+pages walked       22
+pages wholesale    194
+=== coop: 50 collections ===
+pause p50          0.035 ms
+pause max          0.046 ms
+cells freed        5020002 (turnover was 4990000 records + scratch)
+live heap counter  564.4 MB
+peak RSS           627.3 MB

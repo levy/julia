@@ -1,0 +1,22 @@
+=== warm (paced, one event per 100 us slot) ===
+events            10000
+latency p50       70 ns
+latency p99.9     361 ns
+latency max       44354492 ns
+lateness p99.9    60134098 ns
+lateness max      61129109 ns
+slot misses       627 events (6.27 %)
+gc events         0
+gc total          0.0 ms
+overflow pages    0
+=== regions (paced, one event per 100 us slot) ===
+events            1000000
+latency p50       70 ns
+latency p99.9     160 ns
+latency max       4278 ns
+lateness p99.9    221 ns
+lateness max      4330 ns
+slot misses       0 events (0.0 %)
+gc events         0
+gc total          0.0 ms
+live heap         80.1 MB
