@@ -174,6 +174,14 @@ of a region-1 vector into a region-0 holder traps, and the legal direction
 passes. The trap ends the process, so exit code 1 is the pass and exit
 code 2 the failure.
 
+## A region-native model, and its C++ counterpart
+
+`stage6_region_native.jl` allocates packets with a payload naturally at send
+and drops them at delivery — no pool, no reuse, no ownership bookkeeping —
+with the whole simulation in one region and a cooperative census every N
+events. `stage6_equivalent.cpp` is the same model with C++ ownership, for
+the comparison. Its numbers are not part of the measurement record.
+
 ## Files
 
 | file | role |
@@ -193,3 +201,4 @@ code 2 the failure.
 | `hook_patch.py`, `region_check.jl`, `checker_run.jl` | the discipline checker |
 | `model_clean.jl` | the disciplined model: zero violations |
 | `stage4_trap.jl` | the barrier trap |
+| `stage6_region_native.jl`, `stage6_equivalent.cpp` | a region-native model and its C++ counterpart |
