@@ -683,7 +683,7 @@ STATIC_INLINE jl_taggedvalue_t *gc_reset_page(jl_ptls_t ptls2, const jl_gc_pool_
 {
     assert(GC_PAGE_OFFSET >= sizeof(void*));
     pg->nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / p->osize;
-    pg->pool_n = p - ptls2->gc_tls.heap.norm_pools;
+    pg->pool_n = p - ptls2->gc_tls.heap.active_pools;
     jl_taggedvalue_t *beg = (jl_taggedvalue_t*)(pg->data + GC_PAGE_OFFSET);
     pg->has_young = 0;
     pg->has_marked = 0;
@@ -723,7 +723,10 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // Use the pool offset instead of the pool address as the argument
     // to workaround a llvm bug.
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
-    jl_gc_pool_t *p = (jl_gc_pool_t*)((char*)ptls + offset);
+    // `offset` is the stable norm_pools-relative encoding the JIT bakes in;
+    // decode it to a pool index and address the CURRENT region's array.
+    size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
+    jl_gc_pool_t *p = ptls->gc_tls.heap.active_pools + pool_idx;
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == 0);
 #ifdef MEMDEBUG
     return jl_gc_big_alloc(ptls, osize, NULL);
@@ -3508,6 +3511,46 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
     return recollect;
 }
 
+// --- region prototype ---------------------------------------------------------
+// Swap the current allocation region. Every region's pool cursors live in its
+// own array, so the switch is one pointer store; the allocation fast path
+// decodes its stable offset through active_pools. Returns the previous region.
+JL_DLLEXPORT int jl_gc_region_set(int n)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    int old = heap->current_region;
+    if (n == old)
+        return old;
+    assert(n >= 0 && n < JL_GC_MAX_REGIONS);
+    if (!heap->regions[n].initialized) {
+        for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+            heap->regions[n].pools[i].freelist = NULL;
+            heap->regions[n].pools[i].newpages = NULL;
+            heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
+        }
+        heap->regions[n].pages = NULL;
+        heap->regions[n].overflow_pages = 0;
+        heap->regions[n].initialized = 1;
+    }
+    // Every region's cursors live in its own array; the switch is a pointer.
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->current_region = (uint8_t)n;
+    return old;
+}
+
+JL_DLLEXPORT int jl_gc_region_current(void)
+{
+    return jl_current_task->ptls->gc_tls.heap.current_region;
+}
+
+JL_DLLEXPORT uint64_t jl_gc_region_overflow(int n)
+{
+    return jl_current_task->ptls->gc_tls.heap.regions[n].overflow_pages;
+}
+
+// ------------------------------------------------------------------------------
+
 JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 {
     JL_PROBE_GC_BEGIN(collection);
@@ -3629,6 +3672,11 @@ void jl_init_thread_heap(jl_ptls_t ptls)
         p[i].freelist = NULL;
         p[i].newpages = NULL;
     }
+    // --- region prototype: the TLS is not zeroed; start in region 0 ---
+    heap->current_region = 0;
+    heap->active_pools = heap->norm_pools;
+    memset(heap->regions, 0, sizeof(heap->regions));
+    // ------------------------------------------------------------------
     small_arraylist_new(&common_heap->weak_refs, 0);
     small_arraylist_new(&common_heap->live_tasks, 0);
     for (int i = 0; i < JL_N_STACK_POOLS; i++)
