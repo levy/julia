@@ -421,8 +421,26 @@ void jl_gc_run_all_finalizers(jl_task_t *ct)
     run_finalizers(ct, 1);
 }
 
+// Region rule: an object with a finalizer cannot be freed by a trace-free
+// region reset, so finalizers are allowed only on root-region objects.
+// (jl_gc_region_of lives in the stock GC; it answers 0 for any object
+// that is not on a region-tagged pool page.)
+JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v);
+static void jl_gc_check_finalizer_region(jl_value_t *v)
+{
+    int r = jl_gc_region_of(v);
+    if (__unlikely(r != 0))
+        jl_errorf("finalizer: the object lives in memory region %d; "
+                  "a region reset cannot run finalizers, so finalizers are "
+                  "allowed only on root-region objects", r);
+}
+
 void jl_gc_add_finalizer_(jl_ptls_t ptls, void *v, void *f) JL_NOTSAFEPOINT
 {
+    // Every registration path lands here (Base and the Core.finalizer
+    // builtin included). The low two bits tag pointer/quiescent
+    // finalizers; mask them before the region check.
+    jl_gc_check_finalizer_region((jl_value_t*)(((uintptr_t)v) & ~(uintptr_t)3));
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == JL_GC_STATE_UNSAFE);
     arraylist_t *a = &ptls->finalizers;
     // This acquire load and the release store at the end are used to
