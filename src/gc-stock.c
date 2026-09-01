@@ -213,6 +213,8 @@ static _Atomic(int) region_scoped_target = 0;
 static jl_taggedvalue_t *region_scoped_extra[REGION_SCOPED_MAX_EXTRA];
 static int region_scoped_extra_n = 0;
 static int region_scoped_extra_overflow = 0;
+// Rule 5 debug mode: jl_gc_region_reset refuses while a root references in.
+static int region_debug_checks = 0;
 // Phase breakdown of the last jl_gc_region_collect:
 // 0 total ns, 1 stop-the-world ns, 2 mark ns, 3 sweep ns,
 // 4 live cells kept, 5 cells freed, 6 pages walked, 7 pages wholesale.
@@ -221,6 +223,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 {
     return (i >= 0 && i < 8) ? region_collect_stats[i] : 0;
 }
+JL_DLLEXPORT int64_t jl_gc_region_check(int n);
 int current_sweep_full = 0;
 int next_sweep_full = 0;
 int under_pressure = 0;
@@ -3678,6 +3681,17 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
     assert(n > 0 && n < JL_GC_MAX_REGIONS && n != heap->current_region);
     if (!heap->regions[n].initialized)
         return 0;
+    // Rule 5 debug mode: refuse the reset while an execution root still
+    // references into the region. The check leaves clean marks, so the
+    // caller can drop the reference and retry.
+    if (__unlikely(region_debug_checks)) {
+        int64_t live = jl_gc_region_check(n);
+        if (live != 0) {
+            jl_safe_printf("REGION-RESET refused: %lld live references into region %d\n",
+                           (long long)live, n);
+            return (uint64_t)-1;
+        }
+    }
     // The reset walks nothing. Every page of the region hangs on one chain,
     // the chain has a tail, and a fresh page's metadata is allowed to be
     // stale because gc_add_page resets a page when it claims it. So: clear
@@ -3708,6 +3722,104 @@ JL_DLLEXPORT int jl_gc_region_current(void)
 JL_DLLEXPORT uint64_t jl_gc_region_overflow(int n)
 {
     return jl_current_task->ptls->gc_tls.heap.regions[n].overflow_pages;
+}
+
+// Rule 5 debug check: a region may reset only when NO execution root still
+// references into it. The check is a scoped mark (the stage-5 filter) that
+// must find NOTHING: stop the world, mark from the execution roots with
+// the region filter, then walk the region's pages -- every MARKED cell is
+// a violation. The marks are cleared again (cells and tasks), so the
+// check is repeatable and leaves clean state. Enabled per process with
+// jl_gc_region_set_debug(1); jl_gc_region_reset then refuses a violating
+// reset and returns UINT64_MAX.
+JL_DLLEXPORT void jl_gc_region_set_debug(int on)
+{
+    region_debug_checks = on;
+}
+
+JL_DLLEXPORT int64_t jl_gc_region_check(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
+        return 0;
+    if (heap->current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return -2;
+
+    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+    if (!jl_safepoint_start_gc(ct)) {
+        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        return -3;
+    }
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+
+    region_scoped_extra_n = 0;
+    region_scoped_extra_overflow = 0;
+    jl_atomic_store_relaxed(&region_scoped_target, n);
+
+    jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 != NULL) {
+            gc_queue_thread_local(mq, ptls2);
+            gc_queue_bt_buf(mq, ptls2);
+        }
+    }
+    gc_mark_loop_serial(ptls);
+
+    for (int i = 0; i < region_scoped_extra_n; i++)
+        region_scoped_extra[i]->header &= ~(uintptr_t)GC_MARKED;
+
+    // Every marked cell in the region is a live reference at reset time.
+    int64_t violations = 0;
+    jl_gc_pool_t *pools = heap->regions[n].pools;
+    char *bump[JL_GC_N_MAX_POOLS];
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
+        bump[i] = (char*)pools[i].newpages;
+    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+        int i = pg->pool_n;
+        int osize = pg->osize;
+        char *cell = pg->data + GC_PAGE_OFFSET;
+        size_t ncells = (GC_PAGE_SZ - GC_PAGE_OFFSET) / (size_t)osize;
+        char *end = cell + ncells * (size_t)osize;
+        if (bump[i] != NULL && gc_page_data(bump[i] - 1) == pg->data &&
+            (char*)bump[i] < end)
+            end = (char*)bump[i];
+        for (; cell < end; cell += osize) {
+            jl_taggedvalue_t *tv = (jl_taggedvalue_t*)cell;
+            uintptr_t h = tv->header;
+            if (h & GC_MARKED) {
+                tv->header = h & ~(uintptr_t)(GC_MARKED | GC_OLD);
+                if (violations < 8) {
+                    jl_datatype_t *vt = (jl_datatype_t*)jl_typeof(jl_valueof(tv));
+                    jl_safe_printf("REGION-RESET-CHECK: live reference into region %d: %p type=%s\n",
+                                   n, (void*)jl_valueof(tv),
+                                   jl_symbol_name(vt->name->name));
+                }
+                violations++;
+            }
+        }
+        pg->has_marked = 0;
+    }
+
+    jl_atomic_store_relaxed(&region_scoped_target, 0);
+
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_safepoint_end_gc();
+    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+    return violations;
 }
 
 // The scoped sweep shared by both census entries. A page the mark never
