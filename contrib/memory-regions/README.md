@@ -125,6 +125,31 @@ slot misses and their lateness — the hardware-in-the-loop question.
 collector off, sampling RSS every ten seconds, and answers whether memory
 stays flat or a maintenance collection has to come back.
 
+## The census, the throughput, and the slice knob
+
+`stage5_scoped.jl` is the census example with every knob: a Simulation-region
+table of K live records with one replacement per event, Event-region scratch
+reset per event, a census every N events. Its variants:
+
+| variant | what it does |
+| --- | --- |
+| `scoped` | the stop-the-world census |
+| `coop` | the cooperative census, no stop-the-world |
+| `pooled` | records updated in place — no region garbage, no census |
+| `full` | a full `GC.gc()` as the reference |
+| `auto` | the stock collector left to its heuristics |
+| `batch` | one Event window and one reset per B events |
+| `autopool` | the identical `batch` handler under the stock collector |
+
+```
+../../julia stage5_scoped.jl coop 2000000 100000 10000
+../../julia stage5_scoped.jl batch 5000000 100000 10000 200 100
+```
+
+`./run.sh` now runs the whole set in order: the batteries, the tail bound,
+the census frontier with the full-collection reference, the slice throughput
+matrix, and the endurance sampler.
+
 ## Files
 
 | file | role |
@@ -133,10 +158,11 @@ stays flat or a maintenance collection has to come back.
 | `DESIGN.md` | the goal and the semantic design |
 | `regions.jl` | the Julia face: the calls above |
 | `v2_regression.jl`, `stage3_safety.jl` | the correctness batteries |
-| `run.sh` | runs the batteries |
 | `kernel.jl` | a small discrete-event kernel with a measured run loop |
 | `model_alloc.jl`, `model_pooled.jl` | the model, allocating per event and pooled by hand |
 | `harness.jl` | the vanilla-Julia yardstick and the hand-pooled upper bound |
 | `stage3_model.jl`, `stage3_run.jl` | the disciplined model and the tail bound: `baseline` against `regions` |
 | `stage4_paced.jl` | one event per 100 µs slot: latency and slot misses |
 | `stage4_endurance.jl` | memory over time, paced, thirty minutes |
+| `stage5_scoped.jl` | census, throughput, slices — all knobs |
+| `run.sh` | the batteries and every measurement, in order |
