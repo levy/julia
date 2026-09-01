@@ -4,7 +4,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 JULIA="${JULIA:-../../julia}"
-run() { "$JULIA" --startup-file=no "$@"; }
+CORE="${CORE:-29}"; RTPRIO="${RTPRIO:-50}"
+# Pinned, and real-time when the machine grants it - the same discipline
+# as realworld.sh, so every number here is measured the way the matrix is.
+if chrt -f "$RTPRIO" true 2>/dev/null; then RT="chrt -f $RTPRIO"; else RT=""; fi
+run() { $RT taskset -c "$CORE" "$JULIA" --startup-file=no "$@"; }
+
+echo "== the real-world loop: one window per slice, the kept record in the Simulation region,"
+echo "   the cooperative census at a slice boundary - against the stock collector =="
+# Six pinned runs with the heap reserve; the kept-run rule and the summary
+# live in realworld.sh (CORE=, RESERVE=, TRIES= override its defaults).
+JULIA="$JULIA" ./realworld.sh
 
 echo "== correctness batteries =="
 run v2_regression.jl

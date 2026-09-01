@@ -278,3 +278,222 @@ into a region page is cheaper than a general-purpose `new`, and the slice
 reset is cheaper than per-packet `delete`. The stock-Julia and C++
 columns tie.
 
+## The real-world loop against the stock collector
+
+`stage5_scoped.jl real` and `stage5_scoped.jl auto` — logs
+`logs/realworld_real_census_W*_B*.log`, `logs/realworld_real_nocensus_W*_B*.log`,
+`logs/realworld_auto_W*.log`. Measured 2026-09-01 on the same machine and
+build as the rest of this file.
+
+**Why.** Every tail table above pays a window and a reset on every event,
+and nobody runs a simulator that way. The loop a simulator runs opens one
+Event window per slice of B events, resets once per slice, allocates the
+kept record in the Simulation region so it outlives the slice, and calls the
+cooperative census at a slice boundary it owns. That configuration had
+throughput numbers and census pauses in the record, but no per-event
+distribution against the stock collector — and the stock collector is the
+comparison a reader wants.
+
+**What.** One handler — scratch of W floats that dies, and a record that
+replaces the old one in a table of K = 10 000 — under three collectors:
+the stock collector left to its heuristics (`auto`), the regions with the
+cooperative census every 100 000 events (`real`), and the regions with no
+census at all (`real` with `every = 0`), so the census's own share shows by
+its absence. 5 M events; W = 200 (~1.7 KB of garbage per event) with the
+slice B = 100 and W = 3 (~100 B) with B = 1000, the cache optima of the
+throughput matrix. Every event's wall time is recorded into a preallocated
+vector, the slice reset and the census included in the event at whose
+boundary they run.
+
+**OS preemption is kept out by the machine, and the log proves it.** A
+time-shared task is preempted by any other runnable task, and a pinned run
+on an idle core still took one to five involuntary context switches in
+half a second before the isolation. Every variant samples its thread's
+involuntary-context-switch counter (`getrusage(RUSAGE_THREAD)`) across the
+loop and every 10 000 events inside it; the count across the loop is a row
+of the tables, and the per-block attribution — the maximum over the blocks
+that took no preemption, printed beside the raw one — is the fallback for
+a machine without the isolation. In these six runs the counts are 0 and
+the two maxima are equal.
+
+**What is measured is Julia and its collector, not the OS.** The loop is the
+best case a hard real-time simulator arranges for itself, and every column
+gets the same: an isolated core (`isolcpus`, `nohz_full`, `rcu_nocbs`, the
+interrupts elsewhere, its SMT sibling idle), the real-time class
+(`SCHED_FIFO`), its memory locked (`mlockall`), and a heap reserve of
+512 MB claimed before the loop through `region_reserve`, which populates
+every page block the runtime already holds (`MADV_POPULATE_WRITE`) and maps
+its own populated (`MAP_POPULATE`), so that no event takes a page fault.
+Two rows of the tables are the proof, and both read 0 in every column:
+involuntary context switches inside the loop, and page faults inside the
+loop. Without the reserve the first touch of every new page faults, and
+once per about 4 MB of new pages the kernel refills the core's per-CPU
+free list under the zone lock with interrupts off, 300–530 µs that the
+process only sees as a gap; the no-census column, whose heap grows for the
+whole run, paid that as a 330 µs maximum. Without the isolation the stock
+collector's recording-class p99.99 read 3.6 µs; it is 691 ns here. Both
+were the OS, and a simulator that sizes its heap and owns its core pays
+neither.
+
+**What it showed.**
+
+![The latency distribution: fraction of events at least this slow, three collectors, two garbage classes](plots/latency_ccdf.svg)
+
+**~1.7 KB of garbage per event (recording-class), slice B = 100:**
+
+| | stock collector | regions, census every 100 k | regions, no census |
+| --- | --- | --- | --- |
+| events / s | 6.76 M | 15.51 M | 15.83 M |
+| p50 | 60 ns | 40 ns | 40 ns |
+| p99 | 381 ns | 70 ns | 70 ns |
+| p99.9 | 531 ns | 80 ns | 230 ns |
+| p99.99 | 651 ns | 200 ns | 380 ns |
+| max | 4.0 ms | 54.9 µs | 15.1 µs |
+| events over 100 µs | 302 | 0 | 0 |
+| collections | 302 stock | 50 censuses, p50 0.036 ms, max 0.054 ms | 0 |
+| involuntary context switches inside the loop | 0 | 0 | 0 |
+| page faults inside the loop | 0 | 0 | 0 |
+| peak RSS, the 512 MB reserve and the locked image included | 1244.1 MB | 1204.4 MB | 1212.8 MB |
+
+**~100 B of garbage per event (light), slice B = 1000:**
+
+| | stock collector | regions, census every 100 k | regions, no census |
+| --- | --- | --- | --- |
+| events / s | 17.16 M | 18.12 M | 18.39 M |
+| p50 | 30 ns | 31 ns | 31 ns |
+| p99 | 50 ns | 41 ns | 41 ns |
+| p99.9 | 160 ns | 60 ns | 70 ns |
+| p99.99 | 321 ns | 80 ns | 220 ns |
+| max | 3.9 ms | 51.3 µs | 15.5 µs |
+| events over 100 µs | 34 | 0 | 0 |
+| collections | 34 stock | 50 censuses, p50 0.036 ms, max 0.05 ms | 0 |
+| involuntary context switches inside the loop | 0 | 0 | 0 |
+| page faults inside the loop | 0 | 0 | 0 |
+| peak RSS, the 512 MB reserve and the locked image included | 1243.9 MB | 1204.1 MB | 1204.3 MB |
+
+**How to read it.** At recording-class garbage the regions win every row:
+2.3× the throughput, a faster median (40 against 60 ns), every tail
+percentile (p99 70 against 381 ns, p99.9 80 against 531 ns), a maximum of
+55 µs — the census itself, fifty of them at a median of 36 µs —
+against 4.0 ms and 302 stock collections, zero events over the 100 µs
+target against 302, and less memory. At light garbage the stock nursery keeps
+1 ns of the median (30 against 31 ns) and the regions with the census take
+everything else: the throughput (18.1 against 17.2 M events/s), p99 (41
+against 50 ns), p99.9 (60 against 160 ns), p99.99 (80 against 321 ns),
+and the maximum, 51 µs against 3.9 ms.
+
+**Why the region columns look like this.** The reset at every slice
+boundary is O(1) — the chain parks, the claim resets the pages — so no
+boundary event stands out of the band; the census marks non-atomically
+under its single-mutator contract, which is why fifty censuses cost
+36 µs at the median over 10 000 live records; and the heap reserve plus
+the isolation keep the OS out, which the two proof rows show. Each
+decision is argued in its runtime commit and in the chapters above.
+
+**What the census buys, and what "no census" costs.** Without a census
+nothing pays the 55 µs: the no-census maximum is 15 µs in both classes, the
+largest slice-boundary event. What it costs is the heap: the replaced
+records pile up on region pages for the whole run — 160 MB per 5 M events
+at recording-class — so the run is bounded by its reserve, and once the
+reserve is spent the runtime populates a new 64 MB block inside the loop, a
+few milliseconds once per block. An endless run has the census as its only
+bounded configuration, and the census keeps the working set on the same
+cache-hot pages, which is the light-garbage median (31 against 31 ns),
+p99.9 (60 against 70 ns) and p99.99 (80 against 220 ns) between the two
+region columns. Its price is one 55 µs pause per 100 000 events, at a
+boundary the loop owns.
+
+**Environment, and how to reproduce the six runs.** A measurement that can
+not be reproduced is worth nothing, so here is everything the numbers
+depend on.
+
+- *Machine.* AMD Ryzen AI MAX+ 395 (16 cores, 32 threads with SMT on, one
+  NUMA node), 64 GB, Ubuntu 26.04.1 LTS, kernel 7.0.0-30-generic (HZ=1000,
+  `CONFIG_NO_HZ_FULL`, `CONFIG_CPU_ISOLATION`, `CONFIG_RCU_NOCB_CPU`),
+  `performance` governor; transparent huge pages `madvise` (the runtime
+  does not ask for them); `vm.overcommit_memory` = 0. The machine was
+  otherwise idle.
+- *The isolated core.* CPU 13 and CPU 29 are the two threads of core 13;
+  the kernel command line takes both out of everything but a task pinned
+  there, and the loop runs on 29 with 13 idle, so the core's pipeline and
+  caches are its own:
+  `isolcpus=domain,managed_irq,13,29 nohz_full=13,29 rcu_nocbs=13,29 irqaffinity=0-12,14-28,30-31`
+  (`/etc/default/grub`, `GRUB_CMDLINE_LINUX_DEFAULT`, then `update-grub`).
+  `/sys/devices/system/cpu/isolated` and `nohz_full` read `13,29` after
+  the reboot. Across one whole run — about three seconds on the core, the
+  startup, the compilation, the loop, and the report — `/proc/interrupts`
+  counted nine interrupts on CPU 29, four of them the local timer: the
+  tick is stopped while the loop runs.
+- *The real-time class and the lock.* The run is `SCHED_FIFO` priority 50
+  (`chrt -f 50`, which `realworld.sh` applies when the machine grants
+  it), so no time-shared task preempts it, and its memory is locked
+  (`mlockall(MCL_CURRENT | MCL_FUTURE)`), so reclaim can not take a page.
+  Both need limits: `DefaultLimitRTPRIO=99` and
+  `DefaultLimitMEMLOCK=infinity` in `/etc/systemd/system.conf` and
+  `/etc/systemd/user.conf` (they reach every session, an IDE's included;
+  `pam_limits` is not in `common-session` on this Ubuntu, so
+  `limits.conf` alone does not), and `kernel.sched_rt_runtime_us = -1`
+  (`/etc/sysctl.d/99-hil.conf`): with the default 950000 a real-time task
+  that runs more than 0.95 s of any second is throttled for 50 ms, which
+  would show as a 50 ms gap. Each log states the class and the lock it
+  got (`scheduler`, `memory locked`).
+- *Build.* This branch at the commit that holds the logs, `make` with the
+  default `Make.user`, Julia 1.13.0-rc3 as the base.
+- *The loop.* `stage5_scoped.jl`, 5 M events, 10 000 live records, W words
+  of scratch per event (200 = recording-class, 3 = light), slice B (100 and
+  1000), the census every 100 000 events or never (`every` = 0), the heap
+  reserve 512 MB for every column, claimed and populated before the loop
+  (`region_reserve`). The event time is `time_ns()` around the handler, the
+  slice reset and the census counted into the event at whose boundary they
+  run; the recording vector is filled before the loop.
+- *The proof in every log.* `involuntary context switches during the run:
+  0` and `page faults during the run: 0` from `getrusage(RUSAGE_THREAD)`
+  across the loop, `scheduler SCHED_FIFO priority 50`, `memory locked
+  yes`. The driver still attributes preemption per 10 000-event block and
+  prints "max, no preemption" beside the raw maximum, for a machine
+  without the isolation; in these six runs the two are equal.
+- *The command.* `./realworld.sh` from `contrib/memory-regions/` runs the
+  six configurations in that order, writes `logs/realworld_*.log`, and
+  prints the lines the tables are made of; `CORE=`, `RESERVE=`, `RTPRIO=`,
+  `TRIES=`, and `JULIA=` override the core, the reserve in MB, the
+  priority, the tries, and the binary. The tables are the logs,
+  transcribed: `events / s` is the wall time line, the percentiles and
+  the maximum the `per-event wall time` block, the collections the `stock
+  collections` or `pause` lines, the memory `peak RSS`.
+
+## The unit costs, collected
+
+Measured bare, pinned, on the final runtime (`microbench` runs; the
+per-call numbers repeat across runs to the nanosecond):
+
+| cost | value |
+| --- | --- |
+| region switch, region↔region (`region_set` pair) | 5.2 ns |
+| region window, 0↔region open+close (two counter updates) | 10.4 ns |
+| `@with_region` over the bare pair | +0.0 ns |
+| the reset, any slice size (parked chain, O(1)) | ~21 ns |
+| the census, K live objects (cooperative) | ~2–3 µs + ~3.3 ns × K |
+| the census's own memory | one page |
+| a page claim from the fresh list | one `gc_reset_page`, warm |
+| the reserve, at startup | populates the heap once; no fault inside the loop after |
+
+## What was not measured
+
+Multi-threaded mutators (the census contract is single-mutator; the
+stop-the-world entry exists but has no numbers here); NUMA effects (one
+node); a model whose live set grows without bound (the census is
+per-region, its pause grows with the live set by the law above); write
+barriers for a generational split inside a region (none exist).
+
+## Provenance
+
+Every number in this file was measured on 2026-09-01, on this branch's
+finished runtime, on the machine and under the environment the real-world
+chapter states, by the scripts in this directory; `run.sh` reproduces
+them in order, and the logs in `logs/` are what it wrote. Two sections
+are compiler-side and carry the checker build's results instead: the
+discipline checker and the barrier trap, whose outcomes do not depend on
+the runtime. The prototype campaign that preceded this branch lives in
+the simulator repository that motivated the design (`omnet-julia`, plan
+`memory-region-prototype`); its record keeps its own logs, frozen as they
+were measured.
