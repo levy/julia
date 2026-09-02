@@ -102,6 +102,35 @@ let include_result = Base.include(Main, ARGS[1])
                 if t isa Module
                     (t !== mod && sealedroot(t)) && record!(t)
                 elseif t isa DataType && Base.isconcretetype(t)
+                    # The run path takes the NATIVE layout; the cell layout is
+                    # the editor's reactive shadow, and a field read on it is a
+                    # dynamic call no trim can resolve. Sealed substitution must
+                    # only offer what the run path can produce.
+                    Base.occursin("CellModule.Cell", Base.string(t)) && continue
+                    # A document's REACTIVE layout never occurs on the run
+                    # path either. Layouts come in sibling families (MNedX /
+                    # MCNedX / NedX); when an M-prefixed sibling exists, this
+                    # name is the reactive variant — skip it. A kernel
+                    # @cell_struct value type has no sibling and stays.
+                    Base.isdefined(mod, Base.Symbol(:M, Base.nameof(t))) && continue
+                    # A concrete type whose fields are reactive CELLS is UI
+                    # machinery (ProjectionReferenceStep and kin): the run
+                    # path never holds one, and a branch over it walks the
+                    # cell protocol. Safe only NOW: the run-path step types
+                    # converted to layout families and left this class.
+                    let cellfield = false
+                        for ft in Base.fieldtypes(t)
+                            ft isa DataType || continue
+                            fn = ft.name.name
+                            if fn === :ReactiveCell || fn === :MutableCell
+                                cellfield = true
+                                break
+                            end
+                        end
+                        Base.nameof(t) === :ProjectionReferenceStep &&
+                            Core.println("SEALED-EXCL verdict cellfield=", cellfield)
+                        cellfield && continue
+                    end
                     s = Base.supertype(t)
                     while s !== Any
                         if sealedroot(Base.parentmodule(s))
@@ -143,7 +172,15 @@ let include_result = Base.include(Main, ARGS[1])
             for mi in Base.specializations(method)
                 mi isa Core.MethodInstance || continue
                 (mi in preset) && continue
-                Base.isdispatchtuple(mi.specTypes) || continue
+                if !Base.isdispatchtuple(mi.specTypes)
+                    # An instance compiled AT the method's own abstract
+                    # signature is the stem pattern: one body serves every
+                    # layout, and runtime dispatch lands on it. Membership
+                    # needs it in the image (node_address(::ANode) was the
+                    # measured case), so it is harvested and marked for the
+                    # drain filter, which otherwise drops widened instances.
+                    (mi.specTypes == method.sig) || continue
+                end
                 v = Base.get!(Base.Vector{Any}, table, method)
                 Base.push!(v, mi)
                 n[] += 1
@@ -162,6 +199,48 @@ let include_result = Base.include(Main, ARGS[1])
             Compiler.SEALED_TARGET_ROOTS[] = roots
         end
     end
+    let stemenv = Base.get(Base.ENV, "SEALED_STEM_KEEP", "")
+        if !Base.isempty(stemenv)
+            names = Base.Set{Symbol}()
+            for s in Base.split(stemenv, ",")
+                Base.push!(names, Base.Symbol(Base.strip(s)))
+            end
+            Compiler.SEALED_STEM_KEEP[] = names
+        end
+    end
+    let pullenv = Base.get(Base.ENV, "SEALED_NOCALLINFO_PULL", "")
+        if !Base.isempty(pullenv)
+            names = Base.Set{Symbol}()
+            for s in Base.split(pullenv, ",")
+                Base.push!(names, Base.Symbol(Base.strip(s)))
+            end
+            Compiler.SEALED_NOCALLINFO_PULL[] = names
+            # Seed the trim drain with every dispatch-tuple instance of the
+            # named methods. Their call sites carry NoCallInfo (more matches
+            # than max_methods), so no inlining-time pull ever sees them;
+            # inlining-side pulls at such sites cascaded (1 -> 27 -> 158
+            # errors). The entry warm run compiles one instance per method,
+            # so pushing specializations covers the whole match set.
+            seeded = Base.RefValue(0)
+            Base.visit(Core.methodtable) do method
+                method isa Core.Method || return
+                (method.name in names) || return
+                # a NAMED method is explicit intent, so Base methods are
+                # allowed here (the BitVector constructor was the measured
+                # case: an invoke target of a drained instance, whose edges
+                # nothing walks) — marked so the drain filter accepts them
+                for mi in Base.specializations(method)
+                    mi isa Core.MethodInstance || continue
+                    Base.isdispatchtuple(mi.specTypes) || continue
+                    Base.push!(Compiler.SEALED_MEMBERSHIP_KEEP, mi)
+                    Base.push!(Compiler.SEALED_EXTRA_TARGETS, mi)
+                    seeded[] += 1
+                end
+            end
+            Core.println("SEALED-SEED: ", seeded[], " instances for ", names)
+        end
+    end
+    # ------------------------------------------------------------------------
     # --------------------------------------------------------------------------
     if ARGS[2] == "--output-exe"
         have_cmain = false

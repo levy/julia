@@ -1195,6 +1195,18 @@ sealed_union_len(@nospecialize t) =
 # the retained junk produced 1984 verifier errors from bodies `main` can
 # never reach.
 const SEALED_TARGET_ROOTS = Ref{Any}(nothing)
+# Function names (Symbols) at which the NoCallInfo pull may fire. A blanket
+# pull at every given-up call site cascades (measured: 1 -> 27 -> 158
+# verifier errors); the allow-list scopes it to per-kind method families
+# whose bodies are trivial.
+const SEALED_NOCALLINFO_PULL = Ref{Any}(nothing)
+
+# Method names whose method-signature stem instance is admitted even when
+# dispatch-tuple instances cover the method: an INVOKE of the widened
+# signature needs the stem itself (add_module!, measured), but admitting
+# every covered stem re-cascades (22 -> 110 errors, measured).
+const SEALED_STEM_KEEP = Ref{Any}(nothing)
+
 # The union a sealed type stands for, or `nothing` when the type has no entry.
 # A Union is rewritten memberwise, so Union{Nothing,Env} becomes
 # Union{Nothing, <Env's concretes...>}.

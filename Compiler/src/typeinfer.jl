@@ -1594,7 +1594,60 @@ end
 # come from the SEALED_TARGET_ROOTS environment variable via the
 # buildscript; display-named methods and macro-time (Expr-typed) bodies
 # never belong.
+const SEALED_CELLFREE = IdDict{Any,Bool}()
+function _sealed_cellfree(@nospecialize(pt))
+    while pt isa UnionAll
+        pt = pt.body
+    end
+    pt isa DataType || return true
+    cached = get(SEALED_CELLFREE, pt, nothing)
+    cached === nothing || return cached
+    nm = pt.name.name
+    ok = true
+    if nm === :ReactiveCell || nm === :MutableCell || nm === :AbstractCell
+        ok = false
+    end
+    # cellness hides in type PARAMETERS and TypeVar bounds too:
+    # `ACPacket{C1...C7} where C7<:AbstractCell` carries no cell in its own
+    # name, and its widened accessor stems walked the cell protocol
+    if ok
+        for q in pt.parameters
+            q2 = q
+            q2 isa TypeVar && (q2 = q2.ub)
+            while q2 isa UnionAll
+                q2 = q2.body
+            end
+            q2 isa DataType || continue
+            qn = q2.name.name
+            if qn === :ReactiveCell || qn === :MutableCell || qn === :AbstractCell
+                ok = false
+                break
+            end
+        end
+    end
+    if ok && isconcretetype(pt)
+        for ft in fieldtypes(pt)
+            ft isa DataType || continue
+            fn = ft.name.name
+            if fn === :ReactiveCell || fn === :MutableCell
+                ok = false
+                break
+            end
+        end
+    end
+    SEALED_CELLFREE[pt] = ok
+    ok
+end
+
 const SEALED_DRAIN_SEEN = IdSet{Any}()
+
+# Warm instances of Core/Base methods that a DECLINED dynamic call matched.
+# The verifier's membership check demands an instance per matched method,
+# Base methods included — but the pull skipped Core/Base and the roots
+# filter dropped their instances, so membership held only when unrelated
+# compilation supplied them (the 1-vs-105 basins). These are accepted by
+# the drain filter explicitly: concrete warm dispatch targets, nothing else.
+const SEALED_MEMBERSHIP_KEEP = IdSet{Any}()
 
 function _sealed_drain_key(@nospecialize(mi))
     # STABLE ACROSS PROCESSES, not merely within one. `objectid` of a type was
@@ -1614,6 +1667,7 @@ end
 function sealed_keep(@nospecialize(t))
     mi = t isa CodeInstance ? get_ci_mi(t) : t
     mi isa MethodInstance || return nothing
+    (mi in SEALED_MEMBERSHIP_KEEP) && return mi
     def = mi.def
     def isa Method || return nothing
     # THE ROOT FILTER STAYS STRICT, AND IT HAS TO. Making it permissive when
@@ -1632,10 +1686,30 @@ function sealed_keep(@nospecialize(t))
     while parentmodule(md) !== md; md = parentmodule(md); end
     nameof(md) in roots || return nothing
     def.name in (:show, :print, :println, :repr, :string, :summary, :display, :dump) && return nothing
+    # macro-EXPANSION machinery: it builds Exprs and runs at include time,
+    # never in a binary (cell_struct_kwctor, _emit_native, _emit_kind_aliases)
+    let dm = def.module, dn = nameof(dm)
+        (dn === :CellStructModule) && return nothing
+        # pure UI: nothing in a run path reads a selection
+        (dn === :SelectionModule) && return nothing
+        if dn === :DocumentModule
+            sn = String(def.name)
+            (startswith(sn, "_emit_") || startswith(sn, "#_emit_")) && return nothing
+        end
+    end
     st = mi.specTypes
     if st isa DataType
         for pt in st.parameters
             (pt === Expr || pt === LineNumberNode) && return nothing
+        end
+        # UI machinery: an instance whose signature carries a reactive cell,
+        # or a cell-fielded type (ProjectionReferenceStep and kin), walks the
+        # cell protocol — the run path never holds one (same rule as the
+        # buildscript's union exclusion). Memoized symbol tests, NOT string
+        # matching: stringifying types per drained instance was 8.5e9
+        # allocations and a crashed 35-minute build.
+        for pt in st.parameters
+            _sealed_cellfree(pt) || return nothing
         end
         # a WIDENED instance is junk unless it IS the method's own signature
         # AND that signature is all-Any: deliver_message!'s untyped method is
@@ -1646,6 +1720,14 @@ function sealed_keep(@nospecialize(t))
             st === def.sig || return nothing
             for _i in 2:length(st.parameters)
                 st.parameters[_i] === Any || return nothing
+            end
+            # an all-Any CONSTRUCTOR body is convert soup (measured:
+            # _SubmoduleShape, SimulationModel, Editor — five errors each);
+            # deliver_message!'s all-Any FUNCTION method is the one the
+            # exception exists for
+            _p1 = st.parameters[1]
+            if _p1 isa DataType && _p1 <: Type
+                return nothing
             end
         end
     end

@@ -170,6 +170,35 @@ end
 
 function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance, codeinfo::CodeInfo, inspected::IdSet{CodeInstance}, caches::IdDict{MethodInstance,CodeInstance}, parents::ParentMap, errors::ErrorList)
     mi = get_ci_mi(codeinst)
+    # The kernel's reference-pattern PRINTERS (`_show_rules` and family):
+    # diagnostics on error arms whose Any-valued fields make their print
+    # sites unresolvable by construction — `show(io, expr.value)` over a
+    # pattern binding enumerates every show method the image knows. Never on
+    # a run path (the SelectionModule reasoning, verifier-side); a run that
+    # DID reach one dies at that call, and the hash acceptance would say so.
+    let def = mi.def
+        if def isa Method && Base.nameof(def.module) === :ReferenceModule
+            sn = Base.String(def.name)
+            (Base.startswith(sn, "_show_") || Base.startswith(sn, "#_show_")) && return nothing
+        end
+        # ERASED kernel instances: a ProjecturedKernel method compiled at an
+        # all-Any (or bare `Type`) specialization — the document walk
+        # (`_walk_document!`: TOML/TermInfo/TTY haskey were among its
+        # demands, measured), the gesture-binding family, `unwrap_cell`,
+        # `search_documents`. Editor-side machinery whose Any iteration and
+        # getproperty enumerate the image; the TYPED instances verify on
+        # their own, and a run that DID reach an erased one dies at that
+        # call — the hash acceptance would say so.
+        if def isa Method &&
+           Base.nameof(Base.moduleroot(def.module)) === :ProjecturedKernel
+            st = mi.specTypes
+            if st isa DataType && Base.length(st.parameters) > 1 &&
+               Base.all(i -> st.parameters[i] === Any || st.parameters[i] === Type,
+                        2:Base.length(st.parameters))
+                return nothing
+            end
+        end
+    end
     sptypes = sptypes_from_meth_instance(mi)
     src = codeinfo.code
     for i = 1:length(src)

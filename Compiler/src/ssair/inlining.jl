@@ -1463,6 +1463,121 @@ function handle_call!(todo::Vector{Pair{Int,Any}},
     atype = argtypes_to_type(sig.argtypes)
     atype === Union{} && return nothing # accidentally actually unreachable
     # --- sealed world -----------------------------------------------------
+    # Make sure each matched sealed method's WARM instances reach the image,
+    # so the verifier's membership check finds them. UNCONDITIONAL over
+    # sealed-matched calls: a fully-covered call whose one target has an
+    # Any-signature is not invocable and stays dynamic too (measured:
+    # lower_rule_value, one matched method, no instance in caches). Warm
+    # instances ONLY — a method-signature fallback for unexercised methods
+    # compiles bodies whose own dynamic calls never converge (2749 errors) —
+    # and the drain applies `sealed_keep`, so junk cannot enter the image.
+    if SEALED_WORLD[]
+        _warm2 = SEALED_WARM_INSTANCES[]
+        _info2 = info isa ConstCallInfo ? info.call : info
+        if _warm2 !== nothing && (_info2 isa UnionSplitInfo || _info2 isa MethodMatchInfo)
+            _mmis = _info2 isa UnionSplitInfo ? _info2.split : MethodMatchInfo[_info2]
+            _total = 0
+            for mmi in _mmis
+                _total += length(mmi.results)
+            end
+            for mmi in _mmis
+                for k = 1:length(mmi.results)
+                    _mm2 = mmi.results[k]::MethodMatch
+                    _m2 = _mm2.method
+                    _md2 = _m2.module
+                    while parentmodule(_md2) !== _md2; _md2 = parentmodule(_md2); end
+                    if _md2 === Core || _md2 === Base
+                        # membership needs these too — warm instances only,
+                        # marked so the drain filter accepts them past the
+                        # roots rule
+                        _wisb = get(_warm2, _m2, nothing)
+                        if _wisb !== nothing
+                            for _wmib in _wisb
+                                if isa(_wmib.specTypes, DataType) && isdispatchtuple(_wmib.specTypes)
+                                    push!(SEALED_MEMBERSHIP_KEEP, _wmib)
+                                    sealed_push_target!(_wmib, argtypes_to_type(sig.argtypes), 4)
+                                end
+                            end
+                        end
+                        continue
+                    end
+                    _wis2 = get(_warm2, _m2, nothing)
+                    if _wis2 !== nothing
+                        _roots2 = SEALED_TARGET_ROOTS[]
+                        _covered2 = false
+                        for _wmi2 in _wis2
+                            if isa(_wmi2.specTypes, DataType) && isdispatchtuple(_wmi2.specTypes)
+                                _covered2 = true
+                                break
+                            end
+                        end
+                        for _wmi2 in _wis2
+                            if !(isa(_wmi2.specTypes, DataType) && isdispatchtuple(_wmi2.specTypes))
+                                # a stem instance: compiled at the method's own
+                                # abstract signature, the runtime dispatch
+                                # target. Admitted past the drain's widened
+                                # rule only when a declined site matched it
+                                # AND the method is model-rooted — stdlib
+                                # stems flooded the image otherwise
+                                # (LinearAlgebra, TwicePrecision: 406 heads),
+                                # A dispatch-tuple instance satisfies the
+                                # MEMBERSHIP of a dynamic call, but an INVOKE
+                                # of the widened signature needs the stem
+                                # itself. Admitting every covered stem
+                                # re-cascades (22 -> 110), so coverage skips
+                                # the stem unless the method is NAMED in
+                                # SEALED_STEM_KEEP.
+                                _sk2 = SEALED_STEM_KEEP[]
+                                if _covered2
+                                    (_sk2 !== nothing && _m2.name in _sk2) || continue
+                                end
+                                (_roots2 !== nothing && nameof(_md2) in _roots2) || continue
+                                # never a cell-carrying stem: the UI world
+                                # (setindex! on ReactiveCell was admitted here)
+                                _cellok2 = true
+                                if _wmi2.specTypes isa DataType
+                                    for _pt2 in _wmi2.specTypes.parameters
+                                        if !_sealed_cellfree(_pt2)
+                                            _cellok2 = false
+                                            break
+                                        end
+                                    end
+                                end
+                                _cellok2 || continue
+                                # never a CONSTRUCTOR stem: an all-Any ctor
+                                # body is convert soup (OpenElementStep,
+                                # ElementSetStep)
+                                if _wmi2.specTypes isa DataType &&
+                                   length(_wmi2.specTypes.parameters) >= 1
+                                    _q1 = _wmi2.specTypes.parameters[1]
+                                    (_q1 isa DataType && _q1 <: Type) && continue
+                                end
+                                push!(SEALED_MEMBERSHIP_KEEP, _wmi2)
+                            end
+                            sealed_push_target!(_wmi2, argtypes_to_type(sig.argtypes), 5)
+                        end
+                    elseif isa(_m2.sig, DataType) && isdispatchtuple(_m2.sig)
+                        # a method whose OWN signature is a dispatch tuple
+                        # (the per-kind generated methods, e.g.
+                        # collect_module_parameters(::Type{App})) has exactly
+                        # one instance — pushing it is exact at any match
+                        # count, with no fan-out beyond the matched set
+                        sealed_push_target!(specialize_method(_m2, _m2.sig, _mm2.sparams), argtypes_to_type(sig.argtypes), 6)
+                    elseif _total == 1 && isa(_m2.sig, DataType)
+                        # A SINGLE matched sealed method with no warm instance:
+                        # its method-signature body IS the runtime target, and
+                        # a cascade through such pushes follows the real call
+                        # graph. (The unbounded fallback over MULTI-match sets
+                        # was the 2749-error explosion; one match cannot fan
+                        # out.)
+                        sealed_push_target!(specialize_method(_m2, _m2.sig, _mm2.sparams), argtypes_to_type(sig.argtypes), 7)
+                    end
+                end
+            end
+        end
+    end
+    # ----------------------------------------------------------------------
+    # --- sealed world -----------------------------------------------------
     # Decline flattening ONLY for substitution-exploded call sites: a sealed
     # call whose argument-union product exceeds SEALED_DYNAMIC_THRESHOLD.
     # Ordinary partial or small splits flatten exactly as stock does. The
