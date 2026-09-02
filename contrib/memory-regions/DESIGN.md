@@ -334,6 +334,42 @@ The nearest ancestors, so the known failure modes come with the idea:
   without the barrier. Bumper relies on the programmer not to leak; this
   design makes the leak a trap at the store.
 
+## Where this generalizes
+
+**Sibling regions, and a tree of lifetimes, at no new cost.** The
+mechanism is identity, not nesting: a page carries the number of the
+region that claimed it, every region owns its pool cursors and its page
+chain, and a switch is one pointer store. The runtime imposes no order on
+the regions - the order lives entirely in the one rule. So a tree of
+lifetimes - a Simulation holding many independent Flows, each with its
+own Event scratch - is already representable: siblings never reference
+each other (the rule forbids it in both directions), each resets in O(1)
+independently, and the census of one sibling sweeps only its own chain
+and never walks another's pages. What a tree needs beyond this prototype
+is small and local: the comparisons that today read "younger = larger
+number" (the checker, the trap, the rule-5 scan) become an ancestor
+test, and the region count stops being a small constant.
+
+**The stock collector is the one-region special case.** With exactly one
+region - region 0 - every mechanism degenerates: the page tag is always
+zero, the guards guard nothing, `active_pools` never leaves `norm_pools`,
+and no reset or census ever runs. This is not a thought experiment: every
+stock-collector column in `MEASUREMENTS.md` runs on this branch in
+exactly that state, and matches the vanilla yardstick. Read in the other
+direction, it is a unification: the stock collector could be *defined* as
+the regions collector with one region, and lifetime-shaped policies
+become configuration instead of a fork.
+
+**The API can compile to nothing.** The Julia face is a handful of
+`ccall` wrappers. Behind one build flag they become constant no-ops:
+`@with_region` reduces to its body, the dead branches fold, and a program
+written with regions runs unchanged on the stock collector - the
+discipline stays checkable, because the checker is compiler-side and
+needs no runtime at all. On the runtime side the only hot-path residue of
+the mechanism is the `active_pools` indirection, one load, which a
+stock-only build constant-folds away. Opting out costs nothing; opting in
+is a scheduling decision, not a rewrite.
+
 ## What is deferred
 
 - **Concurrent sibling event regions** (one per worker task). The chain comes

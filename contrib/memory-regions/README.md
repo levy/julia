@@ -415,6 +415,15 @@ counterpart.
 
 ## Questions for upstream
 
+The shape of the offer is in DESIGN.md under "Where this generalizes":
+the mechanism is identity, not nesting, so sibling regions and a whole
+tree of lifetimes come at no new cost; the stock collector is the
+one-region special case - every stock column of the record already runs
+this branch in exactly that state - so this is a unification, not a
+fork; and the API can compile to nothing behind one flag, so a program
+written with regions runs unchanged on the stock collector and opting
+out costs nothing.
+
 1. Is a region/arena extension point in the stock GC of interest, or is
    MMTk the intended home for lifetime-shaped policies?
 2. The cooperative census wants a sanctioned "collect without the
