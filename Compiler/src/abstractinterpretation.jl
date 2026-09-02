@@ -126,20 +126,82 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
     max_union_splitting = InferenceParams(interp).max_union_splitting
     if SEALED_WORLD[]
         if SEALED_SUBTYPES[] !== nothing
-            changed = false
+            # PRICE THE SPLIT BEFORE MAKING IT. The substitution below is what
+            # turns an abstract argument into a union, and the splitter then
+            # enumerates the product of every union at this site. Multiplying
+            # the widths first costs a few comparisons; discovering the product
+            # afterwards costs the build.
+            _cases = 1
             for _si = 2:length(argtypes)
                 _a = argtypes[_si]
                 isvarargtype(_a) && continue
                 _w = sealed_widen(widenconst(_a))
-                if _w !== nothing
-                    if !changed
-                        argtypes = copy(argtypes)
-                        changed = true
-                    end
-                    argtypes[_si] = _w
+                _w === nothing && continue
+                _cases *= sealed_union_len(_w)
+                _cases > SEALED_SPLIT_CASES[] && break
+            end
+            if _cases > SEALED_SPLIT_WORST[]
+                SEALED_SPLIT_WORST[] = _cases
+                # NAME THE SITE AS SOON AS IT IS SEEN. The end-of-build summary
+                # is useless for a build that never ends: routing phase 3 spent
+                # fifteen minutes without reaching the compile loop, so nothing
+                # it would have printed was ever printed. Capped, because this
+                # is inference's hot path.
+                if SEALED_SPLIT_SHOW[] > 0 && _cases >= SEALED_SPLIT_SHOW[] &&
+                   SEALED_SPLIT_SHOWN[] < 20
+                    SEALED_SPLIT_SHOWN[] += 1
+                    Core.println("SEALED-SPLIT-SITE ", _cases, " cases  ", atype)
                 end
             end
-            changed && (atype = argtypes_to_type(argtypes))
+            if _cases > SEALED_SPLIT_CASES[]
+                # FALL DOWN THE LATTICE, do not refuse. The arguments keep
+                # their abstract types, so this call stays dynamic and is
+                # answered below the split - by a recorded target, by the
+                # drain, or by a generic signature. One widened body beats
+                # thousands of concrete ones.
+                SEALED_SPLIT_FALLBACKS[] += 1
+                # AND THERE IS NO COMPILER-ONLY `:generic` ARM TO CATCH IT.
+                # The obvious move is to give this site the one signature that
+                # covers its whole domain - the method's own - and compile
+                # that. It was written, and the binary FAILS AT RUN TIME:
+                #
+                #   Internal error: during type inference of
+                #   combine(S1, S2, S3)
+                #   MethodError(f=Compiler."#typeinf_ext_toplevel"(), args=(
+                #     combine(S1,S2,S3) from combine(Signal,Signal,Signal)))
+                #
+                # Compiling `combine(Signal, Signal, Signal)` does not answer a
+                # call to `combine(S1, S2, S3)`. Julia dispatches on the
+                # CONCRETE argument types, finds no specialization, and falls
+                # into a JIT the binary does not contain. A widened instance is
+                # only reachable when the method does not specialize at all -
+                # which is what `@nospecialize` does, and which the compiler can
+                # not retrofit onto a method the program declared with typed
+                # parameters. The `:generic` step needs `seal_collapse`.
+                #
+                # Two guards were needed before that was even visible, and both
+                # matter when the construct is built: Base and Core must be
+                # excluded, or an `Any` signature compiles half the world; and
+                # the vendored `Compiler` must be excluded, or its own edge
+                # bookkeeping - `add_one_edge!`, `_add_edges_impl`,
+                # `add_invoke_edge!` - is demanded in the binary.
+            else
+                _cases > SEALED_SPLIT_TAKEN[] && (SEALED_SPLIT_TAKEN[] = _cases)
+                changed = false
+                for _si = 2:length(argtypes)
+                    _a = argtypes[_si]
+                    isvarargtype(_a) && continue
+                    _w = sealed_widen(widenconst(_a))
+                    if _w !== nothing
+                        if !changed
+                            argtypes = copy(argtypes)
+                            changed = true
+                        end
+                        argtypes[_si] = _w
+                    end
+                end
+                changed && (atype = argtypes_to_type(argtypes))
+            end
         end
         if sealed_call(argtypes)
             max_methods = SEALED_MAX_METHODS[]

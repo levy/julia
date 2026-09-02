@@ -45,6 +45,13 @@ Compiler.activate!(; reflection = true, codegen = true)
 # 9.67s with the split limit at 4.
 const _SEALED_WORLD_WANTED = Base.get(Base.ENV, "SEALED_WORLD", "1") != "0"
 Compiler.SEALED_WORLD[] = false
+# SEALED_SPLIT_CASES bounds ONE call site's union cross product. Over it, the
+# site keeps its abstract types and is answered further down the lattice.
+Compiler.SEALED_SPLIT_CASES[] =
+    Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_CASES", "4096"))
+# SEALED_SPLIT_SHOW=<n> names every site at least that wide, as it is found.
+Compiler.SEALED_SPLIT_SHOW[] =
+    Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_SHOW", "0"))
 # SEALED_SPLIT_LIMIT=4 holds inference to the STOCK union splitter, which is
 # what the `proven` policy level means. Without it, SEALED_SPLIT=0 disables
 # only the abstract-to-union map and a 20 000-wide splitter still resolves

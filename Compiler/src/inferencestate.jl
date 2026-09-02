@@ -1108,6 +1108,39 @@ const SEALED_MAX_METHODS = Ref(20000)  # REQUIRED at 20000: the routing payload 
 # "what can this abstract type be".
 const SEALED_SUBTYPES = Ref{Any}(nothing)
 
+# THE COST OF A SPLIT, AND THE FALLBACK WHEN IT IS TOO HIGH.
+#
+# In a sealed world an abstract argument IS the union of its concrete
+# subtypes, and the splitter enumerates the cases so each resolves concretely.
+# With one such argument that is what makes a dispatch static. With several it
+# is a CROSS PRODUCT: six members at three positions is 216 cases, and routing
+# phase 3 builds a network whose module union has sixteen members.
+#
+# Measured on phase 3: with the limit at 20 000 the build passed fifteen
+# minutes without reaching the compile loop and was killed; at Julia's default
+# of 4 it finished in 125 seconds.
+#
+# The answer is the lattice, not a refusal. A site whose product exceeds the
+# budget keeps its ABSTRACT argument types, so the call stays dynamic and is
+# answered further down - by the trace, by the drain, or by the generic
+# signature. Compiling one widened body is always cheaper than enumerating
+# thousands of concrete ones.
+const SEALED_SPLIT_CASES = Ref(4096)
+const SEALED_SPLIT_FALLBACKS = Ref(0)
+const SEALED_SPLIT_WORST = Ref(0)
+# The widest product a site actually ENUMERATED. `WORST` counts what was
+# attempted, so it stays high even when the fallback saved the build; this is
+# what an example bounds.
+const SEALED_SPLIT_TAKEN = Ref(0)
+# NAME A WIDE SITE AS SOON AS IT IS SEEN. The end-of-build summary is useless
+# for a build that never ends, and routing phase 3 spent fifteen minutes
+# without reaching the compile loop, so nothing it would have printed was ever
+# printed. Capped, because this is inference's hot path.
+const SEALED_SPLIT_SHOW = Ref(0)      # 0 silences; otherwise the width to report
+const SEALED_SPLIT_SHOWN = Ref(0)
+
+sealed_union_len(@nospecialize t) =
+    isa(t, Union) ? sealed_union_len(t.a) + sealed_union_len(t.b) : 1
 
 
 # The union a sealed type stands for, or `nothing` when the type has no entry.
