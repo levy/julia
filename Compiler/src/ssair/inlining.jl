@@ -1423,10 +1423,90 @@ function handle_call!(todo::Vector{Pair{Int,Any}},
     ir::IRCode, idx::Int, stmt::Expr, @nospecialize(info::CallInfo), flag::UInt32, sig::Signature,
     state::InliningState)
     cases = compute_inlining_cases(info, flag, sig, state)
-    cases === nothing && return nothing
+    if cases === nothing
+        # sealed world: the statement stays dynamic and inlining could not even
+        # enumerate cases (mixed arity across a callee union does this). The
+        # CallInfo still knows every match — record the targets from it.
+        if SEALED_WORLD[]
+            splits = info isa UnionSplitInfo ? info.split :
+                     info isa MethodMatchInfo ? MethodMatchInfo[info] : MethodMatchInfo[]
+            for mmi in splits
+                for k = 1:length(mmi.results)
+                    _m = mmi.results[k]::MethodMatch
+                    _spec = get_compileable_sig(_m.method, _m.spec_types, _m.sparams)
+                    if _spec === nothing
+                        # union-typed intersections often have no compileable
+                        # normalization; the METHOD's own signature is one when
+                        # its parameters are untyped — fall back to it
+                        _msig = _m.method.sig
+                        # only SEALED methods: recording Base methods with Any-signatures
+                        # compiles half the world; the build ran away when it did
+                        _mmod = _m.method.module
+                        while parentmodule(_mmod) !== _mmod; _mmod = parentmodule(_mmod); end
+                        if isa(_msig, DataType) && _mmod !== Core && _mmod !== Base
+                            sealed_push_target!(specialize_method(_m.method, _msig, _m.sparams), argtypes_to_type(sig.argtypes), 1)
+                        end
+                        continue
+                    end
+                    if _m.spec_types !== _spec
+                        _sp = ccall(:jl_type_intersection_with_env, Any, (Any, Any), _spec, _m.method.sig)::SimpleVector
+                        sealed_push_target!(specialize_method(_m.method, _spec, _sp[2]::SimpleVector), argtypes_to_type(sig.argtypes), 2)
+                    else
+                        sealed_push_target!(specialize_method(_m.method, _spec, _m.sparams), argtypes_to_type(sig.argtypes), 3)
+                    end
+                end
+            end
+        end
+        return nothing
+    end
     cases, handled_all_cases, fully_covered, joint_effects = cases
     atype = argtypes_to_type(sig.argtypes)
     atype === Union{} && return nothing # accidentally actually unreachable
+    # --- sealed world -----------------------------------------------------
+    # Decline flattening ONLY for substitution-exploded call sites: a sealed
+    # call whose argument-union product exceeds SEALED_DYNAMIC_THRESHOLD.
+    # Ordinary partial or small splits flatten exactly as stock does. The
+    # call stays DYNAMIC — the flattened chain measured 144-166 KB per
+    # event-loop specialization and ran 6x slower than the same dispatch
+    # through the method cache — and the matched methods' warm-run instances
+    # are pulled so run-time dispatch finds compiled targets.
+    if SEALED_WORLD[] && unionsplitcost(optimizer_lattice(state.interp), sig.argtypes) > SEALED_DYNAMIC_THRESHOLD[]
+        _info0 = info isa ConstCallInfo ? info.call : info
+        _all_sealed = _info0 isa UnionSplitInfo || _info0 isa MethodMatchInfo
+        if _all_sealed
+            for mmi in (_info0 isa UnionSplitInfo ? _info0.split : MethodMatchInfo[_info0])
+                for k = 1:length(mmi.results)
+                    _md = (mmi.results[k]::MethodMatch).method.module
+                    while parentmodule(_md) !== _md; _md = parentmodule(_md); end
+                    if _md === Core || _md === Base
+                        _all_sealed = false
+                        break
+                    end
+                end
+                _all_sealed || break
+            end
+        end
+        if _all_sealed
+            # queue the warm-run instances of every matched method — the
+            # concrete monomorphic targets runtime dispatch will look up
+            _warm = SEALED_WARM_INSTANCES[]
+            if _warm !== nothing
+                for mmi in (_info0 isa UnionSplitInfo ? _info0.split : MethodMatchInfo[_info0])
+                    for k = 1:length(mmi.results)
+                        _wis = get(_warm, (mmi.results[k]::MethodMatch).method, nothing)
+                        if _wis !== nothing
+                            for _wmi in _wis
+                                sealed_push_target!(_wmi, argtypes_to_type(sig.argtypes), 8)
+                            end
+                        end
+                    end
+                end
+            end
+            add_flag!(ir[SSAValue(idx)], flags_for_effects(joint_effects))
+            return nothing
+        end
+    end
+    # ----------------------------------------------------------------------
     handle_cases!(todo, ir, idx, stmt, atype, cases, handled_all_cases, fully_covered, joint_effects)
 end
 

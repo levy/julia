@@ -63,6 +63,20 @@ Core.eval(Base.Compiler, quote
     add_entrypoint(types::Type) = $(Compiler).add_entrypoint(types)
 end)
 
+# Snapshot every sealed-module concrete specialization that exists BEFORE the
+# user program runs, so the warm-table delta harvest below can subtract it.
+Core.eval(Main, :(const __SEALED_PRESET = Base.IdSet{Any}()))
+let preset = Main.__SEALED_PRESET
+    sealedroot1(m::Base.Module) = (r = m; while Base.parentmodule(r) !== r; r = Base.parentmodule(r); end;
+                                  r !== Core && r !== Base)
+    Base.visit(Core.methodtable) do method
+        method isa Core.Method || return
+        sealedroot1(method.module) || return
+        for mi in Base.specializations(method)
+            mi isa Core.MethodInstance && Base.push!(preset, mi)
+        end
+    end
+end
 
 
 let include_result = Base.include(Main, ARGS[1])
@@ -114,6 +128,38 @@ let include_result = Base.include(Main, ARGS[1])
             Compiler.SEALED_SUBTYPES[] = subs
         else
             Core.println("SEALED-SPLIT-OFF: abstract-as-union splitting disabled")
+        end
+    end
+    # --- sealed world: the warm-instance TABLE ------------------------------
+    # Not entrypoints: a lookup table (Method => concrete instances the warm
+    # run compiled). Declined dynamic call sites pull from it, so exactly the
+    # runtime dispatch targets are compiled.
+    let table = Base.IdDict{Any,Any}(), preset = Main.__SEALED_PRESET, n = Base.RefValue(0)
+        sealedroot2(m::Base.Module) = (r = m; while Base.parentmodule(r) !== r; r = Base.parentmodule(r); end;
+                                      r !== Core && r !== Base && r !== Compiler)
+        Base.visit(Core.methodtable) do method
+            method isa Core.Method || return
+            sealedroot2(method.module) || return
+            for mi in Base.specializations(method)
+                mi isa Core.MethodInstance || continue
+                (mi in preset) && continue
+                Base.isdispatchtuple(mi.specTypes) || continue
+                v = Base.get!(Base.Vector{Any}, table, method)
+                Base.push!(v, mi)
+                n[] += 1
+            end
+        end
+        Compiler.SEALED_WARM_INSTANCES[] = table
+        Base.println("SEALED-WARM-TABLE: ", n[], " instances across ", Base.length(table), " methods")
+    end
+    # --- sealed world: which roots' recorded targets survive the trim entry --
+    let rootsenv = Base.get(Base.ENV, "SEALED_TARGET_ROOTS", "")
+        if !Base.isempty(rootsenv)
+            roots = Base.Set{Symbol}()
+            for s in Base.split(rootsenv, ",")
+                Base.push!(roots, Base.Symbol(Base.strip(s)))
+            end
+            Compiler.SEALED_TARGET_ROOTS[] = roots
         end
     end
     # --------------------------------------------------------------------------

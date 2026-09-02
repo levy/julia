@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call
+import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call,
+    SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype
 
 using ..Compiler:
      # operators
@@ -38,6 +39,7 @@ struct CCallableMissing <: Exception
     desc
 end
 
+const _SEALED_DEBUG_BUDGET = Base.RefValue{Int}(60)
 const ParentMap = IdDict{CodeInstance,Tuple{CodeInstance,Int}}
 const ErrorList = Vector{Pair{Bool,Any}} # severity => exception
 
@@ -249,6 +251,79 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                     error = "trim verification not yet implemented for builtin `Core.memoryrefmodify!`"
                 else @assert false "unexpected builtin" end
             else
+                # --- sealed world -----------------------------------------------
+                # A dynamic call whose match set is finite and whose every
+                # matched METHOD has a compiled instance in the binary cannot
+                # reach uncompiled code: the world is closed, and the optimizer
+                # above the threshold deliberately left it dynamic with its
+                # targets compiled. Membership is per method; the concrete
+                # specializations exist because the trim drain compiled the
+                # warm-run instances the decline site pulled.
+                if SEALED_WORLD[]
+                    argts = Any[]
+                    okargs = true
+                    for k = 1:length(stmt.args)
+                        t = argextype(stmt.args[k], codeinfo, sptypes)
+                        if isvarargtype(t)
+                            okargs = false
+                            break
+                        end
+                        push!(argts, widenconst(t))
+                    end
+                    if okargs
+                        atype = argtypes_to_type(argts)
+                        local matchvec = nothing
+                        local _vmt = findall(atype, method_table(interp); limit = SEALED_MAX_METHODS[])
+                        (_vmt === nothing || _vmt === false) || (matchvec = _vmt.matches)
+                        if matchvec !== nothing && length(matchvec) > 0
+                            allcompiled = true
+                            for j = 1:length(matchvec)
+                                match = matchvec[j]::MethodMatch
+                                found = false
+                                for kv in caches
+                                    if kv.first.def === match.method
+                                        found = true
+                                        break
+                                    end
+                                end
+                                if !found
+                                    allcompiled = false
+                                    break
+                                end
+                            end
+                        allcompiled && continue
+                            if (_SEALED_DEBUG_BUDGET[] -= 1) > 0
+                                Core.println("SEALED-DEBUG STMT in=", get_ci_mi(codeinst).def,
+                                             " n=", length(matchvec), " atype=", atype)
+                                shown = 0
+                                for j = 1:length(matchvec)
+                                    match = matchvec[j]::MethodMatch
+                                    found = false
+                                    for kv in caches
+                                        if kv.first.def === match.method
+                                            found = true
+                                            break
+                                        end
+                                    end
+                                    if !found
+                                        Core.println("SEALED-DEBUG   missing: ",
+                                                     match.method.name, " @ ", match.method.module,
+                                                     " sig=", match.method.sig)
+                                        (shown += 1) >= 2 && break
+                                    end
+                                end
+                            end
+                        elseif (_SEALED_DEBUG_BUDGET[] -= 1) > 0
+                            print("SEALED-DEBUG findall failed n=")
+                            print(matchvec === nothing ? -1 : length(matchvec))
+                            print(" for ")
+                            println(atype)
+                        end
+                    elseif (_SEALED_DEBUG_BUDGET[] -= 1) > 0
+                        println("SEALED-DEBUG vararg args")
+                    end
+                end
+                # ----------------------------------------------------------------
                 error = "unresolved call"
             end
             extyp = argextype(SSAValue(i), codeinfo, sptypes)

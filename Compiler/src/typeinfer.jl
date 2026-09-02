@@ -1589,12 +1589,104 @@ function typeinf_ext_toplevel(mi::MethodInstance, world::UInt, source_mode::UInt
     return typeinf_ext_toplevel(interp, mi, source_mode)
 end
 
+# sealed world: whether a recorded target belongs in the image. One
+# predicate for the trim-entry filter AND the in-compile drain. The roots
+# come from the SEALED_TARGET_ROOTS environment variable via the
+# buildscript; display-named methods and macro-time (Expr-typed) bodies
+# never belong.
+const SEALED_DRAIN_SEEN = IdSet{Any}()
+
+function _sealed_drain_key(@nospecialize(mi))
+    # STABLE ACROSS PROCESSES, not merely within one. `objectid` of a type was
+    # used here and its comment claimed it was a content hash; it is not, and
+    # the frontier loop's trace arm proved it - the same source, recompiled,
+    # gave one ladder example 283 instances and a pass, then 290 and a
+    # failure, with an objectid sort in place. The printed form is the same in
+    # every process.
+    #
+    # AND THE COMMENT'S SECOND CLAIM WAS NOT IMPLEMENTED AT ALL. It says
+    # dispatch-tuple instances sort FIRST, so a concrete instance is compiled
+    # before its widened cousin and infers precisely. A single `objectid`
+    # can not express that. The key is a pair, and it now does.
+    local st = (mi::MethodInstance).specTypes
+    return (isdispatchtuple(st) ? 0 : 1, string(st))
+end
+function sealed_keep(@nospecialize(t))
+    mi = t isa CodeInstance ? get_ci_mi(t) : t
+    mi isa MethodInstance || return nothing
+    def = mi.def
+    def isa Method || return nothing
+    # THE ROOT FILTER STAYS STRICT, AND IT HAS TO. Making it permissive when
+    # no roots are configured was tried: the drain went from nothing to 2171
+    # targets on one ladder example, the compile set from 273 instances to
+    # 3544, and `union_cross_generic` stopped failing and started CRASHING.
+    # What it drops - StyledStrings, display machinery, iterators - is exactly
+    # what makes a drain unusable.
+    #
+    # A target that must survive it goes in `SEALED_MEMBERSHIP_KEEP` above,
+    # which is the allow-list this function already honours. The `:generic`
+    # arm uses it: its guard is its own, and narrower.
+    roots = SEALED_TARGET_ROOTS[]
+    roots === nothing && return nothing
+    md = def.module
+    while parentmodule(md) !== md; md = parentmodule(md); end
+    nameof(md) in roots || return nothing
+    def.name in (:show, :print, :println, :repr, :string, :summary, :display, :dump) && return nothing
+    st = mi.specTypes
+    if st isa DataType
+        for pt in st.parameters
+            (pt === Expr || pt === LineNumberNode) && return nothing
+        end
+        # a WIDENED instance is junk unless it IS the method's own signature
+        # AND that signature is all-Any: deliver_message!'s untyped method is
+        # the runtime dispatch target and must stay, while a kw-sorter's
+        # NamedTuple/AbstractString sig or a _match_steps widened past its
+        # declared params only imports an unresolvable body
+        if !isdispatchtuple(st)
+            st === def.sig || return nothing
+            for _i in 2:length(st.parameters)
+                st.parameters[_i] === Any || return nothing
+            end
+        end
+    end
+    mi
+end
+
 function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
 )
     interp = workqueue.interp
     world = get_inference_world(interp)
-    while !isempty(workqueue)
+    while !isempty(workqueue) || !isempty(SEALED_EXTRA_TARGETS)
+        # sealed world: calls the optimizer left dynamic above the flatten
+        # threshold still need their targets compiled into the binary. The
+        # KEEP predicate applies HERE too: pushes made during the trim (the
+        # in-trim recorder and pulls) arrive after the entry filter ran, and
+        # an unfiltered drain absorbed LinearAlgebra/Unitful method-signature
+        # instances whose abstract bodies produced hundreds of unverifiable
+        # calls.
+        # Each drain batch is SORTED before it reaches the queue. The pull
+        # pushes in warm-table order, and the table is an IdDict: its order
+        # is address-dependent, so identical builds compiled pulled
+        # instances in a different order each run — and the error count
+        # swung between 1 and ~120 on identical inputs. The key is
+        # content-stable (`objectid` of a TYPE is a content hash), and
+        # dispatch-tuple instances sort FIRST: a concrete instance compiled
+        # before its widened cousin infers precisely.
+        if !isempty(SEALED_EXTRA_TARGETS)
+            _batch = Any[]
+            while !isempty(SEALED_EXTRA_TARGETS)
+                t = pop!(SEALED_EXTRA_TARGETS)
+                (t in SEALED_DRAIN_SEEN) && continue
+                push!(SEALED_DRAIN_SEEN, t)
+                mi = sealed_keep(t)
+                mi === nothing || push!(_batch, mi)
+            end
+            sort!(_batch, by = _sealed_drain_key)
+            for mi in _batch
+                push!(workqueue, mi)
+            end
+        end
         item = pop!(workqueue)
         # each item in this list is either a MethodInstance indicating something
         # to compile, or an svec(rettype, sig) describing a C-callable alias to create.
@@ -1673,6 +1765,23 @@ const TRIM_SAFE = 0x1
 const TRIM_UNSAFE = 0x2
 const TRIM_UNSAFE_WARN = 0x3
 function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_mode::UInt8)
+    # sealed world: the trim reuses the session CodeInstance of the event
+    # loop, and a declined (dynamic) call has no backedges — so the declines
+    # can not refire in-trim. The session pulls are therefore the only source
+    # of dispatch targets. Keep only the targets the ENTRY's own packages own
+    # (SEALED_TARGET_ROOTS); the rest is session junk (measured: an open
+    # filter kept 18201 targets and produced 1984 errors from bodies that
+    # `main` can never reach).
+    if SEALED_WORLD[]
+        keep = Any[]
+        for t in SEALED_EXTRA_TARGETS
+            mi = sealed_keep(t)
+            mi === nothing || push!(keep, mi)
+        end
+        empty!(SEALED_EXTRA_TARGETS)
+        append!(SEALED_EXTRA_TARGETS, keep)
+        println("SEALED-TRIM-ENTRY: ", length(keep), " model-rooted targets retained")
+    end
     inf_params = InferenceParams(; force_enable_inference = trim_mode != TRIM_NO)
 
     # Create an "invokelatest" queue to enable eager compilation of speculative

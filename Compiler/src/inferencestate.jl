@@ -1108,6 +1108,51 @@ const SEALED_MAX_METHODS = Ref(20000)  # REQUIRED at 20000: the routing payload 
 # "what can this abstract type be".
 const SEALED_SUBTYPES = Ref{Any}(nothing)
 
+# Above this many union-split cases, the optimizer leaves the call DYNAMIC
+# instead of flattening it into an isa-chain. The targets are still compiled
+# through SEALED_EXTRA_TARGETS below, so run-time dispatch through the method
+# cache is both sound and FAST: the flattened chain measured 144-166 KB of
+# code per event-loop specialization and ran the routing binary 6x slower
+# than the same dispatch in a session.
+const SEALED_DYNAMIC_THRESHOLD = Ref(8)
+
+# The targets of calls the optimizer deliberately left dynamic. The trim
+# compile queue is fed by `collectinvokes!` from OPTIMIZED IR, so a declined
+# split's cases never reach it on their own; the decline site records them
+# here and the drain loop in `compile!` absorbs them.
+const SEALED_EXTRA_TARGETS = Vector{Any}()
+
+# The distinct targets already recorded, and a count of the records suppressed.
+# A declined split re-records its targets at every visit of every call site: a
+# routing build recorded 852 832 881 targets for 45 771 distinct instances —
+# 6.8 GB of pointers, and 1079 seconds to filter, which was 81% of that build.
+# `specialize_method` returns the SAME object for the same signature, so
+# identity is the right test. The drain already assumes that recording a target
+# once is enough (`SEALED_DRAIN_SEEN`); this applies the same rule at the
+# source, where it also bounds the memory.
+const SEALED_TARGET_SEEN = IdSet{Any}()
+const SEALED_TARGET_DUPES = Ref(0)
+
+function sealed_push_target!(@nospecialize(t), @nospecialize(site), tag::Int = 0)
+    if t in SEALED_TARGET_SEEN
+        SEALED_TARGET_DUPES[] += 1
+    else
+        push!(SEALED_TARGET_SEEN, t)
+        push!(SEALED_EXTRA_TARGETS, t)
+    end
+    return nothing
+end
+
+# Method => Vector{MethodInstance}: the CONCRETE instances the build entry's
+# warm run compiled, keyed by method. Filled by the buildscript after the
+# user program loads. A DECLINED dynamic call site pushes its matched
+# methods' warm instances into SEALED_EXTRA_TARGETS, so exactly the runtime
+# dispatch targets are compiled — no more (force-compiling everything the
+# warm run touched demanded verification of bodies the binary never
+# contains, 1759 errors), and no less (without them the dynamic call cannot
+# verify).
+const SEALED_WARM_INSTANCES = Ref{Any}(nothing)
+
 # THE COST OF A SPLIT, AND THE FALLBACK WHEN IT IS TOO HIGH.
 #
 # In a sealed world an abstract argument IS the union of its concrete
@@ -1143,6 +1188,13 @@ sealed_union_len(@nospecialize t) =
     isa(t, Union) ? sealed_union_len(t.a) + sealed_union_len(t.b) : 1
 
 
+# Set{Symbol} of root package names whose recorded targets survive the
+# trim-entry filter — the packages the ENTRY actually runs. Set by the
+# buildscript from the SEALED_TARGET_ROOTS environment variable. The session
+# records targets from every package's load-time code; without this filter
+# the retained junk produced 1984 verifier errors from bodies `main` can
+# never reach.
+const SEALED_TARGET_ROOTS = Ref{Any}(nothing)
 # The union a sealed type stands for, or `nothing` when the type has no entry.
 # A Union is rewritten memberwise, so Union{Nothing,Env} becomes
 # Union{Nothing, <Env's concretes...>}.
