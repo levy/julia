@@ -370,6 +370,74 @@ the mechanism is the `active_pools` indirection, one load, which a
 stock-only build constant-folds away. Opting out costs nothing; opting in
 is a scheduling decision, not a rewrite.
 
+## Regions as a graph, collected like objects
+
+The generalization above keeps the region graph fixed. One step further
+lurks a general idea: **choose the granularity at which liveness is
+computed.** A collector computes liveness over a graph; the object graph
+has billions of nodes, and everything expensive about collection is a
+function of that size. Let regions form a graph — an edge from region A
+to region B when some object in A references an object in B — and
+collect at the region level: trace the region graph from the root
+regions, free every unreached region wholesale. That graph has thousands
+of nodes, so the collection costs microseconds by construction, and the
+pause is O(regions + stack roots) — independent of the heap size AND of
+the live-object count. Nothing in a conventional collector has that
+property. The two extremes bracket the dial: one region per heap is the
+stock collector; one region per object is classic tracing. The chain of
+this design is one point on the dial; the graph is the whole dial.
+
+The design question is single: how does the mutator maintain the region
+edges? Three regimes.
+
+1. **Declared: the mutator maintains nothing.** The chain (and the tree,
+   and any DAG declared by the programmer or inferred by a compiler in
+   the Tofte–Talpin sense) fixes the region graph a priori. A store can
+   only conform to the declared graph or be a bug, so the barrier traps
+   in development and compiles to nothing in production. This is the
+   regime this prototype lives in.
+2. **Recorded: the barrier coarsens.** For a dynamic graph, the barrier
+   on `a.f = b` compares two page tags (`region_of` is O(1) here) and,
+   when they differ, sets one bit in a per-region-pair table. The
+   economy is that the bit SATURATES: a remembered set records every
+   old-to-young edge because objects are fine-grained; the quotient
+   records one fact per region pair, so a phase-structured program pays
+   the slow path a handful of times and never again. Overwrites never
+   decrement — a region's out-edges are processed in bulk when the
+   region dies, and stale edges are floating garbage at region
+   granularity. Counts (Gay–Aiken region reference counting) are
+   optional: cycles in the region graph defeat counts, and a trace of a
+   graph this small makes them unnecessary.
+3. **Degenerate: per-object regions.** The quotient is the identity and
+   the scheme collapses into ordinary tracing or reference counting —
+   the toll both extremes pay is the reason the middle exists.
+
+**The census is the edge-refresher.** The census already walks exactly
+the live objects of one region; while it walks, it can rebuild that
+region's out-edge set precisely, discarding the edges only dead objects
+held. So the floating garbage of regime 2 is bounded by the census
+cadence: the instrument that reclaims intra-region turnover also keeps
+the region graph honest. This is how distributed collectors work — local
+collections clean the stub/scion tables that inter-space references live
+in, and a global trace over the spaces catches cycles. A dynamic region
+graph is an in-process distributed GC, with regions as the spaces.
+Pony's ORCA (per-actor heaps, freed wholesale when the actor dies) and
+Verona (region forests owned through bridge objects) are the modern
+relatives; generational GC is the two-region special case whose
+remembered set nobody quotiented.
+
+The honest costs, so the idea stays sharp. In regime 2 the barrier
+returns — a predicted branch per reference store, and it can no longer
+compile to nothing. Floating garbage exists at region granularity until
+a census or a region death clears it. And the scheme has no story for an
+object that outlives its region: an escapee pins the whole region, and
+the fixes — promotion, or a census that copies escapees out —
+reintroduce object-level work, which is the toll booth at the exit of
+every region design. What the runtime of this branch already owns is
+every primitive the idea needs — the O(1) region tag, the wholesale
+free, the root-scanning census; the only genuinely new object is the
+pair table.
+
 ## What is deferred
 
 - **Concurrent sibling event regions** (one per worker task). The chain comes
