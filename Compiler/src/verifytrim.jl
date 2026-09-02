@@ -7,7 +7,11 @@ import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, com
     # not in scope without asking. Omitting them made every chain throw an
     # UndefVarError into the one `catch` that turns a report into
     # "SEALED-DESC-DETAIL failed" - 314 of them, saying nothing.
-    SEALED_WHY, SEALED_PROVENANCE, SEALED_TARGET_SITE, get_ci_mi
+    SEALED_WHY, SEALED_PROVENANCE, SEALED_TARGET_SITE, get_ci_mi,
+    # the argument promises: inference and this file compute a site's type
+    # SEPARATELY, so a promise honoured in only one of them narrows what is
+    # compiled while the other reports the underived types.
+    sealed_apply_argument_promises!
 
 using ..Compiler:
      # operators
@@ -321,10 +325,59 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                         push!(argts, widenconst(t))
                     end
                     if okargs
+                        # THE PROMISE APPLIES HERE TOO. The verifier builds its
+                        # own atype from `argextype`, so a promise honoured only
+                        # by inference narrows what is COMPILED while this still
+                        # reports the underived types and calls the site
+                        # unresolved.
+                        let _pm = get_ci_mi(codeinst).def
+                            sealed_apply_argument_promises!(argts,
+                                _pm isa Method ? _pm.sig : nothing, i)
+                        end
+                        # A POSITION PROMISED `Union{}` SAYS THE CALL NEVER
+                        # HAPPENS - the site only exists for arities no callee
+                        # in the image has. There is nothing to look up, and a
+                        # bottom tuple must not reach findall.
+                        local _vbottom = false
+                        for _vk = 2:length(argts)
+                            if argts[_vk] === Union{}
+                                _vbottom = true
+                                break
+                            end
+                        end
+                        _vbottom && continue
                         atype = argtypes_to_type(argts)
+                        # FINDALL CAN NOT SEARCH A UNION-TYPED CALLEE: each
+                        # function owns its own method table, so a union atype
+                        # matches nothing at all - measured as `findall failed
+                        # n=0` at the engine's action site, while every member
+                        # matches on its own. Split the callee and ask per
+                        # member; inference makes the same split in
+                        # find_method_matches before it ever calls findall.
                         local matchvec = nothing
-                        local _vmt = findall(atype, method_table(interp); limit = SEALED_MAX_METHODS[])
-                        (_vmt === nothing || _vmt === false) || (matchvec = _vmt.matches)
+                        local _vfw = argts[1]
+                        if _vfw isa Union
+                            local _vv = Any[]
+                            local _vok = true
+                            for _vmf in Base.uniontypes(_vfw)
+                                local _vsub = Any[_vmf]
+                                for _vk = 2:length(argts)
+                                    Base.push!(_vsub, argts[_vk])
+                                end
+                                local _vmt = findall(argtypes_to_type(_vsub), method_table(interp); limit = SEALED_MAX_METHODS[])
+                                if _vmt === nothing || _vmt === false
+                                    _vok = false
+                                    break
+                                end
+                                for _vj = 1:length(_vmt.matches)
+                                    Base.push!(_vv, _vmt.matches[_vj])
+                                end
+                            end
+                            _vok && (matchvec = _vv)
+                        else
+                            local _vmt = findall(atype, method_table(interp); limit = SEALED_MAX_METHODS[])
+                            (_vmt === nothing || _vmt === false) || (matchvec = _vmt.matches)
+                        end
                         # A MATCH SET TOO WIDE TO ENUMERATE IS NOT THE SAME AS
                         # NO MATCH, and the difference was reported nowhere. When
                         # `findall` gives up, the site falls straight through to

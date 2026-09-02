@@ -1904,6 +1904,9 @@ function sealed_report_items()
         for (v, k) in ks; Core.print("  #", k, "=", v); end
         Core.println()
     end
+    SEALED_ARGUMENT_HIT[] == 0 ||
+        Core.println("SEALED-ARGUMENT ", Base.length(SEALED_ARGUMENT),
+                     " promises, ", SEALED_ARGUMENT_HIT[], " positions narrowed")
     SEALED_RESIDUAL_HIT[] == 0 ||
         Core.println("SEALED-RESIDUAL ", Base.length(SEALED_RESIDUAL),
                      " promises, ", SEALED_RESIDUAL_HIT[], " sites narrowed")

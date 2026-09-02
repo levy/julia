@@ -211,6 +211,87 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
                 push!(_cs, _cm)
             end
         end
+        # THE ARGUMENT PROMISE. What the CALLEE's own parameter is, stated by
+        # the program, applied wherever it is called - and after the sealed
+        # substitution above, because the point is to undo an expansion the
+        # substitution derived rather than to be widened by it again.
+        #
+        # A UNION-TYPED CALLEE NARROWS ONLY IF EVERY MEMBER PROMISES the
+        # position. The engine reaches its action through a field, so the
+        # callee here is `Union{typeof(deliver_message!), ...}`; narrowing
+        # because ONE member promises would be false for the others.
+        if !isempty(SEALED_ARGUMENT) && !isempty(argtypes)
+            local _af = widenconst(argtypes[1])
+            local _acm = try frame_instance(sv).def catch; nothing end
+            local _acsig = _acm isa Method ? _acm.sig : nothing
+            local _apc = try sv.currpc catch; 0 end
+            local _members = _af isa Union ? Base.uniontypes(_af) : Any[_af]
+            local _achanged = false
+            local _abottom = false
+            for _ai = 2:length(argtypes)
+                isvarargtype(argtypes[_ai]) && continue
+                local _pos = _ai - 1
+                local _all = nothing
+                local _every = true
+                local _some = false
+                for _mf in _members
+                    local _p = sealed_argument_for(_mf, _pos, _acsig, _apc)
+                    if _p === nothing
+                        _every = false
+                    else
+                        _some = true
+                        _all = _all === nothing ? _p : Union{_all, _p}
+                    end
+                end
+                if !_every
+                    # A veto is reportable only when the callee is PARTIALLY
+                    # promised: one member promised this position and another
+                    # did not. An unpromised callee is every ordinary call in
+                    # the program, and printing those burned the whole cap on
+                    # `Base.print`.
+                    if _some && SEALED_ARGUMENT_VETO[] < 12
+                        SEALED_ARGUMENT_VETO[] += 1
+                        Core.println("SEALED-ARGUMENT-VETO pos=", _pos,
+                                     " callee=", _af)
+                    end
+                    continue
+                end
+                _all === nothing && continue
+                local _w = widenconst(argtypes[_ai])
+                _w <: _all && continue
+                if !_achanged
+                    argtypes = copy(argtypes)
+                    _achanged = true
+                end
+                argtypes[_ai] = _all
+                _all === Union{} && (_abottom = true)
+                SEALED_ARGUMENT_HIT[] += 1
+            end
+            if _abottom
+                # A POSITION EVERY MEMBER PROMISED `Union{}` IS NEVER
+                # OCCUPIED, so this call can not happen: `invoke_action!`'s
+                # three-argument arm exists for arities no action in the
+                # image has. Answer "never returns"; a bottom tuple must not
+                # reach find_method_matches.
+                return Future(CallMeta(Union{}, Any, EFFECTS_THROWS, NoCallInfo()))
+            end
+            if _achanged
+                atype = argtypes_to_type(argtypes)
+                # SAY WHAT THE SITE BECAME. The promise exists to bring a
+                # site under the split limit, so the number that matters is
+                # the case product AFTER narrowing.
+                local _acases = 1
+                for _t in argtypes
+                    local _wt = widenconst(_t)
+                    _acases *= _wt isa Union ? length(Base.uniontypes(_wt)) : 1
+                end
+                if SEALED_ARGUMENT_SHOWN[] < 8
+                    SEALED_ARGUMENT_SHOWN[] += 1
+                    Core.println("SEALED-ARGUMENT-NARROWED ", _acases,
+                                 " cases  ", atype)
+                end
+            end
+        end
         # THE RESIDUAL PROMISE. The program said this call is only ever made
         # with the covered types, so narrow the arguments to them. Everything
         # below - splitting, matching, the compiled set - then follows from a

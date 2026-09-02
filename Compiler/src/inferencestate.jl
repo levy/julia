@@ -1312,6 +1312,74 @@ promises it would be false for the others.
 """
 const SEALED_ARGUMENT = IdDict{Any,Any}()
 
+const SEALED_ARGUMENT_HIT = Ref(0)
+const SEALED_ARGUMENT_VETO = Ref(0)
+const SEALED_ARGUMENT_SHOWN = Ref(0)
+
+# The promise for one callee and position, or `nothing`. A site-specific
+# promise wins over a global one.
+function sealed_argument_for(@nospecialize(ft), pos::Int, @nospecialize(csig), pc::Int)
+    isempty(SEALED_ARGUMENT) && return nothing
+    local t = get(SEALED_ARGUMENT, (ft, pos, csig, pc), nothing)
+    t === nothing || return t
+    # `within` WITHOUT `at` is stored under pc 0 and means: at every statement
+    # of that method. A real pc can only match one consumer anyway - inference
+    # numbers the source IR and the verifier numbers the optimized IR.
+    if csig !== nothing
+        t = get(SEALED_ARGUMENT, (ft, pos, csig, 0), nothing)
+        t === nothing || return t
+    end
+    return get(SEALED_ARGUMENT, (ft, pos), nothing)
+end
+
+# Apply the argument promises to a call's WIDENED argument types, in place.
+# Inference and the verifier both compute a site's type and they compute it
+# separately: a promise applied in only one of them narrows what is compiled
+# while the other still REPORTS the underived types. Measured -
+# `_generate_packet!(Any, ABurstyApp)` was reported missing at a site inference
+# had already narrowed.
+function sealed_apply_argument_promises!(argts::Vector{Any}, @nospecialize(csig), pc::Int)
+    isempty(SEALED_ARGUMENT) && return false
+    length(argts) < 2 && return false
+    local ft = argts[1]
+    local members = isa(ft, Union) ? Base.uniontypes(ft) : Any[ft]
+    local changed = false
+    for i = 2:length(argts)
+        local pos = i - 1
+        local all = nothing
+        local every = true
+        local some = false
+        for mf in members
+            local p = sealed_argument_for(mf, pos, csig, pc)
+            if p === nothing
+                every = false
+            else
+                some = true
+                all = all === nothing ? p : Union{all, p}
+            end
+        end
+        if !every
+            # A veto is reportable only when the callee is PARTIALLY promised:
+            # one member promised this position and another did not. An
+            # unpromised callee is every ordinary call in the program, and
+            # printing those burned the whole cap on `Base.print`.
+            if some && SEALED_ARGUMENT_VETO[] < 12
+                SEALED_ARGUMENT_VETO[] += 1
+                Core.println("SEALED-ARGUMENT-VETO pos=", pos, " callee=", ft)
+            end
+            continue
+        end
+        all === nothing && continue
+        local w = argts[i]
+        isa(w, Type) || continue
+        w <: all && continue
+        argts[i] = all
+        changed = true
+        SEALED_ARGUMENT_HIT[] += 1
+    end
+    return changed
+end
+
 const SEALED_RESIDUAL = IdDict{Any,Any}()
 
 """
