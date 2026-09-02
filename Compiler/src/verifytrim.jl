@@ -128,9 +128,23 @@ end
 function verify_create_stackframes(codeinst::CodeInstance, stmtidx::Int, parents::ParentMap)
     scopes = LineInfoNode[]
     frames = StackFrame[]
+    # THIS IS THE SAME parents MAP the WHY-chain above walks, and it can
+    # cycle the same way: the document printer shows a field that is a
+    # document, so parents[CI] can end up pointing back to CI itself. The
+    # WHY-chain walk learned that lesson and guards it with a seen set and a
+    # depth cap. This walk did not, and a cyclic entry here is not
+    # hypothetical either - measured directly, it ran past 385 million
+    # iterations, still growing `frames` without bound, until the process
+    # was killed (once by the OOM killer, once by an external timeout) and
+    # took the whole report down with it: no further "Verifier error #"
+    # lines, no "Trim verify finished" line at all.
+    seen = IdSet{CodeInstance}()
     parent = (codeinst, stmtidx)
-    while parent !== nothing
+    depth = 0
+    while parent !== nothing && depth < 256
         codeinst, stmtidx = parent
+        (codeinst in seen) && break # a cycle: stop here rather than loop forever
+        push!(seen, codeinst)
         di = codeinst.debuginfo
         append_scopes!(scopes, stmtidx, di, :var"unknown scope")
         for i in reverse(1:length(scopes))
@@ -143,6 +157,7 @@ function verify_create_stackframes(codeinst::CodeInstance, stmtidx::Int, parents
         end
         empty!(scopes)
         parent = get(parents, codeinst, nothing)
+        depth += 1
     end
     return frames
 end
