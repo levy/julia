@@ -21,6 +21,27 @@ Two shapes fail:
 **Found by** the 10BASE-T1S phase-3 build (inet-julia, 16 errors, seeded
 and frontier agreeing — the class is loop-independent).
 
+**Probe facts (2026-09-02, measured on the example):**
+
+- The trace RECORDS the concrete kwcall tuple the binary needs —
+  `Tuple{typeof(Core.kwcall), @NamedTuple{tag::String, limit::Int64},
+  Type{Sink}, Symbol}` is entry 1 of the 15 — so the evidence exists.
+- The kw sorter methods are MODEL-owned (`which` reports `module=Main`
+  for both constructors), so the registration root filter passes them;
+  "Core-owned" was wrong in the first statement of this plan.
+- The blast radius is DRAIN-borne: with roots on, the errors' hosts are
+  Base display machinery entered as `:drain` (1209 of the explained
+  errors) — declined `(f::Any)(x::Any)` sites inside instances compiled
+  at ABSTRACT signatures (the custom methods' own
+  `AbstractDict{Symbol, V} where V` stems) pull the build session's
+  warm Base instances through the membership keep.
+- So the precise defect: instances of the builder methods are compiled
+  at their WIDENED (declared) signatures although every call site
+  resolves concretely, and their bodies' kw plumbing is unresolvable
+  there. The lever is to stop the widened stems from entering (or to
+  answer their kw sites from the recorded concrete instances), not to
+  admit more evidence.
+
 **Candidate levers, to be measured in this order:**
 
 1. The drain filter admits a recorded kw-sorter/kw-body instance whose
