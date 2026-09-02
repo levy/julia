@@ -2149,6 +2149,43 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
                 skipped = 0
                 nomi = 0
                 for atype in wanted
+                    # A FREE TYPE PARAMETER YIELDS NOTHING TO SPLIT.
+                    # `switchtupleunion` splits a Union and can not split a
+                    # UnionAll, so `evaluate(::Volatile{T} where T, ::MT)`
+                    # produces no instance: the round counts the call as
+                    # unresolved and the error names only the caller. A seal
+                    # file states the instantiations the image contains, and
+                    # they are substituted here.
+                    if !isempty(SEALED_INSTANCES) && isa(atype, DataType)
+                        local ps = atype.parameters
+                        local changed = false
+                        local out = Any[]
+                        for k = 1:length(ps)
+                            local pk = ps[k]
+                            # A PARAMETRIC type is closed by the seal file's
+                            # instantiations; an ABSTRACT one by the sealed
+                            # subtype map the build already has. Neither is a
+                            # Union, so `switchtupleunion` splits neither, and
+                            # `add_module!(::Network{U}, ::AbstractModule)`
+                            # needs both in the same signature.
+                            local inst = sealed_instances(pk)
+                            inst === nothing && (inst = sealed_widen(pk))
+                            if inst === nothing
+                                Base.push!(out, pk)
+                            else
+                                Base.push!(out, inst)
+                                changed = true
+                            end
+                        end
+                        if changed
+                            local sub = try Tuple{out...} catch; nothing end
+                            if sub !== nothing
+                                SEALED_REPAIR_REPORT[] > 0 &&
+                                    Core.println("SEALED-REPAIR-INSTANCES  ", sub)
+                                atype = sub
+                            end
+                        end
+                    end
                     # The concrete combinations the split identified. Dispatch
                     # specialises on the actual types, so these — not the
                     # widened signature — are what it will look for.

@@ -1479,6 +1479,38 @@ function sealed_widen(@nospecialize(t))
     return nothing
 end
 
+# The union a PARAMETRIC type stands for, from `SEALED_INSTANCES`. Separate from
+# `sealed_widen` because it answers a different question: that one maps an
+# abstract type to its concrete subtypes, this one maps a wrapper to the
+# instantiations a seal file says the image contains.
+function sealed_instances(@nospecialize(t))
+    isempty(SEALED_INSTANCES) && return nothing
+    isa(t, UnionAll) || return nothing
+    local u = Base.unwrap_unionall(t)
+    isa(u, DataType) || return nothing
+    # `Type{P{T}} where T` — the parameter is a TYPE OBJECT, so the wrapper to
+    # look up sits inside it and `u.name.wrapper` is `Type`. A constructor call
+    # has this shape: `ModuleIndex(first_id)` arrives as
+    # `Tuple{Type{ModuleIndex{T}} where T, Int64}`.
+    if u.name.wrapper === Type && length(u.parameters) == 1
+        local inner = u.parameters[1]
+        local iw = isa(inner, DataType) ? inner.name.wrapper :
+                   isa(inner, UnionAll) ?
+                       (local iu = Base.unwrap_unionall(inner);
+                        isa(iu, DataType) ? iu.name.wrapper : nothing) :
+                   nothing
+        iw === nothing && return nothing
+        local got = get(SEALED_INSTANCES, iw, nothing)
+        got === nothing && return nothing
+        local parts = Any[]
+        for x in (isa(got, Union) ? Base.uniontypes(got) : (got,))
+            Base.push!(parts, Type{x})
+        end
+        return Union{parts...}
+    end
+    return get(SEALED_INSTANCES, u.name.wrapper, nothing)
+end
+
 # A call qualifies when one of its argument types is an abstract type other than
 # `Any`. `Any` never qualifies. If it did, inference would try to split every
 # generic call in Base and the build would not finish.
