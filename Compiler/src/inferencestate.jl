@@ -1099,6 +1099,20 @@ const SEALED_WORLD = Ref(false)
 # The union splitter's limit, separately settable from `max_methods`. Defaults
 # to the same 20 000; set to 4 for stock inference, which is what the `proven`
 # policy level means.
+# THE GENERIC FALLBACK. A splat through `Core._apply_iterate` has no single
+# callee to name: the arity is a run-time property, so no MethodInstance
+# describes the call. No trace, seal or declaration can supply one — measured,
+# 16 of routing's 28 unresolved statements are exactly this.
+#
+# The answer is to compile the callee's method at its OWN declared signature —
+# the stem — and let dispatch go through it. That is a deliberately admitted
+# dynamic boundary, not a failure.
+#
+# `SEALED_GENERIC` collects the methods while the verifier runs in collect
+# mode; `SEALED_GENERIC_POLICY` turns the whole thing on.
+const SEALED_GENERIC = Ref{Any}(nothing)
+const SEALED_GENERIC_POLICY = Ref(false)
+
 const SEALED_SPLIT_LIMIT = Ref(20000)
 
 const SEALED_MAX_METHODS = Ref(20000)  # REQUIRED at 20000: the routing payload dispatch splits ~6300 ways; at 100 five dynamic remnants survive
@@ -1222,6 +1236,8 @@ const SEALED_SPLIT_TAKEN = Ref(0)
 # printed. Capped, because this is inference's hot path.
 const SEALED_SPLIT_SHOW = Ref(0)      # 0 silences; otherwise the width to report
 const SEALED_SPLIT_SHOWN = Ref(0)
+# Generic targets pushed because a site fell back past the split budget.
+const SEALED_GENERIC_PUSHED = Ref(0)
 
 sealed_union_len(@nospecialize t) =
     isa(t, Union) ? sealed_union_len(t.a) + sealed_union_len(t.b) : 1

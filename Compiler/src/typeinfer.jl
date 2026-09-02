@@ -1919,7 +1919,8 @@ function sealed_report_items()
     Core.println("SEALED-SPLIT budget=", SEALED_SPLIT_CASES[],
                  " worst-site=", SEALED_SPLIT_WORST[],
                  " taken=", SEALED_SPLIT_TAKEN[],
-                 " sites-over-budget=", SEALED_SPLIT_FALLBACKS[])
+                 " sites-over-budget=", SEALED_SPLIT_FALLBACKS[],
+                 " generic-targets=", SEALED_GENERIC_PUSHED[])
     Core.println("SEALED-ITEMS by module (ms, count, module):")
     for i in 1:min(12, length(rows))
         Core.println("  ", round(rows[i][1], digits = 0), "ms  ", rows[i][2], "  ", rows[i][3])
@@ -2143,17 +2144,37 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
             while rounds < 3
                 rounds += 1
                 wanted = Any[]
+                generic = Any[]
                 SEALED_REPAIR[] = wanted
+                SEALED_GENERIC[] = generic
                 try
                     verify_typeinf_trim(codeinfos, true)   # collect, never throw
                 finally
                     SEALED_REPAIR[] = nothing
+                    SEALED_GENERIC[] = nothing
                 end
-                Base.isempty(wanted) && break
+                (Base.isempty(wanted) && Base.isempty(generic)) && break
                 repairq = CompilationQueue(; interp = NativeInterpreter(get_world_counter(); inf_params))
                 added = 0
                 skipped = 0
                 nomi = 0
+                # THE GENERIC FALLBACK: compile the method at its declared
+                # signature. Not a concrete specialization — there is no
+                # concrete call to specialize on, which is the whole point.
+                local gseen = Base.IdSet{Any}()
+                for gm in generic
+                    local gsig = gm.spec_types
+                    (gsig in gseen) && continue
+                    Base.push!(gseen, gsig)
+                    local gmi = try
+                        specialize_method(gm.method, gsig, gm.sparams)
+                    catch
+                        nothing
+                    end
+                    gmi === nothing && continue
+                    Base.push!(repairq, sealed_prov!(gmi, :generic))
+                    added += 1
+                end
                 for atype in wanted
                     # A FREE TYPE PARAMETER YIELDS NOTHING TO SPLIT.
                     # `switchtupleunion` splits a Union and can not split a
@@ -2268,7 +2289,8 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
                     end
                 end
                 Core.println("SEALED-REPAIR round ", rounds, ": ", Base.length(wanted),
-                             " unresolved call(s), ", added, " instance(s), ",
+                             " unresolved call(s), ", Base.length(generic),
+                             " generic, ", added, " instance(s), ",
                              skipped, " over the limit, ",
                              nomi, " with no compilable signature")
                 added == 0 && break

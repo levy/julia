@@ -1,7 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call,
-    SEALED_REPAIR,
+    SEALED_REPAIR, SEALED_GENERIC, SEALED_GENERIC_POLICY,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
     # the why-chain: this file lives in a SUBMODULE, so the parent's names are
     # not in scope without asking. Omitting them made every chain throw an
@@ -263,6 +263,42 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                         farg = stmt.args[3]
                         ftyp = widenconst(argextype(farg, codeinfo, sptypes))
                         if may_dispatch(ftyp)
+                            # GENERIC FALLBACK. The arity of a splat is a
+                            # run-time property, so no instance names this call.
+                            # Record the callee's own method signature instead,
+                            # and let dispatch go through it.
+                            local handled = false
+                            if SEALED_GENERIC_POLICY[] && isconcretetype(ftyp)
+                                local elt = Any
+                                if length(stmt.args) >= 4
+                                    local atyp = widenconst(argextype(stmt.args[4], codeinfo, sptypes))
+                                    if atyp <: AbstractArray && isconcretetype(atyp)
+                                        elt = atyp.parameters[1]
+                                    end
+                                end
+                                local vsig = Tuple{ftyp, Vararg{elt}}
+                                local ms = findall(vsig, method_table(interp); limit = 20)
+                                if ms !== nothing && length(ms.matches) > 0
+                                    let g = SEALED_GENERIC[]
+                                        if g !== nothing
+                                            # Record the MATCH, not the bare
+                                            # method. Compiling `+` at its fully
+                                            # generic signature is unbounded —
+                                            # measured, it took 2 errors to 75.
+                                            # The match carries the signature
+                                            # intersected with the element type
+                                            # actually being splatted, which is
+                                            # a vararg instance with a CONCRETE
+                                            # element and a resolvable body.
+                                            for j = 1:length(ms.matches)
+                                                Base.push!(g, ms.matches[j]::MethodMatch)
+                                            end
+                                            handled = true
+                                        end
+                                    end
+                                end
+                            end
+                            handled && continue
                             error = "unresolved call to function"
                         else
                             for i in 4:length(stmt.args)

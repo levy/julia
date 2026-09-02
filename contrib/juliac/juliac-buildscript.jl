@@ -92,6 +92,9 @@ end
 # what the `proven` policy level means. Without it, SEALED_SPLIT=0 disables
 # only the abstract-to-union map and a 20 000-wide splitter still resolves
 # dispatches stock Julia leaves open.
+# SEALED_GENERIC=1 admits the generic fallback: a splat with no nameable
+# callee compiles the callee's own method signature instead of erroring.
+Compiler.SEALED_GENERIC_POLICY[] = Base.get(Base.ENV, "SEALED_GENERIC", "") != ""
 let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
     v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))
 end
