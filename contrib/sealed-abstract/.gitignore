@@ -1,0 +1,11 @@
+# THE SEALED COMPILER IS THIS REPOSITORY: `Compiler/` and `contrib/juliac/`,
+# two directories up. `sealed_paths.sh` finds it, and `SEALED_JULIA` names
+# another checkout. See HISTORY.md for the vendored and patch-replay layouts
+# that came before.
+#
+# `env2/` is the generated project that names the compiler. `./sealed.sh setup`
+# writes it, and it holds an absolute path, so it can not be tracked.
+env2/
+work*/
+*.log
+*.cov
