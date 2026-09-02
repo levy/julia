@@ -69,6 +69,9 @@ _stamp("activate")
 const _SEALED_WORLD_WANTED = Base.get(Base.ENV, "SEALED_WORLD", "1") != "0"
 Compiler.SEALED_WORLD[] = false
 Compiler.SEALED_TRACE_ONLY[] = Base.get(Base.ENV, "SEALED_TRACE_ONLY", "") != ""
+# SEALED_LOOP names which compile loop runs, `seeded` or `frontier`. Both are
+# kept so they can be cross-tested; `seeded` is the baseline.
+Compiler.SEALED_LOOP[] = Base.Symbol(Base.get(Base.ENV, "SEALED_LOOP", "seeded"))
 # SEALED_SPLIT_CASES bounds ONE call site's union cross product. Over it, the
 # site keeps its abstract types and is answered further down the lattice.
 Compiler.SEALED_SPLIT_CASES[] =
@@ -81,6 +84,10 @@ Compiler.SEALED_WHY[] = Base.get(Base.ENV, "SEALED_WHY", "1") != "0"
 Compiler.SEALED_COVERAGE[] = Base.get(Base.ENV, "SEALED_COVERAGE", "") != ""
 Compiler.SEALED_SPLIT_SHOW[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_SHOW", "0"))
+# SEALED_PROGRESS is the progress interval in SECONDS; 0 silences it.
+let _p = Base.get(Base.ENV, "SEALED_PROGRESS", "5")
+    Compiler.SEALED_PROGRESS_NS[] = Base.UInt64(Base.parse(Float64, _p) * 1e9)
+end
 # SEALED_SPLIT_LIMIT=4 holds inference to the STOCK union splitter, which is
 # what the `proven` policy level means. Without it, SEALED_SPLIT=0 disables
 # only the abstract-to-union map and a 20 000-wide splitter still resolves

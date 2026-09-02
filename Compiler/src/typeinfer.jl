@@ -1952,7 +1952,7 @@ function sealed_report_items()
     return nothing
 end
 
-function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
+function compile_seeded!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
 )
     interp = workqueue.interp
