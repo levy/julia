@@ -35,8 +35,81 @@ function _main(argc::Cint, argv::Ptr{Ptr{Cchar}})::Cint
     return Main.main(args)
 end
 
+using Compiler
+Compiler.activate!(; reflection = true, codegen = true)
+# THE SEALED WORLD IS OFF WHILE THE PROGRAM LOADS. Loading a package infers,
+# and inferring under the sealed settings - `max_union_splitting` at 20 000
+# rather than Julia's 4 - costs 3.6 of the 12.9 seconds `load-program` takes,
+# for work the trim never uses: the compiled set is built later, at exit.
+# Measured on routing phase 0: 12.90s baseline, 9.29s with SEALED_WORLD=0,
+# 9.67s with the split limit at 4.
+const _SEALED_WORLD_WANTED = Base.get(Base.ENV, "SEALED_WORLD", "1") != "0"
+Compiler.SEALED_WORLD[] = false
+# SEALED_SPLIT_LIMIT=4 holds inference to the STOCK union splitter, which is
+# what the `proven` policy level means. Without it, SEALED_SPLIT=0 disables
+# only the abstract-to-union map and a 20 000-wide splitter still resolves
+# dispatches stock Julia leaves open.
+let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
+    v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))
+end
+Core.eval(Base.Compiler, quote
+    add_entrypoint(types::Type) = $(Compiler).add_entrypoint(types)
+end)
+
+
+
 let include_result = Base.include(Main, ARGS[1])
     Core.@latestworld
+    # The program is loaded; from here on the sealed world applies.
+    Compiler.SEALED_WORLD[] = _SEALED_WORLD_WANTED
+    # --- sealed world: abstract type => Union of concrete subtypes ------------
+    let lists = Base.IdDict{Any,Vector{Any}}()
+        rootmod(m::Module) = (while Base.parentmodule(m) !== m; m = Base.parentmodule(m); end; m)
+        # A type is SEALED when its root module is neither Core nor Base: the
+        # program's own types and its packages' types are closed at this point,
+        # while Function, Integer and the other Base abstracta have subtypes no
+        # enumeration can see.
+        sealedroot(m::Module) = (r = rootmod(m); r !== Base.Core && r !== Base)
+        seen = Base.IdSet{Module}()
+        function record!(mod::Module)
+            (mod in seen) && return
+            Base.push!(seen, mod)
+            for name in Base.names(mod; all = true)
+                Base.isdefined(mod, name) || continue
+                Base.isdeprecated(mod, name) && continue
+                t = Base.getglobal(mod, name)
+                if t isa Module
+                    (t !== mod && sealedroot(t)) && record!(t)
+                elseif t isa DataType && Base.isconcretetype(t)
+                    s = Base.supertype(t)
+                    while s !== Any
+                        if sealedroot(Base.parentmodule(s))
+                            list = Base.get!(Vector{Any}, lists, s)
+                            (t in list) || Base.push!(list, t)
+                        end
+                        s = Base.supertype(s)
+                    end
+                end
+            end
+        end
+        for mod in Base.loaded_modules_array()
+            sealedroot(mod) && record!(mod)
+        end
+        record!(Main)
+        subs = Base.IdDict{Any,Any}()
+        for (k, v) in lists
+            subs[k] = Union{v...}
+        end
+        # Leaving this UNSET disables the abstract-as-union split
+        # (`abstractinterpretation.jl` gates on it) while the verifier
+        # relaxation stays on — the separation a trace-driven build needs.
+        if Base.get(Base.ENV, "SEALED_SPLIT", "1") != "0"
+            Compiler.SEALED_SUBTYPES[] = subs
+        else
+            Core.println("SEALED-SPLIT-OFF: abstract-as-union splitting disabled")
+        end
+    end
+    # --------------------------------------------------------------------------
     if ARGS[2] == "--output-exe"
         have_cmain = false
         if isdefined(Main, :main)
@@ -71,6 +144,7 @@ end
 # Run the verifier in the current world (before build-script modifications),
 # so that error messages and types print in their usual way.
 Core.Compiler._verify_trim_world_age[] = Base.get_world_counter()
+Compiler._verify_trim_world_age[] = Base.get_world_counter()
 
 # Apply hacks
 

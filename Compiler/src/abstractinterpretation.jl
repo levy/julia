@@ -117,7 +117,43 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
         add_remark!(interp, sv, "Cannot infer call, because we previously saw :latestworld")
         return Future(CallMeta(Any, Any, Effects(), NoCallInfo()))
     end
-    matches = find_method_matches(interp, argtypes, atype; max_methods)
+    # --- sealed world probe ---------------------------------------------------
+    # An abstract argument type IS the union of its concrete subtypes in a
+    # sealed world. Substituting the union here lets the ordinary
+    # union-splitting machinery enumerate the cases, so each split resolves
+    # concretely, is compiled, and the optimizer emits the dispatch chain —
+    # no dynamic call survives to the verifier or to run time.
+    max_union_splitting = InferenceParams(interp).max_union_splitting
+    if SEALED_WORLD[]
+        if SEALED_SUBTYPES[] !== nothing
+            changed = false
+            for _si = 2:length(argtypes)
+                _a = argtypes[_si]
+                isvarargtype(_a) && continue
+                _w = sealed_widen(widenconst(_a))
+                if _w !== nothing
+                    if !changed
+                        argtypes = copy(argtypes)
+                        changed = true
+                    end
+                    argtypes[_si] = _w
+                end
+            end
+            changed && (atype = argtypes_to_type(argtypes))
+        end
+        if sealed_call(argtypes)
+            max_methods = SEALED_MAX_METHODS[]
+        end
+        # SEALED_SPLIT_LIMIT overrides the union splitter alone, so a build can
+        # be held to STOCK inference. Without it there is no `proven` policy
+        # level: `SEALED_SPLIT=0` disables only the abstract-to-union map, and
+        # this 20 000-wide splitter still resolves dispatches stock Julia (limit
+        # 4) leaves open. Seven of ten ladder examples passed at a "proven"
+        # level that did not exist because of it.
+        max_union_splitting = SEALED_SPLIT_LIMIT[]
+    end
+    # --------------------------------------------------------------------------
+    matches = find_method_matches(interp, argtypes, atype; max_union_splitting, max_methods)
     if isa(matches, FailedMethodMatch)
         add_remark!(interp, sv, matches.reason)
         return Future(CallMeta(Any, Any, Effects(), NoCallInfo()))

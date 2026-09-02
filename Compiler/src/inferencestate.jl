@@ -1094,6 +1094,57 @@ bail_out_apply(::AbstractInterpreter, state::InferenceLoopState, ::IRInterpretat
 add_remark!(::AbstractInterpreter, ::InferenceState, remark) = return
 add_remark!(::AbstractInterpreter, ::IRInterpretationState, remark) = return
 
+# --- sealed world probe -------------------------------------------------------
+const SEALED_WORLD = Ref(false)
+# The union splitter's limit, separately settable from `max_methods`. Defaults
+# to the same 20 000; set to 4 for stock inference, which is what the `proven`
+# policy level means.
+const SEALED_SPLIT_LIMIT = Ref(20000)
+
+const SEALED_MAX_METHODS = Ref(20000)  # REQUIRED at 20000: the routing payload dispatch splits ~6300 ways; at 100 five dynamic remnants survive
+
+# abstract DataType => Union of its concrete subtypes, computed by the
+# buildscript AFTER the user program is loaded — the sealed world's answer to
+# "what can this abstract type be".
+const SEALED_SUBTYPES = Ref{Any}(nothing)
+
+
+
+# The union a sealed type stands for, or `nothing` when the type has no entry.
+# A Union is rewritten memberwise, so Union{Nothing,Env} becomes
+# Union{Nothing, <Env's concretes...>}.
+function sealed_widen(@nospecialize(t))
+    subs = SEALED_SUBTYPES[]
+    subs === nothing && return nothing
+    if isa(t, Union)
+        a = sealed_widen(t.a)
+        b = sealed_widen(t.b)
+        (a === nothing && b === nothing) && return nothing
+        return Union{(a === nothing ? t.a : a), (b === nothing ? t.b : b)}
+    elseif isa(t, DataType) && Base.isabstracttype(t)
+        return get(subs, t, nothing)
+    end
+    return nothing
+end
+
+# A call qualifies when one of its argument types is an abstract type other than
+# `Any`. `Any` never qualifies. If it did, inference would try to split every
+# generic call in Base and the build would not finish.
+function sealed_call(argtypes::Vector{Any})
+    for i = 2:length(argtypes)
+        a = argtypes[i]
+        # A `Vararg` entry is not an ordinary lattice element and `widenconst`
+        # raises an error on it.
+        isvarargtype(a) && continue
+        t = widenconst(a)
+        t === Any && continue
+        isa(t, DataType) || continue
+        Base.isabstracttype(t) && return true
+    end
+    return false
+end
+# ------------------------------------------------------------------------------
+
 function get_max_methods(interp::AbstractInterpreter, @nospecialize(f), sv::AbsIntState)
     fmax = get_max_methods_for_func(f)
     fmax !== nothing && return fmax
