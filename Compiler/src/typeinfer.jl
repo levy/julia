@@ -1476,7 +1476,8 @@ function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vec
         isexpr(stmt, :(=)) && (stmt = stmt.args[2])
         if isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify)
             edge = stmt.args[1]
-            edge isa CodeInstance && isdefined(edge, :inferred) && push!(workqueue, edge)
+            edge isa CodeInstance && isdefined(edge, :inferred) &&
+                push!(workqueue, sealed_prov!(edge, :static_edge))
         end
 
         invokelatest_queue === nothing && continue
@@ -1742,6 +1743,29 @@ end
 # only the distribution says anything.
 const SEALED_ITEM_TIMES = Vector{Any}()
 
+# WHY was this instance compiled? Five wrong hypotheses about a routing build
+# came from inferring provenance out of symptoms: which of the target sources
+# put a given method in the image is not visible anywhere, so every answer was
+# a guess tested by a 318-second build.
+#
+#   :root         an entrypoint - the program's own, or one registered from a
+#                 trace or a declaration
+#   :static_edge  reached from another instance's IR by `collectinvokes!`
+#   :drain        a declined dispatch site's target, via SEALED_EXTRA_TARGETS
+#   :repair       the repair pass, expanding a widened signature
+#   :generic      the generic fallback, a method at its own signature
+#
+# First writer wins: an instance discovered twice keeps the reason it FIRST
+# entered, which is the one that explains its presence.
+const SEALED_PROVENANCE = IdDict{Any,Symbol}()
+
+function sealed_prov!(@nospecialize(x), tag::Symbol)
+    local mi = x isa CodeInstance ? get_ci_mi(x) : x
+    mi isa MethodInstance || return x
+    Base.haskey(SEALED_PROVENANCE, mi) || (SEALED_PROVENANCE[mi] = tag)
+    return x
+end
+
 # Compile the seeded set and take NO closure. `collectinvokes!` is what walks
 # the IR and enqueues callees — the analysis a recorded trace makes
 # unnecessary. The seeded set must then be COMPLETE, Base included.
@@ -1787,6 +1811,28 @@ function sealed_report_items()
     rows = Any[]
     for (r, c) in counts; push!(rows, (c[2], c[1], r)); end
     sort!(rows, by = x -> -x[1])
+    # WHY the compiled set is what it is - the column that five wrong routing
+    # hypotheses were guessing at.
+    # Count DISTINCT instances. SEALED_ITEM_TIMES holds one row per visit, and a
+    # cheap instance can be visited a thousand times, so raw rows over-count.
+    let counts = Base.IdDict{Any,Any}(), seen = Base.IdSet{Any}()
+        for (ns, mi) in SEALED_ITEM_TIMES
+            mi in seen && continue
+            Base.push!(seen, mi)
+            local w = Base.get(SEALED_PROVENANCE, mi, :unknown)
+            counts[w] = Base.get(counts, w, 0) + 1
+        end
+        local parts = Any[]
+        for (w, c) in counts
+            Base.push!(parts, (c, w))
+        end
+        sort!(parts, by = x -> -x[1])
+        Core.print("SEALED-ITEMS by provenance:")
+        for (c, w) in parts
+            Core.print("  ", w, "=", c)
+        end
+        Core.println()
+    end
     # HOW THE SITES ARE CLOSED. Not "what is unanswered" - a build with
     # unanswered targets does not link. What is answered ONLY by walking a
     # method table, with no observation that it ever happens, is the number
@@ -1932,7 +1978,7 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             end
             sort!(_batch, by = _sealed_drain_key)
             for mi in _batch
-                push!(workqueue, mi)
+                push!(workqueue, sealed_prov!(mi, :drain))
             end
         end
         item = pop!(workqueue)
@@ -2058,6 +2104,9 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
             interp = NativeInterpreter(this_world; inf_params)
         )
 
+        for _m in methods
+            sealed_prov!(_m, :root)
+        end
         Core.println("SEALED-TIME toplevel-to-compile ",
                      Base.round((Base.time_ns() - _t_inf) / 1.0e9, digits = 2), "s")
         append!(workqueue, methods)
