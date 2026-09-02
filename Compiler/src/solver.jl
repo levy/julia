@@ -118,6 +118,13 @@ build can already say which one answered.
 function resolve_dispatch(@nospecialize(target), knowledge::Knowledge)
     local mi = sealed_keep(target)
     mi === nothing && return (nothing, :filtered)
+    # THE TRACE ARM, consulted at the site rather than seeded as a root. A
+    # candidate the trace observed is answered by the trace; the rest fall
+    # through to `:sealed`, which is what the enumeration of a declined site's
+    # method matches actually is.
+    if !isempty(SEALED_TRACE_SIGS) && mi.specTypes in SEALED_TRACE_SIGS
+        return (mi, :trace)
+    end
     return (mi, :sealed)
 end
 
@@ -146,6 +153,59 @@ function drain_declined!(workqueue::CompilationQueue, knowledge::Knowledge)
         mi === nothing && continue
         knowledge.answered[why] = get(knowledge.answered, why, 0) + 1
         push!(batch, mi)
+    end
+    # THE TRACE ARM PROPER: for each site inference declined, what did the
+    # trace observe THERE? A trace entry whose signature is a specialization of
+    # the site answers it, whether or not the enumeration produced that
+    # candidate. This is the step that makes the trace evidence rather than a
+    # root list - an entry no site demands is never reached.
+    if !isempty(SEALED_TRACE_SIGS)
+        local world = get_inference_world(workqueue.interp)
+        while !isempty(SEALED_DECLINED_SIGS)
+            local site = pop!(SEALED_DECLINED_SIGS)
+            # A UNION-TYPED CALLEE HAS ONE BUCKET PER MEMBER. The engine reaches
+            # its action through a field, so the site's function type is
+            # `Union{typeof(deliver_message!), ...}` and looking the union up as
+            # a single key finds nothing at all - the site went unanswered while
+            # the entries that answer it sat in the table under their own names.
+            local ft = (site::DataType).parameters[1]
+            local bucket = get(SEALED_TRACE_BY_FT, ft, nothing)
+            if bucket === nothing && ft isa Union
+                local merged = nothing
+                for m in Base.uniontypes(ft)
+                    local b = get(SEALED_TRACE_BY_FT, m, nothing)
+                    b === nothing && continue
+                    merged === nothing && (merged = Any[])
+                    append!(merged, b)
+                end
+                bucket = merged
+            end
+            bucket === nothing && continue
+            # ORDER THE BUCKET BY ITS PRINTED FORM, or the build is not
+            # reproducible. Iterating the table in its own order is not stable:
+            # it is keyed by identity, and identity is an address. Sorting by
+            # `objectid` was tried first and did NOT fix it - for a type that
+            # key varies between PROCESSES, and the runs being compared are
+            # separate builds. The printed form is the same in every process.
+            #
+            # MEASURED: the same source, recompiled twice, gave
+            # `buildtime_index` 283 instances and a pass, then 290 and a
+            # failure. The drain's batch was already sorted for exactly this
+            # reason - a routing build's error count swung between 1 and about
+            # 120 on identical inputs - and this arm was added without it.
+            sort!(bucket, by = string)
+            for t in bucket
+                t <: site || continue
+                t in knowledge.seen && continue
+                push!(knowledge.seen, t)
+                local tmi = ccall(:jl_get_specialization1, Any,
+                                  (Any, Csize_t, Cint), t, world, #= mt_cache =# 0)
+                tmi === nothing && continue
+                knowledge.answered[:trace] = get(knowledge.answered, :trace, 0) + 1
+                sealed_site_traced!(site, t)
+                push!(batch, sealed_prov!(tmi::MethodInstance, :trace))
+            end
+        end
     end
     sort!(batch, by = _sealed_drain_key)
     for mi in batch
@@ -190,7 +250,8 @@ function compile_frontier!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     local repeat_ns = 0
     local inferred_once = IdSet{Any}()
 
-    while !isempty(workqueue) || !isempty(SEALED_EXTRA_TARGETS)
+    while !isempty(workqueue) || !isempty(SEALED_EXTRA_TARGETS) ||
+          (!isempty(SEALED_TRACE_SIGS) && !isempty(SEALED_DECLINED_SIGS))
         drained += drain_declined!(workqueue, knowledge)
         isempty(workqueue) && continue
         rounds += 1
@@ -204,7 +265,7 @@ function compile_frontier!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                          "s  obligations=", rounds,
                          " queue=", length(workqueue.tocompile),
                          " emitted=", length(codeinfos),
-                         " declined=", 0,
+                         " declined=", length(SEALED_DECLINED_SIGS),
                          " infer=", infer_calls, " repeats=", repeat_calls)
         end
         local item = pop!(workqueue)
@@ -299,7 +360,8 @@ function compile_frontier!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                  " distinct instances; ", repeat_calls, " repeats cost ",
                  Base.round(repeat_ns / 1.0e9, digits = 2), "s")
     Core.print("SEALED-FRONTIER fixed point after ", rounds, " obligations, ",
-               drained, " from declined sites")
+               drained, " from declined sites; sites=", length(SEALED_DECLINED_SEEN),
+               " trace=", length(SEALED_TRACE_SIGS))
     for w in SEALED_EVIDENCE_ORDER
         local c = get(knowledge.answered, w, 0)
         c == 0 || Core.print("  ", w, "=", c)

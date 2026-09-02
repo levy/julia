@@ -125,6 +125,12 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
     # no dynamic call survives to the verifier or to run time.
     max_union_splitting = InferenceParams(interp).max_union_splitting
     if SEALED_WORLD[]
+        # RECORD THE CALL SITE FOR THE TRACE ARM. The inliner reports the sites
+        # it processes, which is not all of them: `trace_typeparam` dispatches
+        # on `Type{...}` values and its call never reached the inliner's push
+        # points, so its five trace entries answered nothing. `atype` here is
+        # the site, before any of the sealed machinery rewrites it.
+        sealed_push_declined!(atype)
         if SEALED_SUBTYPES[] !== nothing
             # PRICE THE SPLIT BEFORE MAKING IT. The substitution below is what
             # turns an abstract argument into a union, and the splitter then

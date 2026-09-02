@@ -1154,6 +1154,11 @@ function sealed_push_target!(@nospecialize(t), @nospecialize(site), tag::Int = 0
     Base.haskey(SEALED_TARGET_SITE, t) || (SEALED_TARGET_SITE[t] = site)
     SEALED_PUSH_BY_SITE[tag] = get(SEALED_PUSH_BY_SITE, tag, 0) + 1
     sealed_site_required!(site, t)
+    # THE SITE TRAVELS WITH THE TARGET. Recording sites at one of the eight
+    # push points caught only Base's `promote_rule` calls; the program's own
+    # dynamic call went through another branch, so the trace had nothing to
+    # match against and answered nothing.
+    sealed_push_declined!(site)
     if t in SEALED_TARGET_SEEN
         SEALED_TARGET_DUPES[] += 1
     else
@@ -1173,6 +1178,20 @@ end
 # verify).
 const SEALED_WARM_INSTANCES = Ref{Any}(nothing)
 
+# THE TRACE, AS EVIDENCE RATHER THAN AS ROOTS.
+#
+# The seeded loop registers every trace entry with `add_entrypoint`, so each
+# one is compiled whether or not any call site needs it. That is why a defect
+# in the recorder could put 8645 package instances into a routing phase-1
+# binary: nothing ever asked.
+#
+# The frontier loop puts them here instead. A declined dispatch site enumerates
+# its candidate targets, and a candidate the trace OBSERVED is answered with
+# `:trace`; the rest fall through to the enumeration. An entry no site demands
+# is never compiled, so an over-broad trace costs nothing.
+#
+# Signature types are interned by Julia, and `Serialization.deserialize`
+# returns the canonical object, so identity is the right test here.
 # THE COST OF A SPLIT, AND THE FALLBACK WHEN IT IS TOO HIGH.
 #
 # In a sealed world an abstract argument IS the union of its concrete
@@ -1399,6 +1418,69 @@ file states them: `seal_instances(Volatile, [Volatile{A}, Volatile{B}, ...])`.
 """
 const SEALED_INSTANCES = IdDict{Any,Any}()
 const SEALED_RESIDUAL_HIT = Ref(0)
+
+const SEALED_TRACE_SIGS = IdSet{Any}()
+
+# The same entries, keyed by the called function's type. A declined site is
+# only worth recording when the trace has something to say about that
+# function, and without this index every call site in the program is a
+# candidate: the inliner alone offered 8542 of them for a trace of ten.
+const SEALED_TRACE_BY_FT = IdDict{Any,Vector{Any}}()
+
+function sealed_add_trace_sig!(@nospecialize t)
+    # A TARGET WITH FREE TYPE PARAMETERS IS A UnionAll, NOT A DataType, and the
+    # assert below throws on it. Called from a trace file that is only ever
+    # dispatch tuples, that never happened; called from the edge log, which
+    # records `match.spec_types`, it happens at once - measured, and it takes
+    # the whole build down:
+    #   TypeError(typeassert, expected=DataType,
+    #             got=Tuple{typeof(==), T, T} where T<:Unsigned)
+    # inside `abstract_call_gf_by_type`, reported as an internal inference
+    # error and then `Unreachable reached`. A guard belongs here rather than at
+    # each caller: nothing that reaches this function may crash inference.
+    isa(t, DataType) || return nothing
+    push!(SEALED_TRACE_SIGS, t)
+    local ps = t.parameters
+    isempty(ps) && return nothing
+    local ft = ps[1]
+    local bucket = get(SEALED_TRACE_BY_FT, ft, nothing)
+    bucket === nothing && (bucket = SEALED_TRACE_BY_FT[ft] = Any[])
+    push!(bucket, t)
+    return nothing
+end
+
+# THE DECLINED CALL SITES THEMSELVES, as signature types.
+#
+# The drain receives targets the inliner already enumerated, which is enough to
+# LABEL a candidate the trace observed but not to ANSWER a site the
+# enumeration missed. `trace_abstract` and `trace_typeparam` need targets no
+# enumeration produces, and they failed until the site itself was recorded.
+const SEALED_DECLINED_SIGS = Vector{Any}()
+const SEALED_DECLINED_SEEN = IdSet{Any}()
+
+function sealed_push_declined!(@nospecialize site)
+    # ONLY SITES THE TRACE COULD ANSWER. With no trace loaded there is nothing
+    # to look up, and a site whose function the trace never names can not match
+    # any entry.
+    isempty(SEALED_TRACE_SIGS) && return nothing
+    site isa DataType || return nothing
+    local ps = site.parameters
+    isempty(ps) && return nothing
+    # A UNION-TYPED CALLEE IS STILL A CALLEE. `evt.action` is
+    # `Union{typeof(deliver_message!), ...}`, and looking the whole union up as
+    # one key finds nothing, so the site was never even recorded as declined.
+    local _known = haskey(SEALED_TRACE_BY_FT, ps[1])
+    if !_known && ps[1] isa Union
+        for _m in Base.uniontypes(ps[1])
+            haskey(SEALED_TRACE_BY_FT, _m) && (_known = true; break)
+        end
+    end
+    _known || return nothing
+    site in SEALED_DECLINED_SEEN && return nothing
+    push!(SEALED_DECLINED_SEEN, site)
+    push!(SEALED_DECLINED_SIGS, site)
+    return nothing
+end
 
 # Set{Symbol} of root package names whose recorded targets survive the
 # trim-entry filter — the packages the ENTRY actually runs. Set by the
