@@ -2,11 +2,16 @@
 
 import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call,
     SEALED_REPAIR,
-    SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype
+    SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
+    # the why-chain: this file lives in a SUBMODULE, so the parent's names are
+    # not in scope without asking. Omitting them made every chain throw an
+    # UndefVarError into the one `catch` that turns a report into
+    # "SEALED-DESC-DETAIL failed" - 314 of them, saying nothing.
+    SEALED_WHY, SEALED_PROVENANCE, SEALED_TARGET_SITE, get_ci_mi
 
 using ..Compiler:
      # operators
-     !, !=, !==, +, :, <, <=, ==, =>, >, >=, ∈, ∉,
+     !, !=, !==, +, -, :, <, <=, ==, =>, >, >=, ∈, ∉,
      # types
      Array, Builtin, Callable, Cint, CodeInfo, CodeInstance, Csize_t, Exception,
      GenericMemory, GlobalRef, IdDict, IdSet, IntrinsicFunction, Method, MethodInstance,
@@ -320,6 +325,19 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                         local matchvec = nothing
                         local _vmt = findall(atype, method_table(interp); limit = SEALED_MAX_METHODS[])
                         (_vmt === nothing || _vmt === false) || (matchvec = _vmt.matches)
+                        # A MATCH SET TOO WIDE TO ENUMERATE IS NOT THE SAME AS
+                        # NO MATCH, and the difference was reported nowhere. When
+                        # `findall` gives up, the site falls straight through to
+                        # an error: it is never offered to the repair pass, so it
+                        # shows no skipped site, no missing instance, and raising
+                        # the repair limit does nothing to it. Say so.
+                        if matchvec === nothing
+                            if (_SEALED_NOMATCH_BUDGET[] -= 1) > 0
+                                Core.println("SEALED-VERIFY-NOMATCH limit=", SEALED_MAX_METHODS[],
+                                             " in=", get_ci_mi(codeinst).def, " stmt#", i,
+                                             "  ", atype)
+                            end
+                        end
                         if matchvec !== nothing && length(matchvec) > 0
                             allcompiled = true
                             for j = 1:length(matchvec)
@@ -332,6 +350,20 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                                     end
                                 end
                                 if !found
+                                    # NAME THE METHOD THAT HAS NO INSTANCE.
+                                    # `allcompiled` is per METHOD, and on the
+                                    # final pass - where `SEALED_REPAIR` is not
+                                    # collecting - a false here falls straight
+                                    # through to the error. Which method is
+                                    # missing is the whole answer, and it was
+                                    # reported nowhere: the error names the
+                                    # CALLER and the statement, never the
+                                    # callee that is absent.
+                                    if (_SEALED_MISSING_BUDGET[] -= 1) > 0
+                                        Core.println("SEALED-VERIFY-MISSING in=",
+                                                     get_ci_mi(codeinst).def, " stmt#", i,
+                                                     "  needs ", match.method)
+                                    end
                                     allcompiled = false
                                     break
                                 end
@@ -429,6 +461,15 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
             warn = true
         end
         if !isempty(error)
+            # NAME THE STATEMENT, not only its index. An index is only useful
+            # against the same IR, and the IR changes with every seal: five
+            # errors reported at 762, 763, 800, 804, 805 could not be looked up
+            # in a local `code_typed`, because a residual promise had shifted
+            # the numbering and a promise can not be reproduced outside a build.
+            # The statement itself is the same in every process.
+            Core.println("SEALED-PUSH ", warn ? "warn " : "error ",
+                         get_ci_mi(codeinst).def, " stmt#", i,
+                         "  ", codeinfo.code[i])
             push!(errors, warn => CallMissing(codeinst, codeinfo, sptypes, i, error))
         end
     end
@@ -498,6 +539,13 @@ end
 # driver / verifier implemented by juliac-buildscript.jl for the purpose of extensibility.
 # For now, it is part of Base.Compiler, but executed with invokelatest so that packages
 # could provide hooks to change, customize, or tweak its behavior and heuristics.
+# How many `SEALED-VERIFY-NOMATCH` lines to print. A build reports the same
+# site once per instance, so a handful names every distinct one.
+const _SEALED_NOMATCH_BUDGET = Ref(40)
+
+# How many `SEALED-VERIFY-MISSING` lines to print.
+const _SEALED_MISSING_BUDGET = Ref(100000)
+
 function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
     errors, parents = get_verify_typeinf_trim(codeinfos)
 
@@ -510,8 +558,135 @@ function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
         severity = warn ? 2 : 1
         no = (counts[severity] += 1)
         print(io, warn ? "Verifier warning #" : "Verifier error #", no, ": ")
+        Core.println("SEALED-DESC ", typeof(desc))
+        try
+            Core.println("SEALED-DESC-DETAIL [", desc.desc, "] in=",
+                         desc.codeinst.def, " stmt#", desc.stmtidx)
+            # WALK THE CHAIN TO ITS ROOT, not three levels of it. Three was
+            # enough to see a caller and never enough to answer "how does this
+            # reach `main`" - and on routing all three printed the SAME
+            # instance, which reads as a chain and is a chain of length zero.
+            #
+            # Where the chain ends, the compiler's own provenance says how the
+            # instance entered the compile set at all: an entrypoint, an edge
+            # followed from another body, a declined dispatch site's target, or
+            # a recorded observation. Those are different problems and they
+            # were previously indistinguishable.
+            # WHY THIS IS COMPILED, ALL THE WAY TO A ROOT.
+            #
+            # An explanation that stops at "something recorded this" is not an
+            # explanation: the recorded target was reached by a caller, and
+            # that caller is compiled for a reason of its own. The walk
+            # therefore CROSSES the registration boundary - parents until the
+            # chain ends, then the provenance, then the run-time caller that
+            # put it in the trace, then that caller's own chain - and only
+            # stops at a root, a cycle, or the cap.
+            #
+            # THE CYCLE IS NOT HYPOTHETICAL. The document printer shows a field
+            # that is a document, so `show(IO, Document)` is recorded because
+            # `show(IO, Document)` called it. Without the seen set this walk
+            # does not terminate.
+            # A DIAGNOSTIC MUST NOT BE ABLE TO KILL THE REPORT. The first
+            # version of this walk threw partway through error #1 and took the
+            # whole verification with it: the build printed one error, no
+            # "Trim verify finished with N errors" line at all, and every
+            # report of "phase 3 has 1 error" was that truncation. It has 197.
+            try
+            if SEALED_WHY[]
+                local seen = IdSet{Any}()
+                local cur = desc.codeinst
+                local hop = 0
+                while cur !== nothing && hop < 12
+                    (cur in seen) && (Core.println("SEALED-WHY  (cycle)"); break)
+                    push!(seen, cur)
+                    local depth = 0
+                    while depth < 64
+                        local par = get(parents, cur, nothing)
+                        par === nothing && break
+                        par[1] === cur && break
+                        Core.println("SEALED-WHY  ", depth == 0 && hop == 0 ?
+                                     "called from " : "            ", par[1].def)
+                        cur = par[1]
+                        depth += 1
+                        (cur in seen) && break
+                        push!(seen, cur)
+                    end
+                    local mi = try get_ci_mi(cur) catch; nothing end
+                    local why = mi === nothing ? :unknown :
+                                Base.get(SEALED_PROVENANCE, mi, :unknown)
+                    Core.println("SEALED-WHY  ^ entered as ", why,
+                                 depth == 0 ? " (no static caller)" : "")
+                    if why !== :drain && why !== :trace
+                        break                      # a root, or an edge: done
+                    end
+                    local site = mi === nothing ? nothing :
+                                 Base.get(SEALED_TARGET_SITE, mi, nothing)
+                    site === nothing ||
+                        Core.println("SEALED-WHY  demanded by site ",
+                                     Base.first(Base.string(site), 96))
+                    # CROSS THE BOUNDARY: continue from whoever reached it
+                    # during the recording run.
+                    local nxt = nothing
+                    local named = false
+                    if mi !== nothing && Base.isdefined(mi, :backedges)
+                        local edges = Base.getfield(mi, :backedges)
+                        # PREFER A COMPILED CALLER: only a CodeInstance lets
+                        # the walk cross into that caller's own chain.
+                        for e in edges
+                            local c = try (e isa CodeInstance ? e :
+                                           e isa MethodInstance &&
+                                           Base.isdefined(e, :cache) ? e.cache :
+                                           nothing) catch; nothing end
+                            c isa CodeInstance || continue
+                            (c in seen) && continue
+                            Core.println("SEALED-WHY  recorded because ",
+                                         get_ci_mi(c).def, " called it at run time")
+                            nxt = c
+                            named = true
+                            break
+                        end
+                        # NAME IT EVEN WITHOUT A CODEINSTANCE. None of the
+                        # backedges had a compiled instance to cross into,
+                        # but a MethodInstance backedge is still a real
+                        # caller the recorder saw - "no caller recorded"
+                        # would be a lie one hop early if one is printed here
+                        # instead. There is nothing to cross into, so the
+                        # walk still stops at this hop.
+                        if !named
+                            for e in edges
+                                local d = try (e isa MethodInstance ? e.def :
+                                               e isa CodeInstance ? get_ci_mi(e).def :
+                                               nothing) catch; nothing end
+                                d === nothing && continue
+                                Core.println("SEALED-WHY  recorded because ", d,
+                                             " called it at run time (not itself compiled)")
+                                named = true
+                                break
+                            end
+                        end
+                    end
+                    named ||
+                        Core.println("SEALED-WHY  no caller recorded: the ",
+                                     "recording saw it with no backedge")
+                    cur = nxt
+                    hop += 1
+                end
+            end
+            catch _why_ex
+                Core.println("SEALED-WHY  <explanation failed: ",
+                             typeof(_why_ex), ">")
+            end
+        catch ex
+            Core.println("SEALED-DESC-DETAIL failed: ", typeof(ex))
+        end
         # TODO: should we coalesce any of these stacktraces to minimize spew?
-        verify_print_error(io, desc, parents)
+        # sealed world: one unprintable error must not hide the rest — a
+        # rendering failure aborts the whole report otherwise
+        try
+            verify_print_error(io, desc, parents)
+        catch ex
+            Core.println("  <error rendering failed: ", typeof(ex), ">")
+        end
     end
 
     ## TODO: compute and display the minimum and/or full call graph instead of merely the first parent stacktrace?

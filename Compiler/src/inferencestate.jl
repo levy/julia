@@ -1151,6 +1151,7 @@ const SEALED_PUSH_BY_SITE = IdDict{Int,Int}()
 const SEALED_SKIP_BASE = Ref(false)
 
 function sealed_push_target!(@nospecialize(t), @nospecialize(site), tag::Int = 0)
+    Base.haskey(SEALED_TARGET_SITE, t) || (SEALED_TARGET_SITE[t] = site)
     SEALED_PUSH_BY_SITE[tag] = get(SEALED_PUSH_BY_SITE, tag, 0) + 1
     sealed_site_required!(site, t)
     if t in SEALED_TARGET_SEEN
@@ -1237,6 +1238,13 @@ const SEALED_SITE_REQUIRED = IdDict{Any,IdSet{Any}}()
 # scoped by the CALLING method, so the second question is the one that has to
 # be answered before a promise can be written.
 const SEALED_SITE_CALLER = IdDict{Any,IdSet{Any}}()
+# WHICH SITE DEMANDED A TARGET. A drained or traced instance has no caller in
+# the verifier's parent map - it was registered, not reached - so the chain
+# ends at it and says nothing. This is the missing link.
+const SEALED_TARGET_SITE = IdDict{Any,Any}()
+# `SEALED_WHY=0` silences the chain. It only prints on a verifier error, and an
+# error with no explanation is the thing this exists to stop.
+const SEALED_WHY = Ref(true)
 const SEALED_SITE_TRACED = IdDict{Any,IdSet{Any}}()
 
 function sealed_site_required!(@nospecialize(site), @nospecialize(target))

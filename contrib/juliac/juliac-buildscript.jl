@@ -77,6 +77,7 @@ Compiler.SEALED_SPLIT_CASES[] =
 # SEALED_COVERAGE=1 accounts how each dispatch site is closed. It costs about
 # 20% of a routing build, so it is a diagnostic and not a default.
 Compiler.SEALED_SKIP_BASE[] = Base.get(Base.ENV, "SEALED_SKIP_BASE", "") != ""
+Compiler.SEALED_WHY[] = Base.get(Base.ENV, "SEALED_WHY", "1") != "0"
 Compiler.SEALED_COVERAGE[] = Base.get(Base.ENV, "SEALED_COVERAGE", "") != ""
 Compiler.SEALED_SPLIT_SHOW[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_SHOW", "0"))
