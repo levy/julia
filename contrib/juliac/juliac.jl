@@ -6,7 +6,12 @@
 using LazyArtifacts
 
 module JuliaConfig
-    include(joinpath(@__DIR__, "..", "julia-config.jl"))
+    # The RUNNING Julia's copy, not the one beside this file. This driver
+    # runs from a source checkout whose tree is not built, and the checkout's
+    # contrib/julia-config.jl reports link paths into that unbuilt tree; the
+    # link step then fails. The running distribution installs the same script
+    # under share/julia, with its own correct paths.
+    include(joinpath(Sys.BINDIR, "..", "share", "julia", "julia-config.jl"))
 end
 
 julia_cmd = `$(Base.julia_cmd()) --startup-file=no --history-file=no`
