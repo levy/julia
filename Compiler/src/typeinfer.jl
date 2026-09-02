@@ -1904,6 +1904,9 @@ function sealed_report_items()
         for (v, k) in ks; Core.print("  #", k, "=", v); end
         Core.println()
     end
+    SEALED_RESIDUAL_HIT[] == 0 ||
+        Core.println("SEALED-RESIDUAL ", Base.length(SEALED_RESIDUAL),
+                     " promises, ", SEALED_RESIDUAL_HIT[], " sites narrowed")
     Core.println("SEALED-SPLIT budget=", SEALED_SPLIT_CASES[],
                  " worst-site=", SEALED_SPLIT_WORST[],
                  " taken=", SEALED_SPLIT_TAKEN[],

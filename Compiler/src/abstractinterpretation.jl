@@ -211,6 +211,41 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
                 push!(_cs, _cm)
             end
         end
+        # THE RESIDUAL PROMISE. The program said this call is only ever made
+        # with the covered types, so narrow the arguments to them. Everything
+        # below - splitting, matching, the compiled set - then follows from a
+        # smaller domain without any of it knowing why.
+        if !isempty(SEALED_RESIDUAL) && !isempty(argtypes)
+            local _rf = widenconst(argtypes[1])
+            local _rcaller = try frame_instance(sv).def catch; nothing end
+            local _rn = _rcaller === nothing ? nothing :
+                        get(SEALED_RESIDUAL, (_rcaller, _rf), nothing)
+            if _rn !== nothing
+                # THE PROMISE NAMES ITS POSITIONS. `:all` narrows every
+                # argument, which is right when one union flows into all of
+                # them and wrong the moment they differ: `evaluate(volatile,
+                # rng)` wants `MersenneTwister` in position 2 alone, and a
+                # whole-call promise replaces the volatile with it as well.
+                local _rpos = :all
+                if _rn isa Tuple && length(_rn) == 2
+                    _rpos = _rn[2]
+                    _rn = _rn[1]
+                end
+                SEALED_RESIDUAL_HIT[] += 1
+                argtypes = copy(argtypes)
+                for _ri = 2:length(argtypes)
+                    isvarargtype(argtypes[_ri]) && continue
+                    _rpos === :all || ((_ri - 1) in _rpos) || continue
+                    local _w = widenconst(argtypes[_ri])
+                    # Only narrow where the site is WIDER than the promise:
+                    # an argument already concrete is not made vague by it.
+                    if !(_w <: _rn)
+                        argtypes[_ri] = _rn
+                    end
+                end
+                atype = argtypes_to_type(argtypes)
+            end
+        end
         if sealed_call(argtypes)
             max_methods = SEALED_MAX_METHODS[]
         end

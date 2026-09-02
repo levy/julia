@@ -1263,6 +1263,28 @@ function sealed_site_traced!(@nospecialize(site), @nospecialize(target))
     return nothing
 end
 
+# `seal_residual`: close a call site over what covers it. Plan 47.3.
+#
+# Keyed by the CALLED FUNCTION's type, valued by the union its arguments are
+# narrowed to. A site calling a promised function sees only the covered types,
+# so the ordinary splitting machinery enumerates those and nothing else - and
+# the residual is not compiled because, as far as inference can see, it can not
+# occur. That IS the promise.
+#
+# It reuses the abstract-as-union substitution rather than inventing a
+# mechanism: the difference is only which set the argument is replaced by, all
+# concrete subtypes or the covered ones.
+#
+# WHY NOT INFER THE CALL AS `Union{}`. That was the first design and it does
+# not work: `Union{}` says a call does not RETURN, not that it does not HAPPEN,
+# so Julia still emits it and still needs a body. Measured 272 errors without
+# the promise and 128 with it, the promised method still the top parent.
+# Keyed by (CALLING METHOD, called function type). The promise is about a
+# SITE, and scoping it to the caller is not a refinement - it is what makes it
+# sound. A global promise about `Base.show` broke the build session's own error
+# printing before the program was even compiled: `MethodError(f=Base.show,
+# args=(IOContext, NamedTuple))`. A function that universal is called by
+# everything, and a promise about all of its call sites is simply false.
 """
     SEALED_ARGUMENT
 
@@ -1308,6 +1330,8 @@ The instantiations are knowable and the program is what knows them, so a seal
 file states them: `seal_instances(Volatile, [Volatile{A}, Volatile{B}, ...])`.
 """
 const SEALED_INSTANCES = IdDict{Any,Any}()
+const SEALED_RESIDUAL_HIT = Ref(0)
+
 # Set{Symbol} of root package names whose recorded targets survive the
 # trim-entry filter — the packages the ENTRY actually runs. Set by the
 # buildscript from the SEALED_TARGET_ROOTS environment variable. The session
