@@ -1152,6 +1152,7 @@ const SEALED_SKIP_BASE = Ref(false)
 
 function sealed_push_target!(@nospecialize(t), @nospecialize(site), tag::Int = 0)
     SEALED_PUSH_BY_SITE[tag] = get(SEALED_PUSH_BY_SITE, tag, 0) + 1
+    sealed_site_required!(site, t)
     if t in SEALED_TARGET_SEEN
         SEALED_TARGET_DUPES[] += 1
     else
@@ -1205,6 +1206,54 @@ const SEALED_SPLIT_SHOWN = Ref(0)
 sealed_union_len(@nospecialize t) =
     isa(t, Union) ? sealed_union_len(t.a) + sealed_union_len(t.b) : 1
 
+# HOW EACH DISPATCH SITE IS CLOSED. Plan 46.4.
+#
+#   required     the targets the site's enumeration produced
+#   traced       the ones a recorded observation answered
+#   enumerated   the rest, closed by walking the sealed method table
+#
+# ENUMERATION IS EVIDENCE, and the first version of this accounting forgot it.
+# It counted only the trace arm as `covered` and called everything else
+# `residual`, which read as "unanswered" - and a build with 31 263 unanswered
+# targets would not link at all, let alone run. Routing compiled with sealed
+# unions long before any trace existed, precisely because the SEALED level
+# answers these.
+#
+# So the interesting number is not what is unanswered. It is what is answered
+# ONLY by enumerating a method table, with no evidence that it ever occurs.
+# That is what `seal_residual` (47.3) would remove, and it is the difference
+# between a domain that is closed and a domain that is closed CHEAPLY.
+# DISTINCT TARGETS PER SITE, not pushes. A declined site is re-visited at every
+# inference of every caller, so counting pushes measures traffic rather than
+# domain: `isequal(Symbol, Symbol)` reported 5310 "required" on one small
+# example, which is one site visited 5310 times.
+# OFF BY DEFAULT. Two sets per site is not free: routing phase 3 went from 130
+# to 156 seconds with it on, and its own numbers say why - 14 078 sites and
+# 2 113 441 distinct targets to record.
+const SEALED_COVERAGE = Ref(false)
+const SEALED_SITE_REQUIRED = IdDict{Any,IdSet{Any}}()
+# WHO CALLS A SITE. The coverage table is keyed by the call's signature, which
+# says where the cost is and not who is paying it - and `seal_residual` is
+# scoped by the CALLING method, so the second question is the one that has to
+# be answered before a promise can be written.
+const SEALED_SITE_CALLER = IdDict{Any,IdSet{Any}}()
+const SEALED_SITE_TRACED = IdDict{Any,IdSet{Any}}()
+
+function sealed_site_required!(@nospecialize(site), @nospecialize(target))
+    SEALED_COVERAGE[] || return nothing
+    local set = get(SEALED_SITE_REQUIRED, site, nothing)
+    set === nothing && (set = SEALED_SITE_REQUIRED[site] = IdSet{Any}())
+    push!(set, target)
+    return nothing
+end
+
+function sealed_site_traced!(@nospecialize(site), @nospecialize(target))
+    SEALED_COVERAGE[] || return nothing
+    local set = get(SEALED_SITE_TRACED, site, nothing)
+    set === nothing && (set = SEALED_SITE_TRACED[site] = IdSet{Any}())
+    push!(set, target)
+    return nothing
+end
 
 # Set{Symbol} of root package names whose recorded targets survive the
 # trim-entry filter — the packages the ENTRY actually runs. Set by the

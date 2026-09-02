@@ -74,7 +74,10 @@ Compiler.SEALED_TRACE_ONLY[] = Base.get(Base.ENV, "SEALED_TRACE_ONLY", "") != ""
 Compiler.SEALED_SPLIT_CASES[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_CASES", "4096"))
 # SEALED_SPLIT_SHOW=<n> names every site at least that wide, as it is found.
+# SEALED_COVERAGE=1 accounts how each dispatch site is closed. It costs about
+# 20% of a routing build, so it is a diagnostic and not a default.
 Compiler.SEALED_SKIP_BASE[] = Base.get(Base.ENV, "SEALED_SKIP_BASE", "") != ""
+Compiler.SEALED_COVERAGE[] = Base.get(Base.ENV, "SEALED_COVERAGE", "") != ""
 Compiler.SEALED_SPLIT_SHOW[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_SHOW", "0"))
 # SEALED_SPLIT_LIMIT=4 holds inference to the STOCK union splitter, which is

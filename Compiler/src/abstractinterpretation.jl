@@ -203,6 +203,14 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
                 changed && (atype = argtypes_to_type(argtypes))
             end
         end
+        if SEALED_COVERAGE[]
+            local _cm = try frame_instance(sv).def catch; nothing end
+            if _cm !== nothing
+                local _cs = get(SEALED_SITE_CALLER, atype, nothing)
+                _cs === nothing && (_cs = SEALED_SITE_CALLER[atype] = IdSet{Any}())
+                push!(_cs, _cm)
+            end
+        end
         if sealed_call(argtypes)
             max_methods = SEALED_MAX_METHODS[]
         end

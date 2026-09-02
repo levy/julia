@@ -1787,6 +1787,69 @@ function sealed_report_items()
     rows = Any[]
     for (r, c) in counts; push!(rows, (c[2], c[1], r)); end
     sort!(rows, by = x -> -x[1])
+    # HOW THE SITES ARE CLOSED. Not "what is unanswered" - a build with
+    # unanswered targets does not link. What is answered ONLY by walking a
+    # method table, with no observation that it ever happens, is the number
+    # `seal_residual` would move.
+    if !isempty(SEALED_SITE_REQUIRED)
+        let req = 0, tr = 0, nsites = 0, worst = Any[]
+            for (site, rset) in SEALED_SITE_REQUIRED
+                local tset = Base.get(SEALED_SITE_TRACED, site, nothing)
+                local r = Base.length(rset)
+                local t = tset === nothing ? 0 : Base.length(tset)
+                req += r; tr += t; nsites += 1
+                r - t > 0 && Base.push!(worst, (r - t, Base.string(site)))
+            end
+            Core.println("SEALED-COVERAGE ", nsites, " sites  required=", req,
+                         " traced=", tr, " enumerated=", req - tr)
+            sort!(worst, by = w -> (-w[1], w[2]))
+            for i in 1:Base.min(6, Base.length(worst))
+                Core.println("  enumerated ", worst[i][1], "  ",
+                             Base.first(worst[i][2], 96))
+            end
+            # SITES MATCHING A PATTERN. The top-six listing answers "where is
+            # the cost", not "where is THIS call", and the second question is
+            # the one a single verifier error asks.
+            let pat = Base.get(Base.ENV, "SEALED_SITE_GREP", "")
+                if !Base.isempty(pat)
+                    local shown = 0
+                    for (site, rset) in SEALED_SITE_REQUIRED
+                        local str = Base.string(site)
+                        Base.occursin(pat, str) || continue
+                        Core.println("  site ", Base.length(rset), "  ",
+                                     Base.first(str, 110))
+                        let cs = Base.get(SEALED_SITE_CALLER, site, nothing)
+                            if cs !== nothing
+                                local m = 0
+                                for c in cs
+                                    Core.println("       called from ", c)
+                                    (m += 1) >= 3 && break
+                                end
+                            end
+                        end
+                        (shown += 1) >= 10 && break
+                    end
+                    shown == 0 && Core.println("  no site matches ", pat)
+                end
+            end
+            # WHAT THE WIDEST SITE'S TARGETS ACTUALLY ARE. A count alone does
+            # not say whether 1414 targets is one union enumerated, or a
+            # product of type and constant-propagated field name, and those
+            # want completely different answers.
+            if !Base.isempty(worst)
+                for (site, rset) in SEALED_SITE_REQUIRED
+                    Base.string(site) == worst[1][2] || continue
+                    Core.println("  sample targets of the widest site:")
+                    local shown = 0
+                    for t in rset
+                        Core.println("    ", Base.first(Base.string(t), 92))
+                        (shown += 1) >= 5 && break
+                    end
+                    break
+                end
+            end
+        end
+    end
     if !isempty(SEALED_PUSH_BY_SITE)
         local ks = Any[]
         for (k, v) in SEALED_PUSH_BY_SITE; Base.push!(ks, (v, k)); end
