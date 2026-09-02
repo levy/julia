@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call,
+    SEALED_REPAIR,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype
 
 using ..Compiler:
@@ -320,6 +321,17 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                                     break
                                 end
                             end
+                            # REPAIR MODE: record the widened signature so
+                        # `typeinf_trim` can expand it into the concrete
+                        # instances dispatch will look for (`SEALED_REPAIR`).
+                        if !allcompiled
+                            let repair = SEALED_REPAIR[]
+                                if repair !== nothing
+                                    Base.push!(repair, atype)
+                                    continue
+                                end
+                            end
+                        end
                         allcompiled && continue
                             if (_SEALED_DEBUG_BUDGET[] -= 1) > 0
                                 Core.println("SEALED-DEBUG STMT in=", get_ci_mi(codeinst).def,

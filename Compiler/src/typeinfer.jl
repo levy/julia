@@ -1890,6 +1890,109 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
     end
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE
+        # THE REPAIR PASS — see `SEALED_REPAIR`. A verify-collect, a compile of
+        # the concrete instances it asked for, then the real verify. Bounded:
+        # each round can only request instances of methods the previous round
+        # already matched, and the loop is capped as well.
+        let rounds = 0
+            while rounds < 3
+                rounds += 1
+                wanted = Any[]
+                SEALED_REPAIR[] = wanted
+                try
+                    verify_typeinf_trim(codeinfos, true)   # collect, never throw
+                finally
+                    SEALED_REPAIR[] = nothing
+                end
+                Base.isempty(wanted) && break
+                repairq = CompilationQueue(; interp = NativeInterpreter(get_world_counter(); inf_params))
+                added = 0
+                skipped = 0
+                nomi = 0
+                for atype in wanted
+                    # The concrete combinations the split identified. Dispatch
+                    # specialises on the actual types, so these — not the
+                    # widened signature — are what it will look for.
+                    split = switchtupleunion(atype)
+                    if Base.length(split) > SEALED_REPAIR_LIMIT[]
+                        # OVER THE LIMIT IS WHERE EFFORT STOPS, and stopping
+                        # means compiling a generic signature rather than
+                        # nothing at all (plan section 35). `get_compileable_sig`
+                        # is the same normalization dispatch performs, so it
+                        # honours what the method declared: `nospecialize` in
+                        # its source, or `seal_collapse` setting the bits.
+                        #
+                        # This loop used to skip instead, and it never asked the
+                        # callee anything. Measured on routing phase 3:
+                        # `seal_collapse(_apply_word, 2, 3)` set `nospecialize=6`
+                        # on the one method and the site was still reported at
+                        # 53 x 53 = 2809, skipped, and ninety verifier errors
+                        # followed. The seal was applied before the program was
+                        # loaded, so timing was not the cause.
+                        #
+                        # WIDEN ONLY HERE. Widening every site would compile a
+                        # generic body where a concrete one resolves, and a
+                        # generic body has more unresolved calls, not fewer.
+                        local widened = nothing
+                        let ms = try
+                                     findall(atype, method_table(repairq.interp); limit = 1)
+                                 catch
+                                     nothing
+                                 end
+                            if ms !== nothing && ms !== false && Base.length(ms.matches) == 1
+                                local m = ms.matches[1]::MethodMatch
+                                local csig = get_compileable_sig(m.method, atype, m.sparams)
+                                if csig !== nothing && csig !== atype
+                                    local wsplit = switchtupleunion(csig)
+                                    if Base.length(wsplit) <= SEALED_REPAIR_LIMIT[]
+                                        SEALED_REPAIR_REPORT[] > 0 &&
+                                            Core.println("SEALED-REPAIR-WIDEN ", Base.length(split),
+                                                         " -> ", Base.length(wsplit), "  ", csig)
+                                        widened = wsplit
+                                    end
+                                end
+                            end
+                        end
+                        if widened === nothing
+                            skipped += 1
+                            if skipped <= SEALED_REPAIR_REPORT[]
+                                Core.println("SEALED-REPAIR-SKIP ", Base.length(split),
+                                             " > ", SEALED_REPAIR_LIMIT[], "  ", atype)
+                            end
+                            continue
+                        end
+                        split = widened
+                    end
+                    for concrete in split
+                        mi = compileable_specialization_for_call(repairq.interp, concrete)
+                        if mi === nothing
+                            # SAY WHEN NOTHING CAN BE COMPILED. A site that is
+                            # inside the limit and still produces no instance is
+                            # invisible otherwise: the round reports it as one of
+                            # its `unresolved call(s)` and the error that follows
+                            # names the caller, never this. A signature that is
+                            # not a dispatch tuple - `f(::Any, ::T)` - is the
+                            # usual reason, and the answer is a declaration on
+                            # the callee, not more enumeration.
+                            nomi += 1
+                            if nomi <= SEALED_REPAIR_REPORT[]
+                                Core.println("SEALED-REPAIR-NOMI  ", concrete)
+                            end
+                            continue
+                        end
+                        sealed_prov!(mi, :repair)
+                        Base.push!(repairq, mi)
+                        added += 1
+                    end
+                end
+                Core.println("SEALED-REPAIR round ", rounds, ": ", Base.length(wanted),
+                             " unresolved call(s), ", added, " instance(s), ",
+                             skipped, " over the limit, ",
+                             nomi, " with no compilable signature")
+                added == 0 && break
+                compile!(codeinfos, repairq; invokelatest_queue)
+            end
+        end
         verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
     end
     return codeinfos

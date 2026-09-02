@@ -1201,6 +1201,49 @@ const SEALED_TARGET_ROOTS = Ref{Any}(nothing)
 # whose bodies are trivial.
 const SEALED_NOCALLINFO_PULL = Ref{Any}(nothing)
 
+# THE REPAIR LIST — a dynamic call whose targets were never compiled.
+#
+# The optimiser materialises a union-split call as branches only while the
+# combinations stay small (measured: 9 yes, 16 no). Above that it leaves ONE
+# dynamic call, and the verifier refuses the build because the matched method
+# has no compiled instance — every concrete use having inlined to a `:new`.
+#
+# The call is genuinely dynamic and genuinely needs targets. Forcing the
+# branches is exponential CODE; relaxing the verifier leaves no target at run
+# time. What works is to compile the concrete INSTANCES the split identifies —
+# each one tiny — and let dispatch find them, which is what it looks for: the
+# runtime specialises on the actual argument types, so a single instance at the
+# widened signature is not enough (measured: the binary built and then died with
+# `MissingCodeError` for the concrete signature).
+#
+# When this Ref holds a Vector, `verify_codeinstance!` RECORDS such a call
+# instead of erroring; `typeinf_trim` expands, compiles, and verifies for real.
+# See documentation/guide/trimming-guide.md §8c.
+const SEALED_REPAIR = Ref{Any}(nothing)
+
+# How many concrete instances one repaired call site may ask for. Above this the
+# call is left to the verifier as the error it always was, so an unbounded blow-up
+# is still reported rather than silently paid for.
+#
+# 1024 covers a record of ten optional fields — the `NedConnection` shape, which
+# is what sent us looking. Measured on the `union_product` cases: about 0.86 KB
+# of binary per instance and NO build-time cost at all.
+#
+#     n=2   4 combinations      0 instances (the optimiser inlines them)  1742 KB
+#     n=6   64 combinations   128 instances                               1849 KB
+#     n=10  1024 combinations 2048 instances                              3514 KB
+#
+# `SEALED_REPAIR_LIMIT=<n>` in the environment overrides it.
+const SEALED_REPAIR_LIMIT = Ref(1024)
+
+"""
+    SEALED_REPAIR_REPORT
+
+How many skipped repair sites to PRINT, with their signature and product size.
+A count alone names nothing, and the same count arises from different causes.
+`SEALED_REPAIR_REPORT=<n>` in the environment overrides it.
+"""
+const SEALED_REPAIR_REPORT = Ref(0)
 # Method names whose method-signature stem instance is admitted even when
 # dispatch-tuple instances cover the method: an INVOKE of the widened
 # signature needs the stem itself (add_module!, measured), but admitting

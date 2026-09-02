@@ -208,6 +208,22 @@ let include_result = Base.include(Main, ARGS[1])
             Compiler.SEALED_STEM_KEEP[] = names
         end
     end
+    # How many concrete instances one repaired call site may ask for. The
+    # repair pass compiles the combinations a union-split call dispatches to
+    # (Compiler.SEALED_REPAIR); each is tiny, but a record of ten optional
+    # fields is 1024 of them, so the ceiling is stated rather than assumed.
+    let limenv = Base.get(Base.ENV, "SEALED_REPAIR_LIMIT", "")
+        if !Base.isempty(limenv)
+            Compiler.SEALED_REPAIR_LIMIT[] = Base.parse(Int, Base.strip(limenv))
+        end
+    end
+    # SEALED_REPAIR_REPORT=<n> prints the first n skipped sites, with the
+    # signature and the product size, so a skip names a call rather than a count.
+    let repenv = Base.get(Base.ENV, "SEALED_REPAIR_REPORT", "")
+        if !Base.isempty(repenv)
+            Compiler.SEALED_REPAIR_REPORT[] = Base.parse(Int, Base.strip(repenv))
+        end
+    end
     let pullenv = Base.get(Base.ENV, "SEALED_NOCALLINFO_PULL", "")
         if !Base.isempty(pullenv)
             names = Base.Set{Symbol}()
