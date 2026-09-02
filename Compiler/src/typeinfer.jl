@@ -2215,8 +2215,24 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
                     end
                     # The concrete combinations the split identified. Dispatch
                     # specialises on the actual types, so these — not the
-                    # widened signature — are what it will look for.
-                    split = switchtupleunion(atype)
+                    # widened signature — are what it will look for. A keyword
+                    # call's unions sit INSIDE the NamedTuple slot tuple, one
+                    # level below what `switchtupleunion` splits, so that level
+                    # is expanded first — bounded like every enumeration, and
+                    # a product over the limit is the skip it always was.
+                    local kwx = sealed_expand_kw_slots(atype, SEALED_REPAIR_LIMIT[])
+                    if kwx === nothing
+                        skipped += 1
+                        if skipped <= SEALED_REPAIR_REPORT[]
+                            Core.println("SEALED-REPAIR-SKIP kw-slot product > ",
+                                         SEALED_REPAIR_LIMIT[], "  ", atype)
+                        end
+                        continue
+                    end
+                    split = Any[]
+                    for a2 in kwx
+                        Base.append!(split, switchtupleunion(a2))
+                    end
                     if Base.length(split) > SEALED_REPAIR_LIMIT[]
                         # OVER THE LIMIT IS WHERE EFFORT STOPS, and stopping
                         # means compiling a generic signature rather than

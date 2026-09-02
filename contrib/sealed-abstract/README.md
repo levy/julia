@@ -94,11 +94,12 @@ Open, and declared where it applies:
   numeric tower has no closing mechanism yet (DESIGN.md §45).
 - `trace_typeparam` strictly needs a trace: dispatch on `Type{...}` values
   is invisible to the sealed enumeration.
-- `kw_from_dict` fails at every level: keyword construction from a runtime
-  dict of union-typed values — the C++-INET parameter shape — has no
-  closing mechanism yet. The kw sorter over union-valued NamedTuples and
-  the Core-owned kwcall stem of a dict-splat are answered by no evidence
-  arm once the root filter is on (plan/pending/kwcall-from-dict.md).
+- `kw_from_dict` fails at every level: a DICT-SPLAT keyword call
+  (`T(name; values...)`) has runtime keyword names, so no enumeration can
+  close it and the filtered evidence does not either
+  (plan/pending/kwcall-from-dict.md). The union-SLOT half of the keyword
+  class is closed: the repair pass expands NamedTuple slot unions, and
+  `kw_union_slots` gates it.
 - `buildtime_sealed` mismatches at the trace level on the seeded loop
   (on the frontier loop it passes everywhere). The declaration and the
   compiler diverged in the final commits of the campaign, after the last

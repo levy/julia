@@ -1,10 +1,12 @@
 # kw_union_slots — a keyword call whose slots carry a union, behind @noinline.
-# EXPECT proven=fail sealed=fail trace=pass
+# EXPECT proven=fail sealed=pass trace=pass
 #
-# `trace` PASSES: the @noinline'd sorter executes in the recording, its
-# concrete kwcall instance is recorded, and membership holds — evidence
-# closes the class when it exists. `sealed` is what the repair extension
-# gates: no evidence, so the enumeration must answer.
+# `sealed` PASSES since the repair pass expands NamedTuple slot unions:
+# the two unresolved kwcalls become the 4x4 slot product, 32 concrete
+# instances, zero SEALED-REPAIR-NOMI. `trace` passes independently — the
+# @noinline'd sorter executes in the recording, its concrete kwcall
+# instance is recorded, and membership holds. `proven` still fails: stock
+# inference leaves nothing at the site the expansion can read.
 #
 # The second half of the keyword class (`kw_from_dict` is the first): the
 # keyword NAMES are static, but the VALUES come out of a
@@ -13,15 +15,16 @@
 # whole call only while the product is small AND the body inlines; behind
 # `@noinline` (the flagship's builder bodies are too big to inline) the site
 # stays a `Core.kwcall` over union slots, and the repair pass reports it as
-# `SEALED-REPAIR-NOMI`: `switchtupleunion` splits top-level tuple
-# parameters and cannot split a union NESTED inside the NamedTuple's slot
-# tuple, so no instance is compiled and the call stays unresolved.
+# `SEALED-REPAIR-NOMI` WITHOUT the expansion: `switchtupleunion` splits
+# top-level tuple parameters and cannot split a union NESTED inside the
+# NamedTuple's slot tuple (concrete or in the where-form's TypeVar bound),
+# so no instance is compiled and the call stays unresolved.
 #
 # Distilled from the 10BASE-T1S phase-3 build:
 # `build_ned_module(Type{ActivePacketSource}, ...)` stmt#133, the custom
 # builder passing `values[:production_interval]::NedValue` raw as a keyword.
-# The fix this example gates: the repair expansion enumerates NamedTuple
-# slot unions, bounded by SEALED_REPAIR_LIMIT like every other product.
+# This example gates that expansion: NamedTuple slot unions enumerated in
+# the repair pass, bounded by SEALED_REPAIR_LIMIT like every other product.
 
 const VAL = Union{Bool, Float64, Int64, String}
 

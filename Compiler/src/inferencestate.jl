@@ -1690,6 +1690,97 @@ function sealed_instances(@nospecialize(t))
     return get(SEALED_INSTANCES, u.name.wrapper, nothing)
 end
 
+# A KEYWORD CALL CARRIES ITS UNIONS ONE LEVEL DOWN. The repair pass answers an
+# unresolved call by enumerating `switchtupleunion(atype)`, which splits the
+# TOP-LEVEL tuple parameters. A `Core.kwcall` site's unions sit inside the
+# NamedTuple's slot tuple — `@NamedTuple{a::Union{…}, b::Union{…}}` — one
+# level below, so the split produces nothing, the round reports the call with
+# `SEALED-REPAIR-NOMI`, and the site stays unresolved
+# (`examples/kw_union_slots.jl` is the pinned case; the flagship's builder
+# passes configuration values raw as keywords).
+#
+# This expands that level: every NamedTuple parameter whose slot tuple
+# carries unions becomes the product of its slots, bounded by the caller's
+# limit the way every enumeration here is bounded. `nothing` means the
+# product exceeded the limit, and the caller reports the skip it always
+# reported.
+function sealed_expand_kw_slots(@nospecialize(atype), limit::Int)
+    isa(atype, DataType) || return Any[atype]
+    local out = Any[Any[]]
+    local changed = false
+    for p in atype.parameters
+        local alts = Any[p]
+        # The slot tuple arrives two ways: concrete
+        # (`NamedTuple{names, Tuple{Union{…}, …}}`) or as inference's
+        # where-form (`NamedTuple{names, T} where T <: Tuple{Union{…}, …}`),
+        # where the unions sit in the TypeVar's upper bound.
+        local names = nothing
+        local tt = nothing
+        if isa(p, DataType) && p <: Core.NamedTuple && Base.length(p.parameters) == 2
+            names = p.parameters[1]
+            tt = p.parameters[2]
+        elseif isa(p, UnionAll)
+            local u = Base.unwrap_unionall(p)
+            if isa(u, DataType) && u <: Core.NamedTuple && Base.length(u.parameters) == 2 &&
+               isa(u.parameters[2], TypeVar)
+                names = u.parameters[1]
+                tt = (u.parameters[2]::TypeVar).ub
+            end
+        end
+        if names !== nothing
+            local per = nothing
+            if isa(names, Tuple) && isa(tt, DataType) && tt.name === Tuple.name
+                per = Any[]
+                for st in tt.parameters
+                    if isvarargtype(st) || !(isa(st, Union) || isa(st, DataType) ||
+                                             isa(st, UnionAll))
+                        per = nothing
+                        break
+                    end
+                    push!(per, isa(st, Union) ? Base.uniontypes(st) : Any[st])
+                end
+            end
+            if per !== nothing && Base.any(x -> Base.length(x) > 1, per)
+                local nts = Any[Any[]]
+                local over = false
+                for slot in per
+                    local next = Any[]
+                    for partial in nts, s in slot
+                        local q = Base.copy(partial)
+                        push!(q, s)
+                        push!(next, q)
+                    end
+                    if Base.length(next) > limit
+                        over = true
+                        break
+                    end
+                    nts = next
+                end
+                over && return nothing
+                alts = Any[]
+                for combo in nts
+                    push!(alts, Core.NamedTuple{names, Tuple{combo...}})
+                end
+                changed = true
+            end
+        end
+        local grown = Any[]
+        for partial in out, a in alts
+            local q = Base.copy(partial)
+            push!(q, a)
+            push!(grown, q)
+        end
+        Base.length(grown) > limit && return nothing
+        out = grown
+    end
+    changed || return Any[atype]
+    local res = Any[]
+    for params in out
+        push!(res, Tuple{params...})
+    end
+    return res
+end
+
 # A call qualifies when one of its argument types is an abstract type other than
 # `Any`. `Any` never qualifies. If it did, inference would try to split every
 # generic call in Base and the build would not finish.
