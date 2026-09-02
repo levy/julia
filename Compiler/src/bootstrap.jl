@@ -18,7 +18,11 @@ function activate_codegen!()
 end
 
 global bootstrapping_compiler::Bool = false
-function bootstrap!()
+# The self-inference, WITHOUT installing anything. Precompilation forbids
+# method definition, and `activate_codegen!` defines methods through
+# `Core.eval` — but the cost is here, in the inference, and this part is
+# perfectly legal to run while a package image is being written.
+function bootstrap_infer!()
     global bootstrapping_compiler = true
     let time() = ccall(:jl_clock_now, Float64, ())
         println("Compiling the compiler. This may take several minutes ...")
@@ -75,8 +79,13 @@ function bootstrap!()
         endtime = time()
         println("Base.Compiler ──── ", sub_float(endtime,starttime), " seconds")
     end
-    activate_codegen!()
     global bootstrapping_compiler = false
+    nothing
+end
+
+function bootstrap!()
+    bootstrap_infer!()
+    activate_codegen!()
     nothing
 end
 

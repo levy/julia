@@ -223,6 +223,28 @@ else
     # During bootstrap, skip including these files and defer to base/show.jl to include it later
 end
 
+# SELF-INFERENCE, MOVED INTO PRECOMPILATION.
+#
+# `activate!(codegen = true)` calls `bootstrap!()`, which infers the compiler
+# with itself. Measured at 17 s cold and ~6 s warm, and it is paid on EVERY
+# build, because nothing caches it.
+#
+# Julia's own source explains why it is not cached upstream:
+#
+#     There isn't much point in precompiling native code - downstream users
+#     will specialize their own versions of the compiler code and we don't
+#     activate the compiler by default anyway
+#
+# That reasoning does not hold here: this compiler is activated on every
+# single build, which is the whole point of the sealed toolchain. Running the
+# bootstrap during precompilation puts the result in the package image, where
+# it is paid once per compiler change instead of once per build.
+if ccall(:jl_generating_output, Cint, ()) == 1
+    # Inference only: `activate_codegen!` defines methods, which
+    # precompilation forbids. The cost is in the inference.
+    Compiler.bootstrap_infer!()
+end
+
 end # baremodule Compiler
 
 end # if isdefined(Base, :generating_output) && ...
