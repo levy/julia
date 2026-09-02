@@ -1263,6 +1263,51 @@ function sealed_site_traced!(@nospecialize(site), @nospecialize(target))
     return nothing
 end
 
+"""
+    SEALED_ARGUMENT
+
+What a METHOD'S OWN parameter is, promised by the program.
+
+    (callee function type, position)            -> Type      every call
+    (callee function type, position, caller sig, pc) -> Type  one call site
+
+`seal_residual` is keyed by the CALLER and narrows a callee's arguments there.
+This is the other half: a claim about the callee's own parameter, true wherever
+it is called, which is what a program knows about its own functions.
+
+WHY IT MATTERS. `deliver_message!(ctx, message, gate)` is declared untyped, so
+its parameters are derived from the event's argument fields:
+`Union{Nothing, EventArgument}`, and `GateOwner <: EventArgument` drags every
+module type in - 25 members where the position holds a gate. The engine's
+action site is then 4 actions x 25 x 25 = 2500 against a split limit of 64, the
+split is declined, and nothing reaches the method. Promising the gate position
+is a `Gate` collapses the product rather than enumerating it.
+
+A UNION-TYPED CALLEE NARROWS ONLY IF EVERY MEMBER PROMISES. The engine reaches
+its action through a field, so the site's callee is
+`Union{typeof(deliver_message!), ...}`; narrowing a position because ONE member
+promises it would be false for the others.
+"""
+const SEALED_ARGUMENT = IdDict{Any,Any}()
+
+const SEALED_RESIDUAL = IdDict{Any,Any}()
+
+"""
+    SEALED_INSTANCES
+
+The instantiations a PARAMETRIC type has in the image, keyed by its wrapper.
+
+`switchtupleunion` splits a `Union` and can not split a `UnionAll`, so a site
+whose argument is `Volatile{T} where T` yields no instance at all: the repair
+pass adds nothing, the round still counts the call as unresolved, and the error
+names only the caller. Routing phase 3's last six errors were three sites of
+exactly this shape - `Volatile{T} where T`, `ModuleIndex{T} where T` and
+`Network{M} where M`.
+
+The instantiations are knowable and the program is what knows them, so a seal
+file states them: `seal_instances(Volatile, [Volatile{A}, Volatile{B}, ...])`.
+"""
+const SEALED_INSTANCES = IdDict{Any,Any}()
 # Set{Symbol} of root package names whose recorded targets survive the
 # trim-entry filter — the packages the ENTRY actually runs. Set by the
 # buildscript from the SEALED_TARGET_ROOTS environment variable. The session

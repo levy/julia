@@ -107,11 +107,75 @@ let preset = Main.__SEALED_PRESET
     end
 end
 
+# THE HINTS COME FIRST. A program may call `seal_buildtime` at its top level,
+# so the name has to exist before the program is included. Off, every hint is
+# the identity; `entry_from_edges.jl` turns the recorder's half on.
+#
+# THE FILE BELONGS TO THE PROGRAM, NOT TO THE COMPILER. It is the vocabulary a
+# program uses to talk to the sealed level, and the same text must run under a
+# stock julia with no compiler at all, so the program's own repository owns it
+# and names it here through SEALED_HINTS. This path used to be hard-coded to
+# the directory above juliac, which is where a vendored copy of this toolchain
+# sat inside the program's tree; from the Julia tree it resolved to
+# `contrib/seal_hints.jl` and no build could start.
+#
+# A named path must exist. An unnamed one is looked for beside juliac, and its
+# absence is NOT an error: a program that uses no hint needs no file.
+let hints = Base.get(Base.ENV, "SEALED_HINTS", "")
+    if Base.isempty(hints)
+        hints = Base.joinpath(@__DIR__, "seal_hints.jl")
+        Base.isfile(hints) && Base.include(Main, hints)
+    else
+        Base.isfile(hints) || Base.error("SEALED_HINTS names no file: " * hints)
+        Base.include(Main, hints)
+    end
+end
+Core.@latestworld
+
+# APPLY THE SEAL FILE, AT EVERY POINT IT CAN APPLY. It is evaluated twice: once
+# from an entry file that loads the program's packages itself, before the
+# bodies a seal means to change are inferred, and once here after the program's
+# top level has run.
+#
+# BOTH ARE NEEDED, and neither alone is enough. A `seal_collapse` must land
+# before inference or it changes nothing - measured, it set the bits and the
+# site was still enumerated at its full 2809 combinations. A claim about the
+# module union can not land that early: reflection is disabled in a build, so
+# the union is only readable after the program's own `pin_module_union!` has
+# run, and asking sooner raises "module reflection is disabled".
+#
+# Every seal is idempotent - bits are set again, table entries are overwritten -
+# so a seal file states what it knows and each claim applies as soon as it can.
+const _SEALED_SEAL_ROUND = Base.RefValue(0)
+function sealed_apply_seal_file()
+    local sealfile = Base.get(Base.ENV, "SEALED_SEAL_FILE", "")
+    Base.isempty(sealfile) && return false
+    Base.isfile(sealfile) ||
+        Base.error("SEALED_SEAL_FILE names no file: " * sealfile)
+    _SEALED_SEAL_ROUND[] += 1
+    Base.include(Main, sealfile)
+    _stamp(_SEALED_SEAL_ROUND[] == 1 ? "seal-file" : "seal-file-again")
+    return true
+end
+
 _stamp("sealed-setup")
 
 let include_result = Base.include(Main, ARGS[1])
     Core.@latestworld
     _stamp("load-program")
+
+    # THE SEAL FILE. A seal is a claim about the program that the program itself
+    # does not have to carry: the same `seal_collapse` / `seal_residual` calls,
+    # in a file the BUILD owns. SEALED_SEAL_FILE names it, and a named file must
+    # exist - a seal that silently does not apply is a build nobody can explain.
+    #
+    # A SEAL MUST APPLY BEFORE THE BODIES IT CHANGES ARE INFERRED. This point is
+    # after `ARGS[1]`, and an entry file that RUNS the program - the trace
+    # recorder does - has already inferred them by now. `sealed_apply_seal_file`
+    # is therefore callable from the entry file too, as early as the packages
+    # allow, and it runs once.
+    sealed_apply_seal_file()
+    Core.@latestworld
 
     # The program is loaded; from here on the sealed world applies.
     Compiler.SEALED_WORLD[] = _SEALED_WORLD_WANTED
