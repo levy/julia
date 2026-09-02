@@ -1133,7 +1133,25 @@ const SEALED_EXTRA_TARGETS = Vector{Any}()
 const SEALED_TARGET_SEEN = IdSet{Any}()
 const SEALED_TARGET_DUPES = Ref(0)
 
+# WHERE A TARGET ENTERS. `handle_call!` pushes from eight places and the report
+# could not tell them apart, so "Base's numeric tower dominates" had no
+# follow-up question. Each site passes its own number.
+const SEALED_PUSH_BY_SITE = IdDict{Int,Int}()
+# Skip Core and Base at the warm-instance push sites. `sealed_keep` discards
+# them later, so specializing them looks like work thrown away.
+#
+# MEASURED AND UNCONFIRMED. On a ladder example, with one compiler and the
+# switch flipped, it is a NO-OP: 71 949 pushes and 28 815 required targets
+# either way. No matched method at those sites has a Core or Base root, so the
+# numeric tower does not enter there and the theory behind this switch is
+# wrong for examples. On routing, which unlike an example configures target
+# roots, one run each way gave 158 s against 141 s and 1 912 756 against
+# 1 908 318 targets - 0.23% fewer targets for 11% less wall, from a single
+# pair of runs and not repeated. Do not quote that number.
+const SEALED_SKIP_BASE = Ref(false)
+
 function sealed_push_target!(@nospecialize(t), @nospecialize(site), tag::Int = 0)
+    SEALED_PUSH_BY_SITE[tag] = get(SEALED_PUSH_BY_SITE, tag, 0) + 1
     if t in SEALED_TARGET_SEEN
         SEALED_TARGET_DUPES[] += 1
     else

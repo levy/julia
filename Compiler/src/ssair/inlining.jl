@@ -1484,6 +1484,19 @@ function handle_call!(todo::Vector{Pair{Int,Any}},
                 for k = 1:length(mmi.results)
                     _mm2 = mmi.results[k]::MethodMatch
                     _m2 = _mm2.method
+                    # A RUNTIME SWITCH, NOT AN EDIT. Changing the compiler
+                    # changes what the BUILD SESSION compiles, which changes
+                    # the warm table, which changes the enumeration - by more
+                    # than any guard's own effect. Editing this in and out
+                    # measured 73 691 pushes against 77 262 and told me
+                    # nothing. One compiler, two runs, is the only comparison
+                    # that means anything here.
+                    if SEALED_SKIP_BASE[]
+                        let _r2 = _m2.module
+                            while parentmodule(_r2) !== _r2; _r2 = parentmodule(_r2); end
+                            (_r2 === Core || _r2 === Base) && continue
+                        end
+                    end
                     _md2 = _m2.module
                     while parentmodule(_md2) !== _md2; _md2 = parentmodule(_md2); end
                     if _md2 === Core || _md2 === Base

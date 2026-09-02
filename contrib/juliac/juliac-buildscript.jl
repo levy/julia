@@ -4,6 +4,22 @@
 
 # Initialize some things not usually initialized when output is requested
 Sys.__init__()
+# The parent stamps SEALED_T0 before the spawn. These two lines then place the
+# child's startup and the end of this script in the SAME clock as the parent's
+# timers, which is how the phase map is read: whatever falls between
+# `buildscript-end` and `child-julia` is code generation and the image write.
+const _SEALED_T0 = get(ENV, "SEALED_T0", "")
+# A STAMP AT EVERY PHASE. `buildscript-end` alone said 15 seconds and nothing
+# about where they went, so the fixed cost could not be attacked.
+const _SEALED_TP = Base.RefValue(Base.time())
+_stamp(name) = (local t = Base.time();
+                Core.println("SEALED-PHASE ", name, " ",
+                             Base.round(t - _SEALED_TP[], digits = 2), "s");
+                _SEALED_TP[] = t; nothing)
+if _SEALED_T0 != ""
+    Core.println("SEALED-TIME child-startup ",
+                 time() - Base.parse(Float64, _SEALED_T0), "s")
+end
 Base.reinit_stdio()
 Base.init_depot_path()
 Base.init_load_path()
@@ -36,7 +52,14 @@ function _main(argc::Cint, argv::Ptr{Ptr{Cchar}})::Cint
 end
 
 using Compiler
+_stamp("load-compiler")
 Compiler.activate!(; reflection = true, codegen = true)
+_stamp("activate")
+# Three switches, each measured:
+#   SEALED_WORLD=0       the whole sealed apparatus off
+#   SEALED_SPLIT=0       the abstract-as-union split off, verifier relaxation
+#                        KEPT. Worth 960 s -> 108 s of DISCOVERY on routing.
+#   SEALED_TRACE_ONLY=1  compile the seeded set, take no closure
 # THE SEALED WORLD IS OFF WHILE THE PROGRAM LOADS. Loading a package infers,
 # and inferring under the sealed settings - `max_union_splitting` at 20 000
 # rather than Julia's 4 - costs 3.6 of the 12.9 seconds `load-program` takes,
@@ -45,11 +68,13 @@ Compiler.activate!(; reflection = true, codegen = true)
 # 9.67s with the split limit at 4.
 const _SEALED_WORLD_WANTED = Base.get(Base.ENV, "SEALED_WORLD", "1") != "0"
 Compiler.SEALED_WORLD[] = false
+Compiler.SEALED_TRACE_ONLY[] = Base.get(Base.ENV, "SEALED_TRACE_ONLY", "") != ""
 # SEALED_SPLIT_CASES bounds ONE call site's union cross product. Over it, the
 # site keeps its abstract types and is answered further down the lattice.
 Compiler.SEALED_SPLIT_CASES[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_CASES", "4096"))
 # SEALED_SPLIT_SHOW=<n> names every site at least that wide, as it is found.
+Compiler.SEALED_SKIP_BASE[] = Base.get(Base.ENV, "SEALED_SKIP_BASE", "") != ""
 Compiler.SEALED_SPLIT_SHOW[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_SPLIT_SHOW", "0"))
 # SEALED_SPLIT_LIMIT=4 holds inference to the STOCK union splitter, which is
@@ -78,9 +103,12 @@ let preset = Main.__SEALED_PRESET
     end
 end
 
+_stamp("sealed-setup")
 
 let include_result = Base.include(Main, ARGS[1])
     Core.@latestworld
+    _stamp("load-program")
+
     # The program is loaded; from here on the sealed world applies.
     Compiler.SEALED_WORLD[] = _SEALED_WORLD_WANTED
     # --- sealed world: abstract type => Union of concrete subtypes ------------
@@ -149,6 +177,20 @@ let include_result = Base.include(Main, ARGS[1])
         subs = Base.IdDict{Any,Any}()
         for (k, v) in lists
             subs[k] = Union{v...}
+        end
+        # THE WIDEST UNIONS, because the width is what the splitter multiplies.
+        # Routing phase 3 is flat to a split limit of 96 and does not finish at
+        # 128, so a union somewhere has more than 96 members and this says
+        # which. Sorted by name so the report is the same on every run.
+        let rows = Any[]
+            for (k, v) in lists
+                Base.push!(rows, (Base.length(v), Base.string(k)))
+            end
+            sort!(rows, by = r -> (-r[1], r[2]))
+            Core.println("SEALED-UNION widest, of ", Base.length(rows), " abstract types:")
+            for i in 1:Base.min(12, Base.length(rows))
+                Core.println("  ", rows[i][1], "  ", rows[i][2])
+            end
         end
         # Leaving this UNSET disables the abstract-as-union split
         # (`abstractinterpretation.jl` gates on it) while the verifier
@@ -297,6 +339,7 @@ Compiler._verify_trim_world_age[] = Base.get_world_counter()
 # Apply hacks
 
 if Base.JLOptions().trim != 0
+    _stamp("subtype-map-and-warm")
     include(joinpath(@__DIR__, "juliac-trim-base.jl"))
     include(joinpath(@__DIR__, "juliac-trim-stdlib.jl"))
 end
@@ -334,4 +377,9 @@ end
 @eval Sys begin
     BINDIR = ""
     STDLIB = ""
+end
+_stamp("trim-lists")
+if _SEALED_T0 != ""
+    Core.println("SEALED-TIME buildscript-end ",
+                 time() - Base.parse(Float64, _SEALED_T0), "s (codegen follows, at exit)")
 end

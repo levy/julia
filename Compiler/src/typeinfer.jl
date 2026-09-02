@@ -1734,6 +1734,109 @@ function sealed_keep(@nospecialize(t))
     mi
 end
 
+# (nanoseconds, MethodInstance) for every instance inference produced. Two
+# questions about a build need this and nothing else answers them: WHAT the
+# instances are, and WHICH of them are expensive. A routing build compiles
+# ~28 000 instances at a MEDIAN of 0.03 ms, with the mean carried by a handful
+# of enormous ones — so "milliseconds per instance" is not a real quantity, and
+# only the distribution says anything.
+const SEALED_ITEM_TIMES = Vector{Any}()
+
+# Compile the seeded set and take NO closure. `collectinvokes!` is what walks
+# the IR and enqueues callees — the analysis a recorded trace makes
+# unnecessary. The seeded set must then be COMPLETE, Base included.
+const SEALED_TRACE_ONLY = Ref(false)
+
+function _sealed_root_module(m)
+    r = m
+    while Base.parentmodule(r) !== r
+        r = Base.parentmodule(r)
+    end
+    return r
+end
+
+function sealed_report_items()
+    n = length(SEALED_ITEM_TIMES)
+    n == 0 && return nothing
+    total = 0.0
+    times = Vector{Float64}(undef, n)
+    for i in 1:n
+        t = (SEALED_ITEM_TIMES[i][1]) / 1000000.0
+        times[i] = t
+        total += t
+    end
+    sort!(times)
+    Core.println("SEALED-ITEMS: ", n, " instances, ", round(total / 1000.0, digits = 1), "s total")
+    Core.println("SEALED-ITEMS per instance (ms): median=", round(times[(n + 1) >> 1], digits = 2),
+                 " p90=", round(times[max(1, div(9 * n, 10))], digits = 2),
+                 " p99=", round(times[max(1, div(99 * n, 100))], digits = 2),
+                 " max=", round(times[n], digits = 1))
+
+    counts = Base.IdDict{Any,Any}()
+    mcounts = Base.IdDict{Any,Any}()
+    for (ns, mi) in SEALED_ITEM_TIMES
+        d = mi.def
+        d isa Method || continue
+        ms = ns / 1000000.0
+        r = _sealed_root_module(d.module)
+        c = Base.get(counts, r, nothing)
+        c === nothing ? (counts[r] = Any[1, ms]) : (c[1] += 1; c[2] += ms)
+        c2 = Base.get(mcounts, d, nothing)
+        c2 === nothing ? (mcounts[d] = Any[1, ms]) : (c2[1] += 1; c2[2] += ms)
+    end
+    rows = Any[]
+    for (r, c) in counts; push!(rows, (c[2], c[1], r)); end
+    sort!(rows, by = x -> -x[1])
+    if !isempty(SEALED_PUSH_BY_SITE)
+        local ks = Any[]
+        for (k, v) in SEALED_PUSH_BY_SITE; Base.push!(ks, (v, k)); end
+        sort!(ks, by = x -> -x[1])
+        Core.print("SEALED-PUSH-SITES")
+        for (v, k) in ks; Core.print("  #", k, "=", v); end
+        Core.println()
+    end
+    Core.println("SEALED-SPLIT budget=", SEALED_SPLIT_CASES[],
+                 " worst-site=", SEALED_SPLIT_WORST[],
+                 " taken=", SEALED_SPLIT_TAKEN[],
+                 " sites-over-budget=", SEALED_SPLIT_FALLBACKS[])
+    Core.println("SEALED-ITEMS by module (ms, count, module):")
+    for i in 1:min(12, length(rows))
+        Core.println("  ", round(rows[i][1], digits = 0), "ms  ", rows[i][2], "  ", rows[i][3])
+    end
+
+    # SEALED_ITEM_DUMP=<path> writes every compiled instance with its
+    # signature. Unnecessary work is then visible by inspection: the same
+    # signature twice, an instance compiled at a method's own abstract
+    # signature, a method with hundreds of near-identical specializations.
+    let path = Base.get(Base.ENV, "SEALED_ITEM_DUMP", "")
+        if path != ""
+            io = Base.open(path, "w")
+            Base.println(io, "ms\twhy\tmethod\tmodule\tdispatchtuple\tstem\tfile\tline\tsignature")
+            for (ns, mi) in SEALED_ITEM_TIMES
+                d = mi.def
+                d isa Method || continue
+                Base.println(io, Base.round(ns / 1000000.0, digits = 4), "\t",
+                             Base.get(SEALED_PROVENANCE, mi, :unknown), "\t", d.name, "\t",
+                             d.module, "\t", Base.isdispatchtuple(mi.specTypes), "\t",
+                             mi.specTypes === d.sig, "\t", d.file, "\t", d.line, "\t",
+                             mi.specTypes)
+            end
+            Base.close(io)
+            Core.println("SEALED-ITEMS dump written to ", path)
+        end
+    end
+
+    mrows = Any[]
+    for (d, c) in mcounts; push!(mrows, (c[2], c[1], d)); end
+    sort!(mrows, by = x -> -x[1])
+    Core.println("SEALED-ITEMS ", length(mrows), " distinct methods; top 20 by inference time:")
+    for i in 1:min(20, length(mrows))
+        Core.println("  ", round(mrows[i][1], digits = 0), "ms  x", mrows[i][2], "  ",
+                     mrows[i][3].name, " @ ", mrows[i][3].module)
+    end
+    return nothing
+end
+
 function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
 )
@@ -1778,7 +1881,9 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             # and this is either the primary world, or not applicable in the primary world
             # then we want to compile and emit this
             if item.def.primary_world <= world
+                local _tA = Base.time_ns()
                 ci = typeinf_ext(interp, item, SOURCE_MODE_GET_SOURCE)
+                push!(SEALED_ITEM_TIMES, (Base.time_ns() - _tA, item))
                 ci isa CodeInstance && push!(workqueue, ci)
             end
             markinspected!(workqueue, item)
@@ -1791,7 +1896,9 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                         sig, world, #= mt_cache =# 0)
             if mi !== nothing
                 mi = mi::MethodInstance
+                local _tB = Base.time_ns()
                 ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE)
+                push!(SEALED_ITEM_TIMES, (Base.time_ns() - _tB, mi))
                 ci isa CodeInstance && push!(invokelatest_queue, ci)
             end
             # additionally enqueue the ccallable entrypoint / adapter, which implicitly
@@ -1807,7 +1914,9 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             else
                 src = get(interp.codegen, callee, nothing)
                 if src === nothing
+                    local _tC = Base.time_ns()
                     newcallee = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE)
+                    push!(SEALED_ITEM_TIMES, (Base.time_ns() - _tC, mi))
                     if newcallee isa CodeInstance
                         @assert use_const_api(newcallee) || haskey(interp.codegen, newcallee)
                         push!(workqueue, newcallee)
@@ -1821,7 +1930,7 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             markinspected!(workqueue, callee)
             if src isa CodeInfo
                 sptypes = sptypes_from_meth_instance(mi)
-                collectinvokes!(workqueue, src, sptypes; invokelatest_queue)
+                SEALED_TRACE_ONLY[] || collectinvokes!(workqueue, src, sptypes; invokelatest_queue)
                 # try to reuse an existing CodeInstance from before to avoid making duplicates in the cache
                 if iszero(ccall(:jl_mi_cache_has_ci, Cint, (Any, Any), mi, callee))
                     cached = ccall(:jl_get_ci_equiv, Any, (Any, UInt), callee, world)::CodeInstance
@@ -1847,6 +1956,12 @@ const TRIM_SAFE = 0x1
 const TRIM_UNSAFE = 0x2
 const TRIM_UNSAFE_WARN = 0x3
 function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_mode::UInt8)
+    # WHERE THE BUILD IS, between `buildscript-end` and the compile loop.
+    # Routing phase 3 spends more than fifteen minutes in this gap and the
+    # loop never starts, so no progress line it prints is ever reached. These
+    # two stamps are what tell a reader whether the time is HERE or in codegen
+    # afterwards.
+    Core.println("SEALED-TIME toplevel-begin, ", Base.length(methods), " entry methods")
     # sealed world: the trim reuses the session CodeInstance of the event
     # loop, and a declined (dynamic) call has no backedges — so the declines
     # can not refire in-trim. The session pulls are therefore the only source
@@ -1874,11 +1989,14 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
 
     codeinfos = []
     workqueue = CompilationQueue(; interp = nothing)
+    _t_inf = Base.time_ns()
     for this_world in reverse!(sort!(worlds))
         workqueue = CompilationQueue(workqueue;
             interp = NativeInterpreter(this_world; inf_params)
         )
 
+        Core.println("SEALED-TIME toplevel-to-compile ",
+                     Base.round((Base.time_ns() - _t_inf) / 1.0e9, digits = 2), "s")
         append!(workqueue, methods)
         compile!(codeinfos, workqueue; invokelatest_queue)
     end
@@ -1888,6 +2006,9 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
         # (it will enqueue into itself and immediately drain)
         compile!(codeinfos, invokelatest_queue; invokelatest_queue)
     end
+    Core.println("SEALED-TIME inference ", (Base.time_ns() - _t_inf) / 1000000000,
+                 "s codeinfos=", Base.length(codeinfos))
+    sealed_report_items()
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE
         # THE REPAIR PASS — see `SEALED_REPAIR`. A verify-collect, a compile of
@@ -1993,7 +2114,10 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
                 compile!(codeinfos, repairq; invokelatest_queue)
             end
         end
-        verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
+        let t1 = Base.time_ns()
+            verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
+            Core.println("SEALED-TIME verify ", (Base.time_ns() - t1) / 1000000000, "s")
+        end
     end
     return codeinfos
 end

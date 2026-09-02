@@ -166,10 +166,12 @@ function precompile_env()
     # (otherwise obscure error messages will occur)
     cmd = addenv(`$julia_cmd $project -e "using Pkg; Pkg.precompile()"`)
     verbose && println("Running: $cmd")
+    _tp = time_ns()
     if !success(pipeline(cmd; stdout, stderr))
         println(stderr, "\nError encountered during pre-compilation of environment.")
         exit(1)
     end
+    println("SEALED-TIME precompile-env ", (time_ns() - _tp) / 1e9, "s")
 end
 
 function compile_products(enable_trim::Bool)
@@ -186,12 +188,21 @@ function compile_products(enable_trim::Bool)
     if abi_export_file !== nothing
         push!(args, abi_export_file)
     end
-    cmd = addenv(`$julia_cmd_target $project --output-o $img_path --output-incremental=no $strip_args $julia_args $(joinpath(@__DIR__,"juliac-buildscript.jl")) $(args)`, "OPENBLAS_NUM_THREADS" => 1, "JULIA_NUM_THREADS" => 1)
+    # SEALED_BUILD_THREADS: the buildscript's Julia thread count. Default 1,
+    # as stock juliac pins it — a parallel-engine entry's WARM RUN needs 2+
+    # (one hot-spin worker per thread beside the colorizer; at 1 the warm
+    # deadlocks with the build 38 minutes silent, measured).
+    cmd = addenv(`$julia_cmd_target $project --output-o $img_path --output-incremental=no $strip_args $julia_args $(joinpath(@__DIR__,"juliac-buildscript.jl")) $(args)`, "OPENBLAS_NUM_THREADS" => 1, "JULIA_NUM_THREADS" => get(ENV, "SEALED_BUILD_THREADS", "1"), "SEALED_T0" => string(time()))
     verbose && println("Running: $cmd")
+    _t = time_ns()
     if !success(pipeline(cmd; stdout, stderr))
         println(stderr, "\nFailed to compile $file")
         exit(1)
     end
+    # Whatever this child spent beyond inference and verify is LLVM code
+    # generation and the image write, which no timer inside Julia can reach.
+    println("SEALED-TIME child-julia ", (time_ns() - _t) / 1e9, "s img=",
+            try string(round(filesize(img_path) / 1048576, digits = 1), "MB") catch; "?" end)
 end
 
 function link_products()
@@ -214,7 +225,9 @@ function link_products()
             cmd2 = `$(cc) $(allflags) $(rpath) -o $outname -Wl,$(Base.Linking.WHOLE_ARCHIVE) $img_path -Wl,$(Base.Linking.NO_WHOLE_ARCHIVE)  $(julia_libs)`
         end
         verbose && println("Running: $cmd2")
+        local _tl = time_ns()
         run(cmd2)
+        println("SEALED-TIME link ", (time_ns() - _tl) / 1e9, "s")
     catch e
         println("\nCompilation failed: ", e)
         exit(1)

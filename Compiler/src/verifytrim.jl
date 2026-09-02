@@ -422,6 +422,7 @@ end
 ## entry-point ##
 
 function get_verify_typeinf_trim(codeinfos::Vector{Any})
+    Core.println("SEALED-VERIFY-BEGIN codeinfos=", length(codeinfos))
     this_world = get_world_counter()
     interp = NativeInterpreter(this_world)
     inspected = IdSet{CodeInstance}()
