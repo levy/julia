@@ -131,6 +131,15 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
         # points, so its five trace entries answered nothing. `atype` here is
         # the site, before any of the sealed machinery rewrites it.
         sealed_push_declined!(atype)
+        # THE SITE ASKS FOR ITS OWN TARGETS (§26). A recorded edge is keyed by
+        # `(caller signature, statement index)` - the SOURCE location, which is
+        # the same in both processes, while the argument types are not: this
+        # site resolves narrow while recording and is declined wide here. That
+        # is why a bare target list can never answer it, and why the answer is
+        # looked up only when a site actually needs one.
+        # The lookup itself happens below, in the branch that DECLINES the
+        # split: measured at every site, it pulled the closure of the whole
+        # recorded graph and phase 3 never reached a fixed point.
         if SEALED_SUBTYPES[] !== nothing
             # PRICE THE SPLIT BEFORE MAKING IT. The substitution below is what
             # turns an abstract argument into a union, and the splitter then
@@ -166,6 +175,11 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
                 # drain, or by a generic signature. One widened body beats
                 # thousands of concrete ones.
                 SEALED_SPLIT_FALLBACKS[] += 1
+                # THIS IS THE SITE THAT ASKS THE EDGE TABLE (section 26): it
+                # resolved narrow while recording and is declined wide here,
+                # so its recorded targets are the answer a bare target list
+                # never was. Bounded per site and per build (section 35).
+                sealed_edge_lookup!(sv, atype)
                 # AND THERE IS NO COMPILER-ONLY `:generic` ARM TO CATCH IT.
                 # The obvious move is to give this site the one signature that
                 # covers its whole domain - the method's own - and compile
@@ -352,6 +366,24 @@ function abstract_call_gf_by_type(interp::AbstractInterpreter, @nospecialize(fun
     end
 
     (; valid_worlds, applicable) = matches
+    # RECORD THE EDGE, NOT ONLY THE TARGET (plan §26). The site is
+    # `(caller method signature, statement index)` - the SOURCE location, which
+    # is the same on both sides. The argument types are not: this site resolves
+    # narrow while recording and is declined wide while building, which is
+    # exactly why a bare target list can not answer it.
+    if SEALED_RECORD_EDGES[]
+        local _em = try frame_instance(sv).def catch; nothing end
+        local _pc = try sv.currpc catch; 0 end
+        if _em isa Method && _pc != 0
+            local _key = (_em.sig, _pc)
+            local _b = get(SEALED_EDGE_LOG, _key, nothing)
+            _b === nothing && (_b = SEALED_EDGE_LOG[_key] = Any[])
+            for _i = 1:length(applicable)
+                local _t = applicable[_i].match.spec_types
+                (_t in _b) || push!(_b, _t)
+            end
+        end
+    end
     update_valid_age!(sv, valid_worlds) # need to record the negative world now, since even if we don't generate any useful information, inlining might want to add an invoke edge and it won't have this information anymore
     # Concrete-only functions refuse to commit (and record no backedge) when any
     # applicable match has a non-concrete signature, regardless of scope. This is the

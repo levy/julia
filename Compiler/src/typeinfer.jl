@@ -1907,6 +1907,12 @@ function sealed_report_items()
     SEALED_ARGUMENT_HIT[] == 0 ||
         Core.println("SEALED-ARGUMENT ", Base.length(SEALED_ARGUMENT),
                      " promises, ", SEALED_ARGUMENT_HIT[], " positions narrowed")
+    SEALED_EDGE_LOOKUP[] &&
+        Core.println("SEALED-EDGE-LOOKUP ", Base.length(SEALED_EDGE_BY_SITE),
+                     " sites in the table, ", SEALED_EDGE_ANSWERED[],
+                     " targets pulled, ", SEALED_EDGE_REFUSED[],
+                     " refused; site-limit=", SEALED_EDGE_SITE_LIMIT[],
+                     " budget=", SEALED_EDGE_BUDGET[])
     SEALED_RESIDUAL_HIT[] == 0 ||
         Core.println("SEALED-RESIDUAL ", Base.length(SEALED_RESIDUAL),
                      " promises, ", SEALED_RESIDUAL_HIT[], " sites narrowed")

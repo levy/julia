@@ -336,6 +336,17 @@ let include_result = Base.include(Main, ARGS[1])
     end
     # SEALED_REPAIR_REPORT=<n> prints the first n skipped sites, with the
     # signature and the product size, so a skip names a call rather than a count.
+    # SEALED_EDGE_LOOKUP=1 lets a declined site consult the recorded edge table
+    # (§26). It is off by default: a fault inside inference takes the whole
+    # build down and can not be read from the build's own output.
+    Compiler.SEALED_EDGE_LOOKUP[] = Base.get(Base.ENV, "SEALED_EDGE_LOOKUP", "") != ""
+    # SEALED_EDGE_BUDGET and SEALED_EDGE_SITE_LIMIT bound the lookup (section 35).
+    let b = Base.get(Base.ENV, "SEALED_EDGE_BUDGET", "")
+        Base.isempty(b) || (Compiler.SEALED_EDGE_BUDGET[] = Base.parse(Int, b))
+    end
+    let b = Base.get(Base.ENV, "SEALED_EDGE_SITE_LIMIT", "")
+        Base.isempty(b) || (Compiler.SEALED_EDGE_SITE_LIMIT[] = Base.parse(Int, b))
+    end
     let repenv = Base.get(Base.ENV, "SEALED_REPAIR_REPORT", "")
         if !Base.isempty(repenv)
             Compiler.SEALED_REPAIR_REPORT[] = Base.parse(Int, Base.strip(repenv))

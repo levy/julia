@@ -1455,8 +1455,89 @@ end
 # LABEL a candidate the trace observed but not to ANSWER a site the
 # enumeration missed. `trace_abstract` and `trace_typeparam` need targets no
 # enumeration produces, and they failed until the site itself was recorded.
+"""
+    SEALED_EDGE_LOG
+
+The trace, as EDGES rather than bare targets (plan §26).
+
+    (caller method signature, statement index) -> the targets resolved there
+
+A bare target can not say WHICH site observed it, and the recorder is then left
+guessing whether the build will derive it - it walks `main`'s closure, and above
+the split limit `CodeInstance.edges` gives nothing at all, so the walk models a
+graph the build does not have. Measured: `deliver_message!` is reached only
+through `evt.action`, the recorder found it in the closure and dropped it, and
+the build compiled it ZERO times.
+
+THE SITE IS THE SOURCE LOCATION, not the argument types. At record time this
+site resolves narrow and at build time it is declined wide, so the atypes
+differ; only `(method signature, pc)` is the same on both sides.
+
+`SEALED_RECORD_EDGES[]` turns the recording on. It costs a dictionary push per
+resolved call, so it is off during an ordinary build.
+"""
+const SEALED_EDGE_LOG = IdDict{Any,Any}()
+const SEALED_RECORD_EDGES = Ref(false)
+
+# The edges a previous run recorded, keyed the same way. A declined site looks
+# itself up here and gets the targets that site actually reached.
+const SEALED_EDGE_BY_SITE = Dict{Any,Any}()
+
+# How many targets a declined site pulled from the edge table.
+const SEALED_EDGE_ANSWERED = Ref(0)
+
+# THE BUDGET (plan section 35: every boundary gets bounded effort). A site
+# may pull at most SEALED_EDGE_SITE_LIMIT targets, and the whole build at most
+# SEALED_EDGE_BUDGET; a site refused by either is counted. Unbounded, the
+# lookup does not converge: phase 3 loaded 15 670 sites and 48 707 targets and
+# was still pulling after 23 minutes, because every pulled body has sites of
+# its own and each one pulled its recorded targets in turn.
+const SEALED_EDGE_SITE_LIMIT = Ref(64)
+const SEALED_EDGE_BUDGET = Ref(4096)
+const SEALED_EDGE_REFUSED = Ref(0)
+
+# Whether a declined site consults the edge table. Opt-in from the
+# environment (SEALED_EDGE_LOOKUP=1); the routing scripts set it. Bounded by
+# SEALED_EDGE_SITE_LIMIT and SEALED_EDGE_BUDGET and measured at 0 errors on
+# phase 3 (nothing pulled) and on the flagship (9 targets at three declined
+# sites). The recording half is useful on its own and stays on regardless.
+const SEALED_EDGE_LOOKUP = Ref(false)
+
 const SEALED_DECLINED_SIGS = Vector{Any}()
 const SEALED_DECLINED_SEEN = IdSet{Any}()
+
+# A DECLINED SITE ASKS FOR ITS OWN TARGETS (plan section 26), and only a
+# declined site: a lookup at every site inference visits pulls the closure of
+# the whole recorded graph, executed or not. Returns whether anything was
+# pulled; the caller then re-offers the site.
+function sealed_edge_lookup!(sv, @nospecialize(atype))
+    (SEALED_EDGE_LOOKUP[] && !isempty(SEALED_EDGE_BY_SITE)) || return false
+    local dm = try frame_instance(sv).def catch; nothing end
+    local dpc = try sv.currpc catch; 0 end
+    (dm isa Method && dpc != 0) || return false
+    local ts = get(SEALED_EDGE_BY_SITE, (dm.sig, dpc), nothing)
+    ts === nothing && return false
+    if SEALED_EDGE_ANSWERED[] >= SEALED_EDGE_BUDGET[]
+        SEALED_EDGE_REFUSED[] += 1
+        return false
+    end
+    local pulled = 0
+    for t in ts
+        # Only a dispatch tuple can be a target: a signature with free type
+        # parameters names no instance.
+        isa(t, DataType) || continue
+        t in SEALED_TRACE_SIGS && continue
+        if pulled >= SEALED_EDGE_SITE_LIMIT[]
+            SEALED_EDGE_REFUSED[] += 1
+            break
+        end
+        sealed_add_trace_sig!(t)
+        SEALED_EDGE_ANSWERED[] += 1
+        pulled += 1
+    end
+    pulled > 0 && sealed_push_declined!(atype)
+    return pulled > 0
+end
 
 function sealed_push_declined!(@nospecialize site)
     # ONLY SITES THE TRACE COULD ANSWER. With no trace loaded there is nothing
