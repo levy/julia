@@ -253,6 +253,19 @@ in registers where the precise root scan can not see them. A Julia call is
 a safepoint boundary — the caller spills every live value into its frame,
 which is exactly what the rule-5 scan reads.
 
+**What happens when the program calls `GC.gc()`.** Three cases, and the
+incremental/full argument changes none of them. While any window is open,
+the call defers: it collects nothing, re-arms the collection trigger, and
+returns — a stray `GC.gc` inside a library can not corrupt a window. With
+the windows closed and every region empty (quiesced), it works fully; the
+guards keep region pages out of the mark and the sweep, and
+`v2_regression.jl` proves this case. With the windows closed but a region
+holding live objects, the collection runs and is UNSOUND — the mark sets
+bits on region objects that the sweep never clears, and the next census
+reads them stale. The contract, from the limits below: collect when the
+regions are quiesced, or use the census; a loop like the real-world
+driver simply turns the collector off for the run.
+
 One rule the runtime does not check, and breaks the heap when it is broken:
 **an array with malloc'd data — a `Vector` of more than about 2 KB — must
 not die inside a region.** Its header is a small region object while its
