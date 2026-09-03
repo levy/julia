@@ -119,13 +119,21 @@ region's own boundaries. Six suites green on every item.
       would). The four-thread matrix and the endurance acceptance land
       with stage 4's evidence runs.
 
-## Stage 4 - evidence
+## Stage 4 - evidence (MATURATION.md holds the tables)
 
-- [ ] The full GCBenchmarks suite on the region build with regions
-      unused: no regression (the zero-cost claim, suite-wide).
-- [ ] binary_tree and linked/list with a @with_region wrap: the
-      wholesale-death showcase against the stock columns.
-- [ ] Package load times and code size, before/after.
+- [x] The GCBenchmarks serial set, vanilla v1.13.0-rc3 against this
+      build with regions unused, interleaved on the isolated core: the
+      four realistic benches within noise (append 1.01, strings 1.00,
+      BST 1.04, pollard 1.05); the two big_arrays GC-stressors show the
+      machinery's per-item cost (single_ref 1.08 mark - hoisted down from
+      1.19; many_refs 1.24 alloc-fast-path indirection). NOT a suite-wide
+      zero: honest residual on 100M-object microbenches, the reason the
+      stock-only compile mode exists.
+- [x] binary_tree and linked/list with a @with_region wrap
+      (showcase_*.jl): 0.32 s/0 coll vs 0.47 s/31, and 0.42 s/0 coll vs
+      2.19 s. Wholesale death, the shape the regions are for.
+- [x] Load time unchanged (0.06 s), runtime library +0.8 %. 30-min
+      endurance on the armed runtime: 0 misses, RSS flat.
 
 ## When the stages stand
 
