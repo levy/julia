@@ -90,6 +90,32 @@ This is the wall-time win the compute-bound pair could not give, and it appears
 exactly where the model predicts: when aborted speculation is the dominant
 allocation.
 
+## Demonstrator D -- optimistic parallel Delaunay mesh refinement (`dmr_demo.jl`)
+
+The famous one: the Galois / Lonestar irregular-parallel benchmark, and the
+second allocation-bound win. A shared triangle mesh; each round, N workers each
+pick a bad triangle and SPECULATIVELY compute its Bowyer-Watson cavity and a
+quality analysis (read-only on the mesh, allocation-heavy, in the worker's own
+leaf); then a deterministic sequential commit applies the non-conflicting
+cavities in seed-id order -- a cavity overlapping one already committed this
+round ABORTS and its speculation is discarded. Deterministic, so region and
+stock refine to the identical mesh (same checksum, same 2075 aborts); only the
+reclamation of the per-round speculation differs. Refinement is by centroid
+insertion (always in-domain, so it terminates), capped for safety. Grid 16,
+sweeping the quality-analysis weight, quiet lane:
+
+| analysis work | region wall | stock wall | speedup | region coll. | stock coll. | stock GC |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 | 37.5 ms | 37.3 ms | **0.99x** | 0 | 0 | 0.0 |
+| 512 | 38.3 ms | 41.2 ms | **1.07x** | 0 | 5 | 2.9 |
+| 2048 | 40.1 ms | 55.8 ms | **1.39x** | 0 | 23 | 8.4 |
+
+Same mesh both runs, no quarantine, 2075 aborts each. The region does **zero**
+collections at every level -- it resets each round's speculation, committed and
+aborted alike -- while the stock collector's collections and GC time climb with
+the speculative allocation, and the region's wall advantage grows to 1.39x.
+The same shape as C, on a real, well-known algorithm.
+
 ## What this proves, honestly
 
 - **The categorical result (compute-bound A and B, load-independent):** on the
