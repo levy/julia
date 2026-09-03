@@ -26,6 +26,18 @@ Every claim below is a test in this directory, run on the isolated core
   census refuse, its memory is retained, and a one-time warning names the
   types. The counterexample everyone types first — a region-0 `Dict`
   resized inside a window — runs correctly and leaks exactly its tables.
+  The guarantee covers construction too: a constructor store of an
+  already-boxed child once skipped the barrier (a fresh young parent
+  needs no generational barrier, and the region barrier rode on it), so
+  a region-0 object built with a younger-region field escaped uncaught
+  and the reset dangled it. The barrier now fires for a boxed pointer
+  child at construction. The cost is a boxed-pointer-field construction
+  paying the arming check in the default build: measured worst case (two
+  such fields, tight loop, isolated core) +1.4 ns/object, 42.4 → 43.8 ns,
+  and `JL_NO_REGION_STORE_BARRIER` removes it. A region-only construction
+  intrinsic would cut this to the bare flag check (~0.7 ns; the arming
+  check is irreducible while the barrier is compiled in), and is the
+  recorded zero-cost follow-up if the construction cost proves to matter.
 - **Malloc'd data dies with its region** (`malloced_test.jl`). A memory
   with malloc'd data allocated in a region joins the region's own list;
   the reset frees all of it, the census the dead. The old
@@ -89,7 +101,12 @@ three interleaved runs on the isolated core:
 Read honestly: on the four realistic workloads the region runtime is
 within measurement noise of vanilla, and the two `big_arrays` stressors
 — 100-million-element structures, almost nothing else — sit at vanilla
-or below. The zero-cost claim holds on the whole set.
+or below. The zero-cost claim holds on this set. One honest caveat sits
+outside it: the construction barrier (stage 1) adds ~1.4 ns to a
+boxed-pointer-field construction in the default build — below this set's
+noise, but real on construction-dense code, and the reason a zero-cost
+construction intrinsic is the recorded follow-up. `JL_NO_REGION_STORE_BARRIER`
+removes it, as it does the store barrier.
 
 The stressors are mark-bound, and the seam that decides them is
 inlining, not a check: the work-stealing queue's push and pop copy each

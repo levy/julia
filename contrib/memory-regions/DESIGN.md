@@ -535,6 +535,25 @@ generalization the collector already satisfies, not as a second
 collector. The staged internal path is in `plan/done/region-gc-maturation.md`;
 any pull request, if ever, is made manually by the author.
 
+## Discipline rules the barrier does not remove
+
+Two hazards stay the model developer's discipline, by decision, because
+the runtime alternative costs more than the anti-pattern is worth.
+
+- **Do not block inside a window.** A blocking `take!` (or any wait) inside
+  an open window grows the channel's wait-queue, which allocates in the
+  window's region; the waiter's own frame, held by the scheduler across the
+  wait, then references region memory from outside the disciplined path. The
+  runtime could park the window across every yield, but that pins tasks and
+  complicates the scheduler for a pattern a disciplined event loop does not
+  use. The rule: open a window around synchronous work, not around a wait.
+- **Do not serialize or weak-reference a region object.** Serializing a
+  region object stores it into the serializer's backref table (region 0),
+  which quarantines the region — defined behavior, a leak, never a
+  corruption, but a surprise. A `WeakRef` to a region object is refused
+  outright, because its clearing has no defined story across a reset. Both
+  are transient-by-design objects; neither belongs in a long-lived table.
+
 ## What is deferred
 
 - **Concurrent sibling event regions** (one per worker task). The chain comes
