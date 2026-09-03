@@ -43,6 +43,22 @@ issues, no discussions; any upstreaming is the user's manual act.
 - **The quarantine stays per region.** A leaked object in region `cr`
   can reference only `cr`'s ancestors, which outlive it, so
   quarantining `cr` alone still contains the damage in a tree.
+- **An id names one lifetime, never a per-thread role.** The
+  declaration is global; the page instances stay per thread heap. Two
+  threads must not reuse one leaf id for their two private regions:
+  the pair's page tags compare equal, so the barrier would pass a
+  cross-thread store between them undetected. With distinct leaf ids
+  the ancestor-mask test quarantines leaf-to-leaf stores across
+  threads in both directions — the multi-thread program (a shared
+  trunk plus one private leaf per thread) becomes checkable, not just
+  disciplined.
+- **A shared trunk resets as one act.** A trunk that several threads
+  allocate into is physically one instance per thread heap, and
+  trunk-internal cross-thread references are legal (equal tags), so a
+  per-instance reset would dangle them. `region_reset` of a region
+  with instances on several heaps therefore walks every heap's
+  instance under stop-the-world. The leaf reset keeps today's
+  per-instance fast path — one heap, one bit test, no coordination.
 - **The reset precondition is per branch, and one bit for a leaf.**
   Reset of `r` needs every descendant of `r` dead. Per thread heap,
   keep a live-child counter per region and one word
@@ -86,19 +102,31 @@ issues, no discussions; any upstreaming is the user's manual act.
       interleaved on ONE thread, each in its own leaf over a shared
       trunk (the coverage the chain could not express); a store from
       one leaf into the other quarantines in BOTH directions; leaf →
-      trunk stores pass; trunk → leaf stores quarantine. The armed
-      light-loop median must not move against the chain build.
+      trunk stores pass; trunk → leaf stores quarantine. The same
+      matrix across TWO threads with distinct leaf ids — the
+      cross-thread leaf-to-leaf store must quarantine, which the
+      same-id chain could not even detect. The armed light-loop median
+      must not move against the chain build.
 
 ## Stage 3 — census and reset on the tree
 
 - [ ] Leaf reset behind the one-bit precondition; `region_reset` of a
       region with live descendants refuses with a distinct code;
       `region_subtree_reset` in postorder; subtree collect behind
-      `subtree_mask`. Acceptance: per-task leaf churn — N tasks, each
-      opening, filling, and resetting its own leaf repeatedly while the
-      trunk lives and siblings stay untouched; RSS bounded; a census of
-      one leaf leaves sibling data intact; the stock collector runs
+      `subtree_mask`; the cross-heap trunk reset under stop-the-world.
+      Acceptance: per-task leaf churn — N tasks, each opening,
+      filling, and resetting its own leaf repeatedly while the trunk
+      lives and siblings stay untouched; RSS bounded; a census of one
+      leaf leaves sibling data intact; the stock collector runs
       mid-churn with no contract, as in the maturation plan's stage 2.
+- [ ] The three-thread program, end to end: three threads share one
+      trunk region under application locks, each thread allocates and
+      quick-resets its own leaf, and the trunk resets once at the end
+      across every heap. The test also proves the lock discipline: a
+      lock-held push into a shared trunk structure must run with the
+      trunk current — done with the leaf current, the resized backing
+      memory lands in the leaf and the barrier must quarantine it (the
+      stage-1 Dict-resize hazard, now in its multi-thread coat).
 
 ## Stage 4 — evidence
 
