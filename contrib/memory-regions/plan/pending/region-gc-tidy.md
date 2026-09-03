@@ -246,13 +246,14 @@ the step forced.
       `backup/region-maturation-2026-09-03` (c0b8d4df4a),
       `backup/region-tree-2026-09-03` (a2521fbf57),
       `backup/region-demonstrators-2026-09-03` (9915f3c7de). Pushed.
-- [ ] On `region-demonstrators` (worktree `julia-demos`): `git merge
+- [x] On `region-demonstrators` (worktree `julia-demos`): `git merge
       region-tree`. Expected: `gc-stock.c`, `regions.jl`,
       `region_census_bound_test.jl`, `TREE.md` arrive, no conflict. Build
       (D11). Run `showcase_tree.jl`, `region_census_bound_test.jl`, and one
       demonstrator (`dmr_demo.jl`, cores 24-27) as a smoke check. Commit. Push.
       This tip is **the truth**: `e37c9c7cc4` (merged without conflict; the
-      smoke check and the push wait for the build).
+      three smoke checks pass; pushed). The truth binary reports
+      `1.13.0-rc3.unknown`.
 - [x] Fetch upstream `release-1.13`; the tip is **the base**: `8f33e09afe`
       (`v1.13.0-rc4`). Pushed as `origin/release-1.13`. Note: `git fetch
       upstream release-1.13` makes no tracking ref on this clone; fetch with
@@ -263,9 +264,9 @@ the step forced.
       from the patch stack. No `Make.user`: every branch so far built with
       the defaults. Build (D11; a full build from a clean worktree takes
       about one hour on 8 cores) — waits for the truth build.
-- [ ] Check: `../julia-gc-regions/julia -e 'println(VERSION)'` prints
-      `1.13.0-rc4`; the four tags and `origin/release-1.13` exist on the
-      remote.
+- [x] Check: `../julia-gc-regions/julia -e 'println(VERSION)'` prints
+      `1.13.0-rc4.1` (commit `fe0c579e36`); the four tags and
+      `origin/release-1.13` exist on the remote.
 
 ### Step 1 — the flat port
 
@@ -277,14 +278,18 @@ One commit that holds the whole runtime on the new base, before any split.
       count between the applied tree and the truth equals the upstream
       rc3-to-rc4 count (`gc-stock.c` 4, `gf.c` 13, `julia_internal.h` 48,
       `staticdata.c` 12).
-- [ ] Build. Run every correctness script from the truth's `contrib/` folder
+- [x] Build. Run every correctness script from the truth's `contrib/` folder
       (copied to the scratchpad, `../../julia` replaced by the new binary):
       the 13 tests of the inventory plus `region_census_bound_test.jl`.
-      Each must pass as it passes on the truth.
+      Each must pass as it passes on the truth. Done: 14/14 `ALL PASS`, exit
+      0, on both binaries (cores 24-27, `MemoryMax=8G`, 600 s per script;
+      `lock_discipline_test.jl` runs with one thread, the two tree tests
+      with four).
 - [x] Commit `wip: the region runtime, flat, on rc4` on the scratch branch
       `gc-regions-flat`: `fe0c579e36` (committed before the build, so the
       build has a fixed tree to name; the script check follows).
-- [ ] Check: the script results equal the truth's, line for line.
+- [x] Check: the script results equal the truth's, line for line. The one
+      difference is the address that `stage3_safety.jl` prints.
 
 ### Step 2 — the file move and the critical review
 
