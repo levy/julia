@@ -5,7 +5,7 @@ module Regions
 
 export region_set, region_reset, region_reserve, @with_region, region_current, region_overflow, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
-       region_parent!, region_tree!, region_parent_of
+       region_parent!, region_tree!, region_parent_of, region_reset_global
 
 # Declare the region tree. A region's number is a topological order of the
 # tree: a parent's number is smaller than its child's. The default, until
@@ -66,6 +66,11 @@ end
 # -1 a root references in (debug mode), -2 quarantined, -7 a live child
 # region still exists (reset it first -- the tree precondition).
 @noinline region_reset(n::Int)   = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+# The cross-heap reset of a shared region (a trunk): stops the world and
+# resets every thread heap's instance as one act, because trunk objects on
+# different heaps legally reference each other. Same error codes as the
+# single-heap reset, plus -3 for a lost safepoint race.
+@noinline region_reset_global(n::Int) = UInt64(ccall(:jl_gc_region_reset_global, UInt64, (Cint,), n))
 @noinline region_check(n::Int)   = Int64(ccall(:jl_gc_region_check, Int64, (Cint,), n))
 @noinline region_collect(n::Int) = Int64(ccall(:jl_gc_region_collect, Int64, (Cint,), n))
 # The cooperative census: no stop-the-world. The driving loop calls it at

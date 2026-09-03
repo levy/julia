@@ -4073,6 +4073,8 @@ void jl_gc_install_task_region(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     heap->current_region = (uint8_t)n;
 }
 
+static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT;
+
 // Reset a region that is NOT current: every object in it ceases to exist, in
 // O(pages). Each page becomes the fresh bump page of its pool; a second page
 // of the same pool cannot chain through `newpages` (the allocator holds one
@@ -4102,10 +4104,20 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
             return (uint64_t)-1;
         }
     }
+    return region_reset_heap(jl_current_task, heap, n);
+}
+
+// The per-heap reset body, shared by the single-heap reset and the
+// cross-heap global reset. No precondition, no stop-the-world: the caller
+// owns those. Frees this heap's instance of region n and returns its pages.
+static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (!heap->regions[n].initialized)
+        return 0;
     // Everything in the region dies at a reset: its finalizers run first,
     // on whole objects; then the malloc'd data of its memories is freed;
     // the headers die with the pages below.
-    region_run_finalizers(jl_current_task, &heap->regions[n].finalizers, 0);
+    region_run_finalizers(ct, &heap->regions[n].finalizers, 0);
     region_free_malloced(&heap->regions[n].mallocarrays, 0);
     // The reset walks nothing. Every page of the region hangs on one chain,
     // the chain has a tail, and a fresh page's metadata is allowed to be
@@ -4128,6 +4140,68 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
     }
     region_mark_empty(heap, n);         // the parent may now be resettable
     return pages;
+}
+
+// Reset a region that several threads share: a trunk. Each thread filled its
+// own heap instance, and trunk objects on different heaps may reference each
+// other (same region, a legal edge), so one instance must not free while
+// another lives - the reset is one act across every heap, under the world
+// stopped. Returns the pages reclaimed, or an error code as (uint64_t)-k:
+// -2 the caller is in a window, -3 lost the safepoint race, -7 some heap
+// still has a live child of n.
+JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    if (n <= 0 || n >= JL_GC_MAX_REGIONS)
+        return 0;
+    if (ptls->gc_tls.heap.current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return (uint64_t)-2;                 // a window is open somewhere
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return (uint64_t)-2;
+
+    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+    if (!jl_safepoint_start_gc(ct)) {
+        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        return (uint64_t)-3;
+    }
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+
+    // The world is stopped. First the precondition on every heap: a heap
+    // whose instance of n still has a live child would dangle a leaf -> trunk
+    // edge, so refuse the whole reset and free nothing.
+    uint64_t result = 0;
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 != NULL && ((ptls2->gc_tls.heap.region_haschild_mask >> n) & 1)) {
+            result = (uint64_t)-7;
+            break;
+        }
+    }
+    if (result == 0) {
+        // Every heap passes: reset each instance.
+        for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+            jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+            if (ptls2 != NULL)
+                result += region_reset_heap(ct, &ptls2->gc_tls.heap, n);
+        }
+    }
+
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_safepoint_end_gc();
+    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+    return result;
 }
 
 JL_DLLEXPORT int jl_gc_region_current(void)

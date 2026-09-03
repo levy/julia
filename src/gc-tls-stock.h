@@ -37,7 +37,7 @@ typedef struct {
     // A region is a saved set of pool heads plus the pages claimed while it
     // was current. Swapping regions swaps the pool heads; the inlined
     // allocation fast path is untouched. Region 0 is the default heap.
-#define JL_GC_MAX_REGIONS 4
+#define JL_GC_MAX_REGIONS 8
     uint8_t current_region;
     uint8_t saved_region;   // parked by a stock collection: every thread
                             // runs the collection with region 0 installed
