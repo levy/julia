@@ -3663,6 +3663,37 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
 static _Atomic(int) region_windows_open = 0;
 
 
+// The escape barrier. Armed at the first region use; disarmed it costs
+// every pointer store one well-predicted load-and-branch. Armed, the
+// lowered write barrier calls jl_gc_region_wb, which compares the two
+// page tags: a store whose child is YOUNGER than its parent violates the
+// rule, and the child's region is quarantined - its reset and census
+// refuse from then on, so the escape costs memory, never corruption.
+JL_DLLEXPORT _Atomic(uint8_t) jl_region_barrier_on = 0;
+static _Atomic(uint32_t) region_quarantined_mask = 0;
+
+JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
+{
+    jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
+    jl_gc_pagemeta_t *cm = page_metadata((char*)child);
+    int pr = pm ? pm->region_n : 0;
+    int cr = cm ? cm->region_n : 0;
+    if (__likely(cr <= pr))
+        return;                     // young-to-old or same region: legal
+    uint32_t bit = (uint32_t)1 << cr;
+    uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
+    if (!(seen & bit))
+        jl_safe_printf("REGION-ESCAPE: an object of region %d was stored into "
+                       "region %d; region %d is quarantined - its reset and "
+                       "census now refuse, and its memory is retained\n",
+                       cr, pr, cr);
+}
+
+JL_DLLEXPORT int jl_gc_region_quarantined(int n)
+{
+    return (jl_atomic_load_relaxed(&region_quarantined_mask) >> n) & 1;
+}
+
 static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 {
     if (n == 0 || heap->regions[n].initialized)
@@ -3693,6 +3724,8 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     else if (n == 0 && old != 0)
         jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
     assert(n >= 0 && n < JL_GC_MAX_REGIONS);
+    if (__unlikely(!jl_atomic_load_relaxed(&jl_region_barrier_on)))
+        jl_atomic_store_release(&jl_region_barrier_on, 1);
     region_lazy_init(heap, n);
     // An open window pins the task: a region's pages live in the thread
     // heap, so a task holding a window must not migrate. The stickiness
@@ -3733,6 +3766,8 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
     assert(n > 0 && n < JL_GC_MAX_REGIONS && n != heap->current_region);
     if (!heap->regions[n].initialized)
         return 0;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return (uint64_t)-2;        // quarantined: the region retains its memory
     // Rule 5 debug mode: refuse the reset while an execution root still
     // references into the region. The check leaves clean marks, so the
     // caller can drop the reference and retry.
@@ -4066,6 +4101,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
         return -1;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return -5;      // quarantined: see jl_gc_region_wb
     if (heap->current_region != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)
         return -2;
@@ -4135,6 +4172,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
         return -1;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return -5;      // quarantined: see jl_gc_region_wb
     if (heap->current_region != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)
         return -2;

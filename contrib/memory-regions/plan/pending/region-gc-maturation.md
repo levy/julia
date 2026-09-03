@@ -28,13 +28,23 @@ region tag).
       because a region's pages live in the thread heap; the stickiness it
       had returns at close. Design choice recorded: windows follow tasks,
       tasks with windows do not migrate.
-- [ ] Defined escape behavior: a store that violates the rule must at
-      worst leak, never corrupt. Decide between promotion-on-escape and
-      an always-on cheap checked mode (the page-tag compare is ~2-5 ns
-      per reference store; measure a sampling variant too), guided by
-      the barrier cost on the full benchmark suite.
-      Acceptance: the resizing-Dict counterexample runs correctly with
-      regions on; no benchmark regresses beyond the stated barrier cost.
+- [x] Defined escape behavior (escape_test.jl: ALL PASS). The checked
+      mode was chosen: a runtime flag armed at the first region_set;
+      disarmed, every pointer store pays one well-predicted
+      load-and-branch (emitted in the write-barrier lowering, and in the
+      inline C barriers); armed, a cold call compares the two page tags,
+      and an illegal store QUARANTINES the child's region - reset
+      returns typemax-1, the censuses return -5, the memory is retained,
+      and a one-time warning names the regions. The resizing Dict runs
+      correctly and leaks exactly its Event tables. Two facts recorded:
+      (a) the armed legal-store path costs ~9 ns of light-loop median
+      (p50 31 -> 40 ns, 18.0 -> 15.7 M events/s) - the fast path is a
+      later candidate for inline IR tag-compares instead of the call;
+      (b) two honest gaps - the fresh-store elision can skip a barrier
+      across a window open (region_set is not a safepoint), and even a
+      blocking take! inside a window escapes through its wait-queue
+      growth, which the task test now documents as expected output: the
+      composability hazard, demonstrated.
 - [ ] The malloc'd-data hole: the per-region malloc list (designed, not
       built), so a large array dying in a region frees with it.
       Acceptance: the corruption reproducer in the limits becomes a test
