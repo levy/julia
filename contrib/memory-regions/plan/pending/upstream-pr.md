@@ -7,13 +7,16 @@ under "The road upstream"; this plan turns them into stages. Each stage
 has an acceptance test; a stage that cannot meet it blocks the PR, not
 the stage after it.
 
-## Stage 0 - engage before code
+## Stage 0 - internal only, for now
 
-- [ ] Post the upstream questions (README, "Questions for upstream")
-      as a Discourse thread / issue, with the record's numbers and the
-      one-region unification as the frame. The answers decide stage 5's
-      packaging (gc-stock patch, GC-interface extension, or MMTk plan).
-      Acceptance: a core developer names the acceptable packaging.
+The user's direction (2026-09-03): nothing goes to the project pages -
+no Discourse thread, no issue, no discussions. The work proceeds
+internally through the stages below, and the packaging question is
+decided by us when the work is ready: the working assumption is
+gc-stock patches shaped so that a later move behind the GC interface or
+into an MMTk plan stays cheap (the region state behind its own
+functions, no new invariant leaking into code that does not test the
+region tag).
 
 ## Stage 1 - soundness prerequisites (independent of upstream)
 
@@ -64,8 +67,9 @@ the stage after it.
 
 ## Stage 5 - packaging and the PR series
 
-- [ ] Per stage-0's answer: gc-stock patches, a GC-interface extension,
-      or an MMTk plan. Staged as the upstream questions already cut it:
+- [ ] Packaging decided internally when stages 1-4 stand: gc-stock
+      patches, a GC-interface extension, or an MMTk plan. Staged as the
+      upstream questions already cut it:
       PR 1 the per-page owner tag and per-owner page chains; PR 2 the
       single-mutator collection entry; PR 3 regions on top, API no-oped
       behind a build flag.
