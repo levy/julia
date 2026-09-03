@@ -3745,10 +3745,15 @@ static _Atomic(uint32_t) region_quarantined_mask = 0;
 
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
 {
-    jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
+    // Child first: a region-0 child is legal under any parent, and almost
+    // every store in ordinary code has one, so the common case pays one
+    // page-map walk, not two.
     jl_gc_pagemeta_t *cm = page_metadata((char*)child);
-    int pr = pm ? pm->region_n : 0;
     int cr = cm ? cm->region_n : 0;
+    if (__likely(cr == 0))
+        return;
+    jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
+    int pr = pm ? pm->region_n : 0;
     if (__likely(cr <= pr))
         return;                     // young-to-old or same region: legal
     uint32_t bit = (uint32_t)1 << cr;
