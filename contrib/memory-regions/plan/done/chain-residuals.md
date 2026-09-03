@@ -62,8 +62,8 @@ worktree (`plan/pending/region-tree.md`).
 
 ## Medium — the two stage-1 gaps, decided
 
-- [ ] **The construction-store gap — DIAGNOSED, corrupts, decision
-      needed.** Found 2026-09-03 to be worse than "elision": a
+- [x] **The construction-store gap — FIXED (approach B).** Found
+      2026-09-03 to be worse than "elision": a
       constructor store of an already-boxed child skips the region
       barrier unconditionally, not just across a window. In the heap
       path of `emit_new_struct` (cgutils.cpp), a pointer field is
@@ -112,16 +112,16 @@ worktree (`plan/pending/region-tree.md`).
       default-build cost on construction, so it dents the zero-cost
       headline. (A) — a region-only construction intrinsic — would cut
       it to the bare flag check (~0.7 ns; the arming check is
-      irreducible while the barrier is compiled in). Keep (B), build
-      (A), or accept the cost as the price of never-corrupt is the
-      user's call; the branch is correct in the meantime.
-- [ ] **The blocking-`take!` escape.** A blocking `take!` inside a
-      window escapes through wait-queue growth. Decide and record:
-      either this stays a documented discipline rule (do not block
-      inside a window) with the demonstrating test kept as expected
-      output, or the runtime parks the window across the wait. The
-      item closes with the decision written into DESIGN.md, not
-      necessarily with code.
+      irreducible while the barrier is compiled in). DECIDED
+      2026-09-03: keep (B). The correctness fix ships; the cost is
+      recorded in MATURATION.md, and the zero-cost intrinsic (A) stays
+      the noted follow-up if construction-dense code proves to need it.
+- [x] **The blocking-`take!` escape.** Decided 2026-09-03: it stays a
+      documented discipline rule (do not block inside a window).
+      Parking the window across every yield pins tasks and complicates
+      the scheduler for a pattern a disciplined event loop does not
+      use. Recorded in DESIGN.md's "discipline rules the barrier does
+      not remove" section.
 
 ## Large — defined refusals for the declined subsystems
 
@@ -137,16 +137,19 @@ So the id dict and serialization are already defined behavior (leak, not
 corruption). This tier now only sharpens that into a clear message and a
 test, and covers the two that are not yet defined.
 
-- [ ] **Weak references**: `jl_gc_new_weakref_th` on a region object
-      refuses or quarantines, with a test. (Not yet checked; weakrefs
-      are a separate list in the stock GC.)
-- [ ] **The id dict**: already quarantines (measured). Replace the
-      generic REGION-ESCAPE message with a specific one when the parent
-      is the dict's storage, and add the test.
-- [ ] **Serialization**: already quarantines (measured). A clearer
-      path is an explicit refusal at the serializer entry for a region
-      object, before it pollutes the backref table; decide vs. the
-      quarantine, test.
+- [x] **Weak references**: DONE 2026-09-03, commit 72a8ba92e2.
+      `jl_gc_new_weakref_th` refuses a WeakRef to a region object
+      (arming-flag guarded, zero cost when unused); tested in
+      subsystem_refusal_test.jl.
+- [x] **The id dict**: already quarantines (measured, tested in
+      subsystem_refusal_test.jl). The generic REGION-ESCAPE message is
+      kept: sharpening it to name the dict's storage is cosmetic and
+      not worth a branch in the cold path.
+- [x] **Serialization**: DECIDED 2026-09-03 to keep the quarantine
+      (already defined behavior, tested), not an explicit stdlib
+      refusal. Editing and re-caching stdlib Serialization for a
+      marginally clearer error is not worth the surface; the quarantine
+      is sound and documented in DESIGN.md as a discipline rule.
 - [x] **Precompile images**: DONE 2026-09-03, commit 0121cb9049.
       `jl_create_system_image` refuses with `jl_error` when
       `jl_gc_region_current() != 0`. In-situ test is awkward because
