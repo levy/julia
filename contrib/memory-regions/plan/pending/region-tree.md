@@ -124,14 +124,16 @@ reads them; one testable increment.
       the two-level trunk/leaves shape needs only leaf reset plus the
       global trunk reset; a deeper tree wants it. The census on a
       subtree (`subtree_mask`) is deferred with it.
-- [ ] The three-thread program, end to end: three threads share one
-      trunk region under application locks, each thread allocates and
-      quick-resets its own leaf, and the trunk resets once at the end
-      across every heap. The test also proves the lock discipline: a
-      lock-held push into a shared trunk structure must run with the
-      trunk current — done with the leaf current, the resized backing
-      memory lands in the leaf and the barrier must quarantine it (the
-      stage-1 Dict-resize hazard, now in its multi-thread coat).
+- [x] LANDED 2026-09-03. The three-thread program end to end
+      (multithread_tree_test.jl): three threads share one trunk under a
+      lock, each quick-resets its own distinct-id leaf 50 rounds, the
+      trunk survives, and it resets once globally across every heap.
+      The lock discipline is a separate focused test
+      (lock_discipline_test.jl): a trunk vector grown with the TRUNK
+      current stays clean, and grown under a LEAF window it stores a
+      leaf element into the trunk's backing memory — an escape that
+      quarantines the leaf (the stage-1 Dict-resize hazard in its
+      multi-thread coat).
 
 ## Stage 4 — evidence
 
