@@ -81,36 +81,42 @@ three interleaved runs on the isolated core:
 | --- | --- |
 | append | 1.01 |
 | strings | 1.00 |
-| binary tree (BST insert) | 1.04 |
-| bigint pollard | 1.05 |
-| big_arrays single_ref | 1.08 |
-| big_arrays many_refs | 1.24 |
+| binary tree (BST insert) | 1.01 |
+| bigint pollard | 1.06 |
+| big_arrays single_ref | 0.98 |
+| big_arrays many_refs | 0.92 |
 
 Read honestly: on the four realistic workloads the region runtime is
-within measurement noise of vanilla — the zero-cost claim holds there.
-The two `big_arrays` benchmarks are GC stressors that touch 100-million
--element structures and do almost nothing else, and they expose the two
-places the region machinery adds a per-item cost:
+within measurement noise of vanilla, and the two `big_arrays` stressors
+— 100-million-element structures, almost nothing else — sit at vanilla
+or below. The zero-cost claim holds on the whole set.
 
-- `single_ref` (mark-bound: one array, 100 M identical references) cost
-  the scoped-census page-tag check once per array slot; hoisting it out
-  of the mark loop took it from 1.19 to 1.08, the rest being the leaf
-  path and noise.
-- `many_refs` (allocation-bound: 100 M distinct tiny objects) costs the
-  one extra pointer load the region fast path carries (`active_pools`
-  instead of the inline `norm_pools`); at 100 M allocations of nothing
-  else it is 1.24, and it is the reason a stock-only build matters.
+The stressors are mark-bound, and the seam that decides them is
+inlining, not a check: the work-stealing queue's push and pop copy each
+element with a `memcpy` whose size is a call parameter. The queue
+operations are `FORCE_INLINE` and the scoped-census filter is outlined
+(`gc_scoped_claim`, NOINLINE), so the mark drain compiles as in vanilla
+— the size is a constant, the copy folds to one store, and a stock mark
+pays one predicted branch per object for the region machinery. Left to
+the compiler's inline budget, the filter's body tips the drain over and
+every marked object pays a real call and a size-checked copy; that is
+worth about 40 % of a 35 M-object mark, and no per-slot load hoist can
+buy it back.
+
+`many_refs` lands below 1.0 because the allocation phase of that shape
+runs faster on this binary (155 ms against vanilla's 333 ms for 35 M
+small objects, collector off); that gain is measured but not explained.
 
 **Two escape hatches to literal zero.** The store barrier compiles out
 (`make` with `JL_NO_REGION_STORE_BARRIER`) for a build that never wants
-regions; the allocation indirection is the remaining target for the same
-treatment. Start time is unchanged (0.06 s both), and the runtime library
-grows 0.8 % (11.62 → 11.72 MB).
+regions; the allocation indirection can get the same treatment, though
+it measures at no cost on this set. Start time is unchanged (0.06 s
+both), and the runtime library grows 0.8 % (11.62 → 11.72 MB).
 
 ## Where it stands
 
 Stages 1–3 are done and proven; stage 4 is measured. What remains before
-this could be a feature is not correctness but polish and scope: the
-allocation fast path's zero-cost mode, a broader benchmark sweep, and the
-subsystems the prototype still declines (weak references, the id dict,
-serialization, precompile images). The plan carries the list.
+this could be a feature is not correctness but polish and scope: a
+broader benchmark sweep, and the subsystems the prototype still declines
+(weak references, the id dict, serialization, precompile images). The
+plan carries the list.

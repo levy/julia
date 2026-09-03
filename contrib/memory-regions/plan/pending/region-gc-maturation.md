@@ -124,11 +124,25 @@ region's own boundaries. Six suites green on every item.
 - [x] The GCBenchmarks serial set, vanilla v1.13.0-rc3 against this
       build with regions unused, interleaved on the isolated core: the
       four realistic benches within noise (append 1.01, strings 1.00,
-      BST 1.04, pollard 1.05); the two big_arrays GC-stressors show the
-      machinery's per-item cost (single_ref 1.08 mark - hoisted down from
-      1.19; many_refs 1.24 alloc-fast-path indirection). NOT a suite-wide
-      zero: honest residual on 100M-object microbenches, the reason the
-      stock-only compile mode exists.
+      BST 1.01, pollard 1.06); the two big_arrays GC-stressors at
+      vanilla or below (single_ref 0.98, many_refs 0.92). A suite-wide
+      zero.
+      - History of the stressor cost, closed 2026-09-03. The first
+        readings (single_ref 1.08, many_refs 1.24) were misattributed:
+        not the per-slot page-tag load and not the alloc-fast-path
+        indirection. A signal-based profile of the mark (perf was
+        blocked) found ~10 % of collection time in a fortified memcpy
+        inside the work-stealing queue operations: the scoped filter's
+        inline body pushed the mark drain past GCC's inline budget, the
+        queue push/pop stayed real calls, and their element memcpy -
+        size a runtime parameter - stayed a real memcpy, ~6 ns per
+        object, 35 M times per mark. Two load hoists (objarray commit
+        9620d5972d, and an uncommitted memory8/16 twin, now dropped)
+        measured no change because the load was never the cost. The fix:
+        FORCE_INLINE on ws_queue_push/pop and gc_ptr_queue_push/pop,
+        and the scoped filter outlined into gc_scoped_claim (NOINLINE).
+        Mark time on the 35 M-object probe: vanilla 967 ms, before the
+        fix 1369 ms, after 955 ms. All seven region suites pass.
 - [x] binary_tree and linked/list with a @with_region wrap
       (showcase_*.jl): 0.32 s/0 coll vs 0.47 s/31, and 0.42 s/0 coll vs
       2.19 s. Wholesale death, the shape the regions are for.

@@ -1720,8 +1720,10 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
     }
 }
 
-// Push a work item to the queue
-STATIC_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
+// Push a work item to the queue. Forced inline: the mark drain inlines a
+// large body, and the inline budget would otherwise leave this a real
+// call on the per-object hot path.
+FORCE_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
 #ifdef JL_DEBUG_BUILD
     if (obj == gc_findval)
@@ -1733,8 +1735,8 @@ STATIC_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_
         arraylist_push(&mq->reclaim_set, old_a);
 }
 
-// Pop from the mark queue
-STATIC_INLINE jl_value_t *gc_ptr_queue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
+// Pop from the mark queue. Forced inline for the same reason as the push.
+FORCE_INLINE jl_value_t *gc_ptr_queue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
     ws_queue_pop(&mq->ptr_queue, &v, sizeof(jl_value_t*));
@@ -1811,12 +1813,67 @@ STATIC_INLINE int gc_scoped_setmark(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
     return 1;
 }
 
-// Enqueue an unmarked obj. last bit of `nptr` is set if `_obj` is young
+// The scoped-census claim, outlined and NOINLINE. The filter runs only
+// during a scoped census, but inline it would sit in every mark-loop
+// call site of the claim and bloat the drain loop that every stock
+// collection runs. A census pays one call per object, cheap relative to
+// the filter work itself.
+static NOINLINE void gc_scoped_claim(jl_gc_markqueue_t *mq, jl_value_t *obj,
+                           jl_taggedvalue_t *o, int scoped) JL_NOTSAFEPOINT
+{
+    jl_gc_pagemeta_t *meta = page_metadata((char*)o);
+    int in_region = (meta != NULL && meta->region_n == scoped);
+    if (!in_region) {
+        // Older regions are implicitly live; only a task earns a walk,
+        // for its stack. Record it for mark restoration.
+        if (jl_typeof(obj) != (jl_value_t*)jl_task_type)
+            return;
+        // Claim the task for this scan whatever its current bits: a
+        // stock collection leaves tasks OLD-MARKED, and a mark-based
+        // claim would fail then - the stack would never be scanned and
+        // the census would free the whole live set. The extra list is
+        // the claim; membership is the dedup; the prior bits are saved
+        // and restored after the scan.
+        uintptr_t tag = o->header;
+        if (!gc_marked(tag)) {
+            if (!gc_scoped_setmark(o))
+                return;
+        }
+        else {
+            for (int i = 0; i < region_scoped_extra_n; i++)
+                if (region_scoped_extra[i] == o)
+                    return;         // already queued this scan
+        }
+        if (region_scoped_extra_n < REGION_SCOPED_MAX_EXTRA) {
+            region_scoped_extra_bits[region_scoped_extra_n] = (uint8_t)(tag & 0x3);
+            region_scoped_extra[region_scoped_extra_n++] = o;
+        }
+        else {
+            region_scoped_extra_overflow = 1;
+        }
+        gc_ptr_queue_push(mq, obj);
+        return;
+    }
+    // A LEAF object -- no pointer fields -- needs only its mark bit and
+    // the page metadata; the queue round trip buys nothing. This is
+    // most of a record-heavy region's live set.
+    jl_datatype_t *vt = (jl_datatype_t*)jl_typeof(obj);
+    const jl_datatype_layout_t *layout = vt->layout;
+    if (layout != NULL && layout->npointers == 0) {
+        if (gc_scoped_setmark(o))
+            gc_setmark_pool_(jl_current_task->ptls, o, GC_MARKED, meta);
+        return;
+    }
+    if (gc_scoped_setmark(o))
+        gc_ptr_queue_push(mq, obj);
+}
+
+// Enqueue an unmarked obj. last bit of `nptr` is set if `_obj` is young.
 // The claim, with the scoped-census state as a parameter: the hot mark
 // loops hoist the load and pass a literal 0, so a stock mark's per-slot
-// cost is exactly vanilla - the per-slot load-and-branch was measured as
-// +17 % on a mark-bound array benchmark. The wrapper below keeps the
-// old name and behavior for every other caller.
+// cost is exactly vanilla. The scoped filter lives in gc_scoped_claim,
+// outlined, so this function stays small in every call site. The wrapper
+// below keeps the old name and behavior for every other caller.
 STATIC_INLINE void gc_try_claim_and_push_(jl_gc_markqueue_t *mq, void *_obj,
                            uintptr_t *nptr, int scoped) JL_NOTSAFEPOINT
 {
@@ -1825,53 +1882,7 @@ STATIC_INLINE void gc_try_claim_and_push_(jl_gc_markqueue_t *mq, void *_obj,
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
     if (__unlikely(scoped != 0)) {
-        jl_gc_pagemeta_t *meta = page_metadata((char*)o);
-        int in_region = (meta != NULL && meta->region_n == scoped);
-        if (!in_region) {
-            // Older regions are implicitly live; only a task earns a walk,
-            // for its stack. Record it for mark restoration.
-            if (jl_typeof(obj) != (jl_value_t*)jl_task_type)
-                return;
-            // Claim the task for this scan whatever its current bits: a
-            // stock collection leaves tasks OLD-MARKED, and a mark-based
-            // claim would fail then - the stack would never be scanned and
-            // the census would free the whole live set. The extra list is
-            // the claim; membership is the dedup; the prior bits are saved
-            // and restored after the scan.
-            {
-                uintptr_t tag = o->header;
-                if (!gc_marked(tag)) {
-                    if (!gc_scoped_setmark(o))
-                        return;
-                }
-                else {
-                    for (int i = 0; i < region_scoped_extra_n; i++)
-                        if (region_scoped_extra[i] == o)
-                            return;         // already queued this scan
-                }
-                if (region_scoped_extra_n < REGION_SCOPED_MAX_EXTRA) {
-                    region_scoped_extra_bits[region_scoped_extra_n] = (uint8_t)(tag & 0x3);
-                    region_scoped_extra[region_scoped_extra_n++] = o;
-                }
-                else {
-                    region_scoped_extra_overflow = 1;
-                }
-                gc_ptr_queue_push(mq, obj);
-            }
-            return;
-        }
-        // A LEAF object -- no pointer fields -- needs only its mark bit and
-        // the page metadata; the queue round trip buys nothing. This is
-        // most of a record-heavy region's live set.
-        jl_datatype_t *vt = (jl_datatype_t*)jl_typeof(obj);
-        const jl_datatype_layout_t *layout = vt->layout;
-        if (layout != NULL && layout->npointers == 0) {
-            if (gc_scoped_setmark(o))
-                gc_setmark_pool_(jl_current_task->ptls, o, GC_MARKED, meta);
-            return;
-        }
-        if (gc_scoped_setmark(o))
-            gc_ptr_queue_push(mq, obj);
+        gc_scoped_claim(mq, obj, o, scoped);
         return;
     }
     if (!gc_old(o->header) && nptr)
