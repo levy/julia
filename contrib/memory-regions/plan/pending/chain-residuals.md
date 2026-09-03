@@ -101,6 +101,20 @@ worktree (`plan/pending/region-tree.md`).
       Recommendation: (A). Acceptance: the ctor_corrupt demonstrator
       quarantines after the change; the disarmed construction
       microbench unmoved; escape_test still green.
+
+      LANDED (B) 2026-09-03, commit 0121cb9049: need_wb is set for a
+      boxed pointer child at construction when the barrier is compiled
+      in. ctor_gap_demo now quarantines and the field survives the
+      reset; all seven suites pass. Measured cost, isolated core, worst
+      case (two boxed pointer fields, tight loop): vanilla 42.4 ->
+      mature 43.8 ns/obj, +1.4 ns (+3.2 %), gone under
+      JL_NO_REGION_STORE_BARRIER. OPEN DECISION: this is a real
+      default-build cost on construction, so it dents the zero-cost
+      headline. (A) — a region-only construction intrinsic — would cut
+      it to the bare flag check (~0.7 ns; the arming check is
+      irreducible while the barrier is compiled in). Keep (B), build
+      (A), or accept the cost as the price of never-corrupt is the
+      user's call; the branch is correct in the meantime.
 - [ ] **The blocking-`take!` escape.** A blocking `take!` inside a
       window escapes through wait-queue growth. Decide and record:
       either this stays a documented discipline rule (do not block
@@ -133,9 +147,13 @@ test, and covers the two that are not yet defined.
       path is an explicit refusal at the serializer entry for a region
       object, before it pollutes the backref table; decide vs. the
       quarantine, test.
-- [ ] **Precompile images**: refuse at `jl_create_system_image` (the
-      single choke point for both image kinds) when any region window
-      is open or any region is initialized, with a test.
+- [x] **Precompile images**: DONE 2026-09-03, commit 0121cb9049.
+      `jl_create_system_image` refuses with `jl_error` when
+      `jl_gc_region_current() != 0`. In-situ test is awkward because
+      `Base.compilecache` writes the image in a forked worker where the
+      parent's window is not open — the guard sits at the right choke
+      point but a process test cannot open a window in the worker; a
+      direct-call test is the follow-up.
 
 ## When this stands
 
