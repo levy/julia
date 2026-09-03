@@ -3683,15 +3683,46 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
     uint32_t bit = (uint32_t)1 << cr;
     uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
     if (!(seen & bit))
-        jl_safe_printf("REGION-ESCAPE: an object of region %d was stored into "
-                       "region %d; region %d is quarantined - its reset and "
+        jl_safe_printf("REGION-ESCAPE: a %s of region %d was stored into a %s "
+                       "of region %d; region %d is quarantined - its reset and "
                        "census now refuse, and its memory is retained\n",
-                       cr, pr, cr);
+                       jl_typeof_str((jl_value_t*)child), cr,
+                       jl_typeof_str((jl_value_t*)parent), pr, cr);
 }
 
 JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 {
     return (jl_atomic_load_relaxed(&region_quarantined_mask) >> n) & 1;
+}
+
+int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
+{
+    int cr = ptls->gc_tls.heap.current_region;
+    if (__likely(cr == 0))
+        return 0;
+    small_arraylist_push(&ptls->gc_tls.heap.regions[cr].mallocarrays,
+                         (void*)(((uintptr_t)m) | !!isaligned));
+    return 1;
+}
+
+// Free the malloc'd data of a region's memories: all of it at a reset,
+// only the dead at a census (the caller filters by mark).
+static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_NOTSAFEPOINT
+{
+    size_t n = 0, l = lst->len;
+    void **items = lst->items;
+    while (n < l) {
+        jl_genericmemory_t *m = (jl_genericmemory_t*)((uintptr_t)items[n] & ~(uintptr_t)1);
+        if (only_unmarked && gc_marked(jl_astaggedvalue(m)->bits.gc)) {
+            n++;
+            continue;
+        }
+        int isaligned = (uintptr_t)items[n] & 1;
+        jl_gc_free_memory(m, isaligned);
+        l--;
+        items[n] = items[l];
+    }
+    lst->len = l;
 }
 
 static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
@@ -3709,6 +3740,7 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
     heap->regions[n].n_pages = 0;
     heap->regions[n].n_fresh = 0;
     heap->regions[n].overflow_pages = 0;
+    small_arraylist_new(&heap->regions[n].mallocarrays, 0);
     heap->regions[n].initialized = 1;
 }
 
@@ -3779,6 +3811,9 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
             return (uint64_t)-1;
         }
     }
+    // Everything in the region dies at a reset, the malloc'd data of its
+    // memories included; their headers die with the pages below.
+    region_free_malloced(&heap->regions[n].mallocarrays, 0);
     // The reset walks nothing. Every page of the region hangs on one chain,
     // the chain has a tail, and a fresh page's metadata is allowed to be
     // stale because gc_add_page resets a page when it claims it. So: clear
@@ -4027,6 +4062,9 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
         pools[i].freelist = NULL;
         fl_tail[i] = &pools[i].freelist;
     }
+    // The marks are still set here: free the malloc'd data of the DEAD
+    // memories before the page walk clears the bits.
+    region_free_malloced(&heap->regions[n].mallocarrays, 1);
     jl_gc_pagemeta_t *kept = NULL;
     jl_gc_pagemeta_t *kept_tail = NULL;
     jl_gc_pagemeta_t *pg = heap->regions[n].pages;

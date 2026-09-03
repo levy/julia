@@ -45,10 +45,21 @@ region tag).
       blocking take! inside a window escapes through its wait-queue
       growth, which the task test now documents as expected output: the
       composability hazard, demonstrated.
-- [ ] The malloc'd-data hole: the per-region malloc list (designed, not
-      built), so a large array dying in a region frees with it.
-      Acceptance: the corruption reproducer in the limits becomes a test
-      that passes.
+- [x] The malloc'd-data hole (malloced_test.jl: ALL PASS, single- and
+      multi-threaded). A memory with malloc'd data allocated inside a
+      region goes to the region's own list, never the common one (whose
+      stale entry once read recycled pages - the old corruption). The
+      reset frees all of the region's data (RSS-bounded over 20 000
+      32 KB churn cycles); the census frees the dead and keeps the live,
+      filtered by mark before the page walk clears the bits. Found on
+      the way, two enforcements the barrier delivered by itself: a
+      region object stored into a module binding (the old soft rule "a
+      global may not hold a region object", now with defined behavior),
+      and a window store into a compiler Box - a captured local,
+      reassigned, is boxed in region 0 at function entry, and the box
+      store escapes. The warning now names both types, which is how the
+      box was found; the composability hazards are not hypothetical,
+      they are the first three things the barrier caught.
 - [ ] The finalizer story: either per-region finalizer lists run at
       reset/census, or a documented, catchable refusal.
 

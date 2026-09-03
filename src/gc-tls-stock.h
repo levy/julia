@@ -56,6 +56,11 @@ typedef struct {
                                            // parks the whole chain in O(1)
         uint32_t n_pages;                  // pages on `pages`
         uint32_t n_fresh;                  // pages on `fresh_pages`
+        small_arraylist_t mallocarrays;    // memories with malloc'd data
+                                           // allocated in this region: their
+                                           // data is freed by the reset (all
+                                           // of it) and by the census (the
+                                           // dead), never by the stock sweep
         uint8_t initialized;
         uint32_t overflow_pages;           // pages beyond one per pool at reset
     } regions[JL_GC_MAX_REGIONS];

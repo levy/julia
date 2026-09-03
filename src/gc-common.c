@@ -607,6 +607,11 @@ size_t jl_genericmemory_nbytes(jl_genericmemory_t *m) JL_NOTSAFEPOINT
 
 // tracking Memorys with malloc'd storage
 void jl_gc_track_malloced_genericmemory(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned){
+    // A memory allocated inside a region belongs to the region's own
+    // list: its header dies with the region's pages, so the common list
+    // must never hold it (a stale entry there reads recycled memory).
+    if (jl_gc_region_track_malloced(ptls, m, isaligned))
+        return;
     // This is **NOT** a GC safe point.
     void *a = (void*)((uintptr_t)m | !!isaligned);
     small_arraylist_push(&ptls->gc_tls_common.heap.mallocarrays, a);
