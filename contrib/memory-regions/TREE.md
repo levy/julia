@@ -66,11 +66,34 @@ The tree holds the maturation baseline: within noise of vanilla, the two
 stressors at or below it. The six chain regression suites stay green under
 the capacity bump.
 
+## The showcase: sibling leaves keep the collector out (`showcase_tree.jl`)
+
+The tree's distinguishing win over the chain is sibling isolation. The chain
+is a total order, so two workers' regions are always ancestor-and-descendant:
+one may reference the other, and neither can reset while the other references
+in. The tree lets the workers' leaves be siblings — declared children of the
+same parent — mutually isolated, each reset per event with no coordination.
+
+A mini event loop makes it concrete: a permanent network (region 0), N=3
+worker tasks each owning a sibling leaf and a disjoint stripe of nodes. Every
+event allocates a burst of transient messages (each referencing a node, a
+legal leaf → region-0 edge), updates node state, then resets its leaf. The
+same workload runs again with no regions. Three runs, `-t4`, cores 24–27:
+
+| | wall | stock collections | GC time |
+| --- | --- | --- | --- |
+| tree (per-leaf reset) | ~6.5 ms | **0** | 0.0 ms |
+| stock collector | ~8.0 ms | 6 | ~0.9 ms |
+
+Same final result, no quarantine. The per-event leaf reset frees each event's
+garbage wholesale, so it never reaches the stock collector — zero collections
+across the whole loop, against six for the same churn under the collector, and
+the leaves are mutually isolated by declaration, which the chain's total order
+could not express.
+
 ## Where it stands
 
-The tree's semantics, its reset, and its multi-thread reset are done and
-proven. Deferred: `region_subtree_reset` and the subtree census (a two-level
-trunk/leaves shape needs neither; a deeper tree wants them), the 64-region
-lazy-TLS capacity (8 suffices for a trunk plus per-thread leaves), and the
-full simulator showcase (the shape is already exercised by
-`multithread_tree_test.jl`; a worked event-loop demonstrator is polish).
+The tree's semantics, its reset, its multi-thread reset, and its showcase are
+done and proven. Deferred: `region_subtree_reset` and the subtree census (a
+two-level trunk/leaves shape needs neither; a deeper tree wants them) and the
+64-region lazy-TLS capacity (8 suffices for a trunk plus per-thread leaves).

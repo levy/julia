@@ -145,12 +145,15 @@ reads them; one testable increment.
       barrier's cold path (a mask load) and the region count (4 -> 8),
       neither on a regions-unused path; the six regression suites stay
       green.
-- [ ] The showcase for the shape: a worked simulator trunk with
-      per-task event leaves. DEFERRED as polish — the shape is already
-      exercised end to end by multithread_tree_test.jl (shared trunk,
-      per-task distinct leaves, independent leaf resets, global trunk
-      reset). A worked event-loop demonstrator with throughput numbers
-      is the remaining nicety, not a proof gap.
+- [x] LANDED 2026-09-03 (showcase_tree.jl, table in TREE.md). A mini
+      event loop: a permanent network (region 0), three worker tasks
+      each owning a SIBLING leaf and a disjoint node stripe, every event
+      allocating a burst of transients and resetting its leaf. Against
+      the same workload with no regions, three runs on `-t4`: the tree
+      does zero stock collections against six, same result, no
+      quarantine, and ~6.5 vs ~8.0 ms. The sibling leaves are mutually
+      isolated by declaration — the win the chain's total order cannot
+      express.
 
 ## When the stages stand
 
