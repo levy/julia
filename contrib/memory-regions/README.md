@@ -3,24 +3,25 @@
 **The longest pause any event took, in one unit — the number that decides
 whether a hard real-time loop is possible.** The same loop, 5 million
 events, ~1.7 KB of garbage per event, on an isolated core under the
-real-time class, no page fault and no preemption inside the loop:
+real-time class, no page fault and no preemption inside the loop, every
+collector's pause charged to the event at whose boundary it runs:
 
-## stock collector: 3 905 µs
+## stock collector: 3 957 µs
 
-## regions, census every 100 000 events: 53 µs
+## regions, census every 100 000 events: 94 µs
 
-## regions, no census: 16 µs
+## regions, no census: 12 µs
 
 ![The longest pause any event took, on a log axis](plots/max_pause.svg)
 
-The stock number is one of its 300 collections, and scheduling the
-stock collector by hand does not change it at this garbage rate (the
-tables have that fourth column); the census number is the census itself,
-at a slice boundary the loop owns; the no-census number is the largest
-slice-boundary event. At ~100 B of garbage per event the three read
-3 690, 48, and 15 µs. The plots, the tables, and the section on the
-environment below say exactly how the numbers were made; `plot_realworld.py`
-redraws the plots from the logs.
+The stock number is one of its 300 collections, and scheduling the stock
+collector by hand does not change its class (3.7 ms — the tables have
+that fourth column); the census number is the census itself, at a slice
+boundary the loop owns; the no-census number is the largest
+slice-boundary event. At ~100 B of garbage per event the four columns'
+maxima read 3 886, 3 566, 53, and 15 µs. The plots, the tables, and
+the section on the environment below say exactly how the numbers were
+made; `plot_realworld.py` redraws the plots from the logs.
 
 The runtime of this branch adds regions to the stock collector — sets of
 objects with one common lifetime, kept safe by one rule: a reference may
@@ -88,58 +89,59 @@ the two maxima are equal.
 
 ![The latency distribution: fraction of events at least this slow, three collectors, two garbage classes](plots/latency_ccdf.svg)
 
+![The latency distribution: fraction of events at least this slow, four collectors, two garbage classes](plots/latency_ccdf.svg)
+
 **~1.7 KB of garbage per event (recording-class), slice B = 100:**
 
 | | stock, heuristics | stock, scheduled | regions, census every 100 k | regions, no census |
 | --- | --- | --- | --- | --- |
-| events / s | 7.16 M | 7.13 M | 15.54 M | 15.63 M |
-| p50 | 60 ns | 60 ns | 40 ns | 40 ns |
-| p99 | 371 ns | 370 ns | 70 ns | 70 ns |
-| p99.9 | 521 ns | 521 ns | 80 ns | 230 ns |
-| p99.99 | 761 ns | 671 ns | 211 ns | 411 ns |
-| max | 3.9 ms | 3.9 ms | 52.8 µs | 15.6 µs |
-| events over 100 µs | 300 | 273 | 0 | 0 |
-| collections | 300, the heuristics' | 50 scheduled (p50 0.25 ms, max 4.242 ms) + automatic to 324; final full 4.41 ms | 50 censuses, p50 0.036 ms, max 0.052 ms | 0 |
+| events / s | 7.03 M | 6.79 M | 15.22 M | 14.49 M |
+| p50 | 60 ns | 60 ns | 40 ns | 50 ns |
+| p99 | 380 ns | 381 ns | 70 ns | 80 ns |
+| p99.9 | 531 ns | 531 ns | 80 ns | 240 ns |
+| p99.99 | 761 ns | 742 ns | 201 ns | 411 ns |
+| max | 4.0 ms | 3.7 ms | 94.4 µs | 12.2 µs |
+| events over 100 µs | 300 | 330 | 0 | 0 |
+| collections | 300, the heuristics' | 50 scheduled (p50 0.251 ms, max 3.716 ms) + automatic to 331; final full 4.2 ms | 50 censuses, p50 0.036 ms, max 0.093 ms | 0 |
 | involuntary context switches inside the loop | 0 | 0 | 0 | 0 |
 | page faults inside the loop | 0 | 0 | 0 | 0 |
-| peak RSS, the 512 MB reserve and the locked image included | 1253.1 MB | 1244.1 MB | 1204.4 MB | 1204.5 MB |
+| peak RSS, the 512 MB reserve and the locked image included | 1244.6 MB | 1244.5 MB | 1205.0 MB | 1204.9 MB |
 
 **~100 B of garbage per event (light), slice B = 1000:**
 
 | | stock, heuristics | stock, scheduled | regions, census every 100 k | regions, no census |
 | --- | --- | --- | --- | --- |
-| events / s | 16.88 M | 16.54 M | 18.02 M | 18.3 M |
-| p50 | 30 ns | 31 ns | 31 ns | 30 ns |
-| p99 | 50 ns | 41 ns | 41 ns | 41 ns |
-| p99.9 | 200 ns | 81 ns | 61 ns | 210 ns |
-| p99.99 | 420 ns | 220 ns | 120 ns | 321 ns |
-| max | 3.7 ms | 15.1 µs | 47.8 µs | 14.5 µs |
-| events over 100 µs | 35 | 0 | 0 | 0 |
-| collections | 35, the heuristics' | 50 scheduled (p50 0.319 ms, max 3.406 ms) + automatic to 51; final full 3.4 ms | 50 censuses, p50 0.036 ms, max 0.047 ms | 0 |
+| events / s | 16.57 M | 15.96 M | 17.64 M | 16.48 M |
+| p50 | 40 ns | 40 ns | 40 ns | 40 ns |
+| p99 | 51 ns | 50 ns | 41 ns | 51 ns |
+| p99.9 | 160 ns | 90 ns | 61 ns | 201 ns |
+| p99.99 | 321 ns | 210 ns | 110 ns | 361 ns |
+| max | 3.9 ms | 3.6 ms | 53.0 µs | 15.0 µs |
+| events over 100 µs | 34 | 50 | 0 | 0 |
+| collections | 34, the heuristics' | 50 scheduled (p50 0.329 ms, max 3.566 ms) + automatic to 51; final full 3.83 ms | 50 censuses, p50 0.038 ms, max 0.052 ms | 0 |
 | involuntary context switches inside the loop | 0 | 0 | 0 | 0 |
 | page faults inside the loop | 0 | 0 | 0 | 0 |
-| peak RSS, the 512 MB reserve and the locked image included | 1244.1 MB | 1204.5 MB | 1204.4 MB | 1204.3 MB |
+| peak RSS, the 512 MB reserve and the locked image included | 1244.5 MB | 1244.4 MB | 1204.9 MB | 1205.0 MB |
 
-**How to read it.** At recording-class garbage the regions win every row:
-2.2× the throughput, a faster median (40 against 60 ns), every tail
-percentile (p99 70 against 371 ns, p99.9 80 against 521 ns), a maximum of
-53 µs — the census itself, fifty of them at a median of 36 µs —
-against 3.9 ms and 300 stock collections, zero events over the 100 µs
-target against 300, and less memory. Scheduling the stock collector by
-hand (`GC.gc(false)` at the census cadence — the second column) changes
-nothing here: the nursery fills long before each boundary and the
-heuristics fire 274 times anyway, inside events. At light garbage the
-stock nursery keeps the median (30 against 31 ns) and the regions with
-the census take everything else: the throughput (18.0 against 16.9 M
-events/s), p99.9 (61 against 200 ns), p99.99 (120 against 420 ns), and
-the maximum, 48 µs against 3.7 ms. The scheduled column DOES work at
-light garbage — no event carries a collection, in-event max 15 µs —
-but two things must be read together: its per-event distribution
-excludes the scheduled pauses by construction (they run between events;
-the census column's boundary event includes its census), and each
-scheduled pause costs p50 0.319 ms with a maximum of 3.406 ms — ten to
-seventy times the census at the same cadence over the same live set —
-plus a 3.4 ms full collection at the end.
+**How to read it.** The accounting is uniform: every collector's pause —
+a heuristic collection, a scheduled `GC.gc(false)`, a census — is charged
+to the event at whose boundary it runs, so the max row compares like with
+like. At recording-class garbage the regions win every row: 2.2× the
+throughput, a faster median (40 against 60 ns), every tail percentile,
+and a maximum of 94 µs — the worst of fifty censuses, at a median of
+36 µs — against 4.0 ms and 300 stock collections. Scheduling the
+stock collector by hand changes nothing here: 1.7 KB per event fills the
+nursery long before each boundary and the heuristics fire 281 times
+anyway (3.7 ms max). At light garbage the stock nursery keeps the
+median (40 against 40 ns) and the regions with the census take
+everything else: the throughput (17.6 against 16.6 M events/s), the
+tail band (p99.9 61 against 160 ns, p99.99 110 against 321 ns), and
+the maximum, 53 µs against 3.9 ms. The scheduled column does tame
+the heuristics at light garbage — 1 automatic collection in five
+million events — but its maximum stays 3.6 ms, because the pause it
+schedules is a stock young collection: it walks and promotes the live
+set, ten to seventy times the census's cost at the same cadence over the
+same live set, plus a 3.83 ms full collection at the end.
 
 **Why the region columns look like this.** The reset at every slice
 boundary is O(1) — the chain parks, the claim resets the pages — so no

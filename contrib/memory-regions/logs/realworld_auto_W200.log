@@ -1,52 +1,52 @@
-full GC reference (startup): 16.69 ms
+full GC reference (startup): 5.74 ms
 heap reserve       536.9 MB claimed and prefaulted
 scheduler          SCHED_FIFO priority 50
 memory locked      yes (mlockall)
 involuntary context switches during the run: 0
 page faults during the run: 0
 stock collections during the run: 300
-wall time          0.698 s (7.16 M events/s)
+wall time          0.711 s (7.03 M events/s)
 collection total   0.0 ms (0.0 % of wall)
 table checksum     correct
 === auto: 0 collections ===
-max at event      2808438 (slice boundary: false, census boundary: false); events over 200us: 273
-  over 200us: event 9587  3150 us
-  over 200us: event 18953  814 us
-  over 200us: event 26439  2631 us
-  over 200us: event 34695  224 us
-  over 200us: event 41001  219 us
-  over 200us: event 46157  220 us
-  over 200us: event 50583  221 us
-  over 200us: event 54559  205 us
-  over 200us: event 155387  200 us
-  over 200us: event 159193  200 us
-  over 200us: event 163039  211 us
-  over 200us: event 166935  212 us
-  over 200us: event 170881  213 us
-  over 200us: event 174807  209 us
-  over 200us: event 178783  209 us
-  over 200us: event 182819  208 us
-  over 200us: event 186915  209 us
-  over 200us: event 191078  212 us
-  over 200us: event 195304  213 us
-  over 200us: event 199610  215 us
-  over 200us: event 203976  218 us
-  over 200us: event 208432  222 us
-  over 200us: event 212978  226 us
-  over 200us: event 217614  228 us
-  over 200us: event 222340  231 us
-  over 200us: event 227176  234 us
-  over 200us: event 232102  239 us
-  over 200us: event 237138  243 us
-  over 200us: event 242284  245 us
-  over 200us: event 247540  246 us
+max at event      2810455 (slice boundary: false, census boundary: false); events over 200us: 278
+  over 200us: event 10117  3002 us
+  over 200us: event 19713  873 us
+  over 200us: event 27369  2712 us
+  over 200us: event 35755  268 us
+  over 200us: event 42181  237 us
+  over 200us: event 47427  227 us
+  over 200us: event 51923  226 us
+  over 200us: event 55959  210 us
+  over 200us: event 59675  200 us
+  over 200us: event 73979  200 us
+  over 200us: event 77555  200 us
+  over 200us: event 81131  201 us
+  over 200us: event 153281  202 us
+  over 200us: event 157097  209 us
+  over 200us: event 160963  207 us
+  over 200us: event 164879  216 us
+  over 200us: event 168845  214 us
+  over 200us: event 172851  220 us
+  over 200us: event 176837  220 us
+  over 200us: event 180883  220 us
+  over 200us: event 184989  218 us
+  over 200us: event 189151  220 us
+  over 200us: event 193367  219 us
+  over 200us: event 197663  221 us
+  over 200us: event 202019  223 us
+  over 200us: event 206465  225 us
+  over 200us: event 210991  227 us
+  over 200us: event 215607  233 us
+  over 200us: event 220303  234 us
+  over 200us: event 225119  237 us
 === per-event wall time, 5000000 events ===
 p50               60 ns
-p99               371 ns
-p99.9             521 ns
+p99               380 ns
+p99.9             531 ns
 p99.99            761 ns
-max               3905290 ns
-max, no preemption 3905290 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+max               3957038 ns
+max, no preemption 3957038 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
 over 100us target 300 events (0.006 %)
 live heap counter  81.6 MB
-peak RSS           1253.1 MB
+peak RSS           1244.6 MB

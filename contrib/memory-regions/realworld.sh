@@ -43,7 +43,7 @@ run_kept() { # run_kept <log> <args...>
 for cfg in "200 100" "3 1000"; do
   set -- $cfg; W=$1; B=$2
   run_kept logs/realworld_auto_W${W}.log                auto $EV 100000 $K $W $B $RESERVE logs/ccdf_auto_W${W}.tsv
-  run_kept logs/realworld_sched_W${W}_B${B}.log         sched $EV 100000 $K $W $B $RESERVE
+  run_kept logs/realworld_sched_W${W}_B${B}.log         sched $EV 100000 $K $W $B $RESERVE logs/ccdf_sched_W${W}.tsv
   run_kept logs/realworld_real_census_W${W}_B${B}.log   real $EV 100000 $K $W $B $RESERVE logs/ccdf_census_W${W}.tsv
   run_kept logs/realworld_real_nocensus_W${W}_B${B}.log real $EV 0      $K $W $B $RESERVE logs/ccdf_nocensus_W${W}.tsv
 done

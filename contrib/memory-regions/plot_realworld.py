@@ -14,7 +14,9 @@ import math, os
 D = os.path.dirname(os.path.abspath(__file__))
 SURFACE, GRID = "#fcfcfb", "#e8e7e4"
 INK, INK2 = "#0b0b0b", "#52514e"
-SERIES = [("stock collector", "#2a78d6"),
+# Fixed hue order; a new series never repaints a survivor.
+SERIES = [("stock, heuristics", "#2a78d6"),
+          ("stock, scheduled", "#eda100"),
           ("regions, census every 100 k", "#eb6834"),
           ("regions, no census", "#1baf7a")]
 FONT = 'font-family="DejaVu Sans, sans-serif"'
@@ -96,9 +98,9 @@ def main():
     pa = Panel(80, 110, 380, 300, 1e1, 1e7, 1e-7)
     pb = Panel(560, 110, 380, 300, 1e1, 1e7, 1e-7)
     ccdf_panel(body, pa, "~1.7 KB of garbage per event",
-               ["ccdf_auto_W200.tsv", "ccdf_census_W200.tsv", "ccdf_nocensus_W200.tsv"], [-10, -10, 20])
+               ["ccdf_auto_W200.tsv", "ccdf_sched_W200.tsv", "ccdf_census_W200.tsv", "ccdf_nocensus_W200.tsv"], [-10, 20, -10, 20])
     ccdf_panel(body, pb, "~100 B of garbage per event",
-               ["ccdf_auto_W3.tsv", "ccdf_census_W3.tsv", "ccdf_nocensus_W3.tsv"], [-10, -10, 20])
+               ["ccdf_auto_W3.tsv", "ccdf_sched_W3.tsv", "ccdf_census_W3.tsv", "ccdf_nocensus_W3.tsv"], [-10, 20, -10, 20])
     body.append(f'<text x="510" y="445" {FONT} font-size="13" fill="{INK2}" text-anchor="middle">event latency</text>')
     body.append(f'<text x="20" y="260" {FONT} font-size="13" fill="{INK2}" transform="rotate(-90 20 260)" text-anchor="middle">fraction of events ≥ x</text>')
     write("latency_ccdf.svg", 980, 460, body)
@@ -110,8 +112,8 @@ def main():
     legend(body, 40, 54)
     x0, x1w, xlo, xhi = 220, 660, 1e4, 1e7
     X = lambda ns: x0 + x1w * (math.log10(ns) - 4) / 3
-    rows = [("~1.7 KB per event", 110, ["ccdf_auto_W200.tsv", "ccdf_census_W200.tsv", "ccdf_nocensus_W200.tsv"]),
-            ("~100 B per event", 170, ["ccdf_auto_W3.tsv", "ccdf_census_W3.tsv", "ccdf_nocensus_W3.tsv"])]
+    rows = [("~1.7 KB per event", 110, ["ccdf_auto_W200.tsv", "ccdf_sched_W200.tsv", "ccdf_census_W200.tsv", "ccdf_nocensus_W200.tsv"]),
+            ("~100 B per event", 170, ["ccdf_auto_W3.tsv", "ccdf_sched_W3.tsv", "ccdf_census_W3.tsv", "ccdf_nocensus_W3.tsv"])]
     for k in range(4):
         x = X(xlo * 10 ** k)
         body.append(f'<line x1="{x:.1f}" y1="80" x2="{x:.1f}" y2="195" stroke="{GRID}" stroke-width="1"/>')

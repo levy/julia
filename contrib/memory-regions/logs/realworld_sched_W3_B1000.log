@@ -1,25 +1,55 @@
-full GC reference (startup): 5.42 ms
+full GC reference (startup): 6.17 ms
 heap reserve       536.9 MB claimed and prefaulted
 scheduler          SCHED_FIFO priority 50
 memory locked      yes (mlockall)
-final full collection 3.4 ms
+final full collection 3.83 ms
 involuntary context switches during the run: 0
 page faults during the run: 0
 stock collections during the run: 51
-wall time          0.302 s (16.54 M events/s)
-collection total   25.7 ms (8.51 % of wall)
+wall time          0.313 s (15.96 M events/s)
+collection total   26.5 ms (8.47 % of wall)
 table checksum     correct
 === sched: 50 collections ===
-pause p50          0.319 ms
-pause max          3.406 ms
-max at event      489149 (slice boundary: false, census boundary: false); events over 200us: 0
+pause p50          0.329 ms
+pause max          3.566 ms
+max at event      3000000 (slice boundary: true, census boundary: true); events over 200us: 50
+  over 200us: event 100000  3378 us
+  over 200us: event 200000  787 us
+  over 200us: event 300000  3110 us
+  over 200us: event 400000  408 us
+  over 200us: event 500000  369 us
+  over 200us: event 600000  353 us
+  over 200us: event 700000  347 us
+  over 200us: event 800000  362 us
+  over 200us: event 900000  341 us
+  over 200us: event 1000000  333 us
+  over 200us: event 1100000  337 us
+  over 200us: event 1200000  329 us
+  over 200us: event 1300000  327 us
+  over 200us: event 1400000  327 us
+  over 200us: event 1500000  375 us
+  over 200us: event 1600000  332 us
+  over 200us: event 1700000  325 us
+  over 200us: event 1800000  342 us
+  over 200us: event 1900000  327 us
+  over 200us: event 2000000  326 us
+  over 200us: event 2100000  332 us
+  over 200us: event 2200000  335 us
+  over 200us: event 2300000  326 us
+  over 200us: event 2400000  330 us
+  over 200us: event 2500000  328 us
+  over 200us: event 2600000  324 us
+  over 200us: event 2700000  324 us
+  over 200us: event 2800000  323 us
+  over 200us: event 2900000  551 us
+  over 200us: event 3000000  3566 us
 === per-event wall time, 5000000 events ===
-p50               31 ns
-p99               41 ns
-p99.9             81 ns
-p99.99            220 ns
-max               15119 ns
-max, no preemption 15119 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
-over 100us target 0 events (0.0 %)
-live heap counter  41.6 MB
-peak RSS           1204.5 MB
+p50               40 ns
+p99               50 ns
+p99.9             90 ns
+p99.99            210 ns
+max               3566551 ns
+max, no preemption 3566551 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 50 events (0.001 %)
+live heap counter  81.2 MB
+peak RSS           1244.4 MB

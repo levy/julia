@@ -272,6 +272,12 @@ function main()
             end
             i < events && region_set(EVENT)
         end
+        # Apples to apples: the scheduled stock collection is charged to the
+        # event at whose boundary it runs, exactly like the census.
+        if variant == "sched" && census_on && i % every == 0
+            c0 = time_ns(); GC.gc(false); c1 = time_ns()
+            push!(pauses_ns, Int64(c1 - c0))
+        end
         if record_latency
             @inbounds lat[i] = time_ns() - t_ev
             if i % BLOCK == 0
@@ -279,7 +285,7 @@ function main()
                 sw != tsw && (preempted[i ÷ BLOCK] = true; tsw = sw)
             end
         end
-        if census_on && i % every == 0 && variant != "auto" && variant != "batch" && variant != "autopool" && variant != "real"
+        if census_on && i % every == 0 && variant != "auto" && variant != "batch" && variant != "autopool" && variant != "real" && variant != "sched"
             if use_regions
                 c0 = time_ns()
                 f = coop ? region_coop(SIM) : region_collect(SIM)
