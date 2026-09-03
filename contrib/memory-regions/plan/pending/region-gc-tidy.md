@@ -28,6 +28,37 @@ Any step toward upstream is the user's manual act.
 5. **Mature enough for a pull request.** Every commit builds. The test suite
    passes. The pull request text is short and honest.
 
+## The stance along the way
+
+The tidy is also a review. The person who moves a function reads it as a
+reviewer, not as a mover. These rules apply at every step:
+
+- **Read critically.** For every runtime function ask: is it correct under
+  threads (which lock, which `ptls`), across a task switch, across an
+  exception, and with a stock collection in the middle? Is every
+  `JL_NOTSAFEPOINT` true? Does an error path leave a window open? Is a
+  fixed table (`GC_MAX_BLOCKS`, `JL_GC_MAX_REGIONS`, the mask widths) bounded
+  with a check, or does it fail silently? Is a return code documented and
+  distinct? Is there dead code, a debug leftover, a hot-path print?
+- **Fix a bug when you find one.** First a test case that fails
+  (in the five scripts), then the fix, in the runtime commit that owns the
+  mechanism. The commit message describes the mechanism as it now is. The
+  finding goes to `HISTORY.md`, section "Found during the tidy": the
+  symptom, the cause, the fix, the test.
+- **No new feature.** A fix makes an existing promise true. A feature makes
+  a new promise. A feature idea gets one line in `HISTORY.md`, section
+  "Deferred", and no code.
+- **Write up anything substantial before the step continues.** A finding
+  goes to `HISTORY.md`. A number goes to `MEASUREMENTS.md`. A claim in a
+  document that no test or measurement backs is either backed or removed.
+- **Add a measurement or a plot when it answers a question a reviewer will
+  ask** and the record does not answer it yet. Each addition names its
+  question in the table of step 6, has a bound, and tells one thing per
+  plot. Candidates already known: peak memory of the demonstrators (the
+  honest cost of the model: a region holds its garbage until the reset);
+  thread scaling of the sibling leaves; region pages over time under the
+  growth bound.
+
 ## Facts (2026-09-03)
 
 **Branches** on `levy/julia`, all pushed:
@@ -243,26 +274,36 @@ One commit that holds the whole runtime on the new base, before any split.
       `gc-regions-flat`.
 - [ ] Check: the script results equal the truth's, line for line.
 
-### Step 2 — the file move and the source audit
+### Step 2 — the file move and the critical review
 
 - [ ] Create `src/gc-regions.c` and `src/gc-regions.h`; move the region block
       and the region-only helpers out of `gc-stock.c`; add `gc-regions` to
       the `SRCS` list of `src/Makefile`. Apply the D4 bound.
-- [ ] Audit the runtime, function by function, against three rules: the
-      source describes what is (no "prototype", no "was", no dates, no
-      stage numbers); every exported entry point has a doc comment that
-      states its contract, its return codes, and its thread rules; every
-      entry point is used by a test or a measurement. Write the audit table
-      into `HISTORY.md`: entry point, fate (keep / rename / drop), reason.
-      Apply D10.
-- [ ] Build. Run the 14 scripts again.
+- [ ] Review the runtime, function by function, with the questions of "The
+      stance along the way". Keep a review log in the scratchpad: one line
+      per function, the verdict (clean / cleanup / bug / deferred idea).
+      Known places to look first: the `gf.c` wrappers (the window across an
+      exception), the fixed block table of the heap reserve (silent drop
+      past 4096 blocks), the `-7` style return codes (one table, one
+      meaning each), `jl_error` reached from a `JL_NOTSAFEPOINT` path, the
+      `saved_region` of the census across a task switch, the census hook on
+      the allocation path, the quarantine mask against `JL_GC_MAX_REGIONS`.
+- [ ] Fix every bug the review finds, as the stance says: test first, fix
+      in the flat tree, finding in `HISTORY.md`.
+- [ ] Clean the source against three rules: it describes what is (no
+      "prototype", no "was", no dates, no stage numbers); every exported
+      entry point has a doc comment that states its contract, its return
+      codes, and its thread rules; every entry point is used by a test or a
+      measurement. Write the audit table into `HISTORY.md`: entry point,
+      fate (keep / rename / drop), reason. Apply D10.
+- [ ] Build. Run the 14 scripts again, plus the new cases.
 - [ ] Measure the four unit costs (window open and close, reset, disarmed
       barrier, allocation in a region) and the zero-cost sweep on core 29,
       against the truth's binary, interleaved, min of 5. The move must not
       change them beyond noise (2 %).
 - [ ] Commit on `gc-regions-flat`.
 - [ ] Check: `git diff <truth> gc-regions-flat -- src` contains only lines
-      that the audit table explains.
+      that the audit table or a finding in `HISTORY.md` explains.
 
 ### Step 3 — the tests
 
@@ -271,6 +312,11 @@ One commit that holds the whole runtime on the new base, before any split.
       failure and prints the assertion. `regions_tree.jl` and
       `regions_census.jl` skip the cases that need a thread count the run
       does not have, and print `skip: needs -t4` for each.
+- [ ] Review each test as a reviewer: does it assert the property, or does
+      it only run? Add the negative case where one is missing (the store
+      that must quarantine, the reset that must refuse, the census that
+      must not free a live object). A property the documents promise and no
+      test covers gets a test, or the promise leaves the documents.
 - [ ] Add `@testset "regions"` to `test/gc.jl` with five `run_gctest` lines.
 - [ ] `taskset -c 24-27 ./julia test/runtests.jl gc` under `MemoryMax=8G`
       with a 30-minute timeout. Green.
@@ -324,8 +370,11 @@ One commit that holds the whole runtime on the new base, before any split.
       list: the deferral re-arm, the inline-budget mark regression,
       `preserve_most` rejected, the construction-store gap, the OOM hazard
       and the census, the compile-inside-a-window escape, the region-1 trunk
-      stored into a global. Then the audit table of step 2. Then the four
-      backup tags with one line each.
+      stored into a global. Then "Found during the tidy": every bug the
+      review found, with symptom, cause, fix, and test — or the sentence
+      "The review found no bug", if that is true. Then "Deferred": the
+      feature ideas the tidy did not build, one line each. Then the audit
+      table of step 2. Then the four backup tags with one line each.
 - [ ] `contrib/memory-regions/README.md`: the folder map, the build, the
       four documents, the headline figure (filled in step 6).
 - [ ] `contrib/memory-regions/MEASUREMENTS.md`: the skeleton — one section
@@ -354,13 +403,21 @@ says so — its plot.
 | M5 | the census: against a full collection; pause against live set K; throughput stock / coop / pooled; the slice knob | `bench/census.jl` | `census_*.tsv` | line: pause against K (the live-set law); bars: throughput | 30 min |
 | M6 | paced (1 event per 100 µs) and endurance (30 min) | `bench/paced.jl`, `bench/endurance.jl` | `paced.tsv`, `endurance.tsv` | line: RSS over 30 min | 45 min |
 | M7 | region-native against C++ new/delete | `bench/native.jl`, `bench/native.cpp` | `native.tsv` | table only | 10 min |
-| M8 | wholesale death: binary tree, linked list, the tree showcase, stock against regions | `demo/showcase_*.jl` | `showcase.tsv` | bars: collections and GC time | 15 min |
-| M9 | the growth bound: peak pages with the threshold off and on | `bench/census_bound.jl` (the test in `regions_census.jl` asserts the bound; the bench prints the pages) | `census_bound.tsv` | table only | 5 min |
-| M10 | demonstrators A to D: wall, collections, GC time, region against stock, across the sweep | `demo/*.jl` | `demo_a.tsv` … `demo_d.tsv` | one figure per demonstrator: wall time region against stock over the sweep, and the stock collection count on a second axis | 20 min |
+| M8 | wholesale death: binary tree, linked list, the tree showcase, stock against regions; peak RSS of both | `demo/showcase_*.jl` | `showcase.tsv` | bars: collections and GC time; bars: peak RSS | 15 min |
+| M9 | the growth bound: region pages over the rounds, threshold off and on | `bench/census_bound.jl` (the test in `regions_census.jl` asserts the bound; the bench prints the pages per round) | `census_bound.tsv` | line: pages per round, two series, the threshold as a horizontal line — the question: "what stops a region from growing?" | 5 min |
+| M10 | demonstrators A to D: wall, collections, GC time, peak RSS, region against stock, across the sweep | `demo/*.jl` | `demo_a.tsv` … `demo_d.tsv` | one figure per demonstrator: wall time region against stock over the sweep, the stock collection count on a second axis; one figure for all four: peak RSS region against stock — the question: "what does the model cost in memory?" | 20 min |
 | M11 | the discipline checker: violations in the allocating model against the clean model | `tools/checker_run.jl` | `checker.tsv` | table only | 15 min (skip and record if `hook_patch.py` does not apply to rc4's `Compiler`) |
+| M12 | thread scaling of the sibling leaves: demonstrator B and D at 1, 2, 4, 8 threads, region against stock | `demo/pathtrace.jl`, `demo/dmr.jl` with `-t` | `scaling.tsv` | line: wall time against thread count, two series per demonstrator — the question: "do isolated leaves scale without coordination?" | 20 min (cores 24-31, the only row that leaves the isolated core; run when the load average is below 4) |
 
-- [ ] Run `run_all.sh`. Total bound about four hours. Log to
+A row that a finding of the review makes necessary is added here with its
+question, its bound, and its plot, before it runs.
+
+- [ ] Run `run_all.sh`. Total bound about four and a half hours. Log to
       `results/run_all.log` (not committed).
+- [ ] Read every result as a reviewer before it goes into a table: a number
+      that contradicts a claim of the documents is a finding, not a typo.
+      Follow it to its cause (a rerun on the spare core, then the code)
+      before the step continues.
 - [ ] Fill every table of `MEASUREMENTS.md`. Under each table, one line: the
       date, the SHA, the core, the command.
 - [ ] Add a drift table to `HISTORY.md`: the headline numbers before (from
@@ -422,13 +479,16 @@ The plan is implemented when all of these hold:
 1. `gc-regions` exists on `origin`, 19 commits on `origin/release-1.13`,
    every commit builds, and `git diff gc-regions-flat gc-regions` is empty.
 2. `test/runtests.jl gc core threads misc` is green on the tip.
-3. `MEASUREMENTS.md` holds M1 to M11 with data files under `results/data/`,
+3. `MEASUREMENTS.md` holds M1 to M12 with data files under `results/data/`,
    measured on the tip's SHA, and every plot under `results/plots/` comes
    from `plot.py`.
 4. The four reader documents exist, link only to files on the branch, and
    contain no history outside `HISTORY.md`.
 5. The four backup tags and `origin/release-1.13` exist.
 6. The PR text below has no placeholder left.
+7. `HISTORY.md` has "Found during the tidy" and "Deferred". Every bug in
+   the first has a test and a fix in the series; or the section says, in
+   one sentence, that the review found none.
 
 ## Risks
 
@@ -481,6 +541,8 @@ Title: **GC: memory regions — free one lifetime's objects in O(1), beside the 
 > wall-time win appears only where discarded allocation per unit of work
 > dominates: the demonstrators show the crossover honestly (a bare
 > optimistic insert loses at 0.44x; heavy speculation wins up to 1.63x).
+> A region holds its garbage until the reset, so peak memory is ⟨M10 RSS
+> ratio⟩ of the stock run on the demonstrators.
 >
 > **What it is not.** No Base API yet — the Julia face is a `ccall` wrapper
 > in `contrib/memory-regions/regions.jl` and uses region integers. No
@@ -493,8 +555,9 @@ Title: **GC: memory regions — free one lifetime's objects in O(1), beside the 
 > `src/gc-regions.c` with small hooks in the stock collector; then tests
 > (`test/gc/regions_*.jl`), the devdoc (`doc/src/devdocs/gc-regions.md`), the
 > benchmarks, the demonstrators, the measurements with their data and plots,
-> and the history. The history document records every detour and rejected
-> idea; the four development branches are kept under `backup/` tags.
+> and the history. The history document records every detour, every
+> rejected idea, and ⟨the bugs the final review found, with their tests⟩;
+> the four development branches are kept under `backup/` tags.
 >
 > Branch: ⟨link to gc-regions⟩ · Design: ⟨link to devdoc⟩ · Measurements:
 > ⟨link⟩ · History: ⟨link⟩ · contrib README: ⟨link⟩
