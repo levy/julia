@@ -1812,14 +1812,18 @@ STATIC_INLINE int gc_scoped_setmark(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
 }
 
 // Enqueue an unmarked obj. last bit of `nptr` is set if `_obj` is young
-STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
-                           uintptr_t *nptr) JL_NOTSAFEPOINT
+// The claim, with the scoped-census state as a parameter: the hot mark
+// loops hoist the load and pass a literal 0, so a stock mark's per-slot
+// cost is exactly vanilla - the per-slot load-and-branch was measured as
+// +17 % on a mark-bound array benchmark. The wrapper below keeps the
+// old name and behavior for every other caller.
+STATIC_INLINE void gc_try_claim_and_push_(jl_gc_markqueue_t *mq, void *_obj,
+                           uintptr_t *nptr, int scoped) JL_NOTSAFEPOINT
 {
     if (_obj == NULL)
         return;
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
-    int scoped = jl_atomic_load_relaxed(&region_scoped_target);
     if (__unlikely(scoped != 0)) {
         jl_gc_pagemeta_t *meta = page_metadata((char*)o);
         int in_region = (meta != NULL && meta->region_n == scoped);
@@ -1874,6 +1878,13 @@ STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
         *nptr |= 1;
     if (gc_try_setmark_tag(o, GC_MARKED))
         gc_ptr_queue_push(mq, obj);
+}
+
+STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
+                           uintptr_t *nptr) JL_NOTSAFEPOINT
+{
+    gc_try_claim_and_push_(mq, _obj, nptr,
+                           jl_atomic_load_relaxed(&region_scoped_target));
 }
 
 // Mark object with 8bit field descriptors
@@ -2019,15 +2030,34 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
             pushed_chunk = 1;
         }
     }
-    for (; obj_begin < scan_end; obj_begin += step) {
-        jl_value_t **slot = obj_begin;
-        new_obj = *obj_begin;
-        if (new_obj != NULL) {
-            verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
-                        gc_slot_to_arrayidx(obj_parent, obj_begin));
-            gc_assert_parent_validity(obj_parent, new_obj);
-            gc_try_claim_and_push(mq, new_obj, &nptr);
-            gc_heap_snapshot_record_array_edge(obj_parent, slot);
+    // The scoped state is loop-invariant; hoist it and let the stock
+    // variant's filter fold away (a literal 0 through the force-inlined
+    // claim), so a stock mark walks slots at vanilla cost.
+    int scoped = jl_atomic_load_relaxed(&region_scoped_target);
+    if (__likely(scoped == 0)) {
+        for (; obj_begin < scan_end; obj_begin += step) {
+            jl_value_t **slot = obj_begin;
+            new_obj = *obj_begin;
+            if (new_obj != NULL) {
+                verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
+                            gc_slot_to_arrayidx(obj_parent, obj_begin));
+                gc_assert_parent_validity(obj_parent, new_obj);
+                gc_try_claim_and_push_(mq, new_obj, &nptr, 0);
+                gc_heap_snapshot_record_array_edge(obj_parent, slot);
+            }
+        }
+    }
+    else {
+        for (; obj_begin < scan_end; obj_begin += step) {
+            jl_value_t **slot = obj_begin;
+            new_obj = *obj_begin;
+            if (new_obj != NULL) {
+                verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
+                            gc_slot_to_arrayidx(obj_parent, obj_begin));
+                gc_assert_parent_validity(obj_parent, new_obj);
+                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
+                gc_heap_snapshot_record_array_edge(obj_parent, slot);
+            }
         }
     }
     if (too_big) {

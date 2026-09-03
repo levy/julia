@@ -1989,7 +1989,12 @@ void LateLowerGCFrame::CleanupWriteBarriers(Function &F, State *S, const SmallVe
         // The region escape barrier: one load-and-branch on a runtime flag,
         // cold call into jl_gc_region_wb per child when armed. Emitted
         // independently of the generational condition below, because region
-        // lifetime and generational age are orthogonal.
+        // lifetime and generational age are orthogonal. The guard is not
+        // free on store-dense code (measured up to +28 % on a pointer-store
+        // microbench), so a build that wants the stock collector alone
+        // compiles it out: make with JL_NO_REGION_STORE_BARRIER defined,
+        // and this binary's stores are exactly vanilla.
+#ifndef JL_NO_REGION_STORE_BARRIER
         {
             auto M = F.getParent();
             auto flagTy = Type::getInt8Ty(F.getContext());
@@ -2009,6 +2014,7 @@ void LateLowerGCFrame::CleanupWriteBarriers(Function &F, State *S, const SmallVe
                 rb.CreateCall(rwb, {parent, CI->getArgOperand(i)});
             builder.SetInsertPoint(CI);
         }
+#endif
         auto parTag = EmitLoadTag(builder, T_size, parent);
         auto parBits = builder.CreateAnd(parTag, GC_OLD_MARKED, "parent_bits");
         auto parOldMarked = builder.CreateICmpEQ(parBits, ConstantInt::get(T_size, GC_OLD_MARKED), "parent_old_marked");
