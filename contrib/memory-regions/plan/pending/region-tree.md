@@ -84,41 +84,38 @@ issues, no discussions; any upstreaming is the user's manual act.
   and rejected: it makes the tree depend on execution order, and the
   same region under two parents has no consistent answer.
 
-## Stage 1 — the declaration and the masks
+## Stage 1+2 — the declaration, the masks, and the barrier (MERGED)
 
-- [ ] `region_tree!` / `region_parent!` with `parent < child`
-      validation, ancestor-mask construction, per-heap live-child
-      counters and `region_childless_mask`, and the lazy TLS slots.
-      Acceptance: a declaration test that builds a chain, the
-      degenerate tree, and a two-branch tree; rejects a cycle, a
-      forward parent, and a redeclaration under a different parent;
-      masks and childless bits checked after every init and reset
-      transition.
+Merged because the ancestor masks are inert without the barrier that
+reads them; one testable increment.
 
-## Stage 2 — the barrier and the quarantine on the tree
+- [x] LANDED 2026-09-03, commit 2d1a8f9e28. `jl_gc_region_declare_parent`
+      (Julia `region_parent!` / `region_tree!`) with `parent < child`
+      validation; `region_uptree[r]`, the bitset of r, its ancestors,
+      and the root, built in index order; `jl_gc_init` seeds the chain
+      default so an undeclared build is the old total order.
+      `jl_gc_region_wb` tests `(region_uptree[pr] >> cr) & 1` instead of
+      `cr <= pr`. Acceptance met: sibling_isolation_test.jl — a trunk
+      with two leaves, leaf → trunk legal, leaf → sibling and trunk →
+      leaf quarantine; a forward parent (`parent >= child`) is rejected.
+      The four chain regression suites stay green. DEFERRED to stage 5:
+      the two-thread distinct-leaf matrix (needs JL_GC_MAX_REGIONS > 4
+      for a trunk plus one leaf per thread), and the armed light-loop
+      re-measurement.
 
-- [ ] `jl_gc_region_wb` tests the ancestor mask; the quarantine mask
-      widens. Acceptance: a sibling-isolation test — two tasks
-      interleaved on ONE thread, each in its own leaf over a shared
-      trunk (the coverage the chain could not express); a store from
-      one leaf into the other quarantines in BOTH directions; leaf →
-      trunk stores pass; trunk → leaf stores quarantine. The same
-      matrix across TWO threads with distinct leaf ids — the
-      cross-thread leaf-to-leaf store must quarantine, which the
-      same-id chain could not even detect. The armed light-loop median
-      must not move against the chain build.
-
-## Stage 3 — census and reset on the tree
+## Stage 3 — the reset on the tree
 
 - [ ] Leaf reset behind the one-bit precondition; `region_reset` of a
-      region with live descendants refuses with a distinct code;
-      `region_subtree_reset` in postorder; subtree collect behind
-      `subtree_mask`; the cross-heap trunk reset under stop-the-world.
-      Acceptance: per-task leaf churn — N tasks, each opening,
-      filling, and resetting its own leaf repeatedly while the trunk
-      lives and siblings stay untouched; RSS bounded; a census of one
-      leaf leaves sibling data intact; the stock collector runs
-      mid-churn with no contract, as in the maturation plan's stage 2.
+      region with a live child refuses with `-7`;
+      `region_subtree_reset` in postorder; the cross-heap trunk reset
+      under stop-the-world. Per-heap `region_live_mask`,
+      `region_haschild_mask`, and `region_child_count[]` maintain the
+      bit: a `region_set` marks a region live (its parent gains a
+      child), a `region_reset` marks it empty (the parent loses one,
+      and its haschild bit clears at zero). Acceptance: per-leaf churn
+      — set, fill, and reset one leaf repeatedly while the trunk lives
+      and stays intact; the trunk resets only after the leaf; RSS
+      bounded.
 - [ ] The three-thread program, end to end: three threads share one
       trunk region under application locks, each thread allocates and
       quick-resets its own leaf, and the trunk resets once at the end

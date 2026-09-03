@@ -62,6 +62,9 @@ end
 # references in registers where the precise stack scan cannot see them. A
 # Julia call is a safepoint boundary -- the caller spills every live value
 # into its GC frame, which is exactly what the rule-5 scan reads.
+# region_reset returns the pages reclaimed, or an error as (UInt64)-k:
+# -1 a root references in (debug mode), -2 quarantined, -7 a live child
+# region still exists (reset it first -- the tree precondition).
 @noinline region_reset(n::Int)   = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
 @noinline region_check(n::Int)   = Int64(ccall(:jl_gc_region_check, Int64, (Cint,), n))
 @noinline region_collect(n::Int) = Int64(ccall(:jl_gc_region_collect, Int64, (Cint,), n))

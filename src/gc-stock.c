@@ -3997,6 +3997,31 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
     heap->regions[n].initialized = 1;
 }
 
+// A region becomes live at the first region_set onto it after a reset (or
+// ever); its parent gains a live child. Idempotent through region_live_mask.
+static void region_mark_live(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (n == 0 || (heap->region_live_mask & ((uint64_t)1 << n)))
+        return;
+    heap->region_live_mask |= (uint64_t)1 << n;
+    int p = region_parent[n];
+    if (heap->region_child_count[p]++ == 0)
+        heap->region_haschild_mask |= (uint64_t)1 << p;
+}
+
+// A region becomes empty at its reset; its parent loses a live child, and
+// when the last one goes the parent's haschild bit clears -- the parent is
+// resettable again.
+static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (n == 0 || !(heap->region_live_mask & ((uint64_t)1 << n)))
+        return;
+    heap->region_live_mask &= ~((uint64_t)1 << n);
+    int p = region_parent[n];
+    if (--heap->region_child_count[p] == 0)
+        heap->region_haschild_mask &= ~((uint64_t)1 << p);
+}
+
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
 #ifdef JL_NO_REGION_ALLOC
@@ -4018,6 +4043,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     if (__unlikely(!jl_atomic_load_relaxed(&jl_region_barrier_on)))
         jl_atomic_store_release(&jl_region_barrier_on, 1);
     region_lazy_init(heap, n);
+    region_mark_live(heap, n);
     // An open window pins the task: a region's pages live in the thread
     // heap, so a task holding a window must not migrate. The stickiness
     // it had is restored when the window closes.
@@ -4060,6 +4086,11 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
         return 0;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)-2;        // quarantined: the region retains its memory
+    // A region with a live child must not reset: a descendant may hold a
+    // legal reference into it (leaf -> trunk), which the reset would dangle.
+    // The child reset must come first; this is the one-bit precondition.
+    if (__unlikely((heap->region_haschild_mask >> n) & 1))
+        return (uint64_t)-7;        // has a live descendant: reset it first
     // Rule 5 debug mode: refuse the reset while an execution root still
     // references into the region. The check leaves clean marks, so the
     // caller can drop the reference and retry.
@@ -4095,6 +4126,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
         heap->regions[n].n_fresh += heap->regions[n].n_pages;
         heap->regions[n].n_pages = 0;
     }
+    region_mark_empty(heap, n);         // the parent may now be resettable
     return pages;
 }
 
