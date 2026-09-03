@@ -4,7 +4,7 @@ This branch (`region-maturation`, off `memory-regions`) takes the region
 prototype from "an unsafe opt-in with an operating contract" toward "a
 runtime feature with no cost when unused, full benefit when used alone,
 and coexistence with the stock collector." The plan and its acceptance
-tests are in `plan/pending/region-gc-maturation.md`; this file is the
+tests are in `plan/done/region-gc-maturation.md`; this file is the
 result. No pull request is part of it: any upstreaming is the author's
 manual act.
 

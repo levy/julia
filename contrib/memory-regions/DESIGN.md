@@ -532,7 +532,7 @@ finalizer holes closed (5); packaged behind the GC interface or as an
 MMTk plan (6); and the unification as the pitch - the stock collector IS
 the one-region special case, measured - so the proposal reads as a
 generalization the collector already satisfies, not as a second
-collector. The staged internal path is in `plan/pending/region-gc-maturation.md`;
+collector. The staged internal path is in `plan/done/region-gc-maturation.md`;
 any pull request, if ever, is made manually by the author.
 
 ## What is deferred
