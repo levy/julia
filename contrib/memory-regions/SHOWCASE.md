@@ -79,6 +79,13 @@ grows with the sample count.
   is the shape the region model is for. Both caveats are the plan's honesty
   bar, kept.
 
+  **Update:** the OOM hazard is now fixed on branch `region-tree` by the
+  open-region census -- a region past a threshold reclaims its dead cells in
+  place, so a computation with internal garbage degrades to a region-local
+  mark-sweep instead of OOMing (region_census_bound_test.jl: 160x memory
+  bound). The census bounds memory, not the time of an exponential search;
+  the node cap here still bounds time, which the memory model does not.
+
 ## Reproduce
 
 `julia bt_solver_demo.jl` and `julia -t4 pathtrace_demo.jl`, each under
