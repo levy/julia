@@ -60,8 +60,24 @@ region tag).
       store escapes. The warning now names both types, which is how the
       box was found; the composability hazards are not hypothetical,
       they are the first three things the barrier caught.
-- [ ] The finalizer story: either per-region finalizer lists run at
-      reset/census, or a documented, catchable refusal.
+- [x] The finalizer story (finalizer_test.jl: ALL PASS; the stage-3
+      battery's gate case rewritten to its successor). Per-region
+      finalizer lists: registration on a region object goes to the
+      region's list (cross-thread registration still errors, until
+      stage 3); the reset runs them all on whole objects before it
+      frees; the cooperative census runs the dead ones between its mark
+      and its sweep, and marks the listed finalizer functions so a
+      survivor's closure is not swept from under the list (a dead
+      entry's function lives one census too long - slack, not
+      unsoundness); the stop-the-world census refuses a region that has
+      finalizers (-6) - running arbitrary code with the world stopped
+      can deadlock, and the coop entry or the reset is the answer. A
+      finalizer that resurrects its object is an escape, quarantined
+      like any other.
+
+Stage 1 stands: windows follow tasks, escapes are leaks with a named
+warning, malloc'd data dies with its region, finalizers run at the
+region's own boundaries. Six suites green on every item.
 
 ## Stage 2 - coexistence with no contract
 

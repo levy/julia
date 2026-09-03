@@ -426,21 +426,16 @@ void jl_gc_run_all_finalizers(jl_task_t *ct)
 // (jl_gc_region_of lives in the stock GC; it answers 0 for any object
 // that is not on a region-tagged pool page.)
 JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v);
-static void jl_gc_check_finalizer_region(jl_value_t *v)
-{
-    int r = jl_gc_region_of(v);
-    if (__unlikely(r != 0))
-        jl_errorf("finalizer: the object lives in memory region %d; "
-                  "a region reset cannot run finalizers, so finalizers are "
-                  "allowed only on root-region objects", r);
-}
+int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f);
 
 void jl_gc_add_finalizer_(jl_ptls_t ptls, void *v, void *f) JL_NOTSAFEPOINT
 {
     // Every registration path lands here (Base and the Core.finalizer
-    // builtin included). The low two bits tag pointer/quiescent
-    // finalizers; mask them before the region check.
-    jl_gc_check_finalizer_region((jl_value_t*)(((uintptr_t)v) & ~(uintptr_t)3));
+    // builtin included). A region object's finalizer goes to its region's
+    // own list: the reset runs them all, the cooperative census runs the
+    // dead. Cross-thread registration on a region object still errors.
+    if (jl_gc_region_add_finalizer(ptls, v, f))
+        return;
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == JL_GC_STATE_UNSAFE);
     arraylist_t *a = &ptls->finalizers;
     // This acquire load and the release store at the end are used to

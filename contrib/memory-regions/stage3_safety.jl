@@ -30,30 +30,29 @@ end
 
 region_debug(1)
 
-# 1. A finalizer on a region object must throw at registration.
+# 1. A finalizer on a region object is registered on the region's own
+#    list, and the reset runs it - on a whole object, before the free.
+#    (The gate that threw at registration was replaced by per-region
+#    finalizer lists in the maturation work.)
 @noinline function finalizer_on_region()
     region_set(1)
     t = Thing(1)
     # Pin the materialization inside the window: an allocation moves to its
     # first use, and without a use here LLVM sinks it past region_set(0).
     Base.donotdelete(t)
-    region_set(0)
-    # The object must escape, and the finalizer must have a side effect:
-    # the compiler elides the registration otherwise. And the catch must
-    # sit at the INTERPRETED top level: the compiler models Core.finalizer
-    # as nothrow and may move it out of a compiled catch region, so the
-    # gate's error acts as a trap, like the store barrier.
-    opaque(t)
     finalizer(count_fin, t)
-    return false
+    region_set(0)
+    return nothing
 end
-caught = try
+fin_before = fin_count
+registered = try
     finalizer_on_region()
-catch e
-    occursin("region", sprint(showerror, e))
+    true
+catch
+    false
 end
-check("finalizer on a region object throws", caught === true)
-check("reset after the finalizer test", region_reset(1) != REFUSED)
+check("finalizer on a region object registers", registered)
+check("reset runs the region finalizer", region_reset(1) != REFUSED && fin_count == fin_before + 1)
 
 # 2. A finalizer on a root-region object still works.
 let t0 = Thing(2)

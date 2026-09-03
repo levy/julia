@@ -3705,6 +3705,58 @@ int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isali
     return 1;
 }
 
+void run_finalizer(jl_task_t *ct, void *o, void *ff);
+
+int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
+{
+    jl_value_t *obj = (jl_value_t*)(((uintptr_t)v) & ~(uintptr_t)3);
+    jl_gc_pagemeta_t *pm = page_metadata((char*)obj);
+    int r = pm ? pm->region_n : 0;
+    if (__likely(r == 0))
+        return 0;
+    if (__unlikely(pm->thread_n != ptls->tid))
+        jl_errorf("finalizer: the object lives in region %d of another "
+                  "thread; cross-thread registration on a region object "
+                  "is not supported", r);
+    arraylist_t *lst = &ptls->gc_tls.heap.regions[r].finalizers;
+    arraylist_push(lst, v);
+    arraylist_push(lst, f);
+    return 1;
+}
+
+// Run finalizers out of a region's list: all of them at a reset (dead_only
+// = 0, everything dies), the unmarked at a census (dead_only = 1, between
+// the mark and the sweep, while the objects are still whole). The
+// candidates drain to a local list first: a finalizer may register new
+// finalizers or allocate, and the region list must be consistent then. A
+// finalizer that resurrects its object stores a region object into an
+// older parent - an escape, quarantined by the barrier like any other.
+static void region_run_finalizers(jl_task_t *ct, arraylist_t *lst, int dead_only)
+{
+    if (lst->len == 0)
+        return;
+    arraylist_t run;
+    arraylist_new(&run, 0);
+    size_t n = 0, l = lst->len;
+    void **items = lst->items;
+    while (n < l) {
+        jl_value_t *obj = (jl_value_t*)(((uintptr_t)items[n]) & ~(uintptr_t)3);
+        if (dead_only && gc_marked(jl_astaggedvalue(obj)->bits.gc)) {
+            n += 2;
+            continue;
+        }
+        arraylist_push(&run, items[n]);
+        arraylist_push(&run, items[n + 1]);
+        l -= 2;
+        items[n] = items[l];
+        items[n + 1] = items[l + 1];
+    }
+    lst->len = l;
+    for (size_t i = 0; i < run.len; i += 2)
+        run_finalizer(ct, run.items[i], run.items[i + 1]);
+    arraylist_free(&run);
+}
+
 // Free the malloc'd data of a region's memories: all of it at a reset,
 // only the dead at a census (the caller filters by mark).
 static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_NOTSAFEPOINT
@@ -3741,6 +3793,7 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
     heap->regions[n].n_fresh = 0;
     heap->regions[n].overflow_pages = 0;
     small_arraylist_new(&heap->regions[n].mallocarrays, 0);
+    arraylist_new(&heap->regions[n].finalizers, 0);
     heap->regions[n].initialized = 1;
 }
 
@@ -3811,8 +3864,10 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
             return (uint64_t)-1;
         }
     }
-    // Everything in the region dies at a reset, the malloc'd data of its
-    // memories included; their headers die with the pages below.
+    // Everything in the region dies at a reset: its finalizers run first,
+    // on whole objects; then the malloc'd data of its memories is freed;
+    // the headers die with the pages below.
+    region_run_finalizers(jl_current_task, &heap->regions[n].finalizers, 0);
     region_free_malloced(&heap->regions[n].mallocarrays, 0);
     // The reset walks nothing. Every page of the region hangs on one chain,
     // the chain has a tail, and a fresh page's metadata is allowed to be
@@ -4172,6 +4227,15 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     gc_queue_thread_local(mq, ptls);
     gc_queue_bt_buf(mq, ptls);
+    // The finalizer functions of this region live only in the C-side list;
+    // mark them, so a survivor's finalizer is not swept from under the
+    // list. A dead entry's function survives one census too long - slack,
+    // not unsoundness; the reset frees it with everything else.
+    {
+        arraylist_t *fl = &heap->regions[n].finalizers;
+        for (size_t i = 1; i < fl->len; i += 2)
+            gc_try_claim_and_push(mq, fl->items[i], NULL);
+    }
     gc_mark_loop_serial(ptls);
 
     for (int i = 0; i < region_scoped_extra_n; i++)
@@ -4180,6 +4244,10 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
         jl_safe_printf("REGION-COLLECT: task record overflow; stale marks remain\n");
     uint64_t t_mark = jl_hrtime();
 
+    // The dead objects' finalizers run here, between the mark and the
+    // sweep: single mutator, the objects still whole, the boundary owned
+    // by the caller.
+    region_run_finalizers(ct, &heap->regions[n].finalizers, 1);
     int64_t freed = region_scoped_sweep(heap, n);
     uint64_t t_sweep = jl_hrtime();
 
@@ -4212,6 +4280,10 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
         return -1;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return -5;      // quarantined: see jl_gc_region_wb
+    if (__unlikely(heap->regions[n].finalizers.len != 0))
+        return -6;      // finalizers pending: running them with the world
+                        // stopped can deadlock - use the cooperative entry,
+                        // or the reset
     if (heap->current_region != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)
         return -2;

@@ -56,6 +56,12 @@ typedef struct {
                                            // parks the whole chain in O(1)
         uint32_t n_pages;                  // pages on `pages`
         uint32_t n_fresh;                  // pages on `fresh_pages`
+        arraylist_t finalizers;            // (tagged object, function) pairs
+                                           // registered on this region's
+                                           // objects: the reset runs them all
+                                           // before it frees; the cooperative
+                                           // census runs the dead ones between
+                                           // its mark and its sweep
         small_arraylist_t mallocarrays;    // memories with malloc'd data
                                            // allocated in this region: their
                                            // data is freed by the reset (all
