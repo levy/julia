@@ -105,17 +105,25 @@ reads them; one testable increment.
 
 ## Stage 3 — the reset on the tree
 
-- [ ] Leaf reset behind the one-bit precondition; `region_reset` of a
-      region with a live child refuses with `-7`;
-      `region_subtree_reset` in postorder; the cross-heap trunk reset
-      under stop-the-world. Per-heap `region_live_mask`,
-      `region_haschild_mask`, and `region_child_count[]` maintain the
-      bit: a `region_set` marks a region live (its parent gains a
-      child), a `region_reset` marks it empty (the parent loses one,
-      and its haschild bit clears at zero). Acceptance: per-leaf churn
-      — set, fill, and reset one leaf repeatedly while the trunk lives
-      and stays intact; the trunk resets only after the leaf; RSS
-      bounded.
+- [x] LANDED 2026-09-03, commits 0a7eeb47ec (single-heap) and
+      b9c1c11330 (cross-heap). Leaf reset behind the one-bit
+      precondition; `region_reset` of a region with a live child
+      refuses with `-7`; the cross-heap trunk reset
+      (`jl_gc_region_reset_global`) stops the world, checks the child
+      precondition on every heap, and resets each heap's instance as
+      one act (the per-heap body factored into `region_reset_heap`).
+      Per-heap `region_live_mask`, `region_haschild_mask`, and
+      `region_child_count[]` maintain the bit: a `region_set` marks a
+      region live (its parent gains a child), a `region_reset` marks it
+      empty (the parent's haschild bit clears at its last child).
+      `JL_GC_MAX_REGIONS` raised 4 -> 8 for a trunk plus one leaf per
+      thread. Acceptance met: reset_order_test.jl (leaf-before-trunk,
+      200 rounds of leaf churn, trunk intact) and multithread_tree_test.jl
+      (three threads, shared trunk under a lock, distinct leaves,
+      global reset). `region_subtree_reset` in postorder is deferred:
+      the two-level trunk/leaves shape needs only leaf reset plus the
+      global trunk reset; a deeper tree wants it. The census on a
+      subtree (`subtree_mask`) is deferred with it.
 - [ ] The three-thread program, end to end: three threads share one
       trunk region under application locks, each thread allocates and
       quick-resets its own leaf, and the trunk resets once at the end
