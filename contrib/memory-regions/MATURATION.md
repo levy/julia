@@ -104,8 +104,16 @@ worth about 40 % of a 35 M-object mark, and no per-slot load hoist can
 buy it back.
 
 `many_refs` lands below 1.0 because the allocation phase of that shape
-runs faster on this binary (155 ms against vanilla's 333 ms for 35 M
-small objects, collector off); that gain is measured but not explained.
+runs about twice as fast on this binary (~175 against ~350 ms for 35 M
+small objects, collector off; stable over three interleaved runs). A
+bisect names the mechanism: the deferral re-arm of the guards commit.
+On vanilla, `maybe_collect` fires on `heap_size >= heap_target`, and
+with the collector disabled the heap sits above its target, so every
+allocation re-enters `jl_gc_collect` only to return on the disable
+counter — about 20 ns each. `gc_defer_collection()` re-arms the target,
+so a `GC.enable(false)` loop allocates at full speed. The benchmark
+disables the collector during construction; any workload that does the
+same inherits the gain.
 
 **Two escape hatches to literal zero.** The store barrier compiles out
 (`make` with `JL_NO_REGION_STORE_BARRIER`) for a build that never wants

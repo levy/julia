@@ -9,13 +9,18 @@ worktree (`plan/pending/region-tree.md`).
 
 ## Small — measurements and flags
 
-- [ ] **Explain the many_refs allocation gain.** The allocation phase
-      of the 35 M-object shape measured faster on the region binaries
-      (155 against 333 ms in one warmed probe), and MATURATION.md
-      honestly calls the gain unexplained. Re-measure warmed, repeated,
-      interleaved, on the quiet isolated core; profile the phase on
-      both binaries; either name the mechanism in MATURATION.md or
-      correct the claim if the gap was machine load.
+- [x] **Explain the many_refs allocation gain.** Closed 2026-09-03.
+      Re-measured warmed, three interleaves: vanilla ~334-383 ms, both
+      region binaries ~170-202 ms — real and stable. Ruled out in
+      order: per-phase page faults (equal, /proc/self/stat), memory
+      syscalls (equal, strace), the emitted loop code (byte-identical
+      native), the page-reuse layout (equal transition counts). A
+      bisect over the 30 base commits landed on 13989e9665 ("the
+      guards"): vanilla's maybe_collect re-enters jl_gc_collect on
+      every allocation while the collector is disabled and the heap
+      sits above its target (~20 ns each); gc_defer_collection()
+      re-arms the target, so the disabled loop allocates at full
+      speed. MATURATION.md carries the mechanism.
 - [ ] **The allocation-indirection compile-out.** Mirror
       `JL_NO_REGION_STORE_BARRIER`: with `JL_NO_REGION_ALLOC` defined,
       the pool address computes exactly as vanilla (`ptls + offset`)
