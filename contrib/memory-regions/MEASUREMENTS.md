@@ -520,13 +520,92 @@ barriers for a generational split inside a region (none exist).
 
 ## Provenance
 
-Every number in this file was measured on 2026-09-01, on this branch's
-finished runtime, on the machine and under the environment the real-world
-chapter states, by the scripts in this directory; `run.sh` reproduces
-them in order, and the logs in `logs/` are what it wrote. Two sections
-are compiler-side and carry the checker build's results instead: the
-discipline checker and the barrier trap, whose outcomes do not depend on
-the runtime. The prototype campaign that preceded this branch lives in
-the simulator repository that motivated the design (`omnet-julia`, plan
-`memory-region-prototype`); its record keeps its own logs, frozen as they
-were measured.
+Every number in the sections above this one was measured on 2026-09-01,
+on this branch's finished runtime, on the machine and under the
+environment the real-world chapter states, by the scripts in this
+directory; `run.sh` reproduces them in order, and the logs in `logs/`
+are what it wrote. Two sections are compiler-side and carry the checker
+build's results instead: the discipline checker and the barrier trap,
+whose outcomes do not depend on the runtime. The prototype campaign that
+preceded this branch lives in the simulator repository that motivated
+the design (`omnet-julia`, plan `memory-region-prototype`); its record
+keeps its own logs, frozen as they were measured. The section below was
+added later, dated in its own heading.
+
+## The residual-cleanup measurements (2026-09-03)
+
+These close the chain-residuals plan (`plan/done/chain-residuals.md`).
+All A/B runs are the min of three interleaved runs on the isolated core;
+GCBenchmarks is the serial set unless noted.
+
+**The big_arrays mark regression was inlining, not a check.** A signal-
+based `Profile` of a 35 M-object mark (perf was blocked) found ~10 % of
+collection time in a fortified `memcpy` inside the work-stealing queue's
+push and pop: the scoped-census filter's inline body pushed the mark
+drain past the compiler's inline budget, so the queue operations stayed
+real calls and their element `memcpy` — size a call parameter — ran per
+marked object. `FORCE_INLINE` on the queue operations plus outlining the
+filter (`gc_scoped_claim`, NOINLINE) fixed it. Mark time on the probe:
+
+| build | gc1 mark (ms) | gc2 mark (ms) |
+| --- | --- | --- |
+| vanilla | 967 | 554 |
+| region, before the fix | 1369 | 761 |
+| region, after the fix | 955 | 545 |
+
+Result on GCBenchmarks: single_ref 1.19 → 0.98, many_refs 1.24 → 0.92
+of vanilla; the four realistic benches unchanged.
+
+**The many_refs allocation gain is the deferral re-arm.** The allocation
+phase of that shape runs ~2x faster on the region build (vanilla
+~334–383 ms, region ~170–202 ms, collector off). A bisect over the base
+commits named the guards commit: with the collector disabled and the
+heap above its target, vanilla re-enters `jl_gc_collect` on every
+allocation (~20 ns each); `gc_defer_collection()` re-arms the target, so
+a `GC.enable(false)` loop allocates at full speed. Equal page faults,
+memory syscalls, loop code, and page-reuse layout ruled out every other
+cause.
+
+**The armed barrier is within noise of free.** Testing the child's
+region first (a region-0 child is legal under any parent) returns after
+one page-map walk for the common store:
+
+| path | before | after |
+| --- | --- | --- |
+| armed store (microbench) | 1.94 ns | 1.49 ns |
+| HIL kernel p50, disarmed / armed | 31 / 40 ns (older machine) | 61 / 61 ns |
+
+The inline-IR tag-compare was rejected: the child-first cold call
+already meets the target.
+
+**The construction barrier's cost.** A constructor store of an
+already-boxed child once skipped the region barrier and corrupted after
+reset; the barrier now fires there. The cost is a boxed-pointer-field
+construction paying the arming check in the default build, worst case
+(two such fields, tight loop, isolated core):
+
+| build | ns/object |
+| --- | --- |
+| vanilla | 42.4 |
+| region (barrier at construction) | 43.8 |
+
++1.4 ns, removed by `JL_NO_REGION_STORE_BARRIER`. A region-only
+construction intrinsic would cut it to the bare flag check (~0.7 ns).
+
+**The multithreaded sweep (`-t4`).** mergesort_parallel 0.97,
+mm_divide_and_conquer 1.06, issue-52937 at parity within its ±15 %
+spread (medians 12.0 vs 11.8 s over eight runs). No regression.
+objarray and both binary_tree benches abort on both binaries under the
+harness's pressure callback (an environmental exclusion), as do serial
+linked/list (and TimeZones needs its package offline).
+
+The tree branch (`region-tree`) carries its own evidence in `TREE.md`,
+including its GCBenchmarks table against vanilla.
+
+## The unit costs, updated (2026-09-03)
+
+| cost | value |
+| --- | --- |
+| armed region barrier, region-0 child (the common store) | 1.49 ns |
+| region write barrier at construction, per boxed pointer field | +1.4 ns worst case (default build) |
+| region-tree barrier, a mask-bit test on the cold path | no measurable change vs the chain compare |
