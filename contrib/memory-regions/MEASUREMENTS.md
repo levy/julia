@@ -403,6 +403,29 @@ p99.9 (60 against 70 ns) and p99.99 (80 against 220 ns) between the two
 region columns. Its price is one 55 µs pause per 100 000 events, at a
 boundary the loop owns.
 
+**The stock collector on the program's schedule (`sched`).** The obvious
+counter-move for a stock program is to collect on its own boundaries:
+`GC.gc(false)` at the census cadence, `GC.gc(true)` when the run ends —
+`stage5_scoped.jl sched`, logs `logs/sched_W*.log`. Two honest notes on
+accounting: the scheduled pauses run between events, so this variant's
+per-event distribution excludes them (the census column's boundary event
+includes its census), and the heuristics stay on, because the stock
+nursery can not be switched off. At light garbage the schedule works:
+the heuristics fire once in 5 M events, no event carries a collection
+(in-event max 14 µs), and the price moved into the 50 scheduled pauses —
+p50 0.34 ms, max 3.4 ms, against the census's 36 µs and 51 µs: ~10× at
+the median, ~65× at the worst, at the same cadence over the same live
+set. At recording-class garbage the schedule fails: 1.7 KB per event
+fills the nursery long before the next scheduled boundary, the
+heuristics fire 274 times anyway, 273 events carry a collection inside
+them (in-event max 3.9 ms), and the run degenerates to `auto`. The final
+`GC.gc(true)` costs 3.6–4.0 ms in both classes. Memory stays bounded as
+under `auto`. The reading: scheduling helps the stock collector exactly
+while the allocation rate is low enough that the nursery outlives the
+interval — and even then each pause is an order of magnitude above the
+census, because a young collection still walks and promotes the live
+set, where the census walks it and frees pages wholesale.
+
 **Environment, and how to reproduce the six runs.** A measurement that can
 not be reproduced is worth nothing, so here is everything the numbers
 depend on.

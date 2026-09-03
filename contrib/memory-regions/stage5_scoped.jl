@@ -154,7 +154,7 @@ checksum(table) = (s = 0; for r in table; s += r.id; end; s)
 function main()
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
-    use_regions = variant != "full" && variant != "auto" && variant != "autopool"
+    use_regions = variant != "full" && variant != "auto" && variant != "autopool" && variant != "sched"
     coop = variant == "coop"
     every = length(ARGS) >= 3 ? parse(Int, ARGS[3]) : 100_000
     # `every` = 0 means: no census at all. For `real` that shows the census's
@@ -211,7 +211,7 @@ function main()
     # batch and autopool are the THROUGHPUT variants: two time_ns calls per
     # event would measure the clock, not the mechanism, so only the
     # latency pair records per-event times.
-    record_latency = variant in ("real", "auto")
+    record_latency = variant in ("real", "auto", "sched")
     lat = record_latency ? Vector{Int64}(undef, events) : Int64[]
     fill!(lat, 0)   # touched now: the recording's own pages must not fault inside the loop
     pauses_ns = Int64[]
@@ -293,7 +293,11 @@ function main()
                 region_verify(SIM) == 0 && region_verify(EVENT) == 0 ||
                     error("verify failed after collect at event ", i)
             else
-                c0 = time_ns(); GC.gc(); c1 = time_ns()
+                # 'sched' is the stock collector under the program's own
+                # schedule: a young collection at the census cadence, one
+                # full collection when the run ends. 'full' is the
+                # full-collection-per-cadence reference.
+                c0 = time_ns(); variant == "sched" ? GC.gc(false) : GC.gc(); c1 = time_ns()
                 push!(pauses_ns, Int64(c1 - c0))
             end
         end
@@ -302,6 +306,10 @@ function main()
     if (variant == "batch" || variant == "real") && events % B != 0
         region_set(0)
         region_reset(EVENT)
+    end
+    if variant == "sched"
+        f0 = time_ns(); GC.gc(true); f1 = time_ns()
+        println("final full collection ", round((f1 - f0) / 1e6; digits = 2), " ms")
     end
     t_wall1 = time_ns()
     ctx1 = nivcsw()
