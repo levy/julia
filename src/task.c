@@ -519,6 +519,11 @@ JL_NO_ASAN static void ctx_switch(jl_task_t *lastt)
     jl_signal_fence();
     jl_set_pgcstack(&t->gcstack);
     jl_signal_fence();
+    // The region window follows the task: park the current region on the
+    // task that leaves, install the arriving task's region.
+    lastt->region = ptls->gc_tls.heap.current_region;
+    if (t->region != lastt->region)
+        jl_gc_install_task_region(ptls, t->region);
     lastt->ptls = NULL;
 #ifdef MIGRATE_TASKS
     ptls->previous_task = lastt;
@@ -1149,6 +1154,8 @@ JL_DLLEXPORT jl_task_t *jl_new_task(jl_value_t *start, jl_value_t *completion_fu
     // there is no active exception handler available on this stack yet
     t->eh = NULL;
     t->sticky = 1;
+    t->region = 0;
+    t->sticky_before_region = 0;
     t->gcstack = NULL;
     t->excstack = NULL;
     t->ctx.started = 0;

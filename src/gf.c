@@ -417,7 +417,7 @@ jl_mutex_t jl_typeinf_lock;
 // returns the inferred source, and may cache the result in mi
 // if successful, also updates the mi argument to describe the validity of this src
 // if inference doesn't occur (or can't finish), returns NULL instead
-jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
+static jl_code_instance_t *jl_type_infer_impl(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
 {
     if (jl_typeinf_func == NULL) {
         if (source_mode == SOURCE_MODE_ABI)
@@ -3555,7 +3555,7 @@ JL_DLLEXPORT int jl_method_is_macro(jl_method_t *m)
     return jl_symbol_name(m->name)[0] == '@';
 }
 
-jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t world)
+static jl_code_instance_t *jl_compile_method_internal_impl(jl_method_instance_t *mi, size_t world)
 {
     // quick check if we already have a compiled result
     jl_code_instance_t *codeinst = jl_method_compiled(mi, world);
@@ -5376,3 +5376,30 @@ JL_DLLEXPORT void jl_drop_all_caches(void)
 #ifdef __cplusplus
 }
 #endif
+
+
+// --- region prototype ---------------------------------------------------------
+// The runtime's own allocations belong to region 0, whatever region the
+// mutator is in: inference and compilation triggered mid-event otherwise
+// allocate compiler state into the event region, and the next reset kills it.
+// An exception past the restore leaves region 0, which is the safe direction.
+JL_DLLEXPORT int jl_gc_region_set(int n);
+
+jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
+{
+    int saved = jl_gc_region_set(0);
+    jl_code_instance_t *ci = jl_type_infer_impl(mi, world, source_mode, trim_mode);
+    if (saved != 0)
+        jl_gc_region_set(saved);
+    return ci;
+}
+
+jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t world)
+{
+    int saved = jl_gc_region_set(0);
+    jl_code_instance_t *ci = jl_compile_method_internal_impl(mi, world);
+    if (saved != 0)
+        jl_gc_region_set(saved);
+    return ci;
+}
+// ------------------------------------------------------------------------------

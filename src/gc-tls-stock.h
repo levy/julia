@@ -32,6 +32,58 @@ typedef struct {
     // variables for allocating objects from pools
 #define JL_GC_N_MAX_POOLS 51 // conservative. must be kept in sync with `src/julia_internal.h`
     jl_gc_pool_t norm_pools[JL_GC_N_MAX_POOLS];
+
+    // --- region prototype -----------------------------------------------------
+    // A region is a saved set of pool heads plus the pages claimed while it
+    // was current. Swapping regions swaps the pool heads; the inlined
+    // allocation fast path is untouched. Region 0 is the default heap.
+#define JL_GC_MAX_REGIONS 8
+    uint8_t current_region;
+    uint8_t saved_region;   // parked by a stock collection: every thread
+                            // runs the collection with region 0 installed
+    // The live pool array of the current region: norm_pools for region 0,
+    // regions[n].pools for region n. Allocation paths decode their stable
+    // norm_pools-relative offset into an index and address through this
+    // pointer, so a region switch is one pointer store -- no copying, and
+    // no parked state that can go stale.
+    jl_gc_pool_t *active_pools;
+    struct {
+        jl_gc_pool_t pools[JL_GC_N_MAX_POOLS];
+        struct _jl_gc_pagemeta_t *pages;   // chained through region_next
+        struct _jl_gc_pagemeta_t *fresh_pages; // wholly dead pages, ready for
+                                           // reuse; their metadata is stale -
+                                           // gc_add_page resets a page when it
+                                           // claims it, so nobody resets one here
+        struct _jl_gc_pagemeta_t *pages_tail; // last link of `pages`, so a reset
+                                           // parks the whole chain in O(1)
+        uint32_t n_pages;                  // pages on `pages`
+        uint32_t n_fresh;                  // pages on `fresh_pages`
+        arraylist_t finalizers;            // (tagged object, function) pairs
+                                           // registered on this region's
+                                           // objects: the reset runs them all
+                                           // before it frees; the cooperative
+                                           // census runs the dead ones between
+                                           // its mark and its sweep
+        small_arraylist_t mallocarrays;    // memories with malloc'd data
+                                           // allocated in this region: their
+                                           // data is freed by the reset (all
+                                           // of it) and by the census (the
+                                           // dead), never by the stock sweep
+        uint8_t initialized;
+        uint32_t overflow_pages;           // pages beyond one per pool at reset
+    } regions[JL_GC_MAX_REGIONS];
+    // The tree's reset bookkeeping, per heap (a region's pages are per heap).
+    // A region is "live" between a region_set onto it and its reset. Its
+    // parent counts its live children; region_haschild bit r is set while
+    // region r has at least one live child. A leaf reset is then one bit
+    // test: refuse to reset a region whose haschild bit is set, because a
+    // live descendant may reference into it (a legal leaf -> trunk edge that
+    // the reset would dangle). Zero-initialized: no region is live, none has
+    // a child.
+    uint64_t region_live_mask;             // bit r: region r is live here
+    uint64_t region_haschild_mask;         // bit r: region r has a live child
+    uint8_t region_child_count[JL_GC_MAX_REGIONS];
+    // --------------------------------------------------------------------------
 } jl_thread_heap_t;
 
 typedef struct {
