@@ -117,9 +117,22 @@ same inherits the gain.
 
 **Two escape hatches to literal zero.** The store barrier compiles out
 (`make` with `JL_NO_REGION_STORE_BARRIER`) for a build that never wants
-regions; the allocation indirection can get the same treatment, though
-it measures at no cost on this set. Start time is unchanged (0.06 s
-both), and the runtime library grows 0.8 % (11.62 → 11.72 MB).
+regions, and so does the allocation indirection (`JL_NO_REGION_ALLOC`:
+the pool address computes exactly as vanilla and `jl_gc_region_set`
+refuses with -1) — though the indirection measures at no cost on this
+set. Start time is unchanged (0.06 s both), and the runtime library
+grows 0.8 % (11.62 → 11.72 MB).
+
+**The broader sweep.** The remaining serial benches and the
+multithreaded set, same protocol. Serial: `linked/list` and `TimeZones`
+do not run in this environment on either binary (the harness's
+memory-pressure callback aborts `list`; `TimeZones` needs its package,
+unavailable offline). Multithreaded, `-t4`, min of three interleaved:
+`mergesort_parallel` 0.97, `mm_divide_and_conquer` 1.06, `issue-52937`
+at parity within the bench's ±15 % spread on non-isolated cores
+(medians 12.0 against 11.8 s over eight runs); `objarray` and both
+`binary_tree` benches abort on both binaries under the pressure
+callback. No multithreaded regression.
 
 ## Where it stands
 

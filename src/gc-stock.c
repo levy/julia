@@ -812,10 +812,16 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // Use the pool offset instead of the pool address as the argument
     // to workaround a llvm bug.
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
+#ifdef JL_NO_REGION_ALLOC
+    // The stock-only build: the pool address computes exactly as vanilla,
+    // and jl_gc_region_set refuses, because regions cannot allocate here.
+    jl_gc_pool_t *p = (jl_gc_pool_t*)((char*)ptls + offset);
+#else
     // `offset` is the stable norm_pools-relative encoding the JIT bakes in;
     // decode it to a pool index and address the CURRENT region's array.
     size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
     jl_gc_pool_t *p = ptls->gc_tls.heap.active_pools + pool_idx;
+#endif
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == 0);
 #ifdef MEMDEBUG
     return jl_gc_big_alloc(ptls, osize, NULL);
@@ -3917,6 +3923,12 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
+#ifdef JL_NO_REGION_ALLOC
+    // The stock-only build allocates through norm_pools only; a window
+    // would allocate into the wrong pools, so the entry refuses.
+    (void)n;
+    return -1;
+#else
     jl_ptls_t ptls = jl_current_task->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     int old = heap->current_region;
@@ -3945,6 +3957,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
     heap->current_region = (uint8_t)n;
     return old;
+#endif
 }
 
 // Install a task's parked region on this thread at a task switch. The

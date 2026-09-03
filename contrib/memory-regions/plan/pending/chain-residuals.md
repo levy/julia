@@ -21,17 +21,29 @@ worktree (`plan/pending/region-tree.md`).
       sits above its target (~20 ns each); gc_defer_collection()
       re-arms the target, so the disabled loop allocates at full
       speed. MATURATION.md carries the mechanism.
-- [ ] **The allocation-indirection compile-out.** Mirror
+- [x] **The allocation-indirection compile-out.** Done 2026-09-03. Mirror
       `JL_NO_REGION_STORE_BARRIER`: with `JL_NO_REGION_ALLOC` defined,
       the pool address computes exactly as vanilla (`ptls + offset`)
       and `jl_gc_region_set` refuses with -1, because regions cannot
       allocate in that build. `jl_gc_region_reserve` stays functional:
       the prefault is useful without regions. Acceptance: the flag
       build matches the vanilla allocation path on the alloc probe and
-      refuses `region_set`; the normal build is unchanged.
-- [ ] **The multithreaded sweep.** The cost table is the serial set;
-      run the GCBenchmarks multithreaded set A/B (`-t4`) and add the
-      table to MATURATION.md.
+      refuses `region_set`; the normal build is unchanged. Verified:
+      the flag build returns -1 from `region_set(1)`, allocates and
+      collects normally, and still allocates fast under
+      `GC.enable(false)` (~180 ms — more proof the gain is the
+      deferral re-arm, not the indirection); the restored build passes
+      stockgc_test and escape_test.
+- [x] **The multithreaded sweep.** Done 2026-09-03. `-t4`, three
+      interleaved runs: mergesort_parallel 0.97,
+      mm_divide_and_conquer 1.06, issue-52937 at parity within its
+      ±15 % spread (medians 12.0 against 11.8 s over eight runs — the
+      first reading of 1.12 was scheduler variance on shared cores).
+      objarray and both binary_tree benches abort on BOTH binaries
+      under the harness's memory-pressure callback, as do serial
+      linked/list (and TimeZones needs its package offline) — an
+      environmental exclusion, equal on both sides. MATURATION.md
+      carries the table.
 
 ## Medium — the armed fast path
 
