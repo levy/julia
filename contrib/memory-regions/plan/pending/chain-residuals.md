@@ -47,25 +47,60 @@ worktree (`plan/pending/region-tree.md`).
 
 ## Medium — the armed fast path
 
-- [ ] **Inline IR tag-compares for the armed barrier.** The armed
-      legal-store path costs ~9 ns because every store pays the cold
-      call `jl_gc_region_wb`. Emit the two page-tag loads and the
-      compare inline in the write-barrier lowering, and keep the call
-      only for the violation path. Target: the armed light-loop median
-      within ~2 ns of disarmed. Acceptance: the light-loop measurement,
-      plus escape_test unchanged (every quarantine still fires).
+- [x] **The armed barrier is fast enough with the child-first reorder;
+      inline IR rejected.** Done 2026-09-03. The cold call
+      `jl_gc_region_wb` now tests the child's region first and returns
+      after one page-map walk for a region-0 child (almost every store
+      in ordinary code). Armed store microbench 1.94 -> 1.49 ns; HIL
+      kernel p50 61 ns armed = 61 ns disarmed. The target ("within
+      ~2 ns of disarmed") is met, so the inline IR tag-compare is NOT
+      built: it would replicate the pagetable walk inline (large IR,
+      the non-integral-pointer hazard) for no measurable gain over the
+      cold call, which the child-0 fast path already makes cheap. The
+      old ~9 ns was p50 31 -> 40 on a quiet machine; the reorder closes
+      even that.
 
 ## Medium — the two stage-1 gaps, decided
 
-- [ ] **The fresh-store elision gap.** The compiler elides the write
-      barrier for stores into freshly allocated objects; a window
-      opened between the allocation and the store lets a region store
-      skip the armed barrier. Close it or bound it: either
-      `region_set` acts as an allocation boundary for elision, or the
-      lowering keeps the region branch on elided stores when the flag
-      is armed. Acceptance: a test that demonstrates the miss today
-      and quarantines after the change, plus the light-loop median
-      unmoved while disarmed.
+- [ ] **The construction-store gap — DIAGNOSED, corrupts, decision
+      needed.** Found 2026-09-03 to be worse than "elision": a
+      constructor store of an already-boxed child skips the region
+      barrier unconditionally, not just across a window. In the heap
+      path of `emit_new_struct` (cgutils.cpp), a pointer field is
+      stored with `need_wb = !rhs.isboxed`; for an already-boxed child
+      — a pre-existing object of a younger region — `need_wb` is
+      false, so no write barrier is emitted, so the region barrier
+      that late-lowering bolts onto the generational one never fires.
+      Demonstrated: a region-0 object constructed with a region-1
+      child leaves quarantined(1)=false, region_check(1)=0 (the audit
+      trusts the barrier and does not walk region-0 heap objects), and
+      after region_reset(1) plus churn the surviving field reads
+      garbage — silent corruption, the one thing the barrier promises
+      never happens.
+
+      The fix restores the guarantee and is the user's call on
+      approach:
+      - **(A) region-only construction barrier.** A new
+        `julia.region_write_barrier` intrinsic emitted for boxed
+        pointer fields at construction, lowered to the flag-guarded
+        region call only (no generational part). Zero cost when
+        disarmed past one predicted branch per boxed pointer field at
+        construction; zero under JL_NO_REGION_STORE_BARRIER. Complete
+        soundness. Cost: codegen + late-lowering + intrinsic plumbing.
+      - **(B) widen need_wb.** Set need_wb=true for boxed pointer
+        fields when the barrier is compiled in. One line, but emits
+        the full generational barrier body at every such construction
+        even when regions are unused at runtime — a small always-on
+        cost, measurable on construction-heavy code.
+      - **(C) audit + discipline.** Extend region_check to also walk
+        older-region heap objects for references into region n (a
+        debug/CI full scan, zero production cost), and document
+        construction of a younger child into an older object as a
+        discipline violation. Does NOT restore the production "never
+        corrupt" guarantee.
+      Recommendation: (A). Acceptance: the ctor_corrupt demonstrator
+      quarantines after the change; the disarmed construction
+      microbench unmoved; escape_test still green.
 - [ ] **The blocking-`take!` escape.** A blocking `take!` inside a
       window escapes through wait-queue growth. Decide and record:
       either this stays a documented discipline rule (do not block
@@ -80,14 +115,27 @@ Full support for these is future work, not this plan. This plan only
 replaces silence with a defined, tested refusal — the same move the
 finalizer story made (the STW census refuses with -6).
 
-- [ ] **Weak references**: creating a `WeakRef` to a region object
-      refuses or quarantines, with a test.
-- [ ] **The id dict**: an `IdDict` key in a region either works via
-      the existing hash path or refuses; decide, test.
-- [ ] **Serialization**: serializing a region object refuses with a
-      clear error, with a test.
-- [ ] **Precompile images**: a region open during precompile output
-      refuses, with a test.
+Measured 2026-09-03 with a demonstrator: an `IdDict` key from a region
+and `serialize` of a region object BOTH already quarantine the region —
+the store into the dict's `SimpleVector` slots and into the serializer's
+backref table are ordinary boxed-child stores, so the barrier fires.
+So the id dict and serialization are already defined behavior (leak, not
+corruption). This tier now only sharpens that into a clear message and a
+test, and covers the two that are not yet defined.
+
+- [ ] **Weak references**: `jl_gc_new_weakref_th` on a region object
+      refuses or quarantines, with a test. (Not yet checked; weakrefs
+      are a separate list in the stock GC.)
+- [ ] **The id dict**: already quarantines (measured). Replace the
+      generic REGION-ESCAPE message with a specific one when the parent
+      is the dict's storage, and add the test.
+- [ ] **Serialization**: already quarantines (measured). A clearer
+      path is an explicit refusal at the serializer entry for a region
+      object, before it pollutes the backref table; decide vs. the
+      quarantine, test.
+- [ ] **Precompile images**: refuse at `jl_create_system_image` (the
+      single choke point for both image kinds) when any region window
+      is open or any region is initialized, with a test.
 
 ## When this stands
 
