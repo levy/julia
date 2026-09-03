@@ -4125,6 +4125,16 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n)
         if (ptls2 != NULL) {
             gc_queue_thread_local(mq, ptls2);
             gc_queue_bt_buf(mq, ptls2);
+            // Parked tasks of this thread may hold region references on their
+            // stacks with their windows closed; queue them through the task
+            // claim, so their stacks are scanned like the running ones. A task
+            // of another thread can not legally reference this thread's regions
+            // - such a store is an escape, quarantined by the barrier.
+            {
+                small_arraylist_t *lt = &ptls2->gc_tls_common.heap.live_tasks;
+                for (size_t i = 0; i < lt->len; i++)
+                    gc_try_claim_and_push(mq, (jl_value_t*)lt->items[i], NULL);
+            }
         }
     }
     gc_mark_loop_serial(ptls);
@@ -4305,6 +4315,16 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     gc_queue_thread_local(mq, ptls);
     gc_queue_bt_buf(mq, ptls);
+    // Parked tasks of this thread may hold region references on their
+    // stacks with their windows closed; queue them through the task
+    // claim, so their stacks are scanned like the running ones. A task
+    // of another thread can not legally reference this thread's regions
+    // - such a store is an escape, quarantined by the barrier.
+    {
+        small_arraylist_t *lt = &ptls->gc_tls_common.heap.live_tasks;
+        for (size_t i = 0; i < lt->len; i++)
+            gc_try_claim_and_push(mq, (jl_value_t*)lt->items[i], NULL);
+    }
     // The finalizer functions of this region live only in the C-side list;
     // mark them, so a survivor's finalizer is not swept from under the
     // list. A dead entry's function survives one census too long - slack,
@@ -4400,6 +4420,16 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
         if (ptls2 != NULL) {
             gc_queue_thread_local(mq, ptls2);
             gc_queue_bt_buf(mq, ptls2);
+            // Parked tasks of this thread may hold region references on their
+            // stacks with their windows closed; queue them through the task
+            // claim, so their stacks are scanned like the running ones. A task
+            // of another thread can not legally reference this thread's regions
+            // - such a store is an escape, quarantined by the barrier.
+            {
+                small_arraylist_t *lt = &ptls2->gc_tls_common.heap.live_tasks;
+                for (size_t i = 0; i < lt->len; i++)
+                    gc_try_claim_and_push(mq, (jl_value_t*)lt->items[i], NULL);
+            }
         }
     }
     gc_mark_loop_serial(ptls);

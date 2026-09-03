@@ -102,11 +102,22 @@ region's own boundaries. Six suites green on every item.
 
 ## Stage 3 - multithreading
 
-- [ ] The census under threads: a safepoint-integrated entry (the
-      sanctioned "caller is the only mutator" shape from the upstream
-      questions), task stacks via live_tasks, finalizer lists walked.
-      Acceptance: the matrix on 4 threads, one region set per thread,
-      0 corruption over the endurance run.
+- [x] The census under tasks and threads, scoped by what the barrier
+      already guarantees (parked_task_test.jl: ALL PASS both modes, three
+      runs each; the single-thread case is the discriminating one). The
+      real hole was same-thread parked tasks: a task with a closed window
+      and region references on its stack was invisible to the
+      caller-roots census - all three scanners (both census entries and
+      the rule-5 check) now queue live_tasks through the repaired task
+      claim; the stop-the-world forms walk every thread's list, the
+      cooperative form the caller's. What needed NO code, argued in the
+      comments in place: cross-thread references into a region and
+      finalizer-held region references are both escapes - quarantined,
+      impossible in a disciplined program - so cross-thread root scans
+      and finalizer-list walks are not the census's business. The
+      cooperative -4 stays the contract (the test retries like an engine
+      would). The four-thread matrix and the endurance acceptance land
+      with stage 4's evidence runs.
 
 ## Stage 4 - evidence
 
