@@ -5,7 +5,8 @@ module Regions
 
 export region_set, region_reset, region_reserve, @with_region, region_current, region_overflow, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
-       region_parent!, region_tree!, region_parent_of, region_reset_global
+       region_parent!, region_tree!, region_parent_of, region_reset_global,
+       region_census_threshold!, region_pages
 
 # Declare the region tree. A region's number is a topological order of the
 # tree: a parent's number is smaller than its child's. The default, until
@@ -17,6 +18,12 @@ region_parent!(child::Int, parent::Int) =
     (ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), child, parent) == 0 ||
      error("bad region edge: parent ($parent) must be >= 0 and < child ($child)"))
 region_parent_of(child::Int) = Int(ccall(:jl_gc_region_parent_of, Cint, (Cint,), child))
+# Arm the open-region census: when a region window grows past `pages`, its dead
+# cells are reclaimed in place (the live search state on the stack is kept), so
+# a computation whose garbage dies inside the window does not grow the region
+# without bound. 0 disables it; the reset stays the fast common path.
+region_census_threshold!(pages::Int) = ccall(:jl_gc_region_census_threshold, Cvoid, (Cint,), pages)
+region_pages(n::Int) = Int(ccall(:jl_gc_region_pages, Cint, (Cint,), n))
 # Declare the whole tree at once: parents[i] is the parent of region i, for
 # i = 1.. (region 0 is the root and takes no entry). parents[i] < i.
 function region_tree!(parents::AbstractVector{<:Integer})

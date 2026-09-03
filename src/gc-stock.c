@@ -404,8 +404,20 @@ void gc_setmark_buf(jl_ptls_t ptls, void *o, uint8_t mark_mode, size_t minsz) JL
     gc_setmark_buf_(ptls, o, mark_mode, minsz);
 }
 
+// The growth trigger for the open region's own census. When a region window
+// grows past a threshold -- a computation whose garbage dies INSIDE the window
+// (a deep backtracking search) rather than at its boundary -- reclaim the
+// region's dead cells in place instead of letting it grow without bound. The
+// reset stays the fast common path; this is the safety valve that keeps a
+// long single computation from OOMing where the stock collector would survive.
+// Returns 1 if it ran a census. Defined below, with the census core.
+static int region_maybe_census(jl_ptls_t ptls);
+
 STATIC_INLINE void maybe_collect(jl_ptls_t ptls)
 {
+    if (__unlikely(ptls->gc_tls.heap.current_region != 0) && region_maybe_census(ptls)) {
+        return;
+    }
     if (jl_atomic_load_relaxed(&gc_heap_stats.heap_size) >= jl_atomic_load_relaxed(&gc_heap_stats.heap_target) || jl_gc_debug_check_other()) {
         jl_gc_collect(JL_GC_AUTO);
     }
@@ -3808,6 +3820,16 @@ JL_DLLEXPORT int jl_gc_region_parent_of(int child)
         return 0;
     return region_parent[child];
 }
+
+// The page count of a region on the calling heap -- the observable the census
+// bounds; used by the test.
+JL_DLLEXPORT int jl_gc_region_pages(int n)
+{
+    if (n <= 0 || n >= JL_GC_MAX_REGIONS)
+        return 0;
+    jl_thread_heap_t *heap = &jl_current_task->ptls->gc_tls.heap;
+    return (int)heap->regions[n].n_pages;
+}
 // --------------------------------------------------------------------------
 
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
@@ -4606,23 +4628,15 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 // object it names gets freed here. Preconditions: the region exists, no
 // window is open, and every younger region is quiesced.
 // Returns the number of freed cells, or a negative error code.
-JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
+// The stop-the-world scoped census on region n, from the execution roots.
+// The caller owns the guards. Two callers: jl_gc_region_collect (the region is
+// not current) and region_maybe_census (the region IS current, mid-window).
+// region_scoped_sweep already caps each pool at its live bump cursor and keeps
+// the cursor page, so a census of the open region reclaims its dead cells and
+// leaves allocation to continue from the rebuilt freelist -- the same pool
+// state a stock young collection leaves behind.
+static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
 {
-    jl_task_t *ct = jl_current_task;
-    jl_ptls_t ptls = ct->ptls;
-    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
-        return -1;
-    if (__unlikely(jl_gc_region_quarantined(n)))
-        return -5;      // quarantined: see jl_gc_region_wb
-    if (__unlikely(heap->regions[n].finalizers.len != 0))
-        return -6;      // finalizers pending: running them with the world
-                        // stopped can deadlock - use the cooperative entry,
-                        // or the reset
-    if (heap->current_region != 0 ||
-        jl_atomic_load_relaxed(&region_windows_open) != 0)
-        return -2;
-
     // Stop the world, the way jl_gc_collect does. The scoped collector's
     // operating mode is GC.enable(false), but jl_safepoint_start_gc
     // refuses while the disable counter is set -- clear it for the
@@ -4694,6 +4708,55 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
     region_collect_stats[2] = t_mark - t_stw;
     region_collect_stats[3] = t_sweep - t_mark;
     return freed;
+}
+
+// Collect one region alone, from a quiet boundary (the region not current).
+JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (n <= 0 || n >= JL_GC_MAX_REGIONS || !heap->regions[n].initialized)
+        return -1;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return -5;      // quarantined: see jl_gc_region_wb
+    if (__unlikely(heap->regions[n].finalizers.len != 0))
+        return -6;      // finalizers pending: running them with the world
+                        // stopped can deadlock - use the cooperative entry,
+                        // or the reset
+    if (heap->current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return -2;
+    return region_census_core(ct, ptls, heap, n);
+}
+
+// The open region's growth trigger, called from maybe_collect at a safepoint.
+// A region past its page threshold is censused in place: the live search state
+// on the stack is kept, its dead branches are swept back to the freelist, and
+// allocation continues without the region growing without bound. Default off
+// (0 = never); jl_gc_region_census_threshold(pages) arms it. The finalizer and
+// quarantine cases fall through to the ordinary path (a census will not run
+// finalizers under the world stopped, and a quarantined region keeps its
+// memory by contract).
+static int region_census_page_threshold = 0;
+
+JL_DLLEXPORT void jl_gc_region_census_threshold(int pages)
+{
+    region_census_page_threshold = pages;
+}
+
+static int region_maybe_census(jl_ptls_t ptls)
+{
+    int n = ptls->gc_tls.heap.current_region;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (region_census_page_threshold <= 0 ||
+        (int)heap->regions[n].n_pages < region_census_page_threshold)
+        return 0;
+    if (heap->regions[n].finalizers.len != 0 || jl_gc_region_quarantined(n))
+        return 0;                         // let the ordinary path handle these
+    jl_task_t *ct = jl_current_task;
+    region_census_core(ct, ptls, heap, n);
+    return 1;
 }
 
 // The region of an object, read from its page tag in constant time. NULL
