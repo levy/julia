@@ -1,11 +1,12 @@
-# The road to a real PR
+# Maturing the region collector
 
-The goal: the region allocator/collector as a Julia runtime feature with
-no cost when unused, full benefit when used alone, and coexistence with
-the stock collector. The obstacles and their ranking are in DESIGN.md
-under "The road upstream"; this plan turns them into stages. Each stage
-has an acceptance test; a stage that cannot meet it blocks the PR, not
-the stage after it.
+The goal: the region allocator/collector matured internally to the
+point where it could stand as a Julia runtime feature - no cost when
+unused, full benefit when used alone, coexistence with the stock
+collector. The obstacles and their ranking are in DESIGN.md under "The
+road upstream"; this plan turns them into stages. Each stage has an
+acceptance test. No pull request is part of this plan: if one ever
+happens, the user makes it manually.
 
 ## Stage 0 - internal only, for now
 
@@ -65,13 +66,12 @@ region tag).
       wholesale-death showcase against the stock columns.
 - [ ] Package load times and code size, before/after.
 
-## Stage 5 - packaging and the PR series
+## When the stages stand
 
-- [ ] Packaging decided internally when stages 1-4 stand: gc-stock
-      patches, a GC-interface extension, or an MMTk plan. Staged as the
-      upstream questions already cut it:
-      PR 1 the per-page owner tag and per-owner page chains; PR 2 the
-      single-mutator collection entry; PR 3 regions on top, API no-oped
-      behind a build flag.
-- [ ] Every PR carries its measurements the way this branch does: the
-      environment, the scripts, the logs, one run set.
+The work ends at the evidence. Whether anything ever goes upstream, and
+in what shape, is the user's manual decision outside this plan; the
+working assumption that keeps the option open stays as in stage 0 - the
+region state behind its own functions, no new invariant leaking into
+code that does not test the region tag, and every stage carrying its
+measurements the way this branch does: the environment, the scripts,
+the logs, one run set.
