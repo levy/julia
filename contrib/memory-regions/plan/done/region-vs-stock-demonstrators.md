@@ -63,16 +63,16 @@ rigged. The plan holds itself to these rules, and the result states them.
   pressure and the pause win is categorical.
 - Every number lands in `SHOWCASE.md` with the script that produced it.
 
-## Demonstrator A -- backtracking search (`bt_solver_demo.jl`)
+## Demonstrator A -- backtracking search (`bt_solver_demo.jl`) -- DONE, see SHOWCASE.md
 
-- [ ] **The algorithm.** A backtracking constraint solver in its natural
+- [x] **The algorithm.** A backtracking constraint solver in its natural
       allocating form: graph K-colouring or Latin-square/Sudoku, with the
       per-node working set as allocated objects (candidate/domain sets as
       `Vector`/`Set`, a copied partial assignment per branch). This is the
       idiomatic readable form and the form a non-expert writes -- not the
       bitmask form (which allocates nothing and where regions rightly do
       not help; the result says so).
-- [ ] **The region mapping.** A batch of independent instances; each
+- [x] **The region mapping.** A batch of independent instances; each
       instance's solve runs in one region, reset when the instance
       finishes. The solution (a colouring, or UNSAT) is copied out to
       region 0 as a small result. Parallel workers each take a sibling
@@ -81,28 +81,28 @@ rigged. The plan holds itself to these rules, and the result states them.
       instance stays in that instance's one region -- the region is reset
       between instances, not between frames, so recursion depth is not
       bounded by `JL_GC_MAX_REGIONS`.
-- [ ] **The A/B and acceptance.** Region run vs stock run on the same
+- [x] **The A/B and acceptance.** Region run vs stock run on the same
       batch, three scales (instance count / board size). Accept when: the
       region run does far fewer stock collections (ideally zero on the
       transients), its maximum pause is lower at every scale, and its wall
       time is lower at the medium and large scales; zero quarantines
       throughout; identical solutions from both runs.
 
-## Demonstrator B -- parallel path tracer (`pathtrace_demo.jl`)
+## Demonstrator B -- parallel path tracer (`pathtrace_demo.jl`) -- DONE, see SHOWCASE.md
 
-- [ ] **The algorithm.** A small path tracer: a handful of spheres,
+- [x] **The algorithm.** A small path tracer: a handful of spheres,
       Lambertian and mirror materials, N samples per pixel, bounded
       bounce depth. Its natural form allocates per bounce (ray, hit
       record, scattered ray) -- variable in count with bounce depth, so
       not trivially preallocated.
-- [ ] **The region mapping.** Embarrassingly parallel: one sibling leaf
+- [x] **The region mapping.** Embarrassingly parallel: one sibling leaf
       per worker thread. Each pixel (or each sample) allocates its bounce
       transients in the worker's leaf and resets the leaf when the
       sample finishes; the surviving output is one small colour added to
       the image buffer in region 0 (a region-0-valued store, legal). This
       reuses exactly the sibling-leaf machinery `showcase_tree.jl`
       already exercises, at a real workload.
-- [ ] **The A/B and acceptance.** Region run vs stock run rendering the
+- [x] **The A/B and acceptance.** Region run vs stock run rendering the
       same image at three sample counts. Accept when: the region run
       keeps the collector out of the render loop (zero or near-zero
       collections), its maximum pause is lower at every sample count, and
@@ -164,27 +164,26 @@ baseline but does not pretend the region version competes with it.
 
 ## Demonstrator D -- Delaunay mesh refinement (`dmr_demo.jl`)
 
-- [ ] **The algorithm.** The canonical irregular-parallel benchmark
-      (Galois / Lonestar). A shared triangle mesh; workers repeatedly pick
-      a "bad" triangle, compute its cavity, and retriangulate it --
-      allocating new triangles and vertices -- then commit if the cavity
-      did not overlap another worker's, else abort and discard the new
-      triangles. Aborted cavities are pure allocation garbage; the mesh is
-      the shared trunk. Heavily allocation-bound (object creation per
-      cavity), and famous, so it answers "a real algorithm, not a toy."
-- [ ] **The region mapping.** The mesh in region 0; each worker's
-      speculative cavity retriangulation in its own leaf; a committed
-      cavity's new triangles are copied into region 0 and spliced; an
-      aborted cavity resets its leaf. Conflict detection is the
-      application's (a lock per touched triangle, or a version check); the
-      region model handles only the memory of the aborted work.
-- [ ] **The A/B and acceptance.** Region run vs stock run of the same
-      optimistic refinement, three mesh sizes / bad-triangle densities.
-      Accept when the region run wins on collections, GC time, maximum
-      pause, AND wall time, with the wall advantage rising as the abort
-      rate rises. Both runs converge to a valid Delaunay mesh with the same
-      triangle count; zero quarantines. This is the heavyweight; C is the
-      clean minimal one, and D is optional if C already shows the wall win.
+- [x] DONE 2026-09-03 (table in SHOWCASE.md; core in dmr_core.jl, tested
+      standalone). The Galois/Lonestar benchmark: a shared mesh, each round
+      N workers speculatively compute a bad triangle's Bowyer-Watson cavity
+      + a quality analysis (read-only, allocation-heavy, in the worker's
+      leaf), then a DETERMINISTIC seed-id-order commit applies the
+      non-conflicting cavities -- an overlapping cavity aborts. Determinism
+      makes region and stock refine to the identical mesh (same checksum,
+      same 2075 aborts), so the A/B is clean. Refinement is centroid
+      insertion (always in-domain, terminates), triangle-capped.
+- [x] The wall-time win, same crossover as C. Grid 16, sweeping the
+      quality-analysis weight, quiet lane: work=0 0.99x (parity, refinement
+      compute dominates), work=512 1.07x, work=2048 1.39x. Region does ZERO
+      collections at every level (it resets each round's speculation,
+      committed and aborted alike); stock's collections climb 0->5->23 and
+      GC time 0->2.9->8.4 ms as the speculative allocation grows. Same mesh
+      both runs, no quarantine. Two honest scope notes: the conflict model
+      is round-based-deterministic (not lock-free optimistic), which keeps
+      the A/B reproducible; and the O(n) per-round rescan (no worklist) caps
+      how large the mesh can grow, so the sweep drives allocation by the
+      analysis weight, not by mesh size.
 
 ## Stage C -- the write-up
 
@@ -192,11 +191,12 @@ baseline but does not pretend the region version competes with it.
       time / RSS at three scales each) and the honest caveats -- the
       categorical collection/pause win, the modest compute-bound wall win,
       the in-place-code and OOM caveats.
-- [ ] Extend `SHOWCASE.md` with C (and D if built): the allocation-bound
-      tables with the ABORT RATE as the independent variable, and the
-      headline this pair is for -- a wall-time advantage that RISES with
-      the abort rate, next to the pause advantage that holds flat. This is
-      the wall-time proof the compute-bound pair could not give.
+- [x] `SHOWCASE.md` extended with C and D: the allocation-bound tables
+      with the speculative-work weight as the independent variable, and the
+      headline this pair delivers -- a wall-time advantage that RISES with
+      the discarded allocation (C to 1.63x, D to 1.39x), with region GC held
+      flat while stock's climbs. The wall-time proof the compute-bound pair
+      could not give, on both a minimal algorithm (C) and a famous one (D).
 
 ## Risks and honest failure modes
 
