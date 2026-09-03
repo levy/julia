@@ -60,17 +60,50 @@ sibling leaves let four threads reset per pixel with no coordination and mutual
 isolation. Again the region run keeps the collector out entirely; the win
 grows with the sample count.
 
+## Demonstrator C -- optimistic concurrent persistent BST (`optimistic_bst_demo.jl`)
+
+The allocation-bound case, and the one that wins on WALL time. Four threads
+insert keys into ONE shared persistent tree; each attempt path-copies a new
+version in its own sibling leaf and commits by a compare-and-swap on the root;
+a lost attempt (validated by re-reading the root before it touches region 0)
+resets its leaf, so its whole speculation is leaf garbage. The abort rate sits
+near 300% (three retries per key at four threads). A tunable transaction body
+adds the speculative allocation a real transaction does; sweeping it, at 80000
+keys, on a quiet isolated lane:
+
+| transaction work | region wall | stock wall | speedup | region GC | stock GC | stock coll. |
+| --- | --- | --- | --- | --- | --- | --- |
+| 0 (bare insert) | 66 ms | 29 ms | **0.44x** | 5.5 | 4.6 | 5 |
+| 64 | 101 ms | 84 ms | **0.83x** | 6.1 | 23.0 | 16 |
+| 256 | 181 ms | 266 ms | **1.47x** | 2.6 | 98.5 | 28 |
+| 1024 | 494 ms | 807 ms | **1.63x** | 4.7 | 278.0 | 114 |
+
+Same key set from both runs, no quarantine, aborts steady ~280-300 % across
+the sweep. This is the honest crossover: with a bare insert the discarded
+allocation per attempt is tiny and the region's window overhead (open, close,
+and the O(depth) commit copy-out) dominates -- the region **loses, 0.44x**. As
+the transaction body grows, the garbage a lost attempt discards grows with it;
+the stock collector's GC time climbs from 4.6 ms to **278 ms** (5 to 114
+collections) while the region's stays **flat at ~5 ms** (it resets the losers),
+and the region **wins, up to 1.63x**, the advantage rising with the allocation.
+This is the wall-time win the compute-bound pair could not give, and it appears
+exactly where the model predicts: when aborted speculation is the dominant
+allocation.
+
 ## What this proves, honestly
 
-- **The categorical result (load-independent, proven under load):** on the
-  natural allocating form of both algorithms, the region run does **zero**
-  stock collections and **zero** GC time, where the stock run's collections
-  and GC time rise with allocation pressure. Regions remove the collector, and
-  every stop-the-world pause with it, from the hot loop.
-- **The wall-time result (conservative, shared lane):** the region run is
-  consistently a few percent faster, because these workloads are compute-bound
-  and GC is a small fraction of them. A quiet-core re-measure is pending to
-  pin the ratio; the load-independent metrics above do not need it.
+- **The categorical result (compute-bound A and B, load-independent):** on the
+  natural allocating form of both, the region run does **zero** stock
+  collections and **zero** GC time, where the stock run's collections and GC
+  time rise with allocation pressure. Regions remove the collector, and every
+  stop-the-world pause with it, from the hot loop. Wall time there is only a
+  few percent better, because those workloads are compute-bound.
+- **The wall-time result (allocation-bound C):** when aborted speculation is
+  the dominant allocation, the region wins on wall time -- up to 1.63x here,
+  and rising with the discarded allocation -- while its GC stays flat and the
+  stock collector's climbs to 278 ms. The crossover is honest: with tiny
+  per-attempt allocation the region's overhead makes it lose (0.44x), so the
+  win is real only past the point where discarded garbage dominates.
 - **The honest caveats.** Bitmask / in-place forms of either algorithm
   allocate nothing and regions do not help them -- the win is against the
   natural allocating form, not a hand-optimised one. And a single unbounded
