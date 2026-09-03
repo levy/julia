@@ -16,17 +16,17 @@
 <line x1="880.0" y1="80" x2="880.0" y2="195" stroke="#e8e7e4" stroke-width="1"/>
 <text x="880.0" y="215" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="middle">10 ms</text>
 <text x="204" y="115" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#0b0b0b" text-anchor="end">~1.7 KB per event</text>
-<circle cx="792.1" cy="110" r="7" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<text x="792.1" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">4 ms</text>
-<circle cx="382.7" cy="110" r="7" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<text x="382.7" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">55 µs</text>
-<circle cx="259.4" cy="110" r="7" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text x="259.4" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">15 µs</text>
+<circle cx="790.2" cy="110" r="7" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<text x="790.2" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">4 ms</text>
+<circle cx="379.0" cy="110" r="7" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="379.0" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">53 µs</text>
+<circle cx="262.2" cy="110" r="7" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text x="262.2" y="96" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">16 µs</text>
 <text x="204" y="175" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#0b0b0b" text-anchor="end">~100 B per event</text>
-<circle cx="790.0" cy="170" r="7" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<text x="790.0" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">4 ms</text>
-<circle cx="376.3" cy="170" r="7" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<text x="376.3" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">51 µs</text>
-<circle cx="261.6" cy="170" r="7" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text x="261.6" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">15 µs</text>
+<circle cx="784.8" cy="170" r="7" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<text x="784.8" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">4 ms</text>
+<circle cx="369.5" cy="170" r="7" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="369.5" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">48 µs</text>
+<circle cx="255.6" cy="170" r="7" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text x="255.6" y="156" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">15 µs</text>
 </svg>

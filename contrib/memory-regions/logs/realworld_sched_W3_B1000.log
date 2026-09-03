@@ -1,0 +1,25 @@
+full GC reference (startup): 5.42 ms
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+final full collection 3.4 ms
+involuntary context switches during the run: 0
+page faults during the run: 0
+stock collections during the run: 51
+wall time          0.302 s (16.54 M events/s)
+collection total   25.7 ms (8.51 % of wall)
+table checksum     correct
+=== sched: 50 collections ===
+pause p50          0.319 ms
+pause max          3.406 ms
+max at event      489149 (slice boundary: false, census boundary: false); events over 200us: 0
+=== per-event wall time, 5000000 events ===
+p50               31 ns
+p99               41 ns
+p99.9             81 ns
+p99.99            220 ns
+max               15119 ns
+max, no preemption 15119 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 0 events (0.0 %)
+live heap counter  41.6 MB
+peak RSS           1204.5 MB

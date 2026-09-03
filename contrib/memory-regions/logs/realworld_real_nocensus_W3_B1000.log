@@ -1,22 +1,22 @@
-full GC reference (startup): 6.36 ms
+full GC reference (startup): 6.57 ms
 heap reserve       536.9 MB claimed and prefaulted
 scheduler          SCHED_FIFO priority 50
 memory locked      yes (mlockall)
 involuntary context switches during the run: 0
 page faults during the run: 0
-wall time          0.274 s (18.27 M events/s)
+wall time          0.273 s (18.3 M events/s)
 collection total   0.0 ms (0.0 % of wall)
 table checksum     correct
 === real: 0 collections ===
 cells freed        0 (turnover was 4990000 records + scratch)
-max at event      189785 (slice boundary: false, census boundary: false); events over 200us: 0
+max at event      225625 (slice boundary: false, census boundary: false); events over 200us: 0
 === per-event wall time, 5000000 events ===
-p50               31 ns
+p50               30 ns
 p99               41 ns
 p99.9             210 ns
-p99.99            311 ns
-max               14086 ns
-max, no preemption 14086 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+p99.99            321 ns
+max               14508 ns
+max, no preemption 14508 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
 over 100us target 0 events (0.0 %)
 live heap counter  604.3 MB
-peak RSS           1204.2 MB
+peak RSS           1204.3 MB

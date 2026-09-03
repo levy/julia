@@ -1,0 +1,55 @@
+full GC reference (startup): 5.42 ms
+heap reserve       536.9 MB claimed and prefaulted
+scheduler          SCHED_FIFO priority 50
+memory locked      yes (mlockall)
+final full collection 4.41 ms
+involuntary context switches during the run: 0
+page faults during the run: 0
+stock collections during the run: 324
+wall time          0.702 s (7.13 M events/s)
+collection total   21.7 ms (3.09 % of wall)
+table checksum     correct
+=== sched: 50 collections ===
+pause p50          0.25 ms
+pause max          4.242 ms
+max at event      2589015 (slice boundary: false, census boundary: false); events over 200us: 246
+  over 200us: event 9687  2933 us
+  over 200us: event 19023  760 us
+  over 200us: event 26489  2541 us
+  over 200us: event 34635  228 us
+  over 200us: event 40881  223 us
+  over 200us: event 45987  222 us
+  over 200us: event 50373  216 us
+  over 200us: event 54309  210 us
+  over 200us: event 153951  204 us
+  over 200us: event 157697  204 us
+  over 200us: event 161423  204 us
+  over 200us: event 165189  201 us
+  over 200us: event 169005  200 us
+  over 200us: event 172861  200 us
+  over 200us: event 176767  202 us
+  over 200us: event 180741  203 us
+  over 200us: event 184767  204 us
+  over 200us: event 188843  207 us
+  over 200us: event 192999  209 us
+  over 200us: event 197225  212 us
+  over 200us: event 208443  214 us
+  over 200us: event 212819  216 us
+  over 200us: event 217305  222 us
+  over 200us: event 221911  227 us
+  over 200us: event 226617  230 us
+  over 200us: event 231443  237 us
+  over 200us: event 236379  237 us
+  over 200us: event 241405  241 us
+  over 200us: event 246541  244 us
+  over 200us: event 251787  245 us
+=== per-event wall time, 5000000 events ===
+p50               60 ns
+p99               370 ns
+p99.9             521 ns
+p99.99            671 ns
+max               3868851 ns
+max, no preemption 3868851 ns (0 of 500 blocks of 10000 events took a preemption and are excluded)
+over 100us target 273 events (0.00546 %)
+live heap counter  80.9 MB
+peak RSS           1244.1 MB

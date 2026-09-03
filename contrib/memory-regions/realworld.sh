@@ -1,6 +1,7 @@
 #!/bin/bash
-# The real-world matrix: the stock collector against the regions with and
-# without the census, at recording-class (W=200 words) and light (W=3)
+# The real-world matrix: the stock collector (its own heuristics, and the
+# program's schedule - GC.gc(false) at the census cadence, GC.gc(true) at
+# the end) against the regions with and without the census, at recording-class (W=200 words) and light (W=3)
 # garbage per event. What it measures is Julia and its collector under the
 # best case a hard real-time loop can arrange on an unprivileged Linux
 # machine, not the OS:
@@ -42,11 +43,12 @@ run_kept() { # run_kept <log> <args...>
 for cfg in "200 100" "3 1000"; do
   set -- $cfg; W=$1; B=$2
   run_kept logs/realworld_auto_W${W}.log                auto $EV 100000 $K $W $B $RESERVE logs/ccdf_auto_W${W}.tsv
+  run_kept logs/realworld_sched_W${W}_B${B}.log         sched $EV 100000 $K $W $B $RESERVE
   run_kept logs/realworld_real_census_W${W}_B${B}.log   real $EV 100000 $K $W $B $RESERVE logs/ccdf_census_W${W}.tsv
   run_kept logs/realworld_real_nocensus_W${W}_B${B}.log real $EV 0      $K $W $B $RESERVE logs/ccdf_nocensus_W${W}.tsv
 done
 echo "=== summary"
 for f in logs/realworld_*.log; do
   echo "-- $f"
-  grep -E "heap reserve|scheduler|memory locked|wall time|involuntary|page faults|stock collections|collections ===|pause p50|pause max|^p50|^p99 |^p99.9 |^p99.99|^max|over 100us|peak RSS" "$f" | cut -c1-110
+  grep -E "heap reserve|scheduler|memory locked|final full|wall time|involuntary|page faults|stock collections|collections ===|pause p50|pause max|^p50|^p99 |^p99.9 |^p99.99|^max|over 100us|peak RSS" "$f" | cut -c1-110
 done
