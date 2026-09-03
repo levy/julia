@@ -4,7 +4,27 @@
 module Regions
 
 export region_set, region_reset, region_reserve, @with_region, region_current, region_overflow, region_of,
-       region_collect, region_collect_coop, region_check, region_debug
+       region_collect, region_collect_coop, region_check, region_debug,
+       region_parent!, region_tree!, region_parent_of
+
+# Declare the region tree. A region's number is a topological order of the
+# tree: a parent's number is smaller than its child's. The default, until
+# a declaration, is the chain 0 <- 1 <- 2 <- ..., so an object of region r
+# may reference its own region and every older one. A declaration lets two
+# leaves over a shared trunk be mutually isolated: neither may reference the
+# other, only their common ancestors.
+region_parent!(child::Int, parent::Int) =
+    (ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), child, parent) == 0 ||
+     error("bad region edge: parent ($parent) must be >= 0 and < child ($child)"))
+region_parent_of(child::Int) = Int(ccall(:jl_gc_region_parent_of, Cint, (Cint,), child))
+# Declare the whole tree at once: parents[i] is the parent of region i, for
+# i = 1.. (region 0 is the root and takes no entry). parents[i] < i.
+function region_tree!(parents::AbstractVector{<:Integer})
+    for child in 1:length(parents)
+        region_parent!(child, Int(parents[child]))
+    end
+    return nothing
+end
 
 region_set(n::Int)     = Int(ccall(:jl_gc_region_set, Cint, (Cint,), n))
 region_current()       = Int(ccall(:jl_gc_region_current, Cint, ()))

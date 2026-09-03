@@ -3755,6 +3755,61 @@ static _Atomic(int) region_windows_open = 0;
 JL_DLLEXPORT _Atomic(uint8_t) jl_region_barrier_on = 0;
 static _Atomic(uint32_t) region_quarantined_mask = 0;
 
+// --- the region tree ------------------------------------------------------
+// The regions form a declared tree of lifetimes. region_parent[r] names r's
+// parent (0 = a child of the root region 0); region_uptree[r] is the bitset
+// of r itself, its ancestors, and 0 -- exactly the regions a store from an
+// object of region r may legally target (its own region or an older one on
+// its branch). A store of a child of region cr into a parent of region pr is
+// legal iff cr is in region_uptree[pr]: same region, or an ancestor.
+//
+// The default is the chain 0 <- 1 <- 2 <- ..., which reproduces the total
+// order the barrier used before the tree: region_uptree[r] = {0,1,...,r},
+// so cr in uptree[pr] is exactly cr <= pr. A declaration replaces it.
+static uint8_t region_parent[JL_GC_MAX_REGIONS];
+static _Atomic(uint64_t) region_uptree[JL_GC_MAX_REGIONS];
+static int region_tree_declared = 0;
+
+static void region_tree_init_chain(void)
+{
+    uint64_t up = 0;
+    for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {
+        region_parent[r] = (r == 0) ? 0 : (uint8_t)(r - 1);
+        up |= (uint64_t)1 << r;                  // {0,...,r}
+        jl_atomic_store_relaxed(&region_uptree[r], up);
+    }
+}
+
+// Declare region `child`'s parent. parent < child keeps the ids a topological
+// order, so a child's uptree is built from its parent's, already final. The
+// first declaration drops the chain default. Returns 0, or -1 on a bad edge.
+JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
+{
+    if (child <= 0 || child >= JL_GC_MAX_REGIONS || parent < 0 || parent >= child)
+        return -1;                               // root has no parent; parent < child
+    if (!region_tree_declared) {
+        // Start from an all-root tree: every region a direct child of 0,
+        // so an undeclared region is still legal under 0 and its own.
+        for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {
+            region_parent[r] = 0;
+            jl_atomic_store_relaxed(&region_uptree[r], (uint64_t)1 | ((uint64_t)1 << r));
+        }
+        region_tree_declared = 1;
+    }
+    region_parent[child] = (uint8_t)parent;
+    uint64_t up = jl_atomic_load_relaxed(&region_uptree[parent]) | ((uint64_t)1 << child);
+    jl_atomic_store_relaxed(&region_uptree[child], up);
+    return 0;
+}
+
+JL_DLLEXPORT int jl_gc_region_parent_of(int child)
+{
+    if (child <= 0 || child >= JL_GC_MAX_REGIONS)
+        return 0;
+    return region_parent[child];
+}
+// --------------------------------------------------------------------------
+
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
 {
     // Child first: a region-0 child is legal under any parent, and almost
@@ -3766,8 +3821,12 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
         return;
     jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
     int pr = pm ? pm->region_n : 0;
-    if (__likely(cr <= pr))
-        return;                     // young-to-old or same region: legal
+    // Legal iff the child's region is the parent's own or one of its
+    // ancestors -- a store toward the root of the branch. In the default
+    // chain this is exactly cr <= pr; in a tree it forbids a sibling and a
+    // descendant in both directions, which the total order could not.
+    if (__likely((jl_atomic_load_relaxed(&region_uptree[pr]) >> cr) & 1))
+        return;
     uint32_t bit = (uint32_t)1 << cr;
     uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
     if (!(seen & bit))
@@ -4851,6 +4910,7 @@ void jl_concurrent_gc_threadfun(void *arg)
 // System-wide initializations
 void jl_gc_init(void)
 {
+    region_tree_init_chain();   // the default tree is the chain, until declared
     JL_MUTEX_INIT(&heapsnapshot_lock, "heapsnapshot_lock");
     JL_MUTEX_INIT(&finalizers_lock, "finalizers_lock");
     JL_MUTEX_INIT(&image_remset_lock, "image_remset_lock");
