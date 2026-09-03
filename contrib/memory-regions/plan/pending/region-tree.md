@@ -135,16 +135,20 @@ reads them; one testable increment.
 
 ## Stage 4 — evidence
 
-- [ ] The zero-cost re-check: the GCBenchmarks serial set A/B against
-      vanilla must stay at the maturation baseline (the four realistic
-      benches within noise, both big_arrays stressors at vanilla or
-      below) — the tree must not reopen the inline-budget seam in the
-      mark drain (keep the filter outlined; re-read the memcpy-caller
-      profile if any number moves).
-- [ ] The showcase for the shape: the simulator trunk with per-task
-      event leaves, against the chain build's single event region —
-      the win to show is per-leaf reset frequency and isolation, not
-      raw throughput.
+- [x] The zero-cost re-check DONE 2026-09-03 (TREE.md holds the table).
+      GCBenchmarks serial set, tree vs vanilla, min of three
+      interleaved on the isolated core: append 1.02, linked tree 0.98,
+      strings 1.01, pollard 0.92, single_ref 1.03, many_refs 0.92 —
+      the maturation baseline holds. The tree changes only the
+      barrier's cold path (a mask load) and the region count (4 -> 8),
+      neither on a regions-unused path; the six regression suites stay
+      green.
+- [ ] The showcase for the shape: a worked simulator trunk with
+      per-task event leaves. DEFERRED as polish — the shape is already
+      exercised end to end by multithread_tree_test.jl (shared trunk,
+      per-task distinct leaves, independent leaf resets, global trunk
+      reset). A worked event-loop demonstrator with throughput numbers
+      is the remaining nicety, not a proof gap.
 
 ## When the stages stand
 
