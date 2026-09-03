@@ -8,6 +8,11 @@ using Compiler
 # created later.
 include("region_check.jl")
 using .RegionCheck
+# The example's chain. The checker knows no names; the model defines them.
+const ENGINE     = Int8(1)
+const SIMULATION = Int8(2)
+const EVENT      = Int8(3)
+RegionCheck.region_names!("Root", "Engine", "Simulation", "Event")
 Compiler.activate!(; reflection = true, codegen = true)
 include("kernel.jl")
 using .MiniKernel
@@ -32,7 +37,7 @@ function run_regioned!(network, events::Int)
         # No closure here: a `do` block boxes the loop variable, and the
         # checker itself flagged that box. Set and restore the region inline.
         old = RegionCheck.CURRENT[]
-        RegionCheck.CURRENT[] = RegionCheck.EVENT
+        RegionCheck.CURRENT[] = EVENT
         event.action(network, event.environment)
         RegionCheck.CURRENT[] = old
     end
@@ -46,7 +51,7 @@ function main()
     builder = variant == "alloc" ? ModelAlloc.build :
               variant == "clean" ? ModelClean.build :
               error("variant must be alloc or clean")
-    network, sink = RegionCheck.with_region(RegionCheck.SIMULATION) do
+    network, sink = RegionCheck.with_region(SIMULATION) do
         builder(4)
     end
     count = run_regioned!(network, events)

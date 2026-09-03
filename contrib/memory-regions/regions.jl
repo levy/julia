@@ -22,6 +22,7 @@ region_reserve(bytes::Integer) = UInt64(ccall(:jl_gc_region_reserve, UInt64, (UI
 # (return, break, or a throw). Measured, the try/finally adds nothing over
 # the bare region_set pair (10.35 against 10.39 ns for the enter-and-leave).
 #
+#     const EVENT = 3          # the caller names its own slots
 #     @with_region EVENT begin
 #         process_event!(...)
 #     end
@@ -44,8 +45,8 @@ end
 @noinline region_reset(n::Int)   = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
 @noinline region_check(n::Int)   = Int64(ccall(:jl_gc_region_check, Int64, (Cint,), n))
 @noinline region_collect(n::Int) = Int64(ccall(:jl_gc_region_collect, Int64, (Cint,), n))
-# The cooperative census: no stop-the-world. The ENGINE calls it at an
-# event boundary under the single-mutator contract; -4 means another
+# The cooperative census: no stop-the-world. The driving loop calls it at
+# a quiet boundary under the single-mutator contract; -4 means another
 # thread runs managed code and the STW entry must be used instead.
 @noinline region_collect_coop(n::Int) = Int64(ccall(:jl_gc_region_collect_coop, Int64, (Cint,), n))
 

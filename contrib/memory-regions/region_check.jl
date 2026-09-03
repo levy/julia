@@ -8,13 +8,21 @@
 
 module RegionCheck
 
-export with_region, region_report, enable!, disable!
+export with_region, region_report, region_names!, region_name, enable!, disable!
 
-const ROOT       = Int8(0)
-const ENGINE     = Int8(1)
-const SIMULATION = Int8(2)
-const EVENT      = Int8(3)
-const NAME = ("Root", "Engine", "Simulation", "Event")
+const ROOT = Int8(0)
+# The chain's names belong to the model under test, not to the checker. A
+# run calls region_names! once, with one name per region from 0 upward;
+# region_report prints an unnamed region as "region N".
+const REGION_NAMES = Dict{Int8,String}()
+function region_names!(names::AbstractString...)
+    empty!(REGION_NAMES)
+    for (i, name) in enumerate(names)
+        REGION_NAMES[Int8(i - 1)] = String(name)
+    end
+    return nothing
+end
+region_name(r::Integer) = get(REGION_NAMES, Int8(r), "region $(Int(r))")
 
 const CURRENT = Ref(ROOT)
 const ENABLED = Ref(false)
@@ -111,15 +119,15 @@ function region_report()
             length(VIOLATIONS), " (parent type, child type) sites")
     rows = sort!(collect(VIOLATIONS); by = last, rev = true)
     for (key, count) in rows
-        println(lpad(count, 9), "  ", NAME[key.parent_region + 1], " ← ",
-                NAME[key.child_region + 1], "   ", key.parent, " ← ", key.child,
+        println(lpad(count, 9), "  ", region_name(key.parent_region), " ← ",
+                region_name(key.child_region), "   ", key.parent, " ← ", key.child,
                 "   at ", SITES[key.site])
     end
     println("passing stores, for coverage reading:")
     for (key, count) in sort!(collect(PASSES); by = last, rev = true)
         count < 100 && continue
-        println(lpad(count, 9), "  ", NAME[key.parent_region + 1], " ← ",
-                NAME[key.child_region + 1], "   ", key.parent, " ← ", key.child,
+        println(lpad(count, 9), "  ", region_name(key.parent_region), " ← ",
+                region_name(key.child_region), "   ", key.parent, " ← ", key.child,
                 "   at ", SITES[key.site])
     end
     return nothing

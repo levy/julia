@@ -9,6 +9,7 @@ module ModelClean
 
 using ..MiniKernel
 using ..RegionCheck: RegionCheck, @in_region
+import ..SIMULATION           # the example's chain, defined in checker_run.jl
 
 mutable struct Packet <: EventEnvironment
     id::Int
@@ -42,7 +43,7 @@ function MiniKernel.handle_message!(net, m::Source, env, gate)
     m.sent += 1
     # The packet is IN FLIGHT after this handler returns, and the event queue
     # entry references it: both belong to the Simulation region.
-    @in_region RegionCheck.SIMULATION begin
+    @in_region SIMULATION begin
         packet = Packet(m.sent, [1.0, 2.0, 3.0])
         send!(net, m.out::Gate, packet)
         send!(net, m.self::Gate, nothing)
@@ -51,7 +52,7 @@ function MiniKernel.handle_message!(net, m::Source, env, gate)
 end
 
 MiniKernel.handle_message!(net, m::Relay, env, gate) =
-    @in_region RegionCheck.SIMULATION (send!(net, m.out::Gate, env); nothing)
+    @in_region SIMULATION (send!(net, m.out::Gate, env); nothing)
 
 function MiniKernel.handle_message!(net, m::Sink, env, gate)
     packet = env::Packet
