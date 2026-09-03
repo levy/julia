@@ -438,6 +438,102 @@ every primitive the idea needs — the O(1) region tag, the wholesale
 free, the root-scanning census; the only genuinely new object is the
 pair table.
 
+## Coexistence with the stock collector
+
+Today the operating contract says: collect only when the regions are
+quiesced. Nothing fundamental forces that — it is a prototype boundary,
+and exactly two invariants break when an ordinary collection runs over
+live regions: the mark leaves stale bits on region objects that the
+sweep never clears (and a stale bit hides a live subgraph from the NEXT
+mark — corruption, not a leak), and a region object aged to "old" would
+enter the remembered set, whose entry dangles after a reset.
+
+Three designs remove the contract. (1) Clean up after the mark: walk the
+region chains and clear the bits, and never remset a region object -
+O(region live) per collection. (2) Side bitmaps: mark region objects in
+a per-page side bitmap cleared in O(pages) - headers stay virgin.
+(3) **Regions as roots** - the one the rule hands us. Rule 3 makes the
+heap-region reference structure one-directional: no region-0 object can
+point into a region, while region objects point freely out. So for the
+stock collector, region objects are never targets that need marks - they
+are only sources: scan the regions' allocated cells as an extra root
+array, mark what they reference in region 0, touch no region header.
+Coverage through the regions is transitive by enumeration, not by
+traversal: every region cell is a root, so region-to-region edges need
+no walk. Dead region objects keep their referents alive until the reset
+- floating garbage bounded by the slice and census cadence, which is
+already the regions' contract.
+
+Option 3 legalizes `GC.gc(true)` and `GC.gc(false)` alike, windows open
+or not. The young collection inherits a scan cost proportional to the
+regions' allocated bytes; the cure is dirty cards on region pages only
+(one small store-barrier branch for writes into region objects), or the
+per-region outsets of the region-graph section - the census, which
+already walks the live set, keeps either one honest.
+
+**The three modes, and what each costs the mutator.** With the collector
+off and regions alone (the HIL mode, measured): the window pair 5-10 ns,
+the reset ~21 ns per slice, no store barrier, allocation often faster on
+recycled cache-hot pages - net one nanosecond of median at light garbage
+and a win at recording-class, with only the census as a pause. With the
+stock collector alone and region support merely compiled in (measured -
+every stock column of the record runs in this state): one foldable
+pointer load, not measurable; a stock-only build folds it to literally
+zero, and an empty region set is an empty root scan. With both together
+(designed, not built): the mutator still pays only the region calls it
+makes; the stock collector's pauses grow by the region root scan -
+proportional to region bytes without the cards, to dirty region pages
+with them - and region memory itself is still reclaimed only by reset
+and census.
+
+## The road upstream
+
+What a Julia PR would face, ranked by how hard it bites. First, the
+category: this is an UNSAFE OPT-IN feature - production soundness rests
+on a discipline the runtime does not enforce - and every serious
+objection lives in that asterisk.
+
+1. *Pure Julia code must not corrupt memory.* Inside a window every
+   store is potentially a rule violation, and a violation is silent
+   corruption. `@inbounds` is local and auditable; a window is a dynamic
+   extent that swallows every callee.
+2. *Composability, the sharp form of 1.* A library called inside a
+   window allocates into the region without knowing regions exist: a
+   `Dict` that resizes inside an Event window leaves its new table in
+   Event; an exception thrown out of a window outlives its region;
+   boxes and closures allocate implicitly. The first counterexample
+   anyone will type is the resizing `Dict`, and the PR must have an
+   answer before it exists.
+3. *Task migration.* The window state is per-thread-heap in this
+   prototype, but tasks migrate; it must be per-task state, switched at
+   yield points.
+4. *Escape has no defined behavior.* An object that outlives its region
+   is UB today. The bar upstream will set: a violation may cost
+   performance or leak - never corrupt. That means promotion, or a
+   production-affordable checked mode.
+5. *The known holes*: arrays with malloc'd data dying in a region;
+   finalizers (and the nothrow registration gate); weak references, the
+   id dict, serialization, precompile images - each subsystem needs a
+   region story.
+6. *Maintenance.* The change cross-cuts a collector in active rework,
+   with MMTk as the sanctioned extension path. Expect: "make it an MMTk
+   plan or extend the GC interface" - question 1 of the upstream list
+   anticipates exactly this.
+7. *The multithreading gap.* The cooperative census is single-mutator by
+   contract; `live_tasks` and finalizer lists are not walked.
+8. *Zero-cost skepticism.* One workload convinces nobody; the claim
+   needs the full benchmark suite, package load times, and code size,
+   and a build flag that forks CI is a cost of its own.
+
+What would make it land, mapped against the list: per-task window state
+(3); defined escape behavior (1, 4, and it tames 2); regions-as-roots
+with cards so coexistence has no contract at all; the malloc'd-data and
+finalizer holes closed (5); packaged behind the GC interface or as an
+MMTk plan (6); and the unification as the pitch - the stock collector IS
+the one-region special case, measured - so the proposal reads as a
+generalization the collector already satisfies, not as a second
+collector. The staged path is in `plan/pending/upstream-pr.md`.
+
 ## What is deferred
 
 - **Concurrent sibling event regions** (one per worker task). The chain comes
