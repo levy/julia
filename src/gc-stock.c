@@ -3663,6 +3663,24 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
 static _Atomic(int) region_windows_open = 0;
 
 
+static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (n == 0 || heap->regions[n].initialized)
+        return;
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        heap->regions[n].pools[i].freelist = NULL;
+        heap->regions[n].pools[i].newpages = NULL;
+        heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
+    }
+    heap->regions[n].pages = NULL;
+    heap->regions[n].fresh_pages = NULL;
+    heap->regions[n].pages_tail = NULL;
+    heap->regions[n].n_pages = 0;
+    heap->regions[n].n_fresh = 0;
+    heap->regions[n].overflow_pages = 0;
+    heap->regions[n].initialized = 1;
+}
+
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
@@ -3675,24 +3693,33 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     else if (n == 0 && old != 0)
         jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
     assert(n >= 0 && n < JL_GC_MAX_REGIONS);
-    if (!heap->regions[n].initialized) {
-        for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
-            heap->regions[n].pools[i].freelist = NULL;
-            heap->regions[n].pools[i].newpages = NULL;
-            heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
-        }
-        heap->regions[n].pages = NULL;
-        heap->regions[n].fresh_pages = NULL;
-        heap->regions[n].pages_tail = NULL;
-        heap->regions[n].n_pages = 0;
-        heap->regions[n].n_fresh = 0;
-        heap->regions[n].overflow_pages = 0;
-        heap->regions[n].initialized = 1;
+    region_lazy_init(heap, n);
+    // An open window pins the task: a region's pages live in the thread
+    // heap, so a task holding a window must not migrate. The stickiness
+    // it had is restored when the window closes.
+    jl_task_t *ct = jl_current_task;
+    if (old == 0 && n != 0) {
+        ct->sticky_before_region = ct->sticky;
+        ct->sticky = 1;
+    }
+    else if (n == 0 && old != 0) {
+        ct->sticky = ct->sticky_before_region;
     }
     // Every region's cursors live in its own array; the switch is a pointer.
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
     heap->current_region = (uint8_t)n;
     return old;
+}
+
+// Install a task's parked region on this thread at a task switch. The
+// window count is untouched: the window belongs to the task and stays
+// open while the task is parked.
+void jl_gc_install_task_region(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
+{
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    region_lazy_init(heap, n);
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->current_region = (uint8_t)n;
 }
 
 // Reset a region that is NOT current: every object in it ceases to exist, in

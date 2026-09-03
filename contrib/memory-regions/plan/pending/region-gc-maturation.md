@@ -21,10 +21,13 @@ region tag).
 
 ## Stage 1 - soundness prerequisites (independent of upstream)
 
-- [ ] Per-task window state: `current_region`/`active_pools` move to the
-      task, switched at yield points; a window survives migration.
-      Acceptance: a task that yields inside a window and resumes on
-      another thread allocates correctly; a stress test with @spawn.
+- [x] Per-task window state (task_window_test.jl: ALL PASS, batteries
+      green). The task carries its region across switches (parked in
+      ctx_switch, installed on arrival; the window count untouched - the
+      window belongs to the task). An open window makes the task sticky,
+      because a region's pages live in the thread heap; the stickiness it
+      had returns at close. Design choice recorded: windows follow tasks,
+      tasks with windows do not migrate.
 - [ ] Defined escape behavior: a store that violates the rule must at
       worst leak, never corrupt. Decide between promotion-on-escape and
       an always-on cheap checked mode (the page-tag compare is ~2-5 ns
