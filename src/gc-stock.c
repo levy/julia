@@ -211,6 +211,11 @@ static _Atomic(int) region_scoped_target = 0;
 // clean state.
 #define REGION_SCOPED_MAX_EXTRA 4096
 static jl_taggedvalue_t *region_scoped_extra[REGION_SCOPED_MAX_EXTRA];
+// The prior header bits of each recorded task, restored after the scan:
+// a stock collection leaves tasks OLD-MARKED (the generational invariant),
+// and the restore must put back exactly that - clearing a task's mark
+// down to old-unmarked would break the remembered-set invariant.
+static uint8_t region_scoped_extra_bits[REGION_SCOPED_MAX_EXTRA];
 static int region_scoped_extra_n = 0;
 static int region_scoped_extra_overflow = 0;
 // Rule 5 debug mode: jl_gc_region_reset refuses while a root references in.
@@ -1823,11 +1828,30 @@ STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
             // for its stack. Record it for mark restoration.
             if (jl_typeof(obj) != (jl_value_t*)jl_task_type)
                 return;
-            if (gc_scoped_setmark(o)) {
-                if (region_scoped_extra_n < REGION_SCOPED_MAX_EXTRA)
+            // Claim the task for this scan whatever its current bits: a
+            // stock collection leaves tasks OLD-MARKED, and a mark-based
+            // claim would fail then - the stack would never be scanned and
+            // the census would free the whole live set. The extra list is
+            // the claim; membership is the dedup; the prior bits are saved
+            // and restored after the scan.
+            {
+                uintptr_t tag = o->header;
+                if (!gc_marked(tag)) {
+                    if (!gc_scoped_setmark(o))
+                        return;
+                }
+                else {
+                    for (int i = 0; i < region_scoped_extra_n; i++)
+                        if (region_scoped_extra[i] == o)
+                            return;         // already queued this scan
+                }
+                if (region_scoped_extra_n < REGION_SCOPED_MAX_EXTRA) {
+                    region_scoped_extra_bits[region_scoped_extra_n] = (uint8_t)(tag & 0x3);
                     region_scoped_extra[region_scoped_extra_n++] = o;
-                else
+                }
+                else {
                     region_scoped_extra_overflow = 1;
+                }
                 gc_ptr_queue_push(mq, obj);
             }
             return;
@@ -3707,6 +3731,59 @@ int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isali
 
 void run_finalizer(jl_task_t *ct, void *o, void *ff);
 
+// A stock collection coexists with live regions by two brackets around
+// it. Before: every thread's window is parked and region 0 installed, so
+// the sweep prologue's cursor sync sees norm_pools everywhere. After:
+// every region page the mark touched (has_marked is the card) gets its
+// cells' low header bits cleared - the mark walked region objects
+// normally, which keeps liveness exact through them, and the clear keeps
+// the bits virgin for the census; a freelist link survives the blind
+// clear because an aligned pointer carries zero low bits. Region pages
+// are never swept and region objects never stay old, so they never
+// enter a remembered set.
+static void region_prepare_stock_collection(void) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 == NULL)
+            continue;
+        jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+        heap->saved_region = heap->current_region;
+        if (heap->current_region != 0)
+            jl_gc_install_task_region(ptls2, 0);
+    }
+}
+
+static void region_finish_stock_collection(void) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 == NULL)
+            continue;
+        jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+        for (int n = 1; n < JL_GC_MAX_REGIONS; n++) {
+            if (!heap->regions[n].initialized)
+                continue;
+            for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+                if (!pg->has_marked)
+                    continue;
+                int osize = pg->osize;
+                char *cell = pg->data + GC_PAGE_OFFSET;
+                char *end = pg->data + GC_PAGE_SZ;
+                for (; cell + osize <= end; cell += osize)
+                    ((jl_taggedvalue_t*)cell)->header &= ~(uintptr_t)(GC_MARKED | GC_OLD);
+                pg->has_marked = 0;
+                pg->has_young = 0;
+                pg->nold = 0;
+                pg->prev_nold = 0;
+            }
+        }
+        if (heap->saved_region != 0)
+            jl_gc_install_task_region(ptls2, heap->saved_region);
+    }
+}
+
+
 int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
 {
     jl_value_t *obj = (jl_value_t*)(((uintptr_t)v) & ~(uintptr_t)3);
@@ -4053,7 +4130,8 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n)
     gc_mark_loop_serial(ptls);
 
     for (int i = 0; i < region_scoped_extra_n; i++)
-        region_scoped_extra[i]->header &= ~(uintptr_t)GC_MARKED;
+        region_scoped_extra[i]->header = (region_scoped_extra[i]->header & ~(uintptr_t)0x3)
+                                         | region_scoped_extra_bits[i];
 
     // Every marked cell in the region is a live reference at reset time.
     int64_t violations = 0;
@@ -4239,7 +4317,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     gc_mark_loop_serial(ptls);
 
     for (int i = 0; i < region_scoped_extra_n; i++)
-        region_scoped_extra[i]->header &= ~(uintptr_t)GC_MARKED;
+        region_scoped_extra[i]->header = (region_scoped_extra[i]->header & ~(uintptr_t)0x3)
+                                         | region_scoped_extra_bits[i];
     if (region_scoped_extra_overflow)
         jl_safe_printf("REGION-COLLECT: task record overflow; stale marks remain\n");
     uint64_t t_mark = jl_hrtime();
@@ -4327,7 +4406,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 
     // Restore the marks this collection set on region-0 tasks.
     for (int i = 0; i < region_scoped_extra_n; i++)
-        region_scoped_extra[i]->header &= ~(uintptr_t)GC_MARKED;
+        region_scoped_extra[i]->header = (region_scoped_extra[i]->header & ~(uintptr_t)0x3)
+                                         | region_scoped_extra_bits[i];
     if (region_scoped_extra_overflow)
         jl_safe_printf("REGION-COLLECT: task record overflow; stale marks remain\n");
     uint64_t t_mark = jl_hrtime();
@@ -4395,18 +4475,6 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
         gc_defer_collection(ptls);
         return;
     }
-    // --- region prototype: NO collection while a region is current. ---
-    // The sweep operates on norm_pools, which at that moment are the REGION's
-    // pools: the prologue syncs region cursors, and the freelist merge threads
-    // region-0 pages into the region's pool structs. Everything cross-links,
-    // and the corruption surfaces at the next quiesced collection. Defer,
-    // exactly like the disable counter.
-    if (ptls->gc_tls.heap.current_region != 0 ||
-        jl_atomic_load_relaxed(&region_windows_open) != 0) {
-        gc_defer_collection(ptls);
-        return;
-    }
-    // ------------------------------------------------------------------
     jl_gc_debug_print();
 
 
@@ -4455,6 +4523,7 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 
     if (!jl_atomic_load_acquire(&jl_gc_disable_counter)) {
         JL_LOCK_NOGC(&finalizers_lock); // all the other threads are stopped, so this does not make sense, right? otherwise, failing that, this seems like plausibly a deadlock
+        region_prepare_stock_collection();
 #ifndef __clang_gcanalyzer__
         if (_jl_gc_collect(ptls, collection)) {
             // recollect
@@ -4463,6 +4532,7 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
             assert(!ret);
         }
 #endif
+        region_finish_stock_collection();
         JL_UNLOCK_NOGC(&finalizers_lock);
     }
 
