@@ -91,9 +91,36 @@ across the whole loop, against six for the same churn under the collector, and
 the leaves are mutually isolated by declaration, which the chain's total order
 could not express.
 
+## The open-region census: no OOM on internal garbage (`region_census_bound_test.jl`)
+
+The one hazard of the region model is a computation whose garbage dies INSIDE
+a window, not at its boundary -- a deep backtracking search that discards
+branches. A region frees only at its reset, so such a search grows the region
+without bound, where the stock collector reclaims the dead branches mid-run.
+
+The fix is a census of the OPEN region, fired on growth. `region_scoped_sweep`
+was already cursor-aware -- it caps each pool at its live bump pointer and
+keeps the cursor page -- so the stop-the-world mark-and-sweep (factored into
+`region_census_core`) runs on the current region too: `maybe_collect` fires it
+when the region grows past an armed threshold (`region_census_threshold!`,
+0 = off). The live state on the stack is kept, the dead branches are swept to
+the freelist, allocation continues. Reset stays the fast common path; this is
+the safety valve.
+
+Proven: 156 MB of internal churn in one window holds **10089 pages (157 MB)**
+disarmed against **63 pages (~0 MB)** armed -- a 160x bound, same result, no
+quarantine.
+
+The scope is exact: the census bounds the region's MEMORY. It does not bound
+the TIME of an exponential search -- that is the algorithm's cost, not the
+memory model's. So a region program no longer OOMs on internal garbage; it
+degrades to a region-local mark-sweep, cheaper than the global collection the
+stock collector would run.
+
 ## Where it stands
 
-The tree's semantics, its reset, its multi-thread reset, and its showcase are
-done and proven. Deferred: `region_subtree_reset` and the subtree census (a
-two-level trunk/leaves shape needs neither; a deeper tree wants them) and the
-64-region lazy-TLS capacity (8 suffices for a trunk plus per-thread leaves).
+The tree's semantics, its reset, its multi-thread reset, its showcase, and the
+open-region census are done and proven. Deferred: `region_subtree_reset` and
+the subtree census (a two-level trunk/leaves shape needs neither; a deeper tree
+wants them) and the 64-region lazy-TLS capacity (8 suffices for a trunk plus
+per-thread leaves).
