@@ -205,6 +205,42 @@ function live_object_survives_gc()
     check("the region resets (got $r)", r >= 0)
 end
 
+# Code that runs for the first time inside a window makes the runtime
+# allocate on the code's behalf: a method compiles; a dynamic dispatch on a
+# signature the method cache has not seen builds the argument tuple type
+# and a cache entry; a type first instantiated at run time goes into the
+# type cache. All of that belongs to region 0, whatever window is open, or
+# the runtime's own tables would hold references into the region and the
+# barrier would quarantine it. Four dynamic first-time paths, none warmed
+# before the window opens, next to a static call as the control.
+struct FirstStatic; x::Int; end
+struct FirstDynamic; x::Int; end
+struct FirstLatest; x::Int; end
+struct FirstParam; x::Int; end
+struct FirstTuple; x::Int; end
+@noinline first_static(v) = v.x + 1
+@noinline first_dynamic(v) = v.x * 2
+@noinline first_latest(v) = v.x - 3
+
+@noinline function first_time_code_in_window()
+    region_set(SIM)
+    r = first_static(FirstStatic(1))                    # static: inferred with its caller
+    boxed = Any[FirstDynamic(2), FirstParam, FirstTuple(4)]
+    r += first_dynamic(boxed[1])                        # dynamic dispatch on a signature not in the cache
+    r += Base.invokelatest(first_latest, FirstLatest(3))
+    r += length(Vector{boxed[2]}(undef, 2))             # Vector{FirstParam}, instantiated now
+    r += (boxed[3], 5)[2]                               # Tuple{FirstTuple, Int}, instantiated now
+    region_set(0)
+    return r
+end
+
+function first_time_code_stays_in_region_0()
+    r = first_time_code_in_window()
+    check("the first-time calls compute their sum", r == 13)
+    check("first-time code inside a window does not quarantine the region", quarantined(SIM) == 0)
+    check("the region resets after first-time code ran inside it", !refused(region_reset(SIM)))
+end
+
 # The reserve claims page blocks up front so a later allocation inside a
 # region never first-touch-faults; a second call must be a no-op, not an
 # error, and a window can still allocate normally afterward.
@@ -237,6 +273,7 @@ task_window_cases()
 reset_loop_case()
 swap_only_case()
 live_object_survives_gc()
+first_time_code_stays_in_region_0()
 heap_reserve_then_window()
 
 finish("regions_window")
