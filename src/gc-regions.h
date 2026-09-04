@@ -32,6 +32,8 @@ enum {
                                     // cannot allocate in a region
     JL_GC_REGION_EBUSY = -2,        // the region is current, or this heap
                                     // runs region finalizers now
+    JL_GC_REGION_EQUARANTINED = -5, // the region was escaped from; its memory
+                                    // is retained
 };
 
 #ifndef WITH_THIRD_PARTY_HEAP
@@ -44,6 +46,10 @@ JL_DLLEXPORT int jl_gc_region_current(void);
 // Free every object of region n on the calling thread's heap. Returns the
 // number of pages the region held, or a refusal code.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n);
+// Query: whether an escape quarantined a region.
+JL_DLLEXPORT int jl_gc_region_quarantined(int n);
+// The escape barrier, called by the write barrier while a region is in use.
+JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT;
 
 // --- the hooks the rest of the runtime calls --------------------------------
 // A finalizer on a region object goes to the region's own list. Returns 1

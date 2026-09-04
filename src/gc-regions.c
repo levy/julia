@@ -11,11 +11,12 @@
 // application must keep, and why they make the entries below sound, are in
 // doc/src/devdocs/gc-regions.md.
 //
-// The state lives in two places: the per-heap region table in
-// jl_thread_heap_t (gc-tls-stock.h) and the page tag region_n in
-// jl_gc_pagemeta_t (gc-stock.h). The hooks in the allocator, the sweep and
-// the finalizer path are in gc-stock.c and gc-common.c; each one calls into
-// this file through gc-regions.h.
+// The state lives in three places: the per-heap region table in
+// jl_thread_heap_t (gc-tls-stock.h), the page tag region_n in
+// jl_gc_pagemeta_t (gc-stock.h), and the process-wide barrier state in this
+// file. The hooks in the allocator, the sweep and the finalizer path are in
+// gc-stock.c and gc-common.c; each one calls into this file through
+// gc-regions.h.
 
 #include "gc-common.h"
 #include "gc-stock.h"
@@ -25,9 +26,57 @@
 extern "C" {
 #endif
 
+// --- process-wide state ------------------------------------------------------
+
+// The escape barrier. Armed at the first window; disarmed it costs every
+// pointer store one well-predicted load-and-branch. Armed, the lowered write
+// barrier calls jl_gc_region_wb, which compares the two page tags: a store
+// whose child is younger than its parent breaks the reference rule, and the
+// child's region is quarantined - its reset refuses from then on, so an
+// escape costs memory, never a dangling pointer.
+JL_DLLEXPORT _Atomic(uint8_t) jl_gc_region_barrier_on = 0;
+static _Atomic(uint32_t) region_quarantined_mask = 0;
+
 STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
 {
     return n > 0 && n < JL_GC_MAX_REGIONS;
+}
+
+// 1 when an escape quarantined region n, 0 otherwise (a bad region number
+// included). The quarantine is process-wide and permanent.
+JL_DLLEXPORT int jl_gc_region_quarantined(int n)
+{
+    if (!region_valid(n))
+        return 0;
+    return (jl_atomic_load_relaxed(&region_quarantined_mask) >> n) & 1;
+}
+
+// --- the escape barrier ----------------------------------------------------------
+
+JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
+{
+    // Child first: a region-0 child is legal under any parent, and almost
+    // every store in ordinary code has one, so the common case pays one
+    // page-map walk, not two.
+    jl_gc_pagemeta_t *cm = page_metadata((char*)child);
+    int cr = cm ? cm->region_n : 0;
+    if (__likely(cr == 0))
+        return;
+    jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
+    int pr = pm ? pm->region_n : 0;
+    // Legal iff the child's region is the parent's own or an older one: the
+    // regions are a chain of lifetimes, 0 <- 1 <- 2 <- ..., and a store
+    // toward the root of the chain is exactly cr <= pr.
+    if (__likely(cr <= pr))
+        return;
+    uint32_t bit = (uint32_t)1 << cr;
+    uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
+    if (!(seen & bit))
+        jl_safe_printf("REGION-ESCAPE: a %s of region %d was stored into a %s "
+                       "of region %d; region %d is quarantined - its reset now "
+                       "refuses, and its memory is retained\n",
+                       jl_typeof_str((jl_value_t*)child), cr,
+                       jl_typeof_str((jl_value_t*)parent), pr, cr);
 }
 
 // --- the hooks of the allocator and the finalizer path -------------------------------
@@ -231,6 +280,8 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
         return old;
     if (n != 0 && heap->finalizer_depth != 0)
         return JL_GC_REGION_EBUSY;
+    if (__unlikely(!jl_atomic_load_relaxed(&jl_gc_region_barrier_on)))
+        jl_atomic_store_release(&jl_gc_region_barrier_on, 1);
     region_lazy_init(heap, n);
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
     heap->current_region = (uint8_t)n;
@@ -296,7 +347,8 @@ static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 // another thread filled is reset on that thread.
 // Returns the pages the region held (fresh pages included), 0 for a region
 // never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
-// EBUSY while the region is current or finalizers run on this thread.
+// EBUSY while the region is current or finalizers run on this thread,
+// EQUARANTINED after an escape.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -307,6 +359,8 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
         return (uint64_t)JL_GC_REGION_EBUSY;
     if (!heap->regions[n].initialized)
         return 0;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return (uint64_t)JL_GC_REGION_EQUARANTINED;
     return region_reset_heap(ct, heap, n);
 }
 

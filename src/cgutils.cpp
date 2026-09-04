@@ -4494,6 +4494,16 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
                 need_wb = !rhs.isboxed;
             else
                 need_wb = false;
+#ifndef JL_NO_REGION_STORE_BARRIER
+            // The region escape barrier is orthogonal to generational age.
+            // A fresh young parent needs no generational barrier for an
+            // already-boxed child, but that child may belong to a younger
+            // region -- an escape that reset would later dangle. Emit the
+            // barrier for a boxed pointer child so the region branch runs;
+            // its armed-flag guard keeps it free when no region is in use.
+            if (jl_field_isptr(sty, i) && rhs.isboxed)
+                need_wb = true;
+#endif
             jl_value_t *ft = jl_svecref(sty->types, i);
             emit_typecheck(ctx, rhs, ft, "new"); // n.b. ty argument must be concrete
             rhs = update_julia_type(ctx, rhs, ft);
