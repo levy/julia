@@ -290,14 +290,21 @@ end
     return v
 end
 
+# The vector and its refs stay in this frame, which has returned before the
+# reset runs: the reset checks the execution roots, and a local that still
+# names a region object refuses it.
+@noinline function every_ref_is_in_the_region(n)
+    v = fill_with_refs(n)
+    return all(x -> region_of(x) == RESERVE, v)
+end
+
 function heap_reserve_then_window()
     r1 = heap_reserve(64 << 20)
     check("the reserve returns a byte count, not a refusal", !refused(r1))
     r2 = heap_reserve(64 << 20)
     check("a second reserve call also returns without error", !refused(r2))
-    v = fill_with_refs(10_000)
-    check("every ref landed in the window's region", all(x -> region_of(x) == RESERVE, v))
-    check("the window resets without a refusal", !refused(region_reset(RESERVE)))
+    check("every ref landed in the window's region", every_ref_is_in_the_region(10_000))
+    check("the window resets without a refusal", !refused(reset_via_call(RESERVE)))
 end
 
 bad_region_numbers()

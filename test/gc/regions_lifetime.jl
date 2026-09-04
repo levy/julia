@@ -227,7 +227,10 @@ mutable struct Box
 end
 @noinline make_in_region(n) = (region_set(n); x = Box(7); region_set(0); x)
 
-function weakref_to_region_object_is_refused()
+# The region object stays in this frame, which has returned before the reset
+# runs: the reset checks the execution roots, and a local that still names a
+# region object refuses it.
+@noinline function try_weakref_in_its_own_frame()
     x = make_in_region(SIM)
     threw = false
     message = ""
@@ -237,10 +240,15 @@ function weakref_to_region_object_is_refused()
         threw = true
         message = sprint(showerror, e)
     end
+    return (threw, message)
+end
+
+function weakref_to_region_object_is_refused()
+    threw, message = try_weakref_in_its_own_frame()
     check("a WeakRef to a region object is refused", threw)
     check("the error message mentions region", occursin("region", message))
     check("the refused WeakRef did not quarantine the region", quarantined(SIM) == 0)
-    r = code(region_reset(SIM))
+    r = code(reset_via_call(SIM))
     check("the region still resets (got $r)", r >= 0)
 end
 

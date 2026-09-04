@@ -71,9 +71,15 @@ JL_DLLEXPORT void jl_gc_region_resume(int parked);
 // current, or a refusal code.
 JL_DLLEXPORT int jl_gc_region_set(int n);
 JL_DLLEXPORT int jl_gc_region_current(void);
-// Free every object of region n on the calling thread's heap. Returns the
-// number of pages the region held, or a refusal code.
+// Free every object of region n on the calling thread's heap, after a check
+// that no execution root references into it. Returns the number of pages the
+// region held, or a refusal code.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n);
+// The same, without the check and without its pause. A reference from a
+// stack slot, a register or a parked task's stack is left dangling.
+JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n);
+// Close the window of a task that reaches its end (task.c).
+void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT;
 // Free region n on every heap at once, with the world stopped.
 JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n);
 // The region tree: declare the parent of a region before either is used.
@@ -200,6 +206,7 @@ STATIC_INLINE int jl_gc_region_current(void) { return 0; }
 STATIC_INLINE int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f) { (void)ptls; (void)v; (void)f; return 0; }
 STATIC_INLINE int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) { (void)ptls; (void)m; (void)isaligned; return 0; }
 STATIC_INLINE void jl_gc_region_task_switch(jl_ptls_t ptls, jl_task_t *lastt, jl_task_t *t) { (void)ptls; (void)lastt; (void)t; }
+STATIC_INLINE void jl_gc_region_close_window(jl_task_t *ct) { (void)ct; }
 STATIC_INLINE int jl_gc_region_finalizers_begin(jl_ptls_t ptls) { (void)ptls; return 0; }
 STATIC_INLINE void jl_gc_region_finalizers_end(jl_ptls_t ptls, int parked) { (void)ptls; (void)parked; }
 

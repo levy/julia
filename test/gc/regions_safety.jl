@@ -26,6 +26,9 @@ const BURNED = 4
     region_set(ROOTED)
     r = Ref(42)
     region_set(0)
+    # The object must be allocated for real: one the compiler can prove does
+    # not escape is scalarized, and then the region holds nothing to find.
+    check("the object lives in the region", escape(r) == ROOTED)
     res = reset_via_call(ROOTED)
     check("the checked reset refuses while an execution root points into the region",
           code(res) == EROOT)
