@@ -279,14 +279,24 @@ JL_DLLEXPORT jl_genericmemory_t *jl_genericmemory_copy_slice(jl_genericmemory_t 
         memcpy(new_mem->ptr, (char*)mem->ptr + (size_t)data * elsz, len * elsz);
         memcpy(jl_genericmemory_typetagdata(new_mem), jl_genericmemory_typetagdata(mem) + (size_t)data, len);
     }
+    // The copy moves the references of `mem` into a memory allocated now, in
+    // the region of the open window. The pair check covers every element
+    // when it passes; when it fails the elements decide, one by one, for the
+    // reason gc-wb-stock.h gives for the two copy barriers. The layout of a
+    // boxed memory lists no pointer (its first_ptr is -1: the element itself
+    // is the reference), so the boxed case comes before the layout test.
+    else if (layout->flags.arrayelem_isboxed) {
+        if (data != NULL) {
+            jl_gc_region_wb_copy_boxed_check(new_mem, mem, (_Atomic(void*)*)data, len);
+            memcpy(new_mem->ptr, data, len * elsz);
+        }
+    }
     else if (layout->first_ptr != -1) {
         if (data == NULL) {
             assert(len * elsz / sizeof(void*) == 0); // make static analyzer happy
         }
-        // The copy moves the references of `mem` into a memory the caller
-        // allocated now. One check of the pair covers every element, for the
-        // reason gc-wb-stock.h gives for the two copy barriers.
-        jl_gc_wb_fresh(new_mem, mem);
+        jl_gc_region_wb_copy_inline_check(new_mem, mem, (const char*)data, len, elsz,
+                                          (jl_datatype_t*)jl_tparam1(mtype));
         memmove_refs((_Atomic(void*)*)new_mem->ptr, (_Atomic(void*)*)data, len * elsz / sizeof(void*));
     }
     else if (data != NULL) {

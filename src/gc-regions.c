@@ -214,22 +214,38 @@ JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 
 // --- the escape barrier ----------------------------------------------------------
 
-JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
+// The test of the barrier: 1 when a store of `child` into `parent` breaks
+// the reference rule, with the two regions in `cr` and `pr` for the report.
+STATIC_INLINE int region_store_escapes(const void *parent, const void *child, int *cr, int *pr) JL_NOTSAFEPOINT
 {
     // Child first: a region-0 child is legal under any parent, and almost
     // every store in ordinary code has one, so the common case pays one
     // page-map walk, not two.
     jl_gc_pagemeta_t *cm = page_metadata((char*)child);
-    int cr = cm ? cm->region_n : 0;
-    if (__likely(cr == 0))
-        return;
+    *cr = cm ? cm->region_n : 0;
+    if (__likely(*cr == 0))
+        return 0;
     jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
-    int pr = pm ? pm->region_n : 0;
+    *pr = pm ? pm->region_n : 0;
     // Legal iff the child's region is the parent's own or one of its
     // ancestors -- a store toward the root of the branch. In the default
     // chain this is exactly cr <= pr; in a tree it forbids a sibling and a
     // descendant in both directions, which the total order could not.
-    if (__likely((jl_atomic_load_relaxed(&region_uptree[pr]) >> cr) & 1))
+    return !((jl_atomic_load_relaxed(&region_uptree[*pr]) >> *cr) & 1);
+}
+
+// The test alone, with no quarantine. The bulk barriers of gc-wb-stock.h ask
+// it about a whole container before they look at the elements one by one.
+JL_DLLEXPORT int jl_gc_region_would_escape(const void *parent, const void *child) JL_NOTSAFEPOINT
+{
+    int cr = 0, pr = 0;
+    return region_store_escapes(parent, child, &cr, &pr);
+}
+
+JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
+{
+    int cr = 0, pr = 0;
+    if (__likely(!region_store_escapes(parent, child, &cr, &pr)))
         return;
     uint32_t bit = (uint32_t)1 << cr;
     uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
@@ -239,6 +255,38 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
                        "census now refuse, and its memory is retained\n",
                        jl_typeof_str((jl_value_t*)child), cr,
                        jl_typeof_str((jl_value_t*)parent), pr, cr);
+}
+
+// The elements of a bulk copy, one by one, when the pair check of the
+// containers fails. The source container is a proxy for its elements: a
+// young container of old elements -- the result of a filter or a copy made
+// inside a window, appended to an old vector after the window closed --
+// fails the pair check and is legal. Only a real escape quarantines here.
+// `n` boxed elements from `src`:
+JL_DLLEXPORT void jl_gc_region_wb_boxed(const void *parent, _Atomic(void*) *src, size_t n) JL_NOTSAFEPOINT
+{
+    for (size_t i = 0; i < n; i++) {
+        void *val = jl_atomic_load_relaxed(src + i);
+        if (val != NULL)
+            jl_gc_region_wb(parent, val);
+    }
+}
+
+// `n` inline elements of type `et`, `elsz` bytes apart, from `src`: every
+// pointer field of every element. One immutable object stored inline is the
+// case n = 1 (jl_gc_multi_wb).
+JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, size_t n,
+                                         size_t elsz, jl_datatype_t *et) JL_NOTSAFEPOINT
+{
+    uint32_t np = et->layout->npointers;
+    for (size_t i = 0; i < n; i++) {
+        jl_value_t **s = (jl_value_t**)(src + i * elsz);
+        for (uint32_t j = 0; j < np; j++) {
+            jl_value_t *f = s[jl_ptr_offset(et, j)];
+            if (f != NULL)
+                jl_gc_region_wb(parent, f);
+        }
+    }
 }
 
 // --- the hooks of the allocator and the finalizer path -------------------------------
