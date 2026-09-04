@@ -165,6 +165,56 @@ invalidates when the method is redefined, not when the code is next called. Any
 measurement of "time to rebuild after an edit" must therefore time the edit or
 the load, and not the call that follows.
 
+## The property at scale: the routing model
+
+The small proof settles that Julia invalidates correctly. The question at scale is
+how much of a real application survives one edit, and whether the forward-edge
+graph still predicts the cone.
+
+`tool/prove_routing.jl` loads `OmnetLegacyRoutingExample`, runs the
+`routing_small` scenario to compile the model, and then edits three methods. An
+edit re-evaluates the method from its own source (`src/MethodEdit.jl`), which
+bumps the world counter and invalidates the same set as a real change, and leaves
+the program meaning what it did.
+
+The graph holds **16 155 MethodInstance values and 52 443 edges**.
+
+| Edit | Predicted | Invalidated | Survived | Missed | Edit |
+| --- | --- | --- | --- | --- | --- |
+| A leaf, `naive_fib` | 5 | 5 | **99.97%** | 0 | 0.8 ms |
+| B middle, `routing_handle!` | 2 | 0 | **100.0%** | 0 | 2.0 ms |
+| C widest, `_seam` (40 callers) | 212 | 222 | **98.63%** | 11 | 0.7 ms |
+
+Every edit really replaced its method: the old `Method` object left the table in
+all three cases, and the script checks this. Without that check a re-parse that
+defines a *new* method instead of replacing the old one reports a cone of zero
+and looks like a triumph.
+
+**The property holds.** One edit to a real application leaves between 98.6% and
+100% of the compiled code valid.
+
+**The leaf is predicted exactly.** Five predicted, five invalidated, none missed
+and none over.
+
+**Nothing depends on the forwarding handler.** Editing `routing_handle!`, the
+method every forwarded packet passes through, invalidated nothing at all. The
+graph agrees: it records no caller. The simulator reaches its handlers by dynamic
+dispatch, so no static edge exists. In this architecture the model code is
+already cheap to change, and a cache would have nothing to rebuild.
+
+**The forward-edge graph under-predicts.** This is the finding that matters. On
+the widest edit, 222 nodes were invalidated and the graph predicted 212: **11
+nodes were hit that the graph did not reach**, about 5% of the cone. One is named
+`OmnetSimulator.NetworkModule.#_emit##8`, a compiler-generated closure. The nodes
+are in the graph, but no reverse-edge path joins them to `_seam`, so Julia
+invalidates them through something other than the forward edges this code decodes.
+
+A cache keyed only on `CodeInstance.edges` would therefore leave stale code
+behind. Phase 4 must find the missing mechanism before any cache is trusted, and
+Phase 2 must not be built on the assumption that these edges are complete. This is
+exactly what Phase 1 exists to find, and it was found before a line of cache was
+written.
+
 ## Phase 1 — answer the question before you build anything
 
 This is the highest-value step, and it needs no cache, no store and no fork.
@@ -322,7 +372,12 @@ same model can be pushed.
 
 - [ ] Phase 0 — freeze the baseline, package images on.
 - [ ] Phase 1 — harvest the graph and the costs. Report the cone of each edit class.
-- [ ] **Gate 1** — decide in the open whether to continue.
+- [x] **Gate 1, first half** — the property holds. One edit to a real application
+      of 16 155 compiled MethodInstance values leaves 98.6% to 100% of them valid,
+      and the graph predicts a leaf edit exactly. Continue.
+- [ ] **Gate 1, second half** — the graph is not yet sound. It missed 11 of 222
+      invalidated nodes on the widest edit. Find the mechanism that invalidated
+      them before building a cache on these edges.
 - [ ] Phase 2 — the native-code cell.
 - [ ] **Gate 2** — measure the five edits again.
 - [ ] Phase 3 — the inferred-IR cell.
