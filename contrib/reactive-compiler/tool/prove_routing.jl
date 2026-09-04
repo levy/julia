@@ -115,6 +115,17 @@ function measure_edit(label, method::Method)
             "   cone codegen = ", round(pred_cost, digits = 3), " s (",
             round(100 * pred_cost / max(GraphHarvest.total_local_cost(g), eps()), digits = 2), "%)")
 
+    # The second prediction: walk the backedges that Julia keeps, which is what
+    # `invalidate_backedges` in src/gf.c actually walks when a method is replaced.
+    seed_mis = [g.nodes[i] for i in seeds]
+    be_cone = GraphHarvest.backedge_cone(seed_mis)
+    be_predicted = Set{Int}()
+    for (i, mi) in enumerate(g.nodes)
+        mi in be_cone && push!(be_predicted, i)
+    end
+    println("    backedge cone = ", length(be_predicted), " nodes of the graph (",
+            length(be_cone), " MethodInstance values in all)")
+
     owners, worlds = capture(g)
 
     println("--- edit (redefine the method from its own source)")
@@ -150,9 +161,13 @@ function measure_edit(label, method::Method)
     inside = intersect(actual, predicted)
     missed = setdiff(actual, predicted)
     over = setdiff(predicted, actual)
-    println("    predicted and hit    = ", length(inside))
-    println("    hit but NOT predicted= ", length(missed), "   <- unsoundness if > 0")
-    println("    predicted but not hit= ", length(over), "   <- over-invalidation slack")
+    println("    forward-edge graph : hit ", length(inside),
+            ", missed ", length(missed), ", over ", length(over))
+    be_missed = setdiff(actual, be_predicted)
+    be_over = setdiff(be_predicted, actual)
+    println("    Julia's backedges  : hit ", length(intersect(actual, be_predicted)),
+            ", missed ", length(be_missed), ", over ", length(be_over),
+            isempty(be_missed) ? "   <- SOUND" : "   <- still unsound")
     if !isempty(missed)
         println("    a few that the graph missed:")
         for (k, v) in Iterators.take(sort(collect(names_in(g, missed, APP_MODULES)); by = p -> -p.second), 10)
@@ -160,7 +175,8 @@ function measure_edit(label, method::Method)
         end
     end
     return (; label, total, predicted = length(predicted), actual = length(actual),
-            survived, missed = length(missed), over = length(over), edit_cost, replaced)
+            survived, missed = length(missed), over = length(over),
+            be_missed = length(be_missed), be_over = length(be_over), edit_cost, replaced)
 end
 
 const APP_MODULES = let s = Set{Module}()
@@ -222,12 +238,12 @@ end
 println()
 println("=== summary ===")
 println(rpad("edit", 12), lpad("nodes", 9), lpad("predicted", 11), lpad("invalidated", 13),
-        lpad("survived", 10), lpad("survived %", 12), lpad("missed", 8), lpad("edit ms", 10),
+        lpad("survived", 10), lpad("survived %", 12), lpad("fwd miss", 8), lpad("be miss", 10), lpad("edit ms", 10),
         lpad("replaced", 10))
 for r in results
     r === nothing && continue
     println(rpad(r.label, 12), lpad(r.total, 9), lpad(r.predicted, 11), lpad(r.actual, 13),
             lpad(r.survived, 10), lpad(round(100 * r.survived / r.total, digits = 2), 12),
-            lpad(r.missed, 8), lpad(round(1e3 * r.edit_cost, digits = 1), 10),
+            lpad(r.missed, 8), lpad(r.be_missed, 10), lpad(round(1e3 * r.edit_cost, digits = 1), 10),
             lpad(string(r.replaced), 10))
 end

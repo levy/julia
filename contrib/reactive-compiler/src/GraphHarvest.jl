@@ -167,6 +167,66 @@ function forward_targets(ci::Core.CodeInstance)
     return out
 end
 
+"""
+    backedge_callers(mi) -> Vector{MethodInstance}
+
+The callers that Julia itself records on a `MethodInstance`.
+
+This is not the reverse of the forward edges. Julia keeps its own reverse graph
+in `mi.backedges`, and `invalidate_backedges` in `src/gf.c` walks exactly that
+when a method is redefined. A reverse graph built by turning the forward edges
+around is not the same set, because it can only reach callers that the walk
+already found by going forward.
+
+The encoding is the one `get_next_edge` in `src/method.c` reads: an entry that is
+a `CodeInstance` is the caller, and an entry that is a type is an `invoke`
+signature whose caller is the entry after it.
+"""
+function backedge_callers(mi::Core.MethodInstance)
+    out = Core.MethodInstance[]
+    isdefined(mi, :backedges) || return out
+    list = mi.backedges
+    list === nothing && return out
+    i, n = 1, length(list)
+    while i <= n
+        item = list[i]
+        local caller
+        if item === nothing || item isa Core.CodeInstance
+            caller = item
+            i += 1
+        else
+            i + 1 > n && break
+            caller = list[i+1]
+            i += 2
+        end
+        if caller isa Core.CodeInstance
+            m = method_instance_of(caller)
+            m === nothing || push!(out, m)
+        end
+    end
+    return out
+end
+
+"""
+    backedge_cone(seeds) -> Set{MethodInstance}
+
+Everything that depends on the seeds, following the backedges of Julia.
+
+This is what a redefinition invalidates, walked the way Julia walks it. It needs
+no graph: the answer is reachable from the seed `MethodInstance` values alone.
+"""
+function backedge_cone(seeds)
+    seen = Set{Core.MethodInstance}()
+    todo = collect(seeds)
+    while !isempty(todo)
+        mi = pop!(todo)
+        mi in seen && continue
+        push!(seen, mi)
+        append!(todo, backedge_callers(mi))
+    end
+    return seen
+end
+
 # ---------------------------------------------------------------------------
 # The graph
 # ---------------------------------------------------------------------------

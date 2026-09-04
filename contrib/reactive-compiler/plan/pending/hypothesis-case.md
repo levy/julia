@@ -202,18 +202,45 @@ graph agrees: it records no caller. The simulator reaches its handlers by dynami
 dispatch, so no static edge exists. In this architecture the model code is
 already cheap to change, and a cache would have nothing to rebuild.
 
-**The forward-edge graph under-predicts.** This is the finding that matters. On
-the widest edit, 222 nodes were invalidated and the graph predicted 212: **11
-nodes were hit that the graph did not reach**, about 5% of the cone. One is named
-`OmnetSimulator.NetworkModule.#_emit##8`, a compiler-generated closure. The nodes
-are in the graph, but no reverse-edge path joins them to `_seam`, so Julia
-invalidates them through something other than the forward edges this code decodes.
+**The forward-edge graph under-predicted, and the reason was that it was the
+wrong graph.** On the widest edit, 222 nodes were invalidated and a graph built
+by reversing the forward `edges` reached only 212. Eleven nodes were hit that it
+did not reach, about 5% of the cone, among them a compiler-generated closure
+`OmnetSimulator.NetworkModule.#_emit##8` and specializations of `Base.collect`,
+`grow_to!` and `collect_to!`.
 
-A cache keyed only on `CodeInstance.edges` would therefore leave stale code
-behind. Phase 4 must find the missing mechanism before any cache is trusted, and
-Phase 2 must not be built on the assumption that these edges are complete. This is
-exactly what Phase 1 exists to find, and it was found before a line of cache was
-written.
+The first guess was wrong. It looked like abstract dispatch through the method
+table, because `store_backedges` registers such a call as a pair of an invoke
+signature and a `MethodTable`, and the decoder dropped those. The data refused it:
+of the eleven missed nodes only three carried an abstract-dispatch edge, and all
+eleven carried the same reason, `jl_method_table_disable`.
+
+The real answer is simpler. **Julia keeps its own reverse graph and does not
+derive it from the forward edges.** `mi.backedges` on a `MethodInstance` lists the
+callers, `invalidate_backedges` in `src/gf.c` walks exactly that when a method is
+replaced, and `get_next_edge` in `src/method.c` gives its encoding: a
+`CodeInstance` entry is a caller, and a type entry is an invoke signature whose
+caller is the entry after it. A reverse graph made by turning the forward edges
+around is a different set, because it can only reach callers that the forward walk
+had already found.
+
+`GraphHarvest.backedge_cone` walks the backedges instead, and it needs no graph at
+all: the answer is reachable from the seed `MethodInstance` values alone. Measured
+against the same three edits:
+
+| Edit | Reversed forward edges | Backedges of Julia |
+| --- | --- | --- |
+| A leaf | hit 5, missed 0, over 0 | hit 5, **missed 0**, over 0 |
+| B middle | hit 0, missed 0, over 2 | hit 0, **missed 0**, over 2 |
+| C widest | hit 211, **missed 11**, over 1 | hit 222, **missed 0**, over 2 |
+
+**The backedge prediction is sound on every edit.** What over-approximation
+remains is two nodes, and over-approximation is safe: it rebuilds a little more
+than it must, and never leaves stale code.
+
+The lesson for the design is direct. A cache must key its dependencies on the
+backedges of Julia, not on the forward `edges` of a `CodeInstance`. The forward
+edges say what an entry called. They do not say who is waiting on it.
 
 ## Phase 1 — answer the question before you build anything
 
@@ -375,9 +402,10 @@ same model can be pushed.
 - [x] **Gate 1, first half** — the property holds. One edit to a real application
       of 16 155 compiled MethodInstance values leaves 98.6% to 100% of them valid,
       and the graph predicts a leaf edit exactly. Continue.
-- [ ] **Gate 1, second half** — the graph is not yet sound. It missed 11 of 222
-      invalidated nodes on the widest edit. Find the mechanism that invalidated
-      them before building a cache on these edges.
+- [x] **Gate 1, second half** — the prediction is now sound. The reversed forward
+      edges missed 11 of 222 nodes on the widest edit; the backedges of Julia miss
+      none on any of the three. Key a cache on `mi.backedges`, never on the
+      forward `edges`.
 - [ ] Phase 2 — the native-code cell.
 - [ ] **Gate 2** — measure the five edits again.
 - [ ] Phase 3 — the inferred-IR cell.
