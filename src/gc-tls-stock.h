@@ -32,6 +32,26 @@ typedef struct {
     // variables for allocating objects from pools
 #define JL_GC_N_MAX_POOLS 51 // conservative. must be kept in sync with `src/julia_internal.h`
     jl_gc_pool_t norm_pools[JL_GC_N_MAX_POOLS];
+
+    // --- regions ---------------------------------------------------------------
+    // A region is a numbered set of pool pages with its own allocation
+    // cursors (see gc-regions.h and doc/src/devdocs/gc-regions.md). Region 0
+    // is the default heap: norm_pools and the pages the stock collector sweeps.
+#define JL_GC_MAX_REGIONS 8
+    uint8_t current_region;
+    // The live pool array of the current region: norm_pools for region 0,
+    // regions[n].pools for region n. Allocation paths decode their stable
+    // norm_pools-relative offset into an index and address through this
+    // pointer, so a region switch is one pointer store -- no copying, and
+    // no parked state that can go stale.
+    jl_gc_pool_t *active_pools;
+    struct {
+        jl_gc_pool_t pools[JL_GC_N_MAX_POOLS];
+        struct _jl_gc_pagemeta_t *pages;   // chained through region_next
+        uint32_t n_pages;                  // pages on `pages`
+        uint8_t initialized;
+    } regions[JL_GC_MAX_REGIONS];
+    // --------------------------------------------------------------------------
 } jl_thread_heap_t;
 
 typedef struct {
