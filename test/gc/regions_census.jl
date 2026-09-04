@@ -28,6 +28,49 @@ end
     check("the empty window resets", !refused(region_reset(1)))
 end
 
+# ---- a census refuses while a child region is live ----
+# A child holds legal references into its parent, and the census filter
+# drops the child's objects at the claim: a census of the parent would
+# never mark a parent object that only the child references, and would
+# free it. The reset refuses this case with ECHILD; so must every census
+# entry, and the allocator's census of the open region must skip.
+
+@noinline function census_build_child_holder()
+    region_set(1)
+    a = [Ref(i) for i in 1:1000]
+    region_set(2)
+    b = Ref(a)                        # a region-2 object, the only holder of a
+    region_set(0)
+    return b
+end
+
+@noinline function census_live_child_refusal()
+    b = census_build_child_holder()
+    check("collect of a region with a live child refuses", region_collect(1) == ECHILD)
+    check("coop of a region with a live child refuses", region_collect_coop(1) == ECHILD)
+    # The allocator's census of the open region: region 1 is open again
+    # while its child 2 is live, and the page count passes the threshold.
+    census_threshold!(4)
+    region_set(1)
+    junk = [Ref(-1) for _ in 1:20_000]
+    region_set(0)
+    census_threshold!(0)
+    check("the parent's objects survive (sum $(sum(x[] for x in b[])))",
+          sum(x[] for x in b[]) == 500_500)
+    check("the junk is intact", all(j -> j[] == -1, junk))
+    check("regions 1 and 2 not quarantined", quarantined(1) == 0 && quarantined(2) == 0)
+    check("reset of the parent refuses while the child is live", code(region_reset(1)) == ECHILD)
+    return nothing
+end
+
+# The frame that held the child object is gone; the child resets, and the
+# parent is collectable and resettable again.
+@noinline function census_live_child_cleanup()
+    check("the child resets", !refused(region_reset(2)))
+    check("the parent collects once the child is gone", region_collect(1) >= 0)
+    check("the parent resets", !refused(region_reset(1)))
+end
+
 # ---- the census must not leave a mark on an object outside the region ----
 # The stock mark loop marks the LAST pointer field of an object in place,
 # without a push. A census must route that field through its filter too:
@@ -324,6 +367,8 @@ end
 
 census_bad_number_refusals()
 census_current_region_refusal()
+census_live_child_refusal()
+census_live_child_cleanup()
 census_last_field_leak()
 census_leaves_remsets(region_collect)
 census_leaves_remsets(region_collect_coop)

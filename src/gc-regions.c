@@ -924,6 +924,18 @@ static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_
     }
 }
 
+// Whether a child of region n is live on any heap. The caller stopped the
+// other threads or knows them parked: the masks are read without a fence.
+static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < nthreads; t_i++) {
+        jl_ptls_t ptls2 = all[t_i];
+        if (ptls2 != NULL && ((ptls2->gc_tls.heap.region_haschild_mask >> n) & 1))
+            return 1;
+    }
+    return 0;
+}
+
 // Split the region's finalizer list: the entries whose object the mark did
 // not reach move to `dead`. The finalizer phase of the census then marks
 // both lists (the survivors' functions, and the dead pairs for one more
@@ -1019,13 +1031,21 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
     jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
     uint64_t t_stw = jl_hrtime();
 
-    region_census_begin(n);
-    region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
-    uint64_t t_mark = jl_hrtime();
-    int64_t freed = region_scoped_sweep(heap, n);
-    region_clear_marks_on_other_heaps(heap, n);
-    uint64_t t_sweep = jl_hrtime();
-    region_census_end();
+    // A child of the region live on another heap holds legal references
+    // into this heap's instance of the region as well (a trunk). The
+    // caller checked its own heap; the other heaps are readable only now.
+    int64_t freed = region_child_live_on_any_heap(gc_all_tls_states, gc_n_threads, n)
+                    ? (int64_t)JL_GC_REGION_ECHILD : 0;
+    uint64_t t_mark = t_stw, t_sweep = t_stw;
+    if (freed == 0) {
+        region_census_begin(n);
+        region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
+        t_mark = jl_hrtime();
+        freed = region_scoped_sweep(heap, n);
+        region_clear_marks_on_other_heaps(heap, n);
+        t_sweep = jl_hrtime();
+        region_census_end();
+    }
 
     gc_n_threads = 0;
     gc_all_tls_states = NULL;
@@ -1044,8 +1064,14 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
 // the dead objects, keep the live ones. Pending finalizers refuse it: the
 // world stays stopped, so nothing could run them. Returns the cells freed,
 // or a refusal code: EINVAL for a bad number or a region never used,
-// EQUARANTINED after an escape, EFINALIZERS with pending finalizers, EBUSY
-// while a window is open on any thread or finalizers run on this one.
+// EQUARANTINED after an escape, EFINALIZERS with pending finalizers, ECHILD
+// while a child region is live, EBUSY while a window is open on any thread
+// or finalizers run on this one.
+//
+// A live child refuses the census as it refuses the reset. A child holds
+// legal references into its parent, and the census filter drops the child's
+// objects at the claim: a parent object that only the child references
+// would never be marked, and the sweep would free it under the child.
 JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -1057,6 +1083,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
         return JL_GC_REGION_EQUARANTINED;
     if (__unlikely(heap->regions[n].finalizers.len != 0))
         return JL_GC_REGION_EFINALIZERS;
+    if (__unlikely((heap->region_haschild_mask >> n) & 1))
+        return JL_GC_REGION_ECHILD;
     if (heap->current_region != 0 || heap->finalizer_depth != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)
         return JL_GC_REGION_EBUSY;
@@ -1073,9 +1101,9 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 // census at its safepoint. The dead objects' finalizers run after the sweep,
 // with the filter off: the census keeps them for one more cycle, so a
 // finalizer that allocates and triggers a stock collection sees a whole heap.
-// Returns the cells freed, or a refusal code: EINVAL, EQUARANTINED and EBUSY
-// as the stop-the-world census, EUNSAFE while another thread runs managed
-// code.
+// Returns the cells freed, or a refusal code: EINVAL, EQUARANTINED, ECHILD
+// and EBUSY as the stop-the-world census, EUNSAFE while another thread runs
+// managed code.
 JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -1085,6 +1113,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
         return JL_GC_REGION_EINVAL;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return JL_GC_REGION_EQUARANTINED;
+    if (__unlikely((heap->region_haschild_mask >> n) & 1))
+        return JL_GC_REGION_ECHILD;
     if (heap->current_region != 0 || heap->finalizer_depth != 0)
         return JL_GC_REGION_EBUSY;
 
@@ -1108,6 +1138,11 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
             return JL_GC_REGION_EUNSAFE;
         }
     }
+    // Every other thread is parked, so its live-child mask is stable.
+    if (region_child_live_on_any_heap(all, nthreads, n)) {
+        jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
+        return JL_GC_REGION_ECHILD;
+    }
     uint64_t t_stw = jl_hrtime();
 
     arraylist_t dead;
@@ -1130,14 +1165,15 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 // The census of the open region, from the allocator when the region passed
 // the page threshold: a computation whose garbage dies inside the window,
 // not at its boundary, keeps its live state and gets its dead cells back
-// without the region growing without bound. Pending finalizers and a
-// quarantine fall through to the ordinary path. Returns 1 when a census
-// ran.
+// without the region growing without bound. Pending finalizers, a
+// quarantine and a live child region fall through to the ordinary path.
+// Returns 1 when a census ran.
 int jl_gc_region_census_open(jl_ptls_t ptls)
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     int n = heap->current_region;
-    if (heap->regions[n].finalizers.len != 0 || jl_gc_region_quarantined(n))
+    if (heap->regions[n].finalizers.len != 0 || jl_gc_region_quarantined(n) ||
+        ((heap->region_haschild_mask >> n) & 1))
         return 0;
     return region_census_core(jl_current_task, ptls, heap, n) >= 0;
 }
