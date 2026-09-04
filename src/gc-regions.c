@@ -13,10 +13,10 @@
 //
 // The state lives in three places: the per-heap region table in
 // jl_thread_heap_t (gc-tls-stock.h), the page tag region_n in
-// jl_gc_pagemeta_t (gc-stock.h), and the process-wide barrier and census
-// state in this file. The hooks in the allocator, the mark loop, the sweep
-// and the finalizer path are in gc-stock.c and gc-common.c; each one calls
-// into this file through gc-regions.h.
+// jl_gc_pagemeta_t (gc-stock.h), and the process-wide tree and masks in
+// this file. The hooks in the allocator, the mark loop, the sweep and the
+// finalizer path are in gc-stock.c and gc-common.c; each one calls into this
+// file through gc-regions.h.
 
 #include "gc-common.h"
 #include "gc-stock.h"
@@ -30,8 +30,8 @@ extern "C" {
 
 // How many windows are open across every thread. A parked task keeps its
 // window, so the count is the number of tasks in a window. The stop-the-world
-// census refuses while any window is open; the stock collection parks every
-// open window instead (see the brackets below).
+// census and the global reset refuse while any window is open; the stock
+// collection parks every open window instead (see the brackets below).
 static _Atomic(int) region_windows_open = 0;
 
 // The escape barrier. Armed at the first window; disarmed it costs every
@@ -73,6 +73,72 @@ STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
     return n > 0 && n < JL_GC_MAX_REGIONS;
 }
 
+// --- the region tree ------------------------------------------------------------
+// The regions form a declared tree of lifetimes. region_parent[r] names the
+// parent of r (0 = a child of the root region 0); region_uptree[r] is the
+// bitset of r itself, its ancestors, and 0 -- exactly the regions a store
+// from an object of region r may legally target (its own region or an older
+// one on its branch). A store of a child of region cr into a parent of
+// region pr is legal iff cr is in region_uptree[pr]: the same region, or an
+// ancestor.
+//
+// The default is the chain 0 <- 1 <- 2 <- ..., a total order:
+// region_uptree[r] = {0,1,...,r}, so cr in uptree[pr] is exactly cr <= pr.
+// The first declaration replaces the chain by the all-root tree and then
+// applies the declared edge.
+static uint8_t region_parent[JL_GC_MAX_REGIONS];
+static _Atomic(uint64_t) region_uptree[JL_GC_MAX_REGIONS];
+static int region_tree_declared = 0;
+
+// Rebuild every uptree from region_parent[]. A parent has a lower number
+// than its child, so one pass in index order reads each parent's final
+// uptree.
+static void region_tree_rebuild(void)
+{
+    for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {
+        uint64_t up = (uint64_t)1 << r;
+        if (r != 0)
+            up |= jl_atomic_load_relaxed(&region_uptree[region_parent[r]]);
+        jl_atomic_store_relaxed(&region_uptree[r], up);
+    }
+}
+
+// Declare the parent of `child`. parent < child keeps the numbers a
+// topological order. The tree is declared before the regions are used: the
+// call refuses while any region is live on any heap (the live-child counts
+// are kept per edge) or while any window is open.
+JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
+{
+    if (!region_valid(child) || parent < 0 || parent >= child)
+        return JL_GC_REGION_EINVAL;
+    if (jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return JL_GC_REGION_EBUSY;
+    int nthreads = jl_atomic_load_acquire(&jl_n_threads);
+    jl_ptls_t *all = jl_atomic_load_relaxed(&jl_all_tls_states);
+    for (int t_i = 0; t_i < nthreads; t_i++) {
+        jl_ptls_t ptls2 = all[t_i];
+        if (ptls2 != NULL && ptls2->gc_tls.heap.region_live_mask != 0)
+            return JL_GC_REGION_ECHILD;
+    }
+    if (!region_tree_declared) {
+        for (int r = 0; r < JL_GC_MAX_REGIONS; r++)
+            region_parent[r] = 0;
+        region_tree_declared = 1;
+    }
+    region_parent[child] = (uint8_t)parent;
+    region_tree_rebuild();
+    return 0;
+}
+
+// The declared parent of `child`: 0 for a child of the root, and 0 for a
+// bad region number.
+JL_DLLEXPORT int jl_gc_region_parent_of(int child)
+{
+    if (!region_valid(child))
+        return 0;
+    return region_parent[child];
+}
+
 // 1 when an escape quarantined region n, 0 otherwise (a bad region number
 // included). The quarantine is process-wide and permanent.
 JL_DLLEXPORT int jl_gc_region_quarantined(int n)
@@ -95,10 +161,11 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
         return;
     jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
     int pr = pm ? pm->region_n : 0;
-    // Legal iff the child's region is the parent's own or an older one: the
-    // regions are a chain of lifetimes, 0 <- 1 <- 2 <- ..., and a store
-    // toward the root of the chain is exactly cr <= pr.
-    if (__likely(cr <= pr))
+    // Legal iff the child's region is the parent's own or one of its
+    // ancestors -- a store toward the root of the branch. In the default
+    // chain this is exactly cr <= pr; in a tree it forbids a sibling and a
+    // descendant in both directions, which the total order could not.
+    if (__likely((jl_atomic_load_relaxed(&region_uptree[pr]) >> cr) & 1))
         return;
     uint32_t bit = (uint32_t)1 << cr;
     uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
@@ -295,6 +362,31 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
     heap->regions[n].initialized = 1;
 }
 
+// A region becomes live at the first window onto it after a reset (or
+// ever); its parent gains a live child. Idempotent through region_live_mask.
+static void region_mark_live(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (n == 0 || (heap->region_live_mask & ((uint64_t)1 << n)))
+        return;
+    heap->region_live_mask |= (uint64_t)1 << n;
+    int p = region_parent[n];
+    if (heap->region_child_count[p]++ == 0)
+        heap->region_haschild_mask |= (uint64_t)1 << p;
+}
+
+// A region becomes empty at its reset; its parent loses a live child, and
+// when the last one goes the parent's haschild bit clears -- the parent is
+// resettable again.
+static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
+{
+    if (n == 0 || !(heap->region_live_mask & ((uint64_t)1 << n)))
+        return;
+    heap->region_live_mask &= ~((uint64_t)1 << n);
+    int p = region_parent[n];
+    if (--heap->region_child_count[p] == 0)
+        heap->region_haschild_mask &= ~((uint64_t)1 << p);
+}
+
 // Open a window on region n, or close it (n = 0). Every region's cursors
 // live in its own array, so the switch is one pointer store; the inlined
 // allocation fast path is untouched. The window belongs to the calling
@@ -321,6 +413,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     if (__unlikely(!jl_atomic_load_relaxed(&jl_gc_region_barrier_on)))
         jl_atomic_store_release(&jl_gc_region_barrier_on, 1);
     region_lazy_init(heap, n);
+    region_mark_live(heap, n);
     // An open window pins the task: a region's pages live in the thread
     // heap, so a task holding a window must not migrate. The stickiness
     // it had is restored when the window closes.
@@ -358,14 +451,16 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 
 // --- reset ---------------------------------------------------------------------------
 
-// The per-heap reset body. The caller owns the preconditions. Everything in
-// the region dies: its finalizers run first, on whole objects; then the
-// malloc'd data of its memories is freed; the headers die with the pages.
-// The reset walks nothing: every page hangs on one chain with a tail, and a
-// fresh page's metadata is allowed to be stale because gc_add_page resets a
-// page when it claims it. So the pool cursors are cleared, the chain is
-// parked on the fresh list in O(1), and the page count comes from the
-// counters the claim path keeps.
+// The per-heap reset body, shared by the single-heap reset and the global
+// reset. The caller owns the preconditions. Everything in the region dies:
+// its finalizers run first, on whole objects (the single-heap reset only;
+// the global reset refuses a region with pending finalizers, because it
+// holds the world stopped); then the malloc'd data of its memories is
+// freed; the headers die with the pages. The reset walks nothing: every
+// page hangs on one chain with a tail, and a fresh page's metadata is
+// allowed to be stale because gc_add_page resets a page when it claims it.
+// So the pool cursors are cleared, the chain is parked on the fresh list in
+// O(1), and the page count comes from the counters the claim path keeps.
 static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 {
     if (!heap->regions[n].initialized)
@@ -390,16 +485,17 @@ static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
         heap->regions[n].n_fresh += heap->regions[n].n_pages;
         heap->regions[n].n_pages = 0;
     }
+    region_mark_empty(heap, n);         // the parent may now be resettable
     return pages;
 }
 
 // Reset region n on the calling thread's heap: run its finalizers, free the
 // malloc'd data of its memories, and park its pages for reuse. A region
-// another thread filled is reset on that thread.
+// another thread filled is reset on that thread, or by the global reset.
 // Returns the pages the region held (fresh pages included), 0 for a region
 // never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
 // EBUSY while the region is current or finalizers run on this thread,
-// EQUARANTINED after an escape.
+// EQUARANTINED after an escape, ECHILD while a child region is live.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -412,7 +508,83 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
         return 0;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)JL_GC_REGION_EQUARANTINED;
+    // A region with a live child must not reset: a descendant may hold a
+    // legal reference into it (leaf -> trunk), which the reset would dangle.
+    if (__unlikely((heap->region_haschild_mask >> n) & 1))
+        return (uint64_t)JL_GC_REGION_ECHILD;
     return region_reset_heap(ct, heap, n);
+}
+
+// Reset a region that several threads share: a trunk. Each thread filled
+// its own heap instance, and trunk objects on different heaps may
+// reference each other (the same region, a legal edge), so one instance
+// must not free while another lives - the reset is one act across every
+// heap, with the world stopped. The world stays stopped, so no finalizer
+// can run: a trunk with pending finalizers is refused; a cooperative
+// census on each heap runs them first. Returns the pages reclaimed, or a
+// refusal code cast to uint64_t.
+JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    if (!region_valid(n))
+        return (uint64_t)JL_GC_REGION_EINVAL;
+    if (ptls->gc_tls.heap.current_region != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return (uint64_t)JL_GC_REGION_EBUSY;
+    if (__unlikely(jl_gc_region_quarantined(n)))
+        return (uint64_t)JL_GC_REGION_EQUARANTINED;
+
+    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+    if (!jl_safepoint_start_gc(ct)) {
+        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        return (uint64_t)JL_GC_REGION_ERACE;
+    }
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+
+    // The world is stopped. First the preconditions on every heap, so the
+    // reset frees nothing when one heap refuses.
+    uint64_t result = 0;
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 == NULL)
+            continue;
+        jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+        if (heap->finalizer_depth != 0) {
+            result = (uint64_t)JL_GC_REGION_EBUSY;
+            break;
+        }
+        if ((heap->region_haschild_mask >> n) & 1) {
+            result = (uint64_t)JL_GC_REGION_ECHILD;
+            break;
+        }
+        if (heap->regions[n].initialized && heap->regions[n].finalizers.len != 0) {
+            result = (uint64_t)JL_GC_REGION_EFINALIZERS;
+            break;
+        }
+    }
+    if (result == 0) {
+        for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+            jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+            if (ptls2 != NULL)
+                result += region_reset_heap(ct, &ptls2->gc_tls.heap, n);
+        }
+    }
+
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_safepoint_end_gc();
+    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+    return result;
 }
 
 // --- the census ------------------------------------------------------------------------
@@ -727,6 +899,12 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 
 void jl_gc_region_init(void)
 {
+    uint64_t up = 0;
+    for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {
+        region_parent[r] = (r == 0) ? 0 : (uint8_t)(r - 1);
+        up |= (uint64_t)1 << r;                  // {0,...,r}
+        jl_atomic_store_relaxed(&region_uptree[r], up);
+    }
     htable_new(&region_census_tasks, 0);
 }
 
@@ -738,6 +916,9 @@ void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT
     heap->active_pools = heap->norm_pools;
     memset(heap->regions, 0, sizeof(heap->regions));
     heap->regions[0].initialized = 1;
+    heap->region_live_mask = 0;
+    heap->region_haschild_mask = 0;
+    memset(heap->region_child_count, 0, sizeof(heap->region_child_count));
 }
 
 #ifdef __cplusplus
