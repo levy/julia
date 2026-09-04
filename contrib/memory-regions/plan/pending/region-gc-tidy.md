@@ -233,6 +233,25 @@ threads; concurrent sweep off or on). A script passes when it exits 0. The
   one command, `results/run_all.sh` on a quiet machine, and the user can ask
   for it. The flat commit is `8c1bb50b50`; the series is cut a fourth time,
   and only the trees of commits 19 and 20 change.
+- **D16. Every branch and tag that the series supersedes is renamed
+  `obsolete/...` (2026-09-04, the user's direction).** Branches, local and
+  on `origin`: `memory-regions`, `region-maturation`, `region-tree` and
+  `region-demonstrators` became `obsolete/<name>`; the worktrees
+  `julia-region`, `julia-mature`, `julia-tree` and `julia-demos` follow
+  them. Tags: `backup/<name>-2026-09-03` became `obsolete/<name>-2026-09-03`
+  (annotated again under the new name, pushed, the old names deleted on
+  `origin`); the local cut tags became `obsolete/gc-regions-cut1..4-2026-09-04`.
+  Not renamed: `gc-regions` (the result), `gc-regions-flat` (the flat tree
+  the series was cut from; `MEASUREMENTS.md` and `HISTORY.md` name it, so
+  it is pushed now), `sealed-aot` (other work), `master`, `release-1.13`.
+  `HISTORY.md` (section "The obsolete branches and their tags") and the
+  README row for it name the new names, so the series is cut a fifth time
+  from the flat tip `728957e8b1`: commits 1 to 15 keep their SHAs; 16
+  `3d1b546748` (README), 17 `a2ea6b7720`, 18 `b7d40e4659`, 19 `c0eb11ffd5`,
+  20 `4b02199e76` (the tip, pushed with `--force-with-lease` on the fourth
+  cut, which is the tag `obsolete/gc-regions-cut4-2026-09-04`). Outside
+  `contrib/memory-regions/` the tree is the fourth cut's, so the gate
+  stands. `retake.sh` takes a first stage now.
 
 ## Target layout
 
@@ -815,8 +834,8 @@ question, its bound, and its plot, before it runs.
 
 ### Step 9 — close
 
-- [ ] Move this plan to `plan/done/` on `region-demonstrators` (the
-      development lineage keeps its plans). Push.
+- [ ] Move this plan to `plan/done/` on `obsolete/region-demonstrators`
+      (the development lineage keeps its plans; D16 renamed it). Push.
 - [x] Update the memory `region-gc-maturation-branch.md`: the final branch,
       the tags, the PR. Done 2026-09-04; the memory says the PR is not
       opened.
@@ -850,7 +869,10 @@ inputs are the fourth cut's. Item 3 holds except "measured on the tip's
 SHA": the tables ran on `48603f334c`, before the B16 fix, and
 `MEASUREMENTS.md` says so and says why they stand (D15). Item 5: the four
 `backup/*-2026-09-03` tags and `release-1.13` are on `origin`; the three
-cut tags and `gc-regions-flat` are local.
+cut tags and `gc-regions-flat` are local. After D16 (13:05) the four tags
+are `obsolete/*-2026-09-03`, the four cut tags are
+`obsolete/gc-regions-cut{1,2,3,4}-2026-09-04` (local), `gc-regions-flat` is
+on `origin` too, and `origin/gc-regions` is `4b02199e76`.
 
 ## Risks
 
@@ -943,7 +965,10 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > tables of `MEASUREMENTS.md` ran on `48603f334c`, a commit of the flat
 > tree before the last fix; the document says what the tip adds and why the
 > tables stand for it. The four
-> development branches are kept under `backup/` tags.
+> development branches are not rewritten: they are the branches
+> `obsolete/<name>`, with their tips at the start of the tidy under the tags
+> `obsolete/<name>-2026-09-03`; the tag `gc-regions-flat` marks the flat
+> tree the series was cut from.
 >
 > Branch: https://github.com/levy/julia/tree/gc-regions ·
 > Design: https://github.com/levy/julia/blob/gc-regions/doc/src/devdocs/gc-regions.md ·
