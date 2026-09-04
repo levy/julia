@@ -277,6 +277,39 @@ function lazy_state_stays_in_region_0()
     check("the region resets after lazy state was made inside it", !refused(region_reset(SIM)))
 end
 
+# A lookup of a global name that no binding exists for yet makes the
+# binding and, lazily, its partition. Both are stored into stock tables (the
+# module's binding vector, the binding itself), so the runtime makes them in
+# region 0 whatever window is open; otherwise the store is an escape and the
+# region is quarantined by a lookup. The name is built at run time, so the
+# compiler cannot resolve the binding when it compiles the function.
+@noinline function lookup_of_new_name_in_window(stem)
+    region_set(SIM)
+    name = Symbol(stem, "_seen_first_inside_a_window")
+    r = try
+        getglobal(@__MODULE__, name)
+        :defined
+    catch e
+        e isa UndefVarError ? :undefined : :other
+    end
+    region_set(0)
+    return r, name
+end
+
+function runtime_binding_stays_in_region_0()
+    r, name = lookup_of_new_name_in_window("never")
+    check("the new name is undefined", r == :undefined)
+    b = ccall(:jl_get_binding, Any, (Any, Any), @__MODULE__, name)
+    check("a binding made inside a window is in region 0", region_of(b) == 0)
+    check("its partition is in region 0", region_of(b.partitions) == 0)
+    check("a lookup of a new name inside a window does not quarantine the region", quarantined(SIM) == 0)
+    check("the region resets after the lookup", !refused(region_reset(SIM)))
+    Core.eval(@__MODULE__, :(global $name = 7))
+    # The definition is in a newer world than this function; read it there.
+    check("the binding takes a value after the reset",
+          Base.invokelatest(getglobal, @__MODULE__, name) == 7)
+end
+
 # The reserve claims page blocks up front so a later allocation inside a
 # region never first-touch-faults; a second call must be a no-op, not an
 # error, and a window can still allocate normally afterward.
@@ -318,6 +351,7 @@ swap_only_case()
 live_object_survives_gc()
 first_time_code_stays_in_region_0()
 lazy_state_stays_in_region_0()
+runtime_binding_stays_in_region_0()
 heap_reserve_then_window()
 
 finish("regions_window")
