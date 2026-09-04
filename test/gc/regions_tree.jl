@@ -98,20 +98,29 @@ const tree_counter = Ref(0)
     return t
 end
 
+# The chain stays in this frame, which has returned before the reset runs:
+# the reset checks the execution roots, and a local that still names one of
+# the region's objects refuses it.
+@noinline function tree_round!(leaf, trunk)
+    region_set(leaf)
+    c = TreeNode(nothing)
+    for _ in 1:500
+        c = TreeNode(c)
+    end
+    region_set(0)
+    c.f = trunk                         # leaf -> trunk: legal, an edge into an ancestor
+    return nothing
+end
+
 @noinline function tree_worker(w, trunk)
     leaf = tree_leaf_of(w)
     for round in 1:50
-        region_set(leaf)
-        c = TreeNode(nothing)
-        for _ in 1:500
-            c = TreeNode(c)
-        end
-        region_set(0)
-        c.f = trunk                     # leaf -> trunk: legal, an edge into an ancestor
+        tree_round!(leaf, trunk)
         lock(tree_counter_lock) do
             tree_counter[] += 1
         end
-        check("worker $w round $round leaf reset", !refused(region_reset(leaf)))
+        local r = reset_via_call(leaf)
+        check("worker $w round $round leaf reset (code $(code(r)))", !refused(r))
     end
 end
 

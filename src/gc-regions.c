@@ -588,14 +588,24 @@ static uint64_t region_reset_body(int n, int checked)
     if (!checked)
         return region_reset_heap(ct, heap, n);
 
-    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-    if (!jl_safepoint_start_gc(ct)) {
+    // Several threads reset their own leaves at once in the tree model, so a
+    // lost safepoint is the common case, not an error. The loser waits for
+    // the winner and tries again: it has work to do that nobody else does.
+    // The bound keeps a pathological contention from hanging the caller.
+    uint32_t saved_disable;
+    int8_t old_state;
+    int attempt = 0;
+    for (;;) {
+        saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+        old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+        if (jl_safepoint_start_gc(ct))
+            break;
         jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
         jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
         jl_safepoint_wait_thread_resume(ct);
-        return (uint64_t)JL_GC_REGION_ERACE;
+        if (++attempt >= 1024)
+            return (uint64_t)JL_GC_REGION_ERACE;
     }
     jl_fence();
     gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
