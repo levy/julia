@@ -3,7 +3,8 @@
 Every number in this document comes from a data file under `results/data/`.
 `results/tables.py` writes every table below from those files, and
 `results/plot.py` draws every plot under `results/plots/` from them, with no
-other input. `results/run_all.sh` runs every measurement below in order and
+other input; each plot stands under the table that holds its data.
+`results/run_all.sh` runs every measurement below in order and
 writes the data files; the logs go to `results/log/`, which git ignores. A
 number in the prose repeats a number of a table.
 
@@ -58,6 +59,8 @@ the rounds: a ratio inside the spread is noise.
 | mm_divide_and_conquer | 4 | 0.755 | 0.769 | 1.02 | 5 | 8 % |
 | issue-52937 | 4 | 9.668 | 9.798 | 1.01 | 5 | 2 % |
 <!-- /table -->
+
+![Unused, the region runtime runs the GCBenchmarks within noise of vanilla](results/plots/gcbench.svg)
 
 Two of the five parallel benchmarks, `tree_mutable` and `objarray`, have no
 row. On this machine both abort on both binaries, in the suite's own
@@ -120,6 +123,8 @@ row is an upper bound on the reset.
 | stock_mark | ms/collection | 64.35 | 65.15 | 65.37 |
 <!-- /table -->
 
+![What one operation costs](results/plots/unit_costs.svg)
+
 ## M3 — The tail, one Bool apart
 
 **Claim.** In a pooled event loop whose only garbage is the scratch of the
@@ -140,6 +145,8 @@ with the scratch left to the collector (`baseline`) and reset per event
 | tail | baseline | 60 | 81 | 531 | 1,533 | 2,767,153 | 27 | 16 | 11.0 | 888 |
 | tail | regions | 70 | 101 | 120 | 1,413 | 164,982 | 3 | 0 | 0.0 | 971 |
 <!-- /table -->
+
+![Event latency: the percentiles and the longest event](results/plots/tail.svg)
 
 The `over 100 µs` column of a run with zero collections is not the
 collector. The pooled yardstick collects nothing and still has events over
@@ -189,6 +196,10 @@ kept run must read 0.
 | light, W=3 | regions, no census | 16.9 M | 40 | 50 | 301 | 15,560 | 15,560 | — | 1,206 |
 <!-- /table -->
 
+![How many events are at least this slow](results/plots/latency_ccdf.svg)
+
+![The longest pause any event took](results/plots/max_pause.svg)
+
 ## M5 — The census
 
 **Claim.** The pause of a census grows with the live set of the region, not
@@ -236,6 +247,8 @@ and sweep columns are means over the collections of one run.
 | full | 100,000 | 5822.2 | 11198.8 | — | — | — | — | — |
 <!-- /table -->
 
+![A census pause grows with the live cells, and only with them](results/plots/census_pause.svg)
+
 The throughput table uses the in-place handler: scratch of W floats per
 event, and a record updated in place, so the Simulation region makes no
 garbage. `batch` opens one Event window per B events and resets it at the
@@ -258,6 +271,8 @@ the window pair and the reset are paid once per B events.
 | batch | 200 | 1000 | 38.9 M | 0 | 629 |
 | pooled | 200 | 1 | 21.1 M | 50 | 629 |
 <!-- /table -->
+
+![Throughput of the event loop: what one window per B events costs](results/plots/census_throughput.svg)
 
 ## M6 — Paced and endurance
 
@@ -289,6 +304,8 @@ machine, not the collector, and it stayed inside the slot.
 | regions | 1,000,000 | 81 | 11,401 | 691 | 92,453 | 0 | 0 | 0.0 |
 <!-- /table -->
 
+![Paced events: how late the loop was at its worst](results/plots/paced.svg)
+
 The endurance run keeps no per-event buffer: latencies go to a fixed
 histogram, so the harness cannot grow, and any RSS growth is a leak. The
 RSS is `Sys.maxrss`, the high-water mark. The row "allocated through the
@@ -309,6 +326,8 @@ throughput the reset recycles, not a leak (see the devdoc, section
 | allocated through the region, first to last sample (MB) | 525 |
 | slot misses | 0 |
 <!-- /table -->
+
+![Memory stays flat over a long paced run](results/plots/endurance.svg)
 
 ## M7 — Region-native against C++
 
@@ -331,6 +350,8 @@ only when a compiler builds `native.cpp`.
 | stock | 200 | 32.6 M | — | — | — | 279.7 |
 | cpp | 200 | 42.2 M | — | — | — | 3.8 |
 <!-- /table -->
+
+![The same event loop, region-native Julia against C++](results/plots/native.svg)
 
 ## M8 — Wholesale death
 
@@ -356,6 +377,8 @@ holds the round with the best wall time.
 | tree | regions | 0.006 | 0 | 0.0 | — | 3 |
 <!-- /table -->
 
+![Wholesale death: a structure that dies at once is freed at once](results/plots/showcase.svg)
+
 ## M9 — The growth bound
 
 **Claim.** The census of the open region, armed at a page threshold, holds
@@ -374,6 +397,8 @@ pages per round.
 | disarmed | 40,000 | 10,089 | 10,089 | 1.00 |
 | armed | 40,000 | 60 | 63 | 160.14 |
 <!-- /table -->
+
+![A census threshold bounds the pages a region can hold](results/plots/census_bound.svg)
 
 ## M10 — The demonstrators
 
@@ -411,6 +436,16 @@ The ratio column is stock / regions: above 1.0 regions are faster.
 | D | work=512 (grid 16, work=512, 4 threads) | 4 | 37.3 | 36.3 | 1.03 | 4 | 0 | 2.2 | 0.0 | 296 | 297 |
 | D | work=2048 (grid 16, work=2048, 4 threads) | 4 | 45.7 | 38.4 | 1.19 | 26 | 0 | 8.0 | 0.0 | 302 | 297 |
 <!-- /table -->
+
+![Demonstrator A: backtracking search, one thread](results/plots/demo_a.svg)
+
+![Demonstrator B: rays in per-thread leaves](results/plots/demo_b.svg)
+
+![Demonstrator C: speculation that mostly aborts](results/plots/demo_c.svg)
+
+![Demonstrator D: mesh refinement, the cavity per thread](results/plots/demo_d.svg)
+
+![Peak memory of the demonstrators at their largest point](results/plots/demo_rss.svg)
 
 ## M11 — The discipline checker
 
@@ -469,3 +504,5 @@ This row runs on CPUs 24 to 31. The ratio column is stock / regions.
 | D | work=512 | 8 | 26.4 | 27.1 | 0.97 | 5 | 1 | 3.0 | 1.6 |
 | D | work=2048 | 8 | 36.0 | 29.5 | 1.22 | 20 | 4 | 8.0 | 3.4 |
 <!-- /table -->
+
+![The sibling leaves scale with the threads](results/plots/scaling.svg)
