@@ -30,8 +30,9 @@ extern "C" {
 
 // How many windows are open across every thread. A parked task keeps its
 // window, so the count is the number of tasks in a window. The stop-the-world
-// census and the global reset refuse while any window is open; the stock
-// collection parks every open window instead (see the brackets below).
+// census, the global reset and the debug check refuse while any window is
+// open; the stock collection parks every open window instead (see the
+// brackets below).
 static _Atomic(int) region_windows_open = 0;
 
 // The escape barrier. Armed at the first window; disarmed it costs every
@@ -54,6 +55,10 @@ _Atomic(int) jl_gc_region_census_target = 0;
 // old-marked, and a mark-based claim would never fire).
 static htable_t region_census_tasks;
 static size_t region_census_task_count = 0;
+
+// The debug mode: a reset refuses while an execution root references into
+// the region (jl_gc_region_set_debug).
+static int region_debug_checks = 0;
 
 // The phase breakdown of the last census: 0 total ns, 1 stop-the-world ns,
 // 2 mark ns, 3 sweep ns, 4 live cells kept, 5 cells freed, 6 pages walked,
@@ -516,7 +521,8 @@ static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 // Returns the pages the region held (fresh pages included), 0 for a region
 // never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
 // EBUSY while the region is current or finalizers run on this thread,
-// EQUARANTINED after an escape, ECHILD while a child region is live.
+// EQUARANTINED after an escape, ECHILD while a child region is live, EROOT
+// when the debug check finds an execution root that references the region.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -533,6 +539,19 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
     // legal reference into it (leaf -> trunk), which the reset would dangle.
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return (uint64_t)JL_GC_REGION_ECHILD;
+    // The debug mode refuses the reset while an execution root still
+    // references into the region. The check leaves clean marks, so the
+    // caller can drop the reference and retry.
+    if (__unlikely(region_debug_checks)) {
+        int64_t live = jl_gc_region_check(n);
+        if (live < 0)
+            return (uint64_t)live;
+        if (live != 0) {
+            jl_safe_printf("REGION-RESET refused: %lld live references into region %d\n",
+                           (long long)live, n);
+            return (uint64_t)JL_GC_REGION_EROOT;
+        }
+    }
     return region_reset_heap(ct, heap, n);
 }
 
@@ -931,6 +950,185 @@ int jl_gc_region_census_open(jl_ptls_t ptls)
     if (heap->regions[n].finalizers.len != 0 || jl_gc_region_quarantined(n))
         return 0;
     return region_census_core(jl_current_task, ptls, heap, n) >= 0;
+}
+
+// --- debug ------------------------------------------------------------------------------
+
+// Turn the debug check of the reset on (nonzero) or off, process-wide.
+JL_DLLEXPORT void jl_gc_region_set_debug(int on)
+{
+    region_debug_checks = on;
+}
+
+// The debug check behind the refused reset: a region may reset only when no
+// execution root references into it. The check is a census mark that must
+// find nothing: stop the world, mark from the execution roots with the
+// filter, then walk the region's pages -- every marked cell is a violation.
+// The marks are cleared again, so the check is repeatable and leaves clean
+// state. Returns the count, or a refusal code.
+JL_DLLEXPORT int64_t jl_gc_region_check(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (!region_valid(n) || !heap->regions[n].initialized)
+        return 0;
+    if (heap->current_region != 0 || heap->finalizer_depth != 0 ||
+        jl_atomic_load_relaxed(&region_windows_open) != 0)
+        return JL_GC_REGION_EBUSY;
+
+    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+    if (!jl_safepoint_start_gc(ct)) {
+        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        return JL_GC_REGION_ERACE;
+    }
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+
+    region_census_begin(n);
+    region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
+
+    // Every marked cell in the region is a live reference at reset time.
+    int64_t violations = 0;
+    jl_gc_pool_t *pools = heap->regions[n].pools;
+    char *bump[JL_GC_N_MAX_POOLS];
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
+        bump[i] = (char*)pools[i].newpages;
+    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+        int i = pg->pool_n;
+        int osize = pg->osize;
+        char *cell = pg->data + GC_PAGE_OFFSET;
+        size_t ncells = (GC_PAGE_SZ - GC_PAGE_OFFSET) / (size_t)osize;
+        char *end = cell + ncells * (size_t)osize;
+        if (bump[i] != NULL && gc_page_data(bump[i] - 1) == pg->data &&
+            (char*)bump[i] < end)
+            end = (char*)bump[i];
+        for (; cell < end; cell += osize) {
+            jl_taggedvalue_t *tv = (jl_taggedvalue_t*)cell;
+            uintptr_t h = tv->header;
+            if (h & GC_MARKED) {
+                tv->header = h & ~(uintptr_t)(GC_MARKED | GC_OLD);
+                if (violations < 8) {
+                    jl_datatype_t *vt = (jl_datatype_t*)jl_typeof(jl_valueof(tv));
+                    jl_safe_printf("REGION-RESET-CHECK: live reference into region %d: %p type=%s\n",
+                                   n, (void*)jl_valueof(tv),
+                                   jl_symbol_name(vt->name->name));
+                }
+                violations++;
+            }
+        }
+        pg->has_marked = 0;
+    }
+    region_census_end();
+
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_safepoint_end_gc();
+    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+    return violations;
+}
+
+// The consistency walk of a region's page chains: every chained page
+// carries tag n and an intact page-map entry; the pool cursors point into
+// tagged pages; and the allocated-page stack sees the same tagged pages as
+// the chains. Returns the error count, or EINVAL.
+JL_DLLEXPORT int jl_gc_region_verify(int n)
+{
+    jl_ptls_t ptls = jl_current_task->ptls;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if (!region_valid(n))
+        return JL_GC_REGION_EINVAL;
+    if (!heap->regions[n].initialized)
+        return 0;
+    int errors = 0;
+    uint64_t chain_len = 0;
+    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+        chain_len++;
+        if (pg->region_n != n) {
+            jl_safe_printf("REGION-VERIFY: chained page %p tag %d, expected %d\n",
+                           (void*)pg->data, (int)pg->region_n, n);
+            errors++;
+        }
+        jl_gc_pagemeta_t *meta = page_metadata(pg->data);
+        if (meta != pg) {
+            jl_safe_printf("REGION-VERIFY: page %p map meta %p != chained %p\n",
+                           (void*)pg->data, (void*)meta, (void*)pg);
+            errors++;
+        }
+        if (chain_len > 1000000) {
+            jl_safe_printf("REGION-VERIFY: chain does not terminate\n");
+            errors++;
+            break;
+        }
+    }
+    uint64_t fresh_len = 0;
+    for (jl_gc_pagemeta_t *fp = heap->regions[n].fresh_pages; fp != NULL; fp = fp->region_next) {
+        fresh_len++;
+        if (fp->region_n != n) {
+            jl_safe_printf("REGION-VERIFY: fresh page %p tag %d, expected %d\n",
+                           (void*)fp->data, (int)fp->region_n, n);
+            errors++;
+        }
+        if (fresh_len > 1000000) {
+            jl_safe_printf("REGION-VERIFY: fresh chain does not terminate\n");
+            errors++;
+            break;
+        }
+    }
+    const jl_gc_pool_t *pools = heap->regions[n].pools;
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        jl_taggedvalue_t *fl = pools[i].newpages;
+        if (fl != NULL) {
+            jl_gc_pagemeta_t *meta = page_metadata((char*)fl - 1);
+            if (meta == NULL || meta->region_n != n) {
+                jl_safe_printf("REGION-VERIFY: pool %d newpages %p on page tag %d\n",
+                               i, (void*)fl, meta ? (int)meta->region_n : -1);
+                errors++;
+            }
+        }
+        if (pools[i].freelist != NULL) {
+            jl_gc_pagemeta_t *meta = page_metadata((char*)pools[i].freelist);
+            if (meta == NULL || meta->region_n != n) {
+                jl_safe_printf("REGION-VERIFY: pool %d freelist head %p on page tag %d\n",
+                               i, (void*)pools[i].freelist,
+                               meta ? (int)meta->region_n : -1);
+                errors++;
+            }
+        }
+    }
+    uint64_t in_allocd = 0;
+    for (jl_gc_pagemeta_t *pg = jl_atomic_load_relaxed(&ptls->gc_tls.page_metadata_allocd.bottom);
+         pg != NULL; pg = pg->next) {
+        if (pg->region_n == n)
+            in_allocd++;
+    }
+    if (in_allocd != chain_len + fresh_len) {
+        jl_safe_printf("REGION-VERIFY: chain %llu + fresh %llu pages, allocd sees %llu tagged\n",
+                       (unsigned long long)chain_len,
+                       (unsigned long long)fresh_len,
+                       (unsigned long long)in_allocd);
+        errors++;
+    }
+    return errors;
+}
+
+// The region of an object, read from its page tag in constant time. NULL
+// metadata means the object is not a pool object (big, malloc'd, permanent,
+// or foreign); those all belong to region 0.
+JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
+{
+    jl_gc_pagemeta_t *meta = page_metadata((char*)jl_astaggedvalue(v));
+    if (meta == NULL)
+        return 0;
+    return (int)meta->region_n;
 }
 
 // --- initialization ----------------------------------------------------------------------
