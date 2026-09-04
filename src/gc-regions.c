@@ -65,6 +65,9 @@ static int region_debug_checks = 0;
 // 7 pages freed wholesale.
 static uint64_t region_collect_stats[8];
 
+// Read one field of the breakdown; 0 for an index out of range. The fields
+// are those of the last census any thread ran: read them on the thread that
+// ran the census, right after it returned.
 JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 {
     return (i >= 0 && i < 8) ? region_collect_stats[i] : 0;
@@ -74,6 +77,8 @@ JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 // allocator (jl_gc_region_maybe_census in gc-regions.h). 0 = never.
 int jl_gc_region_census_page_threshold = 0;
 
+// Set the threshold, process-wide. It takes effect at the next page a window
+// claims on any thread.
 JL_DLLEXPORT void jl_gc_region_census_threshold(int pages)
 {
     jl_gc_region_census_page_threshold = pages;
@@ -141,6 +146,8 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
     return 0;
 }
 
+// The declared parent of `child`: 0 for a child of the root, and 0 for a
+// bad region number.
 JL_DLLEXPORT int jl_gc_region_parent_of(int child)
 {
     if (!region_valid(child))
@@ -158,6 +165,8 @@ JL_DLLEXPORT int jl_gc_region_pages(int n)
     return (int)heap->regions[n].n_pages;
 }
 
+// 1 when an escape quarantined region n, 0 otherwise (a bad region number
+// included). The quarantine is process-wide and permanent.
 JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 {
     if (!region_valid(n))
@@ -406,7 +415,10 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 
 // Open a window on region n, or close it (n = 0). Every region's cursors
 // live in its own array, so the switch is one pointer store; the inlined
-// allocation fast path is untouched. Returns the region that was current.
+// allocation fast path is untouched. The window belongs to the calling
+// task: it follows the task across a task switch, and the task stays on its
+// thread while the window is open. Returns the region that was current;
+// EINVAL for a bad region number, EBUSY while finalizers run on this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
 #ifdef JL_NO_REGION_ALLOC
@@ -446,6 +458,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
 #endif
 }
 
+// The region of the open window on the calling thread, 0 when none is open.
 JL_DLLEXPORT int jl_gc_region_current(void)
 {
     return jl_current_task->ptls->gc_tls.heap.current_region;
@@ -502,9 +515,14 @@ static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
     return pages;
 }
 
-// Reset a region that is not current on this heap. Returns the pages the
-// region held (fresh pages included), 0 for a region never used, or a
-// refusal code cast to uint64_t.
+// Reset region n on the calling thread's heap: run its finalizers, free the
+// malloc'd data of its memories, and park its pages for reuse. A region
+// another thread filled is reset on that thread, or by the global reset.
+// Returns the pages the region held (fresh pages included), 0 for a region
+// never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
+// EBUSY while the region is current or finalizers run on this thread,
+// EQUARANTINED after an escape, ECHILD while a child region is live, EROOT
+// when the debug check finds an execution root that references the region.
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -819,8 +837,12 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
     return freed;
 }
 
-// The stop-the-world census of a region that is not current. Pending
-// finalizers refuse it: the world stays stopped, so nothing could run them.
+// The stop-the-world census of region n on the calling thread's heap: free
+// the dead objects, keep the live ones. Pending finalizers refuse it: the
+// world stays stopped, so nothing could run them. Returns the cells freed,
+// or a refusal code: EINVAL for a bad number or a region never used,
+// EQUARANTINED after an escape, EFINALIZERS with pending finalizers, EBUSY
+// while a window is open on any thread or finalizers run on this one.
 JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -848,6 +870,9 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 // census at its safepoint. The dead objects' finalizers run after the sweep,
 // with the filter off: the census keeps them for one more cycle, so a
 // finalizer that allocates and triggers a stock collection sees a whole heap.
+// Returns the cells freed, or a refusal code: EINVAL, EQUARANTINED and EBUSY
+// as the stop-the-world census, EUNSAFE while another thread runs managed
+// code.
 JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -911,6 +936,7 @@ int jl_gc_region_census_open(jl_ptls_t ptls)
 
 // --- debug ------------------------------------------------------------------------------
 
+// Turn the debug check of the reset on (nonzero) or off, process-wide.
 JL_DLLEXPORT void jl_gc_region_set_debug(int on)
 {
     region_debug_checks = on;
