@@ -261,8 +261,9 @@ The tidy ported the union of the four tips onto `v1.13.0-rc4` as one flat
 tree and checked the port equal to the truth. It then read every line of the
 runtime delta as a reviewer, with the rule "test first, fix in the flat
 tree, record here". The review found thirteen bugs in the development
-runtime, two more surfaced while the scripts became tests, and every fix has a
-test that fails on the development binary and passes on the new one. The
+runtime, two more surfaced while the scripts became tests, one more in the
+final gate of the test suite, and every fix has a test that fails on the
+development binary and passes on the new one. The
 scripts became five test scripts under `test/gc/`, and the measurement
 scripts became `bench/`, `demo/`, and `tools/`. The eighteen entry points
 that survived the audit got one contract each in `src/gc-regions.h`. Every
@@ -307,7 +308,10 @@ them lists every detour of the ten plans.
   window pinned region 0. The maturation made inference and compilation run
   in region 0. The tidy found two more first-time paths that had stayed in
   the window: a dynamic dispatch on a new signature and a type first
-  instantiated at run time (B14, B15 below). Both run in region 0 now. A
+  instantiated at run time (B14, B15 below). Both run in region 0 now. The
+  final gate of the test suite found a third, in Base: the scheduler task
+  and the work queue a thread makes at its first idle wait (B16). Base
+  makes them with the window suspended now. A
   window at top level stays the one case the runtime does not cover: the
   evaluator stores a `BindingPartition` of the region into a stock
   `Binding`, and the barrier quarantines the region exactly. That is rule 5
@@ -370,10 +374,11 @@ below fails on the development binary and passes on the new one.
 | B13 | `region_census_mark`, the stock task branch of `gc_mark_outrefs` | SIGSEGV in `gc_mark_outrefs` or `GC error (probable corruption)` at `--gcthreads=2` after a census, a stock collection, and churn. | The stock task branch re-adds an old task to the marking thread's remset; the census scanned every task and set no mark bit, so every old task sat in the remset with header `GC_OLD`, a state the stock protocol never produces. The next collection scanned the task as a remset object, its page kept `has_marked = 0`, and the sweep freed the page with the live task in it. A GC thread's root task is alone on its page. | The census saves `remset.len` and `remset_nptr` before it queues the roots and restores them after the last mark loop. | `census_leaves_remsets` in `regions_census.jl` (stop-the-world and cooperative). |
 | B14 | `jl_lookup_generic_` in `gf.c` | `REGION-ESCAPE: a DataType of region 1 was stored into a SimpleVector of region 0`; the region is quarantined after a dynamic dispatch on a signature the method cache had not seen, or after `invokelatest`. | The cache-miss path built the argument tuple type and the cache entry inside the window. | The cache-miss path runs with region 0 installed, as inference and compilation do; a cache hit pays one compare. | `first_time_code_stays_in_region_0` in `regions_window.jl`. |
 | B15 | `inst_datatype_inner` in `jltypes.c` | The same escape after `Vector{T}(undef, n)` with a run-time `T`, or a tuple of a fresh type combination, inside a window. | The cache-miss path made the new `DataType` and its parameter vector inside the window and stored them into the stock type cache. | The tail past the caches is `inst_datatype_new` and runs with region 0 installed; a cache hit pays nothing. | `first_time_code_stays_in_region_0`. |
+| B16 | `OncePerThread`, `OncePerProcess` in `base/lock.jl`; the scheduler task of `wait` in `base/task.jl` | `REGION-ESCAPE: a Task of region 2 was stored into a GenericMemory of region 0` in about 7 % of the runs of `regions_window.jl` at `JULIA_NUM_THREADS=2,0`, at the `wait` of the `interleave` case; region 2 quarantined. | Julia 1.13 makes a thread's scheduler task lazily: the first `wait` that finds the local queue empty calls `get_sched_task()`, a `OncePerThread` that does `Task(wait_forever)` on behalf of the task that waits. When that task holds a window, the scheduler task, its `ThreadSynchronizer` and the table of the `OncePerThread` are made in the region, and the store into the per-thread table is an escape. The thread's sticky work queue (`Workqueues`, also a `OncePerThread`) is made the same way at the first sticky enqueue. Which thread runs the windowed task first decides whether its scheduler task exists yet, so the failure was a race of the thread configuration. | The slow path of every `OncePerProcess` and `OncePerThread` runs with the window suspended: a new pair `jl_gc_region_suspend`, `jl_gc_region_resume` (`gc-common.c`, exported for the `ccall`) installs region 0 and installs the window again, without closing it - the task stays pinned to its thread while the slow path parks on a lock, and a `finally` runs the resume on the exception path. The C brackets of B14, B15 and inference keep `jl_gc_region_set(0)`: they never park, and an exception past them leaves the window closed, which is coherent; a suspend on those sites would leave a window counted open with no way to close it after an exception. | `lazy_state_stays_in_region_0` in `regions_window.jl`; the `interleave` case at `2,0` is the original race, 8 of 120 runs before the fix. |
 
 Three of the bugs (B10, B12, B13) are silent heap corruption in the
 development runtime, in programs that keep a region object across a stock
-collection, and one (B11) quarantines a region for a reason the program
+collection, and two (B11, B16) quarantine a region for a reason the program
 cannot see. None of them showed in the development scripts. B13 needs two
 GC threads and a stock collection after a census; B12 needs a forced full
 collection with a live region object; B10 needs a census over a region-0

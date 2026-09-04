@@ -241,6 +241,42 @@ function first_time_code_stays_in_region_0()
     check("the region resets after first-time code ran inside it", !refused(region_reset(SIM)))
 end
 
+# Base keeps lazily initialized state - a value made once per process or
+# once per thread, in a table that outlives every window - and makes it on
+# behalf of whatever task first needs it, inside that task's window when
+# it holds one. The case that reaches every program is the scheduler's:
+# the first idle wait on a thread makes the thread's scheduler task and
+# its sticky work queue. All of it belongs to region 0, or the table would
+# reference into the region and the barrier would quarantine it.
+const lazy_per_thread = Base.OncePerThread{Base.RefValue{Int}}() do
+    Ref(1)
+end
+const lazy_per_process = Base.OncePerProcess{Base.RefValue{Int}}() do
+    Ref(2)
+end
+
+@noinline function lazy_state_in_window()
+    region_set(SIM)
+    a = lazy_per_thread()
+    b = lazy_per_process()
+    s = Base.get_sched_task()
+    q = Base.workqueue_for(Threads.threadid())
+    r = Ref(3)                                          # the window still allocates here
+    region_set(0)
+    return region_of(a), region_of(b), region_of(s), region_of(q), region_of(r)
+end
+
+function lazy_state_stays_in_region_0()
+    ra, rb, rs, rq, rr = lazy_state_in_window()
+    check("a per-thread value first made inside a window is in region 0", ra == 0)
+    check("a per-process value first made inside a window is in region 0", rb == 0)
+    check("the thread's scheduler task is in region 0", rs == 0)
+    check("the thread's sticky work queue is in region 0", rq == 0)
+    check("the window allocates in its region after the lazy state was made", rr == SIM)
+    check("lazy state made inside a window does not quarantine the region", quarantined(SIM) == 0)
+    check("the region resets after lazy state was made inside it", !refused(region_reset(SIM)))
+end
+
 # The reserve claims page blocks up front so a later allocation inside a
 # region never first-touch-faults; a second call must be a no-op, not an
 # error, and a window can still allocate normally afterward.
@@ -274,6 +310,7 @@ reset_loop_case()
 swap_only_case()
 live_object_survives_gc()
 first_time_code_stays_in_region_0()
+lazy_state_stays_in_region_0()
 heap_reserve_then_window()
 
 finish("regions_window")

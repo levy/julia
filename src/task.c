@@ -1618,6 +1618,8 @@ jl_task_t *jl_init_root_task(jl_ptls_t ptls, void *stack_lo, void *stack_hi)
     jl_atomic_store_relaxed(&ct->tid, ptls->tid);
     ct->threadpoolid = jl_threadpoolid(ptls->tid);
     ct->sticky = 1;
+    ct->region = 0;
+    ct->sticky_before_region = 0;
     ct->ptls = ptls;
     ct->world_age = 1; // OK to run Julia code on this task
     ct->reentrant_timing = 0;

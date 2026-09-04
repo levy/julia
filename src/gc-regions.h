@@ -45,6 +45,25 @@ enum {
                                     // that references the region
 };
 
+// --- the runtime's own allocations ------------------------------------------
+// The runtime allocates on behalf of the task that runs it, and what it
+// allocates outlives any window that task holds: it belongs to region 0.
+// The C sites - inference, compilation, type instantiation, the dispatch
+// cache (gf.c, jltypes.c) - close the window with jl_gc_region_set(0) and
+// reopen it after; they never park the task, and an exception past the
+// bracket leaves the window closed, which is coherent. The lazily
+// initialized state of Base (OncePerProcess, OncePerThread in lock.jl) can
+// park the task on a lock, and a closed window would let the parked task
+// migrate. So Base brackets its initializers with this pair instead:
+// `suspend` installs region 0 and returns the parked region, `resume`
+// installs the parked region again (0: nothing to do); the window stays
+// open in between - the task stays pinned to its thread and the window
+// counts as open - and a `finally` in Base runs the resume on the
+// exception path. The pair lives in gc-common.c and is exported for the
+// ccall from Base; a third-party heap has no window to park.
+JL_DLLEXPORT int jl_gc_region_suspend(void);
+JL_DLLEXPORT void jl_gc_region_resume(int parked);
+
 #ifndef WITH_THIRD_PARTY_HEAP
 
 // --- the exported API ------------------------------------------------------

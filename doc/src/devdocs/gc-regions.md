@@ -178,6 +178,19 @@ nothing for this. An error thrown from this work (a `MethodError`, a bad type
 parameter) leaves region 0 current: the exception is a stock object, and the
 handler at the window boundary closes the window in any case.
 
+Base keeps lazily initialized state, a value made once per process or once
+per thread (`OncePerProcess`, `OncePerThread` in `base/lock.jl`), in tables
+that outlive every window, and makes it on behalf of whatever task first
+needs it. The scheduler's own state is made this way: the first idle wait on
+a thread makes the thread's scheduler task and its sticky work queue, inside
+the window of the task that waits when it holds one. The slow path of each
+`Once` runs with the window suspended (`jl_gc_region_suspend`,
+`jl_gc_region_resume` in `src/gc-common.c`): region 0 is installed, the
+window stays open, so the task stays pinned to its thread while the slow path
+parks on a lock, and a `finally` installs the window again on every exit. The
+C sites above close the window instead: they never park the task, and an
+exception past their bracket leaves the window closed, which is coherent.
+
 ## [The tree](@id gc-regions-tree)
 
 The default tree is the chain: the parent of region `n` is `n - 1`. A program
@@ -286,8 +299,9 @@ see the execution roots, so the program keeps the following rules.
   statement, and the objects the evaluator makes there (a binding partition,
   for one) are stored into stock tables: an escape, which the barrier reports
   and quarantines. Inside a function the runtime's own work is safe: a method
-  that compiles for the first time, a dynamic dispatch on a new signature, and
-  a type first instantiated at run time all happen in region 0.
+  that compiles for the first time, a dynamic dispatch on a new signature, a
+  type first instantiated at run time, and the scheduler state a first wait
+  on a thread makes all happen in region 0.
 - **Catch an exception inside the window.** An exception allocated inside the
   window is a region object. An exception that leaves the window is a root
   into the region at the reset point. The handler at the window boundary
@@ -348,12 +362,13 @@ on four demonstrators.
 | `src/gc-regions.c` | The window, the reset, the tree, the census, the barrier, the debug checks. |
 | `src/gc-tls-stock.h` | The per-heap region table: pools, page chains, finalizer list, malloc'd list, live and child masks. |
 | `src/gc-stock.c` | The region page tag, the allocation into the active pools, the census filter in the mark loops, the sweep that skips region pages, the `WeakRef` refusal. |
-| `src/gc-common.c` | Finalizer lists and malloc'd data of a region. |
+| `src/gc-common.c` | Finalizer lists and malloc'd data of a region; the suspend and resume of a window around the runtime's own allocation. |
 | `src/gc-pages.c` | The heap reserve. |
 | `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. |
 | `src/task.c` | The window follows the task. |
 | `src/gf.c` | Inference, compilation, and the cache-miss path of a dynamic dispatch run in region 0. |
 | `src/jltypes.c` | The cache-miss path of a type instantiation runs in region 0. |
 | `src/staticdata.c` | The image writer refuses inside a window. |
+| `base/lock.jl` | The lazily initialized state of `OncePerProcess` and `OncePerThread` is made with the window suspended. |
 | `contrib/memory-regions/` | The Julia wrapper, the benchmarks, the demonstrators, the checker, and the measurements. |
 | `test/gc/regions_*.jl` | The tests. |
