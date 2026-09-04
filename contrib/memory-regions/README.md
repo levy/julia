@@ -49,12 +49,15 @@ each part costs:
 
 | Define | Effect |
 | --- | --- |
-| `JL_NO_REGION_ALLOC` | the small allocator takes the stock pool directly; a window has no effect on where objects go. |
+| `JL_NO_REGION_ALLOC` | the small allocator takes the stock pool directly, `jl_gc_region_set` refuses, and the census filter of the mark loops is the constant 0, so the census branches fold out. |
 | `JL_NO_REGION_STORE_BARRIER` | the escape barrier is compiled out of the lowered write barrier and of the two C-side hooks. |
 
 Pass a define through `CPPFLAGS` in `Make.user`, which `src/Makefile`
 adds to every C and C++ compile of the runtime, for example
-`CPPFLAGS += -DJL_NO_REGION_STORE_BARRIER`.
+`CPPFLAGS += -DJL_NO_REGION_STORE_BARRIER`. A change of `CPPFLAGS` alone
+does not recompile the objects that exist: run `make -C src clean` first.
+The region tests fail on both builds by design; what each build keeps is in
+the Cost section of the developer documentation.
 
 To run the tests of the runtime alone:
 

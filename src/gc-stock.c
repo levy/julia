@@ -1870,8 +1870,7 @@ STATIC_INLINE void gc_try_claim_and_push_(jl_gc_markqueue_t *mq, void *_obj,
 STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
                            uintptr_t *nptr) JL_NOTSAFEPOINT
 {
-    gc_try_claim_and_push_(mq, _obj, nptr,
-                           jl_atomic_load_relaxed(&jl_gc_region_census_target));
+    gc_try_claim_and_push_(mq, _obj, nptr, jl_gc_region_census_filter());
 }
 
 // Mark object with 8bit field descriptors
@@ -1884,7 +1883,7 @@ STATIC_INLINE jl_value_t *gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_
     jl_value_t *new_obj = NULL;
     // The census filter (gc-regions.h) is invariant over one object: one
     // load here, then a register compare per field.
-    int scoped = jl_atomic_load_relaxed(&jl_gc_region_census_target);
+    int scoped = jl_gc_region_census_filter();
     for (; obj8_begin < obj8_end; obj8_begin++) {
         slot = &((jl_value_t**)obj8_parent)[*obj8_begin];
         new_obj = *slot;
@@ -1925,7 +1924,7 @@ STATIC_INLINE jl_value_t *gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint
     jl_value_t *new_obj = NULL;
     // The census filter (gc-regions.h) is invariant over one object: one
     // load here, then a register compare per field.
-    int scoped = jl_atomic_load_relaxed(&jl_gc_region_census_target);
+    int scoped = jl_gc_region_census_filter();
     for (; obj16_begin < obj16_end; obj16_begin++) {
         slot = &((jl_value_t **)obj16_parent)[*obj16_begin];
         new_obj = *slot;
@@ -1966,7 +1965,7 @@ STATIC_INLINE jl_value_t *gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint
     jl_value_t *new_obj = NULL;
     // The census filter (gc-regions.h) is invariant over one object: one
     // load here, then a register compare per field.
-    int scoped = jl_atomic_load_relaxed(&jl_gc_region_census_target);
+    int scoped = jl_gc_region_census_filter();
     for (; obj32_begin < obj32_end; obj32_begin++) {
         slot = &((jl_value_t **)obj32_parent)[*obj32_begin];
         new_obj = *slot;
@@ -2047,7 +2046,7 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
     // The census filter is loop-invariant; hoist it and let the stock
     // variant's filter fold away (a literal 0 through the force-inlined
     // claim), so a stock mark walks slots at vanilla cost.
-    int scoped = jl_atomic_load_relaxed(&jl_gc_region_census_target);
+    int scoped = jl_gc_region_census_filter();
     if (__likely(scoped == 0)) {
         for (; obj_begin < scan_end; obj_begin += step) {
             jl_value_t **slot = obj_begin;

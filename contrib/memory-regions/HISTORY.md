@@ -409,6 +409,7 @@ vector in a last field. The development scripts did none of the three.
 | C18 | `jl_region_barrier_on` | The one region symbol without the `jl_gc_region_` prefix. | Renamed `jl_gc_region_barrier_on`. |
 | C19 | `ctx_switch` in `task.c` | The park and install of the window were inline in the task code. | One call, `jl_gc_region_task_switch`, in `gc-regions.c`. |
 | C20 | `contrib/memory-regions/regions.jl` | The Julia wrapper's comments named the wrong refusal codes for the census and the reset. | The comments name the codes of `gc-regions.h`. |
+| C21 | The census filter under `JL_NO_REGION_ALLOC` | The mark loops loaded `jl_gc_region_census_target` in the stock-only build too, which can never run a census: the define was documented as "the allocation half compiled out" while the stock mark still paid the filter. | The loops read the filter through `jl_gc_region_census_filter()`, the constant 0 under the define; `gc-stock.o` then holds 0 references to the target against 43. The documents say what each define removes and what a build with both keeps: nothing per object. |
 
 ### Stock-path changes
 

@@ -343,10 +343,6 @@ see the execution roots, so the program keeps the following rules.
   every window is refused, every hook declines.
 - The cost is measured on Linux x86-64 only.
 
-Two build flags exist for measurement. `JL_NO_REGION_ALLOC` builds the stock
-pools only, and `jl_gc_region_set` refuses. `JL_NO_REGION_STORE_BARRIER` omits
-the escape barrier from the compiler and the runtime.
-
 ## Cost
 
 A program that opens no window pays the barrier's flag load at every managed
@@ -357,6 +353,19 @@ vanilla julia built from the same base, on the GCBenchmarks suite and on unit
 costs of the allocator, the mark, and the sweep. The same document measures the
 cost and the pause tail of a program that uses a region, on synthetic loops and
 on four demonstrators.
+
+Two build defines exist for measurement; each takes one half of that cost
+out. `JL_NO_REGION_STORE_BARRIER` omits the escape barrier from the compiler
+and from the runtime: a pointer store and a construction compile as vanilla
+compiles them, so rule 4 is gone and rule 3 rests on the static checker in
+`contrib/memory-regions/tools` alone. `JL_NO_REGION_ALLOC` builds the stock
+pools only: `jl_gc_region_set` refuses, so no region initializes and no census
+runs, and the census filter of the mark loops is the constant 0, which folds
+the census branches out. What a build with both defines keeps is nothing per
+object: one region tag per page, which the page allocator writes and the
+sweep reads, and a store and a compare of the region fields at a task switch.
+The region tests fail on both builds by design, every window refused on the
+one and no escape ever seen on the other.
 
 ## Files
 
