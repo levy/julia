@@ -152,7 +152,7 @@ void jl_gc_region_finish_stock_collection(void) JL_NOTSAFEPOINT;
 void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT;
 // The census the allocator triggers on the open region (see the inline below).
 int jl_gc_region_census_open(jl_ptls_t ptls);
-extern int jl_gc_region_census_page_threshold;
+extern _Atomic(int) jl_gc_region_census_page_threshold;
 // Process and per-heap initialization.
 void jl_gc_region_init(void);
 void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT;
@@ -193,7 +193,7 @@ STATIC_INLINE void jl_gc_region_finalizers_end(jl_ptls_t ptls, int parked) JL_NO
 // while a window is open: the threshold is off, or the region is small.
 STATIC_INLINE int jl_gc_region_maybe_census(jl_ptls_t ptls)
 {
-    int threshold = jl_gc_region_census_page_threshold;
+    int threshold = jl_atomic_load_relaxed(&jl_gc_region_census_page_threshold);
     if (__likely(threshold <= 0))
         return 0;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;

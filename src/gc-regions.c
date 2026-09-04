@@ -63,25 +63,25 @@ static int region_debug_checks = 0;
 // The phase breakdown of the last census: 0 total ns, 1 stop-the-world ns,
 // 2 mark ns, 3 sweep ns, 4 live cells kept, 5 cells freed, 6 pages walked,
 // 7 pages freed wholesale.
-static uint64_t region_collect_stats[8];
+static _Atomic(uint64_t) region_collect_stats[8];
 
 // Read one field of the breakdown; 0 for an index out of range. The fields
 // are those of the last census any thread ran: read them on the thread that
 // ran the census, right after it returned.
 JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 {
-    return (i >= 0 && i < 8) ? region_collect_stats[i] : 0;
+    return (i >= 0 && i < 8) ? jl_atomic_load_relaxed(&region_collect_stats[i]) : 0;
 }
 
 // The page count that triggers a census on the open region from the
 // allocator (jl_gc_region_maybe_census in gc-regions.h). 0 = never.
-int jl_gc_region_census_page_threshold = 0;
+_Atomic(int) jl_gc_region_census_page_threshold = 0;
 
 // Set the threshold, process-wide. It takes effect at the next page a window
 // claims on any thread.
 JL_DLLEXPORT void jl_gc_region_census_threshold(int pages)
 {
-    jl_gc_region_census_page_threshold = pages;
+    jl_atomic_store_relaxed(&jl_gc_region_census_page_threshold, pages);
 }
 
 STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
@@ -125,25 +125,63 @@ static void region_tree_rebuild(void)
 // are kept per edge) or while any window is open.
 JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
 {
+    jl_task_t *ct = jl_current_task;
+    jl_ptls_t ptls = ct->ptls;
     if (!region_valid(child) || parent < 0 || parent >= child)
         return JL_GC_REGION_EINVAL;
     if (jl_atomic_load_relaxed(&region_windows_open) != 0)
         return JL_GC_REGION_EBUSY;
-    int nthreads = jl_atomic_load_acquire(&jl_n_threads);
-    jl_ptls_t *all = jl_atomic_load_relaxed(&jl_all_tls_states);
-    for (int t_i = 0; t_i < nthreads; t_i++) {
-        jl_ptls_t ptls2 = all[t_i];
-        if (ptls2 != NULL && ptls2->gc_tls.heap.region_live_mask != 0)
-            return JL_GC_REGION_ECHILD;
+
+    // The world stops for the test and the rebuild together. The eight
+    // uptree words change one at a time, so a thread that opened a window
+    // between a test and a rebuild done apart could read a half-built tree
+    // and judge a store against it. A declaration is a startup act and runs
+    // a handful of times, so the pause costs nothing that matters.
+    uint32_t saved_disable;
+    int8_t old_state;
+    int attempt = 0;
+    for (;;) {
+        saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+        old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+        if (jl_safepoint_start_gc(ct))
+            break;
+        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        if (++attempt >= 1024)
+            return JL_GC_REGION_ERACE;
     }
-    if (!region_tree_declared) {
-        for (int r = 0; r < JL_GC_MAX_REGIONS; r++)
-            region_parent[r] = 0;
-        region_tree_declared = 1;
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+
+    int result = 0;
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 != NULL && ptls2->gc_tls.heap.region_live_mask != 0) {
+            result = JL_GC_REGION_ECHILD;
+            break;
+        }
     }
-    region_parent[child] = (uint8_t)parent;
-    region_tree_rebuild();
-    return 0;
+    if (result == 0) {
+        if (!region_tree_declared) {
+            for (int r = 0; r < JL_GC_MAX_REGIONS; r++)
+                region_parent[r] = 0;
+            region_tree_declared = 1;
+        }
+        region_parent[child] = (uint8_t)parent;
+        region_tree_rebuild();
+    }
+
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_safepoint_end_gc();
+    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+    return result;
 }
 
 // The declared parent of `child`: 0 for a child of the root, and 0 for a
@@ -838,11 +876,39 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
     heap->regions[n].n_fresh += (uint32_t)pages_wholesale;
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
         *fl_tail[i] = NULL;
-    region_collect_stats[4] = live;
-    region_collect_stats[5] = (uint64_t)freed;
-    region_collect_stats[6] = pages_walked;
-    region_collect_stats[7] = pages_wholesale;
+    jl_atomic_store_relaxed(&region_collect_stats[4], live);
+    jl_atomic_store_relaxed(&region_collect_stats[5], (uint64_t)freed);
+    jl_atomic_store_relaxed(&region_collect_stats[6], pages_walked);
+    jl_atomic_store_relaxed(&region_collect_stats[7], pages_wholesale);
     return freed;
+}
+
+// The mark of a census walks the execution roots of every thread, so it sets
+// mark bits on objects of the region that live on other heaps as well. The
+// sweep walks the calling heap alone, so those bits would stay set: the next
+// census on that heap would read a dead cell as live and keep it, and only a
+// stock collection would clear them. A program that runs no stock collection
+// is the point of the model, so the census clears what it set elsewhere.
+static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 == NULL)
+            continue;
+        jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+        if (heap == mine || !heap->regions[n].initialized)
+            continue;
+        for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+            if (!pg->has_marked)
+                continue;
+            int osize = pg->osize;
+            char *cell = pg->data + GC_PAGE_OFFSET;
+            char *end = pg->data + GC_PAGE_SZ;
+            for (; cell + osize <= end; cell += osize)
+                ((jl_taggedvalue_t*)cell)->header &= ~(uintptr_t)(GC_MARKED | GC_OLD);
+            pg->has_marked = 0;
+        }
+    }
 }
 
 // Split the region's finalizer list: the entries whose object the mark did
@@ -944,6 +1010,7 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
     region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
     uint64_t t_mark = jl_hrtime();
     int64_t freed = region_scoped_sweep(heap, n);
+    region_clear_marks_on_other_heaps(heap, n);
     uint64_t t_sweep = jl_hrtime();
     region_census_end();
 
@@ -953,10 +1020,10 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
     jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
     jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
     jl_safepoint_wait_thread_resume(ct);
-    region_collect_stats[0] = t_sweep - t0;
-    region_collect_stats[1] = t_stw - t0;
-    region_collect_stats[2] = t_mark - t_stw;
-    region_collect_stats[3] = t_sweep - t_mark;
+    jl_atomic_store_relaxed(&region_collect_stats[0], t_sweep - t0);
+    jl_atomic_store_relaxed(&region_collect_stats[1], t_stw - t0);
+    jl_atomic_store_relaxed(&region_collect_stats[2], t_mark - t_stw);
+    jl_atomic_store_relaxed(&region_collect_stats[3], t_sweep - t_mark);
     return freed;
 }
 
@@ -1039,10 +1106,10 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     region_census_end();
     jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
 
-    region_collect_stats[0] = t_sweep - t0;
-    region_collect_stats[1] = t_stw - t0;
-    region_collect_stats[2] = t_mark - t_stw;
-    region_collect_stats[3] = t_sweep - t_mark;
+    jl_atomic_store_relaxed(&region_collect_stats[0], t_sweep - t0);
+    jl_atomic_store_relaxed(&region_collect_stats[1], t_stw - t0);
+    jl_atomic_store_relaxed(&region_collect_stats[2], t_mark - t_stw);
+    jl_atomic_store_relaxed(&region_collect_stats[3], t_sweep - t_mark);
     region_run_finalizer_list(ct, &dead);
     return freed;
 }
