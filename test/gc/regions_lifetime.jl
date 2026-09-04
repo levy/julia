@@ -137,6 +137,64 @@ function reset_global_refuses_with_pending_finalizers()
     check("the finalizer ran exactly once", global_reset_finalizer_ran[] == 1)
 end
 
+# A finalizer can register a finalizer on another object of the region. The
+# reset takes the list again until it stays empty, so the second one runs in
+# the same reset, before the free. The frame of the registering function
+# has returned before the reset: nothing else roots the two objects.
+const chain_seen = Int[]
+@noinline function register_chained_finalizers()
+    region_set(EVENT)
+    a = Payload(1)
+    b = Payload(2)
+    finalizer(a) do q
+        push!(chain_seen, q.x)
+        finalizer(p -> push!(chain_seen, p.x), b)   # registered while the reset runs the list
+    end
+    escape(a)
+    region_set(0)
+    return nothing
+end
+
+function reset_runs_a_finalizer_registered_by_a_finalizer()
+    empty!(chain_seen)
+    register_chained_finalizers()
+    r = region_reset(EVENT)
+    check("the reset succeeded (code $(code(r)))", code(r) >= 0)
+    check("both finalizers ran, the second one registered by the first", chain_seen == [1, 2])
+end
+
+# A finalizer that registers itself again every round would keep the reset
+# in its finalizer phase forever. The phase is bounded: the reset refuses
+# with EFINALIZERS and leaves the region whole, and the next reset takes
+# the list up again. The relay stops after 100 rounds, so the second reset
+# drains it and frees.
+const relay_rounds = Ref(0)
+function relay(q)
+    relay_rounds[] += 1
+    relay_rounds[] < 100 && finalizer(relay, q)
+end
+
+@noinline function register_relay()
+    region_set(EVENT)
+    q = Payload(3)
+    finalizer(relay, q)
+    escape(q)
+    region_set(0)
+    return nothing
+end
+
+function reset_bounds_a_finalizer_that_registers_forever()
+    relay_rounds[] = 0
+    register_relay()
+    r = region_reset(EVENT)
+    check("the reset refuses a relay that outlives its bound (code $(code(r)))", code(r) == EFINALIZERS)
+    check("the reset ran a bounded number of rounds (ran $(relay_rounds[]))", relay_rounds[] == 64)
+    r2 = region_reset(EVENT)
+    check("the next reset drains the relay and frees (code $(code(r2)))", code(r2) >= 0)
+    check("the relay ran to its end (ran $(relay_rounds[]))", relay_rounds[] == 100)
+    check("the region is not quarantined", quarantined(EVENT) == 0)
+end
+
 const SINK = Any[]
 mutable struct Handle
     x::Int
@@ -345,6 +403,8 @@ census_runs_only_the_dead()
 closures_survive_stock_collections()
 reset_runs_finalizers_in_reverse_order()
 reset_global_refuses_with_pending_finalizers()
+reset_runs_a_finalizer_registered_by_a_finalizer()
+reset_bounds_a_finalizer_that_registers_forever()
 stock_finalizer_inside_a_window()
 reset_frees_mallocd_data()
 census_frees_dead_mallocd_memories()

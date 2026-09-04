@@ -603,21 +603,33 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 // O(1), and the page count comes from the counters the claim path keeps.
 // The finalizer phase of a reset, on its own because it runs Julia code: a
 // finalizer allocates, stores, and can quarantine the region it belongs to.
-// It runs before the free, and never with the world stopped.
-static void region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
+// It runs before the free, and never with the world stopped. A finalizer can
+// register a finalizer on another object of the region, so the phase takes
+// the list again until it stays empty; the bound turns a finalizer that
+// registers one every round into a refusal instead of a hang. Returns 0
+// with the list empty, EFINALIZERS otherwise.
+#define REGION_FINALIZER_ROUNDS 64
+static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 {
-    if (heap->regions[n].initialized && heap->regions[n].finalizers.len != 0) {
+    if (!heap->regions[n].initialized)
+        return 0;
+    for (int round = 0; round < REGION_FINALIZER_ROUNDS; round++) {
+        if (heap->regions[n].finalizers.len == 0)
+            return 0;
         arraylist_t run;
         region_take_list(&run, &heap->regions[n].finalizers);
         region_run_finalizer_list(ct, &run);
     }
+    return heap->regions[n].finalizers.len == 0 ? 0 : JL_GC_REGION_EFINALIZERS;
 }
 
-static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
+// The free. The caller drained the finalizer list, or refused: no Julia code
+// runs here, so the caller may hold the world stopped through it.
+static uint64_t region_reset_heap(jl_thread_heap_t *heap, int n)
 {
     if (!heap->regions[n].initialized)
         return 0;
-    region_reset_finalizers(ct, heap, n);
+    assert(heap->regions[n].finalizers.len == 0);
     region_free_malloced(&heap->regions[n].mallocarrays, 0);
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
         heap->regions[n].pools[i].freelist = NULL;
@@ -668,12 +680,14 @@ static uint64_t region_reset_body(int n, int checked)
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return (uint64_t)JL_GC_REGION_ECHILD;
 
-    region_reset_finalizers(ct, heap, n);
+    int pending = region_reset_finalizers(ct, heap, n);
+    if (__unlikely(pending != 0))
+        return (uint64_t)pending;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)JL_GC_REGION_EQUARANTINED;
 
     if (!checked)
-        return region_reset_heap(ct, heap, n);
+        return region_reset_heap(heap, n);
 
     // Several threads reset their own leaves at once in the tree model, so a
     // lost safepoint is the common case, not an error. The loser waits for
@@ -709,7 +723,7 @@ static uint64_t region_reset_body(int n, int checked)
     else {
         // No finalizer is left to run, so the free needs no Julia code and
         // the pause holds through it.
-        result = region_reset_heap(ct, heap, n);
+        result = region_reset_heap(heap, n);
     }
 
     gc_n_threads = 0;
@@ -818,7 +832,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
         for (int t_i = 0; t_i < gc_n_threads; t_i++) {
             jl_ptls_t ptls2 = gc_all_tls_states[t_i];
             if (ptls2 != NULL)
-                result += region_reset_heap(ct, &ptls2->gc_tls.heap, n);
+                result += region_reset_heap(&ptls2->gc_tls.heap, n);
         }
     }
 
