@@ -79,11 +79,15 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent);
 JL_DLLEXPORT int jl_gc_region_parent_of(int child);
 // A census frees the dead objects of one region and keeps the live ones.
 // The stop-the-world census; the cooperative census, which needs every
-// other thread parked GC-safe.
+// other thread parked GC-safe; the page threshold that triggers a census
+// on the open region from the allocator (0 = never).
 JL_DLLEXPORT int64_t jl_gc_region_collect(int n);
 JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n);
-// Queries: whether an escape quarantined a region, the phase times and
-// counts of the last census (see jl_gc_region_stat).
+JL_DLLEXPORT void jl_gc_region_census_threshold(int pages);
+// Queries: the page count of a region on this heap, whether an escape
+// quarantined a region, the phase times and counts of the last census (see
+// jl_gc_region_stat).
+JL_DLLEXPORT int jl_gc_region_pages(int n);
 JL_DLLEXPORT int jl_gc_region_quarantined(int n);
 JL_DLLEXPORT uint64_t jl_gc_region_stat(int i);
 // The escape barrier, called by the write barrier while a region is in use.
@@ -124,6 +128,9 @@ void jl_gc_region_clear_stock_marks(void) JL_NOTSAFEPOINT;
 void jl_gc_region_finish_stock_collection(void) JL_NOTSAFEPOINT;
 // Mark every region finalizer list as a root of the stock collection.
 void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT;
+// The census the allocator triggers on the open region (see the inline below).
+int jl_gc_region_census_open(jl_ptls_t ptls);
+extern int jl_gc_region_census_page_threshold;
 // Process and per-heap initialization.
 void jl_gc_region_init(void);
 void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT;
@@ -158,6 +165,19 @@ STATIC_INLINE void jl_gc_region_finalizers_end(jl_ptls_t ptls, int parked) JL_NO
     heap->finalizer_depth--;
     if (parked != 0)
         jl_gc_region_install_task(ptls, parked);
+}
+
+// The allocator's check, inline because it runs on the allocation path
+// while a window is open: the threshold is off, or the region is small.
+STATIC_INLINE int jl_gc_region_maybe_census(jl_ptls_t ptls)
+{
+    int threshold = jl_gc_region_census_page_threshold;
+    if (__likely(threshold <= 0))
+        return 0;
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    if ((int)heap->regions[heap->current_region].n_pages < threshold)
+        return 0;
+    return jl_gc_region_census_open(ptls);
 }
 
 #else // WITH_THIRD_PARTY_HEAP
