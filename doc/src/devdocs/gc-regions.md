@@ -49,7 +49,9 @@ reference into the region.
 1. **Ownership.** Every managed object belongs to exactly one region.
 2. **Allocation.** Every pool allocation goes into the region of the open
    window of the thread. This includes the allocations the compiler makes:
-   tuples, closures, boxes, arrays, exceptions.
+   tuples, closures, boxes, arrays, exceptions. A buffer that replaces the
+   buffer of an object that exists is the exception: it goes into the region
+   of that object, whatever window is open (see "A replacement buffer").
 3. **Reference monotonicity.** For every managed reference `a -> b`, the
    region of `b` is the region of `a` or one of its ancestors.
 4. **Write enforcement.** Every managed pointer store checks rule 3 while a
@@ -65,6 +67,21 @@ reference into the region.
 Rule 4 makes the design different from a generational collector. A
 generational write barrier records a store that makes collection harder. This
 barrier rejects a store that makes a reset unsafe.
+
+Two facts carry the rest of the runtime, and neither is a check.
+
+**The runtime's own objects are region 0.** Inference, compilation, a
+dispatch cache miss and a type instantiation all run with region 0 forced
+(`gf.c`, `jltypes.c`), so a method, a type, a code instance and a binding are
+region-0 objects. Rule 3 makes a region-0 child legal under any parent, so
+the many stores in the type system and the method table that carry no barrier
+cannot break the rule. Anyone who removes one of those forced zones opens a
+class of missed escapes at once.
+
+**The barrier sees a managed store and nothing else.** A store from C code,
+an `unsafe_store!`, and a pointer a foreign library keeps are all invisible.
+A region object handed to C and stored there dangles at the reset with no
+report.
 
 ## The barrier
 
@@ -91,6 +108,79 @@ safety: the store stays, and the region never frees under the reference.
 `jl_gc_wb` in `src/gc-wb-stock.h` runs the same check for the stores of the
 C runtime and of the builtins.
 
+## A replacement buffer
+
+A container that grows does not make a new object: it replaces the buffer
+behind an object that exists. The new buffer takes the lifetime of that
+object, so it takes its region, whatever window happens to be open. Without
+the rule, a `push!` to a long-lived vector inside a window would put the new
+`Memory` in the window's region, an older array would hold a younger object,
+and the barrier would quarantine the region for an operation the program has
+every right to make.
+
+The region comes from the **container**, never from the old buffer. An empty
+container shares one permanent empty `Memory` that belongs to region 0, so a
+container made inside a window starts with a region-0 buffer, and its first
+growth must land where the container lives.
+
+`jl_gc_region_borrow(n)` gives region `n` to the next allocations of the
+thread and returns the region it replaced; `jl_gc_region_unborrow` gives that
+region back. A borrow is not a window: it changes no window state, so the
+count of open windows, the task's own region and the task's stickiness stay
+as they were. `jl_gc_region_suspend` is the borrow of region 0.
+
+Three rules for a borrow. Keep it short, around one allocation. Do not yield
+inside one, because a task switch would save the borrowed region as the
+task's window. Always give it back in a `finally`.
+
+The places that follow the rule are `array_new_memory_for` in `base/array.jl`,
+which every array growth passes through and with it `push!`, `pushfirst!`,
+`append!`, `insert!`, `resize!`, the data of a `Channel` and the chunks of a
+`BitVector`; `rehash!` in `base/dict.jl`; `jl_idtable_rehash`; and the growth
+of an `IOBuffer`. A container written elsewhere follows the rule with the
+same pair, or its growth stays an escape.
+
+The rule covers the buffer. It does not cover the **elements**: a region
+object stored into a long-lived container outlives its region, and the
+barrier is right to quarantine it.
+
+## The reset
+
+`jl_gc_region_reset` runs four phases, and each one sees the result of the
+one before.
+
+1. The preconditions: a valid region, no window on it, no pending finalizer
+   run on this thread, no quarantine, no live child.
+2. The finalizers of the region, which run Julia code with the barrier armed.
+3. The quarantine, read again. A finalizer that stores one of its own objects
+   into an older region condemns this region, and a reset that freed after
+   that would leave the published reference dangling.
+4. The root check and the free, in one stop-the-world pause. No finalizer is
+   left to run, so the pause holds through the free.
+
+The root check is what stands between a live local and a freed object,
+because the barrier sees the heap and not the stack. It marks from the
+execution roots of every thread with the region filter and counts the marked
+cells of the region; a count above zero refuses the reset with `EROOT`.
+`jl_gc_region_set_debug(1)` makes the runtime name the objects it found.
+
+**The reset must not run in a frame that still names the region's objects.**
+A Julia frame roots a local until the frame ends, whether or not the program
+reads it again, so a function that builds in a window and resets afterwards
+refuses its own reset. Build and use the region's objects in one function,
+and reset after that function returned.
+
+Several threads that reset their own leaves collide on the safepoint, so a
+reset that loses the race waits for the winner and tries again. `ERACE` comes
+back only after many failed attempts.
+
+`jl_gc_region_unsafe_reset` frees with no pause and no scan. A reference from
+a stack slot, a register or a parked task's stack is then left pointing into
+freed memory, and the next collection reports `CORPSE` and aborts. Use it
+where the pause is the thing being measured, or in a loop that has shown with
+the checked entry that no root survives its window. The benchmarks and the
+demonstrators of `contrib/memory-regions` use it for that reason.
+
 ## The API
 
 Every entry point takes region numbers. The numbering and its meaning belong
@@ -100,7 +190,10 @@ to the program. The entries are `ccall` targets; there is no `Base` API.
 |:--|:--|
 | `jl_gc_region_set(n)` | Open a window on region `n` on the calling task; `n = 0` closes it. Returns the region that was current, or a refusal code. |
 | `jl_gc_region_current()` | The region of the open window, 0 when none. |
-| `jl_gc_region_reset(n)` | Free every object of region `n` on the calling thread's heap. Returns the pages the region held (`uint64_t`), or a refusal code cast to `uint64_t`. |
+| `jl_gc_region_reset(n)` | Free every object of region `n` on the calling thread's heap, after a check that no execution root references into it. Returns the pages the region held (`uint64_t`), or a refusal code cast to `uint64_t`. |
+| `jl_gc_region_unsafe_reset(n)` | The same with no check and no pause. A reference from a stack slot, a register or a parked task's stack is left dangling. |
+| `jl_gc_region_borrow(n)` | Give region `n` to the next allocations of this thread; returns the region it replaced. Not a window. |
+| `jl_gc_region_unborrow(lent)` | Give back the region a borrow replaced. |
 | `jl_gc_region_reset_global(n)` | Free region `n` on every heap at once, with the world stopped. |
 | `jl_gc_region_declare_parent(child, parent)` | Declare an edge of the tree before either region is used. Returns 0, or a refusal code. |
 | `jl_gc_region_parent_of(child)` | The declared parent. |
@@ -111,7 +204,7 @@ to the program. The entries are `ccall` targets; there is no `Base` API.
 | `jl_gc_region_pages(n)` | The pages region `n` holds on the calling thread's heap. |
 | `jl_gc_region_quarantined(n)` | 1 when an escape quarantined region `n`. |
 | `jl_gc_region_stat(i)` | A field of the last census: 0 total ns, 1 stop-the-world ns, 2 mark ns, 3 sweep ns, 4 live cells, 5 freed cells, 6 pages walked, 7 pages freed wholesale. |
-| `jl_gc_region_set_debug(on)` | With checks on, a reset refuses while an execution root references into the region. |
+| `jl_gc_region_set_debug(on)` | With reporting on, the reset's root check names the objects it found. The check itself always runs. |
 | `jl_gc_region_check(n)` | Run that check alone; returns the count of references, or a refusal code. |
 | `jl_gc_region_verify(n)` | Walk the page chains of region `n` for consistency; returns the error count. |
 | `jl_gc_heap_reserve(bytes)` | Prefault `bytes` of pool heap so a later allocation never faults. Returns the bytes mapped. |
@@ -283,17 +376,21 @@ in use. A program that watches the memory of a region reads
 ## Discipline the barrier does not remove
 
 The barrier catches every heap reference that breaks the rule. It does not
-see the execution roots, so the program keeps the following rules.
+see the execution roots. The checked reset does (see "The reset"), so the
+rules below are what the program keeps beyond it, and every one of them is
+the program's own to keep.
 
-- **Close every window on the region before its reset.** A reference to a
-  region object in a stack slot, a register, or a task that is not finished
-  is not seen by the barrier. A reset under such a reference frees the
-  object; the next collection that meets the reference aborts with a
-  `CORPSE` report. The reset refuses the window of the calling task
-  (`EBUSY`); it does not see the window of a parked task on the same thread.
-  The debug mode (`jl_gc_region_set_debug(1)`) makes the reset refuse under
-  any execution root (`EROOT`), at the price of a scan of the execution roots
-  per reset.
+- **Reset from a frame that names none of the region's objects.** A Julia
+  frame roots a local until the frame ends, whether or not the program reads
+  it again, so a function that builds in a window and resets afterwards
+  refuses its own reset with `EROOT`. Build and use the region's objects in
+  one function and reset after it returned. The checked reset makes this a
+  refusal; `jl_gc_region_unsafe_reset` makes it a freed object under a live
+  reference and a `CORPSE` abort at the next collection.
+- **Close every window on the region before its reset.** The reset refuses
+  the window of the calling task (`EBUSY`). A parked task of the same thread
+  that holds a window on the region is not counted, although the root check
+  does reach that task's stack.
 - **Open a window inside a function, not at top level.** A window at top
   level covers the lowering and the evaluation of the next top-level
   statement, and the objects the evaluator makes there (a binding partition,
@@ -318,6 +415,9 @@ see the execution roots, so the program keeps the following rules.
   reference the reset does not clear.
 - **Do not serialize a region object.** The image writer (`src/staticdata.c`)
   refuses while a window is open.
+- **Do not hand a region object to C and let it keep the pointer.** The
+  barrier sees a managed store and nothing else, so a pointer a foreign
+  library holds dangles at the reset with no report.
 
 ## Limits
 
@@ -333,8 +433,16 @@ see the execution roots, so the program keeps the following rules.
 - `WeakRef` on a region object and an image write inside a window are refused.
 - `finalize(o)` on a region object does nothing: its finalizer is on the
   region's list, which only the reset and the census run.
-- The pages of a region never return to the operating system; a reset parks
-  them for the next window on the region.
+- The pages of a region never return to the operating system, and they never
+  return to the stock pool either: a reset parks them for the next window on
+  the region. `gc_heap_stats.heap_size` counts them, parked or in use, so a
+  large region raises the heap size the stock collector aims at.
+- A quarantine is permanent. No entry point clears it, the reset and both
+  censuses refuse from then on, a window on the region is refused, and the
+  region's finalizer list stays a root of the stock mark. The memory of a
+  quarantined region is retained for the life of the process.
+- A window costs the thread heap eight pool arrays and the page metadata two
+  fields, whether or not a program ever opens one.
 - The heap reserve prefaults at most `GC_MAX_BLOCKS` blocks (about 64 GB);
   blocks past that are mapped lazily.
 - `jl_gc_region_collect` returns `EINVAL` for a valid region that no window

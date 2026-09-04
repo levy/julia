@@ -26,7 +26,7 @@ try the runtime, to measure it, and to know how it came to be.
 
 | Path | Content |
 | --- | --- |
-| `regions.jl` | the Julia face of the runtime: `@with_region`, `region_reset`, the tree declarations, the census. Every benchmark and demonstrator includes it. |
+| `regions.jl` | the Julia face of the runtime: `@with_region`, `region_reset` and `unsafe_region_reset`, the tree declarations, the census. Every benchmark and demonstrator includes it. |
 | `bench/` | the benchmarks: the unit costs, the GCBenchmarks sweep, the event-loop models and their tails, the census, the growth bound, the region-native model against C++. `bench/README.md` lists each program and its command. |
 | `demo/` | the demonstrators: four algorithms run twice, under regions and under the stock collector, with the two results side by side; and three showcases of wholesale death. `demo/README.md` lists each. |
 | `tools/` | the discipline checker, which finds the stores that break the region rule before a program runs under regions; and the core isolation for the paced measurements. `tools/README.md` lists each. |
@@ -67,6 +67,9 @@ usr/bin/julia test/gc/regions_escape.jl
 usr/bin/julia test/gc/regions_lifetime.jl
 usr/bin/julia -t4 test/gc/regions_census.jl
 usr/bin/julia -t4 test/gc/regions_tree.jl
+usr/bin/julia test/gc/regions_stores.jl
+usr/bin/julia test/gc/regions_safety.jl
+usr/bin/julia test/gc/regions_containers.jl
 ```
 
 Each script prints its check count and exits 0, or prints `FAIL: <name>` and

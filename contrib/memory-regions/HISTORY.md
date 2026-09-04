@@ -385,6 +385,28 @@ GC threads and a stock collection after a census; B12 needs a forced full
 collection with a live region object; B10 needs a census over a region-0
 vector in a last field. The development scripts did none of the three.
 
+### A second review, and what it found
+
+A reading of the sixth cut looked for a store the barrier could not see, a
+free that runs after its own precondition, and a leak with no recovery. It
+found nine issues; the seven below changed the runtime. A test came first
+for each one, and each test fails on the sixth cut.
+
+| # | Where | Symptom | Cause | Fix | Test |
+| --- | --- | --- | --- | --- | --- |
+| R1 | `gc-interface.h`, the two `GenericMemory` copy barriers, and the raw sites of `task.c`, `opaque_closure.c`, `genericmemory.c`, `simplevector.c`, `gf.c` | A callable made in a window and put into a task made outside, `copyto!` and `copy` of region elements into a region-0 vector: none of them quarantines, and the reset then frees an object a live container holds. | The generational shortcut "the parent is fresh, so no barrier" is inverted for a region: a fresh parent takes the region of the open window, and the child can come from an earlier one. `jl_gc_wb_fresh`, `jl_gc_wb_current_task` and `jl_gc_wb_knownold` were empty functions, and the two bulk-copy barriers carried no region check. | The three annotations run the region check (S6); the copy barriers check the pair (destination, source) once, which covers every element because an element of the source keeps the rule against the source; the raw sites annotate their store. | `regions_stores.jl`. |
+| R2 | `jl_gc_region_reset` | A finalizer of the region publishes one of its own objects while the reset runs it. The reset had already passed its quarantine test and frees the pages under the published reference. | The quarantine was read before the finalizers, which are the one thing that can condemn the region while the reset runs. | The reset runs four phases and reads the quarantine again after the finalizers. | `the_reset_refuses_after_its_finalizer_escaped` in `regions_safety.jl`. |
+| R3 | `jl_gc_region_reset` | The reset frees a region while a local of the calling frame still points into it; the next collection reports `CORPSE`. | The barrier sees the heap and not the stack, and the root check was a process-wide debug flag that was off by default. | The check runs in every reset, in the same pause as the free. `jl_gc_region_unsafe_reset` is the named entry for a loop that has shown it does not need it. Three cases of the suite reset in the frame that rooted their objects and now reset after it returned. | `checked_reset_refuses_under_a_root` in `regions_safety.jl`. |
+| R4 | `jl_finish_task` | A task that dies inside a window leaves the count of open windows above zero, and every census, global reset and declaration returns `EBUSY` for the life of the process. | Only `jl_gc_region_set(0)` lowered the count, and no exit path closed a window. | `jl_gc_region_close_window` at the end of a task, on the return and the throw path. | `a_dead_task_leaves_no_window` in `regions_safety.jl`. |
+| R5 | `jl_gc_region_set` | A quarantined region frees nothing again, and a loop that keeps opening a window on it grows without bound until the process dies. | A window on a quarantined region was allowed. | The window is refused with `EQUARANTINED`, so the program stops at the window and not at its memory limit. | `a_window_on_a_quarantined_region_is_refused` in `regions_safety.jl`. |
+| R6 | `jl_gc_region_collect_coop` | Two threads read the window count as zero and both start a census; they share one process-wide filter and one task table, so one marks with the other's filter and frees live objects. | The test and the increment were two acts. | One compare-exchange. | Inspection; a race that a test cannot make fail on demand. |
+| R7 | `array_new_memory_for`, `rehash!`, `jl_idtable_rehash`, the `IOBuffer` growth | `push!(long_term_vector, 1)` inside a window quarantines the region. | The new backing memory went into the region of the window although it has the lifetime of the container. | A replacement buffer is allocated in the region of its container (S7). The region comes from the container and not from the old buffer, because an empty container shares a permanent empty `Memory` of region 0. | `regions_containers.jl`. |
+
+Two more findings changed no behaviour and are recorded in the developer
+documentation instead: the runtime's own objects are always region 0, which
+is why the unbarriered stores of the type system and the method table are
+sound, and the barrier sees a managed store and nothing else.
+
 ### Cleanups
 
 | # | Where | Finding | Action |
@@ -413,7 +435,7 @@ vector in a last field. The development scripts did none of the three.
 
 ### Stock-path changes
 
-Five changes touch paths a program without regions runs. Each has its own
+Seven changes touch paths a program without regions runs. Each has its own
 commit in the series, with the reason in the message.
 
 | # | Where | Change | Reason |
@@ -423,6 +445,8 @@ commit in the series, with the reason in the message.
 | S3 | `gc_setmark_pool` | `gc_region_corpse_report` on `NULL` page metadata. | Names the object that a bad reset dangled, on a path that already crashes. |
 | S4 | `cgutils.cpp`, `emit_new_struct` | `need_wb = true` for boxed pointer children at construction. | The escape barrier needs the store checked; off under `JL_NO_REGION_STORE_BARRIER`. |
 | S5 | `llvm-late-gc-lowering.cpp` | A flag-guarded call to `jl_gc_region_wb` after the generational barrier. | The escape barrier; off under the same define. |
+| S6 | `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_wb_fresh`, `jl_gc_wb_current_task`, `jl_gc_wb_knownold` | The three empty annotations become declarations, and the stock collector defines them with the region check. | Each one names a store whose *generational* half a property of the parent or of the child removes. None of those properties says anything about a region, and a fresh parent takes the region of the open window while the child can come from an earlier one. The mmtk build keeps them empty. |
+| S7 | `base/array.jl`, `base/dict.jl`, `base/iobuffer.jl`, `src/iddict.c` | A replacement buffer is allocated in the region of its container, through `jl_gc_region_borrow`. | Without it a `push!` to a long-lived vector inside a window quarantines the region for an operation the program has every right to make. With no region in use the borrow reads region 0 and installs region 0: two field writes on the growth path, none on the allocation path. |
 
 ### Pitfalls of the tests and the benchmarks
 
