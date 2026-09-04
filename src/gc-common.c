@@ -280,6 +280,32 @@ static void jl_gc_run_finalizers_in_list(jl_task_t *ct, arraylist_t *list) JL_NO
     ct->sticky = sticky;
 }
 
+// The bracket around the runtime's own allocations on behalf of a task
+// that holds a window (gc-regions.h): region 0 is installed between the
+// two calls, the window stays open.
+JL_DLLEXPORT int jl_gc_region_suspend(void)
+{
+#ifdef WITH_THIRD_PARTY_HEAP
+    return 0;
+#else
+    jl_ptls_t ptls = jl_current_task->ptls;
+    int parked = ptls->gc_tls.heap.current_region;
+    if (parked != 0)
+        jl_gc_region_install_task(ptls, 0);
+    return parked;
+#endif
+}
+
+JL_DLLEXPORT void jl_gc_region_resume(int parked)
+{
+#ifdef WITH_THIRD_PARTY_HEAP
+    (void)parked;
+#else
+    if (parked > 0)
+        jl_gc_region_install_task(jl_current_task->ptls, parked);
+#endif
+}
+
 static uint64_t finalizer_rngState[JL_RNG_SIZE];
 
 void jl_rng_split(uint64_t dst[JL_RNG_SIZE], uint64_t src[JL_RNG_SIZE]) JL_NOTSAFEPOINT;
