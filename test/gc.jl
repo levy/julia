@@ -105,6 +105,7 @@ end
     run_gctest("gc/regions_stores.jl")
     run_gctest("gc/regions_safety.jl")
     run_gctest("gc/regions_containers.jl")
+    run_gctest("gc/regions_heaps.jl")
 end
 end
 

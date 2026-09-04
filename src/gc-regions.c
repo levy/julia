@@ -537,10 +537,11 @@ void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 
 // --- reset ---------------------------------------------------------------------------
 
-// The root scan of the checked reset and of jl_gc_region_check, defined with
-// the debug entries below. The caller has stopped the world and set
-// gc_n_threads and gc_all_tls_states.
+// The root scans of the checked reset, the global reset and
+// jl_gc_region_check, defined with the debug entries below. The caller has
+// stopped the world and set gc_n_threads and gc_all_tls_states.
 static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n);
+static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 
 // The per-heap reset body, shared by the single-heap reset and the global
 // reset. The caller owns the preconditions. Everything in the region dies:
@@ -704,8 +705,10 @@ JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n)
 // must not free while another lives - the reset is one act across every
 // heap, with the world stopped. The world stays stopped, so no finalizer
 // can run: a trunk with pending finalizers is refused; a cooperative
-// census on each heap runs them first. Returns the pages reclaimed, or a
-// refusal code cast to uint64_t.
+// census on each heap runs them first. The root check of the per-heap
+// reset runs here too, once for every instance: a parked task's frame that
+// references a trunk object refuses the reset with EROOT. Returns the pages
+// reclaimed, or a refusal code cast to uint64_t.
 JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -751,6 +754,16 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
         if (heap->regions[n].initialized && heap->regions[n].finalizers.len != 0) {
             result = (uint64_t)JL_GC_REGION_EFINALIZERS;
             break;
+        }
+    }
+    if (result == 0) {
+        // The root check, as the per-heap reset runs it: an execution root
+        // of any thread that references any heap's instance refuses.
+        int64_t roots = region_root_scan_global(ptls, n);
+        if (roots != 0) {
+            jl_safe_printf("REGION-RESET refused: %lld live references into region %d\n",
+                           (long long)roots, n);
+            result = (uint64_t)JL_GC_REGION_EROOT;
         }
     }
     if (result == 0) {
@@ -1139,18 +1152,12 @@ JL_DLLEXPORT void jl_gc_region_set_debug(int on)
     region_debug_checks = on;
 }
 
-// The root scan the checked reset and jl_gc_region_check share. The caller
-// stopped the world and set gc_n_threads and gc_all_tls_states.
-//
-// Mark from the execution roots of every thread with the region filter, then
-// walk the region's pages: every marked cell is an object a root still
-// references, which the free would dangle. The marks are cleared again, so
-// the scan is repeatable and leaves clean state. Returns the count.
-static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
+// The walk of one heap's pages of region n after a census mark: every
+// marked cell is an object an execution root still references, which a free
+// would dangle. The marks are cleared as they are counted, so the walk leaves
+// clean state. The pages are walked up to the bump cursor of their pool.
+static int64_t region_count_marked(jl_thread_heap_t *heap, int n)
 {
-    region_census_begin(n);
-    region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
-
     int64_t violations = 0;
     jl_gc_pool_t *pools = heap->regions[n].pools;
     char *bump[JL_GC_N_MAX_POOLS];
@@ -1180,6 +1187,41 @@ static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
             }
         }
         pg->has_marked = 0;
+    }
+    return violations;
+}
+
+// The root scan the checked reset and jl_gc_region_check share. The caller
+// stopped the world and set gc_n_threads and gc_all_tls_states.
+//
+// Mark from the execution roots of every thread with the region filter, then
+// count and clear the marks on this heap's pages of the region. The mark ran
+// from the roots of every thread, so it marked the other heaps' objects of
+// region n too; those marks are cleared as well. A mark left there would
+// make the next checked reset of that heap refuse falsely, and would stop
+// the next census of that heap at the marked object, which then frees the
+// object's children under a live parent. Returns the count.
+static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
+{
+    region_census_begin(n);
+    region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
+    int64_t violations = region_count_marked(heap, n);
+    region_clear_marks_on_other_heaps(heap, n);
+    region_census_end();
+    return violations;
+}
+
+// The root scan of the global reset: one mark, then the count on every
+// heap's instance of the region. The same preconditions.
+static int64_t region_root_scan_global(jl_ptls_t ptls, int n)
+{
+    region_census_begin(n);
+    region_census_mark(ptls, gc_all_tls_states, gc_n_threads, &ptls->gc_tls.heap, n, NULL);
+    int64_t violations = 0;
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 != NULL && ptls2->gc_tls.heap.regions[n].initialized)
+            violations += region_count_marked(&ptls2->gc_tls.heap, n);
     }
     region_census_end();
     return violations;

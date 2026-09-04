@@ -129,19 +129,27 @@ end
 # A region is reset on the heap that allocated it, so the schedule is
 # :static: a worker that waits for the lock stays on its thread. Runs at
 # any thread count, including one.
-function tree_multithread_leaves()
+#
+# The trunk object is a local of this frame, and the frame has returned
+# before the global reset runs: the global reset checks the execution roots
+# like the per-heap reset, and a local that names a trunk object refuses it.
+@noinline function tree_run_workers()
     trunk_obj = tree_build_trunk()
     Threads.@threads :static for w in 1:3
         tree_worker(w, trunk_obj)
     end
-    check("the trunk survived the workers", trunk_obj.f == 777)
+    return trunk_obj.f
+end
+
+function tree_multithread_leaves()
+    check("the trunk survived the workers", tree_run_workers() == 777)
     check("the shared counter reached every round", tree_counter[] == 3 * 50)
     for w in 1:3
         check("leaf $(tree_leaf_of(w)) not quarantined", quarantined(tree_leaf_of(w)) == 0)
     end
     check("the trunk not quarantined", quarantined(TREE_TRUNK) == 0)
     r = region_reset_global(TREE_TRUNK)
-    check("the global trunk reset succeeds", !refused(r))
+    check("the global trunk reset succeeds (code $(code(r)))", !refused(r))
 end
 
 @noinline function tree_fill_region(n, k)
@@ -176,6 +184,35 @@ function tree_reset_order()
     end
     check("the trunk survives 200 leaf resets", trunk_obj2.f == 424242)
     check("the trunk resets last", !refused(region_reset(TREE_TRUNK)))
+end
+
+# ---- the global reset checks the execution roots ----
+# A parked task keeps a trunk object on its frame. The per-heap checked
+# reset refuses that with EROOT; the global reset must refuse it as well,
+# whichever heap the task's objects landed on. The window is closed before
+# the task parks, so the reset is not busy: only the root check can refuse.
+@noinline function tree_park_with_trunk(parked, release)
+    region_set(TREE_TRUNK)
+    t = TreeNode(4242)
+    region_set(0)
+    check("the parked task's object is in the trunk", escape(t) == TREE_TRUNK)
+    notify(parked)                       # park: the window is closed, t lives on this frame
+    wait(release)
+    return t.f
+end
+
+function tree_global_reset_root_check()
+    parked, release = Base.Event(), Base.Event()
+    tA = Threads.@spawn tree_park_with_trunk(parked, release)
+    wait(parked)
+    r = region_reset_global(TREE_TRUNK)
+    check("the global reset refuses while a parked task roots a trunk object (code $(code(r)))",
+          code(r) == EROOT)
+    notify(release)
+    check("the parked task reads its trunk object", fetch(tA) == 4242)
+    r2 = region_reset_global(TREE_TRUNK)
+    check("the global reset succeeds once the task is gone (code $(code(r2)))", !refused(r2))
+    check("the trunk not quarantined by the root check", quarantined(TREE_TRUNK) == 0)
 end
 
 @noinline function tree_check_clean_before_escapes()
@@ -284,6 +321,7 @@ tree_declare_final()
 
 tree_multithread_leaves()
 tree_reset_order()
+tree_global_reset_root_check()
 tree_check_clean_before_escapes()
 
 tree_sibling_isolation()
