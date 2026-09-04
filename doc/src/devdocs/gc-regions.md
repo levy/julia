@@ -72,11 +72,20 @@ Two facts carry the rest of the runtime, and neither is a check.
 
 **The runtime's own objects are region 0.** Inference, compilation, a
 dispatch cache miss and a type instantiation all run with region 0 forced
-(`gf.c`, `jltypes.c`), so a method, a type, a code instance and a binding are
-region-0 objects. Rule 3 makes a region-0 child legal under any parent, so
-the many stores in the type system and the method table that carry no barrier
-cannot break the rule. Anyone who removes one of those forced zones opens a
-class of missed escapes at once.
+(`gf.c`, `jltypes.c`), so a method, a type and a code instance are region-0
+objects. A binding is made where a name is first looked up, which can be
+inside a window, so `jl_get_module_binding` and `new_binding_partition`
+(`module.c`) allocate the `Binding` and its partition under a borrow of
+region 0. The exception stack of a task is made at the task's first throw,
+which can be inside a window, and the task keeps it for every later throw, so
+`jl_reserve_excstack` (`rtutils.c`) allocates it under a borrow of the task's
+region. The saved stack of a copy-stack task needs no such care: it is larger
+than the pool limit, so it is a big object and belongs to region 0 (see
+"Finalizers and malloc'd data"). Rule 3 makes a region-0 child legal under any
+parent, so the many
+stores in the type system and the method table that carry no barrier cannot
+break the rule. Anyone who removes one of those forced zones opens a class of
+missed escapes at once.
 
 **The barrier sees a managed store and nothing else.** A store from C code,
 an `unsafe_store!`, and a pointer a foreign library keeps are all invisible.
@@ -108,6 +117,19 @@ safety: the store stays, and the region never frees under the reference.
 `jl_gc_wb` in `src/gc-wb-stock.h` runs the same check for the stores of the
 C runtime and of the builtins.
 
+A bulk copy moves many references in one act: `copyto!` and `copy` of a
+`Memory` with references (`jl_genericmemory_copyto`,
+`jl_genericmemory_copy_slice`), `jl_svec_copy`, and the store of an inline
+immutable with pointer fields (`jl_gc_multi_wb`). Each one checks the pair
+(destination, source) first. Every element of the source keeps the rule
+against the source, so a source that is legal under the destination makes
+every element legal under it, and the copy pays one check. The converse does
+not hold: a young container of old elements — a `filter` made inside a
+window and appended to an old vector after the window closed — fails the
+pair, and the copy is legal. So a failed pair decides nothing; the check then
+walks the copied references, or the pointer fields of each copied element,
+and quarantines only a real escape.
+
 ## A replacement buffer
 
 A container that grows does not make a new object: it replaces the buffer
@@ -133,12 +155,20 @@ Three rules for a borrow. Keep it short, around one allocation. Do not yield
 inside one, because a task switch would save the borrowed region as the
 task's window. Always give it back in a `finally`.
 
+A borrow makes the region live on the heap that borrows
+(`jl_gc_region_install_borrow`). A thread that grows a container of another
+thread's region takes pages of that region on its own heap, and from that
+moment its resets of the region's parent see the region as a live child.
+
 The places that follow the rule are `array_new_memory_for` in `base/array.jl`,
 which every array growth passes through and with it `push!`, `pushfirst!`,
 `append!`, `insert!`, `resize!`, the data of a `Channel` and the chunks of a
-`BitVector`; `rehash!` in `base/dict.jl`; `jl_idtable_rehash`; and the growth
-of an `IOBuffer`. A container written elsewhere follows the rule with the
-same pair, or its growth stays an escape.
+`BitVector`; `jl_array_grow_end` in `src/array.c`, the growth the runtime's
+own `jl_array_ptr_1d_push` callers use; `rehash!` in `base/dict.jl`;
+`jl_idtable_rehash` and `empty!` for an `IdDict`; the key list and the index
+table of an `IdSet` in `push!`; and the growth of an `IOBuffer`, with the new
+data that a write or a `truncate` makes after a `take!`. A container written
+elsewhere follows the rule with the same pair, or its growth stays an escape.
 
 The rule covers the buffer. It does not cover the **elements**: a region
 object stored into a long-lived container outlives its region, and the
@@ -152,6 +182,9 @@ one before.
 1. The preconditions: a valid region, no window on it, no pending finalizer
    run on this thread, no quarantine, no live child.
 2. The finalizers of the region, which run Julia code with the barrier armed.
+   A finalizer can register a finalizer on another object of the region, so
+   the phase runs rounds until the list is empty, and refuses with
+   `EFINALIZERS` after 64 rounds. No Julia code runs after this phase.
 3. The quarantine, read again. A finalizer that stores one of its own objects
    into an older region condemns this region, and a reset that freed after
    that would leave the published reference dangling.
@@ -162,7 +195,12 @@ The root check is what stands between a live local and a freed object,
 because the barrier sees the heap and not the stack. It marks from the
 execution roots of every thread with the region filter and counts the marked
 cells of the region; a count above zero refuses the reset with `EROOT`.
-`jl_gc_region_set_debug(1)` makes the runtime name the objects it found.
+`jl_gc_region_set_debug(1)` makes the runtime name the objects it found. The
+marks the scan leaves on the other heaps' instances of the region are
+cleared before the pause ends: two threads that use one region number each
+on their own heap must not see each other's marks at their next reset or
+census. `jl_gc_region_reset_global` runs the same root check, over every
+heap's instance of the region, inside its own pause.
 
 **The reset must not run in a frame that still names the region's objects.**
 A Julia frame roots a local until the frame ends, whether or not the program
@@ -172,7 +210,8 @@ and reset after that function returned.
 
 Several threads that reset their own leaves collide on the safepoint, so a
 reset that loses the race waits for the winner and tries again. `ERACE` comes
-back only after many failed attempts.
+back after 1024 lost attempts. It is a refusal like the others: the region is
+intact, and the caller resets it again later.
 
 `jl_gc_region_unsafe_reset` frees with no pause and no scan. A reference from
 a stack slot, a register or a parked task's stack is then left pointing into
@@ -194,7 +233,7 @@ to the program. The entries are `ccall` targets; there is no `Base` API.
 | `jl_gc_region_unsafe_reset(n)` | The same with no check and no pause. A reference from a stack slot, a register or a parked task's stack is left dangling. |
 | `jl_gc_region_borrow(n)` | Give region `n` to the next allocations of this thread; returns the region it replaced. Not a window. |
 | `jl_gc_region_unborrow(lent)` | Give back the region a borrow replaced. |
-| `jl_gc_region_reset_global(n)` | Free region `n` on every heap at once, with the world stopped. |
+| `jl_gc_region_reset_global(n)` | Free region `n` on every heap at once, with the world stopped, after the same root check over every heap's instance. |
 | `jl_gc_region_declare_parent(child, parent)` | Declare an edge of the tree before either region is used. Returns 0, or a refusal code. |
 | `jl_gc_region_parent_of(child)` | The declared parent. |
 | `jl_gc_region_collect(n)` | The stop-the-world census of region `n`: free its dead objects, keep the live ones. Returns the cells freed (`int64_t`), or a refusal code. |
@@ -300,7 +339,9 @@ stops the world and resets every heap's instance as one act.
 
 A region is live between a window on it and its reset. A reset of a region
 with a live child refuses with `ECHILD`: a descendant can hold a legal
-reference into it. The program resets the leaves first.
+reference into it. A census of it refuses for the same reason: the census
+filter drops the child's objects, so a parent object that only the child
+references would go unmarked and freed. The program resets the leaves first.
 
 ## The census
 
@@ -392,13 +433,15 @@ the program's own to keep.
   that holds a window on the region is not counted, although the root check
   does reach that task's stack.
 - **Open a window inside a function, not at top level.** A window at top
-  level covers the lowering and the evaluation of the next top-level
-  statement, and the objects the evaluator makes there (a binding partition,
-  for one) are stored into stock tables: an escape, which the barrier reports
-  and quarantines. Inside a function the runtime's own work is safe: a method
-  that compiles for the first time, a dynamic dispatch on a new signature, a
-  type first instantiated at run time, and the scheduler state a first wait
-  on a thread makes all happen in region 0.
+  level covers the evaluation of the next top-level statement. A definition
+  there makes the defined object in the open region — the type of a new
+  function, the `DataType` of a `struct`, a `Module`, the value of a `const` —
+  and stores it into a binding of region 0: an escape, which the barrier
+  reports and quarantines. Inside a function the runtime's own work is safe:
+  a method that compiles for the first time, a dynamic dispatch on a new
+  signature, a type first instantiated at run time, a name first looked up,
+  a first throw, and the scheduler state a first wait on a thread makes all
+  happen in region 0.
 - **Catch an exception inside the window.** An exception allocated inside the
   window is a region object. An exception that leaves the window is a root
   into the region at the reset point. The handler at the window boundary
@@ -489,7 +532,11 @@ one and no escape ever seen on the other.
 | `src/task.c` | The window follows the task. |
 | `src/gf.c` | Inference, compilation, and the cache-miss path of a dynamic dispatch run in region 0. |
 | `src/jltypes.c` | The cache-miss path of a type instantiation runs in region 0. |
+| `src/module.c` | A `Binding` and its partition are made in region 0. |
+| `src/rtutils.c` | The exception stack of a task is made in the region of the task. |
+| `src/array.c`, `src/genericmemory.c`, `src/simplevector.c` | The replacement buffer of `jl_array_grow_end`; the pair check of a bulk copy. |
 | `src/staticdata.c` | The image writer refuses inside a window. |
 | `base/lock.jl` | The lazily initialized state of `OncePerProcess` and `OncePerThread` is made with the window suspended. |
+| `base/array.jl`, `base/dict.jl`, `base/iddict.jl`, `base/idset.jl`, `base/iobuffer.jl` | The replacement buffer of a container that grows. |
 | `contrib/memory-regions/` | The Julia wrapper, the benchmarks, the demonstrators, the checker, and the measurements. |
 | `test/gc/regions_*.jl` | The tests. |

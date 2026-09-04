@@ -407,6 +407,34 @@ documentation instead: the runtime's own objects are always region 0, which
 is why the unbarriered stores of the type system and the method table are
 sound, and the barrier sees a managed store and nothing else.
 
+### A third review, of the fixes
+
+A reading of the seven fixes above, with the same three questions, found
+seven more; the tests written for them found two more. Two are corruptions,
+one is a false quarantine, and the rest are holes in a check. Each has a
+regression script under `test/gc/`, shown to fail on the build before its
+fix. The scripts pass at every configuration of the harness: 1, 2 and 4
+threads, each with 0 and 1 interactive thread.
+
+| # | Where | Symptom | Cause | Fix | Test |
+| --- | --- | --- | --- | --- | --- |
+| F1 | `region_root_scan` | Two threads use one region number on their own heaps, the leaf pattern. After B's checked reset, A's next checked reset refuses falsely with `EROOT`, and A's next census frees live children of a live parent. | The root scan marks from the roots of every thread but cleared the marks of the calling heap only; a stale mark on A's heap makes A's census stop at the object and never mark what it holds. | The root scan clears the marks on every other heap before it ends, as the census does. | `heaps_round(:reset)`, `heaps_round(:census)` in `regions_heaps.jl`; skipped with one thread. |
+| F7 | `jl_gc_region_collect`, `jl_gc_region_collect_coop`, `jl_gc_region_census_open` | A census of a region with a live child frees a parent object that only the child references; the next stock collection segfaults on the freed cells. | The census filter drops every out-of-region object, so it never walks the child that holds the legal reference into the parent. The reset refused this case with `ECHILD`; the three census entries did not. | The same `ECHILD` refusal in all three; the allocator's census of the open region skips and goes on. | `census_live_child_refusal`, `census_live_child_cleanup` in `regions_census.jl`. |
+| F2 | The five bulk-copy checks of R1 | `append!(old, filter(f, xs))` after the window closed, or `copy(scratch)` into a region-0 field, quarantines the region for a legal program. Separately, the C copy of a `Vector{Any}` ran no check at all and let region elements leave unnoticed. | The pair check used the region of the source container as a proxy for its elements; a young container of old elements fails the proxy. The boxed case sat behind a layout test that lists no pointer for a boxed memory. | The pair check stays the fast path; when it would quarantine, `jl_gc_region_would_escape` tests each element (each pointer field for an inline copy) and quarantines only a real escape. The boxed case runs before the layout test. | `bulk_copies_of_old_do_not_quarantine`, `slice_copy_quarantines` and the other new cases of `regions_stores.jl`. |
+| F3 | `jl_gc_region_reset_global` | The global reset frees every heap's instance of a region while a parked task's frame still points into it. | The global reset checked `EFINALIZERS`, `ECHILD` and `EBUSY` per heap and ran no root scan: an unchecked reset under the checked name. | `region_root_scan_global` inside the same pause, `EROOT` on a hit. | `tree_global_reset_root_check` in `regions_tree.jl`; `tree_multithread_leaves` now resets after the frame that held the trunk returned. |
+| F4 | `jl_gc_region_reset`, the finalizer phase | A finalizer that registers a finalizer on another region object leaves a non-empty list, and the pause then runs Julia code under stop-the-world. | The finalizer phase ran once. | The phase runs rounds until the list is empty and refuses with `EFINALIZERS` after 64; the pause asserts an empty list. | `reset_runs_a_finalizer_registered_by_a_finalizer`, `reset_bounds_a_finalizer_that_registers_forever` in `regions_lifetime.jl`. |
+| F5 | `jl_get_module_binding`, `new_binding_partition` in `module.c` | A name first looked up inside a window — `getglobal`, `isdefined`, the first resolution of a global in compiled code — quarantines the region. | The `Binding` and its first partition were made in the open region and stored into the module's binding table of region 0. | Both allocations run under a borrow of region 0. A toplevel definition inside a window still quarantines, through the defined object itself (the type of a function, a `DataType`, a `Module`, the value of a `const`); the devdoc names it as discipline. | `runtime_binding_stays_in_region_0` in `regions_window.jl`. |
+| F6 | `ensureroom_reallocate` and `truncate` of an `IOBuffer` after `take!`, `empty!(::IdDict)`, `push!(::IdSet)`, `jl_array_grow_end` | An old container that grows or reinitializes inside a window quarantines the region. | Four replacement-buffer sites R7 did not reach. | A borrow keyed on the container at each site. | `an_iobuffer_reinits_inside_a_window`, `an_iobuffer_truncates_inside_a_window`, `an_iddict_empties_inside_a_window`, `an_idset_grows_inside_a_window`, `a_c_growth_inside_a_window` in `regions_containers.jl`. |
+| F8 | `jl_gc_region_borrow` | Thread B grows a vector that A made in a child region; B's heap takes pages of the child, and B's reset of the parent frees them under the live child. | The borrow installed the region through the task-switch path, which assumes the region is already live on the heap. | `jl_gc_region_install_borrow` initializes the region on the heap, marks it live, then installs it. | `heaps_borrow_round` in `regions_heaps.jl`. |
+| F9 | `jl_reserve_excstack` in `rtutils.c` | The first throw of a task inside a window prints `a (null) of region n was stored into a Task of region 0` and quarantines the region. | The exception stack of a task is made at its first throw, in the open region, and the task keeps it for every later throw. A GC buffer has no type name, hence `(null)`. | The allocation runs under a borrow of the task's region. The saved stack of a copy-stack task needs nothing: it is a big object and belongs to region 0. | `first_throw_stays_in_region_0` in `regions_window.jl`. |
+
+Two tests changed because they held the fault they tested for.
+`tree_multithread_leaves` reset the trunk from the frame that rooted the
+trunk object, and the F3 root scan refused it rightly. `tree_park_with_trunk`
+read its object through one field only, so the compiler scalar-replaced the
+allocation and nothing was on the frame; the case now forces the object with
+`escape`.
+
 ### Cleanups
 
 | # | Where | Finding | Action |
