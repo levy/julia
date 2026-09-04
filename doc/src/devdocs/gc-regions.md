@@ -253,6 +253,20 @@ An object larger than the pool limit (`GC_MAX_SZCLASS`) is a big object and
 belongs to region 0 whatever window is open. A store of a region object into it
 is an escape.
 
+## Counters
+
+An allocation in a region counts as an allocation: `gc_num.allocd` grows by
+the object size, so `@time` and `Base.gc_num()` report it. `Base.gc_live_bytes()`
+adds `allocd` to a running total that only a stock sweep reduces, by the bytes
+it frees. A reset parks the pages of the region for reuse and subtracts nothing,
+and a stock sweep skips region pages, so nothing ever subtracts a region object: over
+a long run the counter grows by every byte allocated through a region, and its
+slope is the allocation throughput of the regions, not the live heap. The
+collector's heuristics do not read this counter; they read the heap size in
+pages (`gc_heap_stats.heap_size`), which counts the pages of a region, parked or
+in use. A program that watches the memory of a region reads
+`jl_gc_region_pages(n)`; a program that watches the process reads `Sys.maxrss()`.
+
 ## Discipline the barrier does not remove
 
 The barrier catches every heap reference that breaks the rule. It does not

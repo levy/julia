@@ -49,8 +49,10 @@ SHA=$(git -C "$ROOT" rev-parse --short=10 HEAD)
 } > "$DATA/context.tsv"
 
 # --- the runner ---------------------------------------------------------------
+# A rerun of some rows (ONLY=...) appends to status.tsv: the last row of a
+# name is the one that stands.
 STATUS=$LOG/status.tsv
-printf '# row\tname\texit\tseconds\n' > "$STATUS"
+[ -s "$STATUS" ] || printf '# row\tname\texit\tseconds\n' > "$STATUS"
 want() { case " $ONLY " in *" $1 "*) return 0;; *) return 1;; esac; }
 RT=""; if [ "$RTPRIO" -gt 0 ] && chrt -f "$RTPRIO" true 2>/dev/null; then RT="chrt -f $RTPRIO"; fi
 SCOPE=""; command -v systemd-run >/dev/null && SCOPE="systemd-run --user --scope --quiet"
@@ -89,9 +91,13 @@ if want M1; then
 fi
 
 # --- M2: unit costs -----------------------------------------------------------
-# unit_costs.jl prints TSV rows itself; the two binaries are joined into one
-# file with a first column that names the binary. No real-time class: the
-# script waits for a child process.
+# unit_costs.jl prints TSV rows itself; the runs are joined into one file
+# with a first column that names the run. Three runs: `vanilla` is the stock
+# rows on the vanilla binary; `regions_stock` is the same stock rows on the
+# regions binary in a process that never opens a window (the zero-cost
+# question at the unit level); `regions` is every row on the regions binary,
+# where the rows after the first window run with the barrier armed. No
+# real-time class: the script waits for a child process.
 if want M2; then
     fresh unit_costs.tsv
     printf '# binary\tcost\tvalue\tunit\n' > "$DATA/unit_costs.tsv"
@@ -99,6 +105,8 @@ if want M2; then
         run M2 unit_costs_vanilla 8G 900 "$CORE" 0 "$VANILLA" --startup-file=no ../bench/unit_costs.jl stock 5 \
             && grep -P '^\w+\t' "$LOG/unit_costs_vanilla.log" | sed 's/^/vanilla\t/' >> "$DATA/unit_costs.tsv"
     else echo "[M2] no VANILLA: the vanilla rows are missing"; fi
+    run M2 unit_costs_regions_stock 8G 900 "$CORE" 0 $J ../bench/unit_costs.jl stock 5 \
+        && grep -P '^\w+\t' "$LOG/unit_costs_regions_stock.log" | sed 's/^/regions_stock\t/' >> "$DATA/unit_costs.tsv"
     run M2 unit_costs_regions 8G 900 "$CORE" 0 $J ../bench/unit_costs.jl 5 \
         && grep -P '^\w+\t' "$LOG/unit_costs_regions.log" | sed 's/^/regions\t/' >> "$DATA/unit_costs.tsv"
 fi

@@ -19,7 +19,7 @@ try the runtime, to measure it, and to know how it came to be.
 | --- | --- |
 | `doc/src/devdocs/gc-regions.md` | the model, the six rules, the barrier, the API with its return codes, the tree, the census, the limits, and one paragraph on cost. Present tense; describes what is. |
 | `MEASUREMENTS.md` | every measurement: the claim, the script, the data file, the plot, and the numbers. Twelve rows, M1 to M12. |
-| `HISTORY.md` | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, the deferred ideas, the audit of the entry points, and the backup tags. |
+| `HISTORY.md` | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, what the redone measurements changed, the deferred ideas, the audit of the entry points, and the backup tags. |
 | this file | the folder map and the build. |
 
 ## The folder
@@ -30,7 +30,7 @@ try the runtime, to measure it, and to know how it came to be.
 | `bench/` | the benchmarks: the unit costs, the GCBenchmarks sweep, the event-loop models and their tails, the census, the growth bound, the region-native model against C++. `bench/README.md` lists each program and its command. |
 | `demo/` | the demonstrators: four algorithms run twice, under regions and under the stock collector, with the two results side by side; and three showcases of wholesale death. `demo/README.md` lists each. |
 | `tools/` | the discipline checker, which finds the stores that break the region rule before a program runs under regions; and the core isolation for the paced measurements. `tools/README.md` lists each. |
-| `results/` | `run_all.sh` runs every measurement and writes `data/*.tsv`; `plot.py` draws `plots/*.svg` from the data files; `realworld.sh` is the matrix of the real-world loop. The logs go to `results/log/`, which git ignores. |
+| `results/` | `run_all.sh` runs every measurement and writes `data/*.tsv`; `tables.py` writes the tables of `MEASUREMENTS.md` and `plot.py` draws `plots/*.svg`, both from the data files alone; `realworld.sh` is the matrix of the real-world loop. The logs go to `results/log/`, which git ignores. |
 
 The tests of the runtime are not here. They are the five scripts
 `test/gc/regions_*.jl`, run by `test/gc.jl` as part of the `gc` test set,
@@ -77,25 +77,39 @@ a checkout of GCBenchmarks:
 ```
 VANILLA=/path/to/vanilla/usr/bin/julia GCBENCHMARKS=/path/to/GCBenchmarks \
     contrib/memory-regions/results/run_all.sh
+python3 contrib/memory-regions/results/tables.py
 python3 contrib/memory-regions/results/plot.py
 ```
 
-`run_all.sh` takes about four and a half hours. It pins the single-thread
-rows to one core (`CORE`, default 29) and the four-thread rows to a range
-(`MTCORES`, default 24-27). A row that a step of the run skips is named in
-`results/log/status.tsv`.
+`run_all.sh` takes about one hour; the endurance row of M6 is thirty
+minutes of it. It pins the single-thread rows to one core (`CORE`, default
+29) and the multi-thread rows to a range (`MTCORES`, default 24-31). Every
+row and its exit code go to `results/log/status.tsv`; a row that a step of
+the run skips is named there with the reason.
 
 ## The headline
 
 Three claims, each with its measurement in `MEASUREMENTS.md`:
 
-1. Unused, the runtime costs nothing that the GCBenchmarks can see (M1),
-   and one predicted branch per store (M2).
+1. Unused, the runtime runs the GCBenchmarks within noise of vanilla (M1).
+   Its unit costs on a program that never opens a window are one flag check
+   per pointer store (about 0.09 ns), about 0.3 ns per pool allocation,
+   about 1 ns per object constructed with pointer fields, and about 1 % on
+   the stock mark (M2). Small, not zero.
 2. Used alone, a reset frees a region in constant time, a window pair costs
-   tens of nanoseconds, and the collector's tail leaves the per-event
-   latency of an event loop (M3, M4, M6).
+   about 10 ns, and the collector's tail leaves the per-event latency of an
+   event loop: at one event per 100 µs slot the regions run misses no slot
+   in a million (M3, M4, M6).
 3. Used with the stock collector, the two coexist: a stock collection walks
    region objects and leaves them where they are, and a census reclaims the
    dead cells of a region that lives on (M5, M9). Where the discarded
    allocation per unit of work is large, the region model wins on wall time
-   as well (M10).
+   as well: up to 2x on the demonstrators, and 3.8x on a showcase whose
+   garbage is one linked list (M8, M10).
+
+The two sides of the third claim in one plot: demonstrator C, a speculative
+tree whose aborted transactions die in a leaf. With little work per
+transaction the region model loses; as the garbage per unit of work grows,
+the stock collector's count of collections grows and the region model wins.
+
+![Demonstrator C: wall time under the stock collector against wall time under regions, at four amounts of work per transaction](results/plots/demo_c.svg)

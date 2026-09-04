@@ -74,8 +74,11 @@ function main()
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
-    latencies = Vector{Int64}(undef, events)
-    gc_ns = Vector{Int64}(undef, events)
+    # zeros, not undef: the result vectors are touched before the loop, so
+    # no store of a result faults a page in (with transparent huge pages a
+    # first store zeroes 2 MB, about 200 us).
+    latencies = zeros(Int64, events)
+    gc_ns = zeros(Int64, events)
     deliveries = events ÷ (relays + 3) + 1
 
     network, sink = ModelScratch.build(relays, deliveries;

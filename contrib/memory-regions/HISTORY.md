@@ -265,8 +265,9 @@ runtime, two more surfaced while the scripts became tests, and every fix has a
 test that fails on the development binary and passes on the new one. The
 scripts became five test scripts under `test/gc/`, and the measurement
 scripts became `bench/`, `demo/`, and `tools/`. The eighteen entry points
-that survived the audit got one contract each in `src/gc-regions.h`. The
-findings are in the section "Found during the tidy" below.
+that survived the audit got one contract each in `src/gc-regions.h`. Every
+measurement ran again on the flat tree; six faults of the harness and five
+claims fell. The findings are in the section "Found during the tidy" below.
 
 ## The detours
 
@@ -294,8 +295,9 @@ them lists every detour of the ten plans.
 - **The construction-store gap.** A constructor stored an already-boxed
   child without a write barrier, so the region barrier never saw it. The
   construction-only intrinsic (A) and discipline alone (C) lost to widening
-  `need_wb` (B), at +1.4 ns per two-pointer-field construction (plan 8). The
-  zero-cost intrinsic is a recorded follow-up.
+  `need_wb` (B), at +1.4 ns per two-pointer-field construction as plan 8
+  measured it; the flat tree measures +1.05 ns in a process without a window
+  (M2). The intrinsic is a deferred item below.
 - **The out-of-memory hazard and the census.** A search whose dead branches
   die inside a window grows its region without bound. The demonstrators
   first bounded the search by a node cap; the tree plan then built the census
@@ -455,6 +457,80 @@ or the benchmarks meets again.
   that spend their time in the runtime's C code have one placement per
   binary; a difference there needs the disassembly as a second witness.
 
+### The measurements, redone
+
+The tidy ran every measurement again on the flat tree, with
+`results/run_all.sh`, and read every result as a reviewer before it went
+into a table. The rule was: a number that disagrees with its claim is a
+finding, and a finding is followed to its cause before the step continues.
+Three kinds of finding came out: faults of the harness, claims the data did
+not support, and drift against the numbers of the development branch.
+
+**Faults of the harness.** None of them is a fault of the runtime; each one
+put a wrong number into a table of the development branch, or would have.
+
+| # | Where | Fault | Fix |
+| --- | --- | --- | --- |
+| H1 | `bench/gcbench.sh` | The suite prints `times = 0x…`; the script read the field as decimal, so every wall time was 0. | The parse reads both forms and `$((ns))` makes the row decimal. A run that prints no `times` field is reported as `FAILED` with the tail of its output and gets no row. |
+| H2 | `bench/paced.jl`, `bench/yardstick.jl` | The result vectors were `Vector{Int64}(undef, n)`; the first touch of each of their huge pages fell inside a measured slot and cost about 200 µs. The four slot misses of the regions run were these faults, not the runtime. | `zeros`, which touches every page before the loop. The regions run misses no slot. |
+| H3 | `bench/unit_costs.jl`, the design | One process opened a window to measure the window rows, and the barrier stays armed from the first window on. The `alloc_stock` and `construct_two` rows compared an armed process with vanilla, and the no-window cost was confounded with the armed cost. | A third run: the regions binary in a process that never opens a window. M2 has three columns. |
+| H4 | `results/run_all.sh` | Each run overwrote `log/status.tsv`; a partial rerun lost the status of the rows it did not run. | Append. |
+| H5 | `results/plot.py`, `plot_scaling` | The points were grouped by their full label, which carries the thread count, so one thread count matched and the axis had zero width. The plot had never been drawn. | Group by the name before the parenthesis. |
+| H6 | `MEASUREMENTS.md` | Every table was typed from the logs by hand. | `results/tables.py` writes every table from the data files; a table lives between two markers. |
+| H7 | `results/plot.py`, the throughput plot of M5 | The legend named the `autopool` row, which is the in-place handler under the stock collector with no region call, "region, one reset per event", and the `pooled` row, which opens a window per event, "hand-pooled, no allocation". The table of M5 was right; the plot said the opposite of it. | The legend names each row for what `census.jl` runs. Every plot was rendered and read against its data before it went in; the same pass found labels that overlapped or ran off the canvas, and markers that hid one another where two values coincide. |
+
+**Claims the data did not support.** Five claims of the development branch
+changed.
+
+- *M2, the cost when unused.* The old claim was "one predicted branch per
+  store". The three-column measurement gives the no-window costs against
+  vanilla: +0.085 ns per pointer store, +0.28 ns per pool allocation,
+  +1.05 ns per object constructed with two pointer fields, and +1.2 % on the
+  stock mark. The claim now names them: small, not zero. The construction
+  cost is the largest; the flag check is about a quarter of it, the rest is
+  the generational barrier that vanilla omits at construction (S4).
+- *M5, the throughput.* The old claim was that a census-paced region loop
+  keeps the throughput of the stock loop. The `batch` rows run no census,
+  and the `pooled` row (a window and a reset per event, a scoped collection
+  every 100 000 events) is slower than the stock in-place handler at B = 1
+  with light scratch, faster at B ≥ 100. The claim says that now.
+- *M12, thread scaling.* The old claim said the region model scales where
+  the stock collector does not. Both scale. The region model is faster at
+  two threads and more on demonstrator D, where the stock side collects;
+  equal at one thread; equal on demonstrator B, which collects little.
+- *M3, the residual tail.* A run with zero collections still has events
+  over 100 µs, and its maximum moves between runs (34 µs, 165 µs). The
+  cause is the page fault of the machine on a fresh huge page; the scripts
+  of M3 take no heap reserve. M4 takes the reserve and counts the faults:
+  zero. The prose of M3 says which columns carry the claim.
+- *The counters.* `Base.gc_live_bytes()` grows by every byte a region
+  allocates and a reset never subtracts it: the stock sweep skips region
+  pages, and a reset frees pages, not bytes. The endurance row read the
+  counter as a leak. The devdoc has a section "Counters" now, and the row
+  is named "allocated through the region".
+
+**Drift.** The numbers of the development branch (its `MEASUREMENTS.md`,
+2026-09-01 to 2026-09-03) against the flat tree. A change inside the spread
+of the rounds is noise; every change beyond that has its cause named.
+
+| Row | Development branch | Flat tree | Cause |
+| --- | --- | --- | --- |
+| M1 serial: append, tree, strings, pollard, single_ref, many_refs | 1.01, 1.00, 1.01, 1.06, 0.98, 0.92 | 1.01, 1.03, 1.01, 1.01, 0.96, 0.92 | Inside the spread. `many_refs` is S1 in both. |
+| M1 parallel: mergesort, mm, issue-52937 | 0.97, 1.06, parity | 1.00, 1.02, 1.01 | Inside the spread. |
+| M2 armed store | 1.49 ns | 1.37 ns | Placement; the row is the minimum over eight copies now. |
+| M2 disarmed store | ~0.41 ns | 0.41 ns | Same. |
+| M2 window pair, switch pair | 10.4 ns, 5.2 ns | 10.5 ns, 5.1 ns | Same. |
+| M2 reset | ~21 ns | 30.0 ns | The new row times one call between two clock reads, and the pair of reads costs 10 ns on this host; the row is an upper bound. In the same method a reset after one `Ref` reads 20 ns, and a loop of window, one allocation, and reset runs at 24.5 ns per iteration, of which the window pair is 10.5 ns. The old harness is not in the flat tree. |
+| M2 construction, two pointer fields | +1.4 ns (an armed process against vanilla) | +1.05 ns, no window; +3.5 ns, armed | H3: the old row was the armed number on one copy of the loop. |
+| M3 `tail regions` maximum | 9.9 µs | 165 µs (34 µs in another run) | The machine's page fault; zero collections in both. See M3. |
+| M5 census, cooperative | ~2–3 µs + ~3.3 ns × K | 2.2 µs at K = 300, 276 µs at K = 100 000 | The same law, about 2.7 ns × K. |
+| M6 paced, slot misses baseline / regions | 20 / 0 | 122 / 0 | The baseline runs with `--heap-size-hint=128M` now and collects twice; H2 for the regions run. |
+| M6 endurance, 30 minutes: RSS first / last sample, misses, bytes per event | 301.7 / 301.7 MB, 0, 29.3 | 303.6 / 303.6 MB, 0, 29.3 | Same. The row that read the live-heap counter as a leak is named "allocated through the region" now. |
+| M8 showcase tree, collections stock / regions | 6 / 0 | 6 / 0 | Same. |
+| M9 growth bound, pages disarmed / armed | 10 089 / 63 | 10 089 / 63 | Same. |
+| M10 demonstrator C, largest point | 1.63× | 1.98× | Four threads on cores that are not isolated; the stock side's collection count decides the wall time and moves between runs. |
+| M10 demonstrator D, largest point | 1.39× | 1.19× | Same. |
+
 ## Deferred
 
 Ideas the tidy did not build. None of them is needed for the runtime to be
@@ -479,8 +555,12 @@ correct under its documented rules.
   `gc_setmark_buf_` on each task's exception stack and copy-stack buffer. The
   direction is safe: a set `has_marked` only makes the sweep walk the page,
   and a stale mark on a young buffer promotes it to old at worst. No fix.
-- **A construction-only barrier intrinsic.** It would cut the +1.4 ns of the
-  construction store to the bare flag check.
+- **A construction-only barrier intrinsic.** An object constructed with two
+  pointer fields costs +1.05 ns on this branch in a process that never opens
+  a window (M2, `construct_two`, 8.19 ns against 7.13 ns on vanilla). The
+  flag checks are about 0.26 ns of it; the rest is the generational barrier,
+  which a fresh object does not need. An intrinsic that emits the region
+  check alone at construction would cut the cost to the flag checks.
 - **A postorder subtree reset and a subtree census.** The two-level shape
   (a trunk and leaves) needs neither.
 - **An in-process test of the image refusal.** `jl_create_system_image`

@@ -195,7 +195,9 @@ end
 end
 
 # The reset alone: fill, then time the one call. 2000 calls per repetition;
-# the min over every call.
+# the min over every call. The reading includes the pair of clock reads
+# around the call (about 10 ns on the measurement host), so the row is an
+# upper bound on the reset.
 function reset_slice()
     t = Inf
     for _ in 1:N

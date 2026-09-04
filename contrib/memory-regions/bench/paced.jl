@@ -84,9 +84,13 @@ function main()
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
-    latencies = Vector{Int64}(undef, events)
-    late_ns = Vector{Int64}(undef, events)
-    gc_ns = Vector{Int64}(undef, events)
+    # zeros, not undef: the result vectors are touched here, before the
+    # loop. An untouched page faults in at its first store, and with
+    # transparent huge pages that first store zeroes 2 MB (about 200 us):
+    # the store of one event's result then delays the next slot.
+    latencies = zeros(Int64, events)
+    late_ns = zeros(Int64, events)
+    gc_ns = zeros(Int64, events)
     deliveries = events ÷ (relays + 3) + 1
 
     warm_n = min(10_000, events)

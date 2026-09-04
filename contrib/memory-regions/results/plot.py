@@ -45,10 +45,28 @@ def context():
     rows = read_tsv("context.tsv") or []
     return {r["key"]: r["value"] for r in rows}
 
-def caption_text():
+# Where the rows of a plot ran, from context.tsv. run_all.sh pins every
+# one-thread row to CORE and every multi-thread row to MTCORES; the latency
+# rows take SCHED_FIFO, the other rows are time-shared.
+#   "rt"      one thread on CORE under SCHED_FIFO      (tail, paced, endurance, real-world)
+#   "single"  one thread on CORE, time-shared          (unit costs, census, native, ...)
+#   "multi"   several threads on MTCORES, time-shared  (demos B to D, scaling)
+#   "mixed"   one-thread rows on CORE, multi-thread rows on MTCORES (gcbench, showcase, demos)
+def where(kind):
+    c = context()
+    core, mt, rt = c.get("core", "?"), c.get("mtcores", "?"), c.get("realtime", "")
+    if kind == "rt":
+        return f"core {core} · {rt}" if rt and rt != "none" else f"core {core} · time-shared"
+    if kind == "single":
+        return f"core {core} · time-shared"
+    if kind == "multi":
+        return f"cores {mt} · time-shared"
+    return f"core {core} (one thread), cores {mt} (several) · time-shared"
+
+def caption_text(kind):
     c = context()
     parts = [f"julia {c.get('sha', '?')} ({c.get('julia', '?')})", c.get("cpu", "?"),
-             f"core {c.get('core', '?')}", c.get("realtime", ""), c.get("date", "")]
+             where(kind), c.get("date", "")]
     return " · ".join(p for p in parts if p)
 
 # ---- formats ----------------------------------------------------------------------
@@ -56,8 +74,8 @@ def caption_text():
 def fmt_ns(ns):
     if ns == 0: return "0"
     if ns >= 1e9: return f"{ns/1e9:.1f} s"
-    if ns >= 1e6: return f"{ns/1e6:.0f} ms" if ns >= 2e6 else f"{ns/1e6:.1f} ms"
-    if ns >= 1e3: return f"{ns/1e3:.0f} µs" if ns >= 2e3 else f"{ns/1e3:.1f} µs"
+    if ns >= 1e6: return f"{ns/1e6:.0f} ms" if ns >= 1e7 else f"{ns/1e6:.1f} ms"
+    if ns >= 1e3: return f"{ns/1e3:.0f} µs" if ns >= 1e4 else f"{ns/1e3:.1f} µs"
     return f"{ns:.0f} ns" if ns >= 10 else f"{ns:.1f} ns"
 
 def fmt_num(v):
@@ -101,10 +119,30 @@ def decade_bounds(values, lo_default, hi_default):
 
 # ---- drawing ----------------------------------------------------------------------
 
-def text(body, x, y, s, size=13, fill=INK, anchor="start", bold=False, extra=""):
+def text(body, x, y, s, size=13, fill=INK, anchor="start", bold=False, extra="", halo=False):
+    """halo paints the surface color behind the glyphs, so a label stays
+    readable over a grid line or a reference line."""
     w = ' font-weight="bold"' if bold else ""
+    h = f' paint-order="stroke" stroke="{SURFACE}" stroke-width="3" stroke-linejoin="round"' if halo else ""
     body.append(f'<text x="{x:.1f}" y="{y:.1f}" {FONT} font-size="{size}" fill="{fill}" '
-                f'text-anchor="{anchor}"{w}{extra}>{s}</text>')
+                f'text-anchor="{anchor}"{w}{h}{extra}>{s}</text>')
+
+# The width of a label, estimated: about 0.56 em per glyph of the font.
+est_width = lambda s, size: 0.56 * size * len(s)
+
+def dots(body, pts, r=6, label_dy=None, size=12):
+    """Markers at (x, y, color, label). Two markers closer than r pixels
+    would hide one another; the later one is drawn smaller on top of the
+    first, and its label goes under the row instead of over it, so every
+    series stays visible where two values coincide."""
+    drawn = []
+    for x, y, color, label in pts:
+        near = any(abs(x - px) < r and abs(y - py) < r for px, py in drawn)
+        rr = r * 0.55 if near else r
+        body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{rr:.1f}" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
+        if label and label_dy is not None:
+            text(body, x, y + (abs(label_dy) + size if near else label_dy), label, size, INK, "middle", halo=True)
+        drawn.append((x, y))
 
 def heading(body, title, subtitle):
     text(body, 40, 30, title, 17, bold=True)
@@ -117,8 +155,8 @@ def legend(body, x, y, series):
         text(body, x + 28, y, name, 13)
         x += 34 + max(7.2 * len(name), 36)
 
-def caption(body, h):
-    text(body, 40, h - 12, caption_text(), 11, INK2)
+def caption(body, h, kind):
+    text(body, 40, h - 12, caption_text(kind), 11, INK2)
 
 class Axes:
     """One panel; either axis linear or log10."""
@@ -126,6 +164,7 @@ class Axes:
         self.x0, self.y0, self.w, self.h = x0, y0, w, h
         self.xlo, self.xhi, self.ylo, self.yhi = xlo, xhi, ylo, yhi
         self.xlog, self.ylog = xlog, ylog
+        self.ends = []                                   # the end markers drawn so far
     def X(self, v):
         if self.xlog:
             v = max(v, self.xlo)
@@ -165,8 +204,12 @@ class Axes:
         dd = f' stroke-dasharray="{dash}"' if dash else ""
         body.append(f'<path d="{d}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"{dd}/>')
         if marker:
-            x, y = pts[-1]
-            body.append(f'<circle cx="{self.X(x):.1f}" cy="{self.Y(y):.1f}" r="5" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
+            # A second series that ends on the same value gets the smaller
+            # marker on top, so both stay visible.
+            x, y = self.X(pts[-1][0]), self.Y(pts[-1][1])
+            near = any(abs(x - px) < 5 and abs(y - py) < 5 for px, py in self.ends)
+            body.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{2.5 if near else 5}" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
+            self.ends.append((x, y))
     def hline(self, body, v, color, label=None):
         y = self.Y(v)
         body.append(f'<line x1="{self.x0}" y1="{y:.1f}" x2="{self.x0+self.w}" y2="{y:.1f}" stroke="{color}" stroke-width="1.5" stroke-dasharray="6 4"/>')
@@ -176,7 +219,10 @@ class Axes:
 def bar_groups(body, ax, groups, series, values, fmt, sublabels=None, group_colors=None):
     """Grouped vertical bars from y=0. values[group][series] is a float or
     None. A group label may hold one newline; the second line is muted.
-    group_colors, when given, paints the bars of each group in one color."""
+    group_colors, when given, paints the bars of each group in one color.
+    A value label wider than its bar would run into its neighbor's, so the
+    labels of the odd series are raised one line where the bars are that
+    narrow."""
     n, m = len(groups), len(series)
     slot = ax.w / n
     bw = slot * 0.72 / m
@@ -191,7 +237,8 @@ def bar_groups(body, ax, groups, series, values, fmt, sublabels=None, group_colo
                 color = group_colors[gi]
             x, y = gx + si * bw, ax.Y(v)
             body.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw-3:.1f}" height="{base-y:.1f}" fill="{color}"/>')
-            text(body, x + (bw - 3) / 2, y - 5, fmt(v), 10, INK, "middle")
+            raise_ = 12 if si % 2 == 1 and est_width(fmt(v), 10) > bw - 3 else 0
+            text(body, x + (bw - 3) / 2, y - 5 - raise_, fmt(v), 10, INK, "middle", halo=True)
         lines = g.split("\n")
         text(body, gx + slot * 0.36, base + 18, lines[0], 12, INK, "middle")
         if len(lines) > 1:
@@ -235,16 +282,16 @@ def plot_gcbench():
         ratios.append([g / v])
         colors.append(YELLOW if s == "multithreaded" else BLUE)
     body = []
-    heading(body, "The region runtime costs nothing while no region is in use",
+    heading(body, "Unused, the region runtime runs the GCBenchmarks within noise of vanilla",
             f"GCBenchmarks wall time, this branch / vanilla at the same base commit; the best of {rounds} rounds each; the dashed line is equal time")
     legend(body, 40, 74, [("one thread", BLUE), ("four threads", YELLOW)])
-    ax = Axes(80, 100, max(90 * len(groups), 800), 260, 0, 1, 0, max(1.25, ymax_of([r[0] for r in ratios])))
+    ax = Axes(80, 100, max(160 * len(groups), 800), 260, 0, 1, 0, max(1.25, ymax_of([r[0] for r in ratios])))
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: f"{v:.2f}")
-    bar_groups(body, ax, groups, [("regions / vanilla", BLUE)], ratios, lambda v: f"{v:.3f}", group_colors=colors)
     ax.hline(body, 1.0, INK2)
+    bar_groups(body, ax, groups, [("regions / vanilla", BLUE)], ratios, lambda v: f"{v:.3f}", group_colors=colors)
     ax.ylabel(body, "wall time, regions / vanilla")
     h = ax.y0 + ax.h + 80
-    caption(body, h)
+    caption(body, h, "mixed")
     write("gcbench.svg", ax.x0 + ax.w + 40, h, body)
 
 # ---- M2: unit costs -----------------------------------------------------------------
@@ -261,15 +308,23 @@ def plot_unit_costs():
     vals = [v for v, _ in by.values() if v > 0]
     xlo, xhi = decade_bounds(vals, 1e-1, 1e2)
     body = []
-    heading(body, "What one operation costs", "one row per micro-cost; a dot is the median of the runs; the axis is log")
-    series = [("vanilla", BLUE), ("regions", ORANGE)]
-    legend(body, 40, 74, series)
-    x0, w, y0, rh = 260, 600, 100, 28
+    heading(body, "What one operation costs", "one row per micro-cost; a dot is the min of the runs; the axis is log")
+    # vanilla: the stock rows on the vanilla binary. regions, no window: the
+    # same rows on the regions binary in a process that never opens a
+    # window. regions: every row on the regions binary; after the first
+    # window the barrier is armed.
+    series = [("vanilla", BLUE), ("regions_stock", GREEN), ("regions", ORANGE)]
+    legend(body, 40, 74, [("vanilla", BLUE), ("regions, no window", GREEN), ("regions", ORANGE)])
+    x0, w, y0, rh = 260, 560, 100, 28
     X = lambda v: x0 + w * (math.log10(max(v, xlo)) - math.log10(xlo)) / (math.log10(xhi) - math.log10(xlo))
     y1 = y0 + rh * len(costs)
     for v in decades(xlo, xhi):
         body.append(f'<line x1="{X(v):.1f}" y1="{y0-10}" x2="{X(v):.1f}" y2="{y1}" stroke="{GRID}" stroke-width="1"/>')
         text(body, X(v), y1 + 18, fmt_ns(v), 12, INK2, "middle")
+    # the values as a column to the right of the axis, one per series
+    cols = {name: x0 + w + 40 + 125 * k for k, (name, _) in enumerate(series)}
+    for name, color in series:
+        text(body, cols[name], y0 - 14, name.replace("_stock", ", no window"), 11, color, "middle")
     for i, c in enumerate(costs):
         y = y0 + rh * i + rh / 2
         text(body, x0 - 16, y + 4, c, 13, INK, "end")
@@ -278,11 +333,10 @@ def plot_unit_costs():
                 continue
             v, unit = by[(name, c)]
             body.append(f'<circle cx="{X(v):.1f}" cy="{y}" r="6" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
-            dy = -9 if name == "vanilla" else 15
-            text(body, X(v), y + dy, f"{v:g} {unit}", 10, INK, "middle")
+            text(body, cols[name], y + 4, f"{v:g} {unit}", 10, INK, "middle")
     h = y1 + 60
-    caption(body, h)
-    write("unit_costs.svg", x0 + w + 60, h, body)
+    caption(body, h, "single")
+    write("unit_costs.svg", x0 + w + 40 + 125 * len(series), h, body)
 
 # ---- M3: the tail, one Bool apart ---------------------------------------------------
 
@@ -319,7 +373,7 @@ def plot_tail():
             body.append(f'<circle cx="{X(v):.1f}" cy="{y}" r="6" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
         text(body, X(hi) + 12, y + 4, f"max {fmt_ns(hi)}, {r['over_100us']} events over 100 µs, {r['gc_events']} collections", 11, INK2)
     h = y1 + 60
-    caption(body, h)
+    caption(body, h, "rt")
     write("tail.svg", x0 + w + 320, h, body)
 
 # ---- M4: the real-world loop (the CCDF and the longest pause) ---------------------
@@ -382,7 +436,7 @@ def plot_realworld():
     ccdf_panel(body, pb, "~100 B of garbage per event", 3, [-10, 20, -10, 20])
     text(body, 510, 445, "event latency", 13, INK2, "middle")
     text(body, 20, 260, "fraction of events ≥ x", 13, INK2, "middle", extra=' transform="rotate(-90 20 260)"')
-    caption(body, 480)
+    caption(body, 480, "rt")
     write("latency_ccdf.svg", 980, 480, body)
 
     body = []
@@ -394,17 +448,17 @@ def plot_realworld():
         x = X(xlo * 10 ** k)
         body.append(f'<line x1="{x:.1f}" y1="80" x2="{x:.1f}" y2="195" stroke="{GRID}" stroke-width="1"/>')
         text(body, x, 215, fmt_ns(xlo * 10 ** k), 12, INK2, "middle")
-    for label, y, W in [("~1.7 KB per event", 110, 200), ("~100 B per event", 170, 3)]:
+    for label, y, W in [("~1.7 KB per event", 110, 200), ("~100 B per event", 175, 3)]:
         text(body, x0 - 16, y + 5, label, 13, INK, "end")
+        marks = []
         for name, color, tag in REALWORLD:
             pts = read_ccdf(f"ccdf_{tag}_W{W}.tsv")
-            if not pts:
-                continue
-            mx = pts[-1][0]
-            body.append(f'<circle cx="{X(mx):.1f}" cy="{y}" r="7" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
-            text(body, X(mx), y - 14, fmt_ns(mx), 12, INK, "middle")
-    caption(body, 255)
-    write("max_pause.svg", 960, 255, body)
+            if pts:
+                mx = pts[-1][0]
+                marks.append((X(mx), y, color, fmt_ns(mx)))
+        dots(body, marks, 7, -14)
+    caption(body, 260, "rt")
+    write("max_pause.svg", 960, 260, body)
 
 # ---- M5: the census ----------------------------------------------------------------
 
@@ -433,7 +487,7 @@ def plot_census_pause():
             ax.line(body, pts, color)
         ax.xlabel(body, "K, live cells")
     panels[0][2].ylabel(body, "pause")
-    caption(body, 470)
+    caption(body, 470, "single")
     write("census_pause.svg", 980, 470, body)
 
 def plot_census_throughput():
@@ -444,26 +498,33 @@ def plot_census_throughput():
         if r["variant"] == "batch":
             return f"batch B={int(float(r['B']))}"
         return r["variant"]
-    names = {"autopool": "region, one reset per event", "pooled": "hand-pooled, no allocation"}
+    # autopool is the in-place handler under the stock collector, with no
+    # region call; batch opens one window per B events; pooled opens and
+    # resets a window per event and runs a census every 100 000 events.
+    names = {"autopool": "stock GC, same handler",
+             "pooled": "region, a window per event and a census every 100 k"}
+    per = lambda n: "event" if n == "1" else f"{n} events"
+    name_of = lambda v: names.get(v, f"region, a window per {per(v.split('=')[-1])}")
     variants = []
     for r in rows:
         k = key(r)
         if k not in variants:
             variants.append(k)
     Ws = sorted({int(float(r["W"])) for r in rows})
-    series = [(names.get(v, v.replace("batch", "region, reset every")), c) for v, c in zip(variants, [BLUE, YELLOW, ORANGE, GREEN, INK2])]
+    series = [(name_of(v), c) for v, c in zip(variants, [BLUE, YELLOW, ORANGE, GREEN, INK2])]
     values = [[next((num(r["events_per_s"]) for r in rows if key(r) == v and int(float(r["W"])) == W), None)
                for v in variants] for W in Ws]
     body = []
-    heading(body, "Throughput of the event loop: a region reset is cheap enough to do per event",
+    heading(body, "Throughput of the event loop: what one window per B events costs",
             f"{fmt_num(float(rows[0]['events']))} events, one core; W words of garbage per event")
-    legend(body, 40, 74, series)
-    ax = Axes(90, 100, 700, 260, 0, 1, 0, ymax_of([v for g in values for v in g]))
+    legend(body, 40, 74, series[:1] + series[-1:])
+    legend(body, 40, 94, series[1:-1])
+    ax = Axes(90, 120, 700, 260, 0, 1, 0, ymax_of([v for g in values for v in g]))
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: f"{v/1e6:g} M")
     bar_groups(body, ax, [f"W = {W}" for W in Ws], series, values, lambda v: f"{v/1e6:.1f} M")
     ax.ylabel(body, "events per second")
-    caption(body, 440)
-    write("census_throughput.svg", 880, 440, body)
+    caption(body, 460, "single")
+    write("census_throughput.svg", 880, 460, body)
 
 # ---- M6: endurance ------------------------------------------------------------------
 
@@ -477,8 +538,9 @@ def plot_endurance():
     misses = int(float(rows[-1]["misses"]))
     body = []
     heading(body, "Memory stays flat over a long paced run",
-            f"{fmt_ns(ts[-1]*1e9)} of paced events, one event per 100 µs slot; {misses} slot misses in total")
-    series = [("resident set (RSS)", BLUE), ("live heap counter", ORANGE)]
+            f"{fmt_ns(ts[-1]*1e9)} of paced events, one event per 100 µs slot; {misses} slot misses in total; "
+            "the counter counts every region allocation in and no reset subtracts it")
+    series = [("resident set (RSS)", BLUE), ("gc_live_bytes: allocated through the region", ORANGE)]
     legend(body, 40, 74, series)
     ax = Axes(90, 100, 760, 260, 0, max(ts), 0, ymax_of(rss + live))
     ax.grid(body, nice_ticks(0, max(ts), 6), nice_ticks(0, ax.yhi, 5), lambda v: f"{v:g} s", lambda v: f"{v:g} MB")
@@ -486,7 +548,7 @@ def plot_endurance():
     ax.line(body, list(zip(ts, live)), ORANGE)
     ax.xlabel(body, "time")
     ax.ylabel(body, "memory")
-    caption(body, 440)
+    caption(body, 440, "rt")
     write("endurance.svg", 940, 440, body)
 
 def plot_paced():
@@ -510,14 +572,10 @@ def plot_paced():
     for i, r in enumerate(rows):
         y = y0 + rh * i + rh / 2
         text(body, x0 - 16, y + 4, names.get(r["variant"], r["variant"]), 13, INK, "end")
-        for label, col, color in cols:
-            v = num(r[col])
-            if v is None:
-                continue
-            body.append(f'<circle cx="{X(v):.1f}" cy="{y}" r="6" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
+        dots(body, [(X(num(r[col])), y, color, None) for _, col, color in cols if num(r[col]) is not None])
         text(body, X(xhi) + 12, y + 4, f"{r['slot_misses']} slot misses, {r['gc_events']} collections", 11, INK2)
     h = y1 + 60
-    caption(body, h)
+    caption(body, h, "rt")
     write("paced.svg", x0 + w + 260, h, body)
 
 # ---- M7: region-native against C++ -------------------------------------------------
@@ -540,7 +598,7 @@ def plot_native():
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: f"{v/1e6:g} M")
     bar_groups(body, ax, [f"W = {W}" for W in Ws], series, values, lambda v: f"{v/1e6:.1f} M")
     ax.ylabel(body, "events per second")
-    caption(body, 440)
+    caption(body, 440, "single")
     write("native.svg", 740, 440, body)
 
 # ---- M8: wholesale death, the showcases --------------------------------------------
@@ -577,7 +635,7 @@ def plot_showcase():
         ax.grid(body, [], nice_ticks(0, ax.yhi, 4), fmt_num, tick)
         bar_groups(body, ax, groups, series, values, fmt)
         x += 400
-    caption(body, 440)
+    caption(body, 440, "mixed")
     write("showcase.svg", x - 40, 440, body)
 
 # ---- M9: the growth bound ------------------------------------------------------------
@@ -601,7 +659,7 @@ def plot_census_bound():
     ax.hline(body, 64, ORANGE, "64 pages")
     ax.xlabel(body, "round")
     ax.ylabel(body, "pages held")
-    caption(body, 440)
+    caption(body, 440, "single")
     write("census_bound.svg", 940, 440, body)
 
 # ---- M10: the demonstrators ------------------------------------------------------------
@@ -635,12 +693,15 @@ def plot_demo(demo):
     body = []
     heading(body, title, f"{sub}; {threads} thread{'s' if threads != '1' else ''}; under a pair: collections stock → regions, and the speedup")
     legend(body, 40, 74, series)
-    ax = Axes(90, 100, max(180 * len(points), 800), 260, 0, 1, 0, ymax_of([v for g in values for v in g]))
+    # A point reads "name   (details)"; the name is the label, the details
+    # the muted line under it, and the pair's collections the third line.
+    labels = [p.split("(")[0].strip() + "\n" + p[p.index("("):] if "(" in p else p for p in points]
+    ax = Axes(90, 100, max(230 * len(points), 800), 250, 0, 1, 0, ymax_of([v for g in values for v in g]))
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: fmt_ms(v))
-    bar_groups(body, ax, points, series, values, lambda v: fmt_ms(v), subs)
+    bar_groups(body, ax, labels, series, values, lambda v: fmt_ms(v), subs)
     ax.ylabel(body, "wall time")
-    caption(body, 440)
-    write(f"demo_{demo.lower()}.svg", ax.x0 + ax.w + 40, 440, body)
+    caption(body, 450, "single" if threads == "1" else "multi")
+    write(f"demo_{demo.lower()}.svg", ax.x0 + ax.w + 40, 450, body)
 
 def plot_demo_rss():
     groups, values = [], []
@@ -651,7 +712,10 @@ def plot_demo_rss():
         last = rows[-1]["point"]
         s = next((r for r in rows if r["point"] == last and r["mode"] == "stock"), None)
         g = next((r for r in rows if r["point"] == last and r["mode"] == "region"), None)
-        groups.append(f"{demo}: {title.split(':')[0]}, {last}")
+        # "D: dmr, large" on the first line, the details of the point on the
+        # muted second line.
+        name, details = (last.split("(", 1) + [""])[:2]
+        groups.append(f"{demo}: {title.split(':')[0]}, {name.strip()}" + (f"\n({details}" if details else ""))
         values.append([num(s["peak_rss_mb"]) if s else None, num(g["peak_rss_mb"]) if g else None])
     if not groups:
         return
@@ -660,11 +724,11 @@ def plot_demo_rss():
     heading(body, "Peak memory of the demonstrators at their largest point",
             "one process runs both modes, region first; the peak is the process maximum after each mode")
     legend(body, 40, 74, series)
-    ax = Axes(90, 100, 200 * len(groups) + 40, 240, 0, 1, 0, ymax_of([v for g in values for v in g]))
+    ax = Axes(90, 100, 260 * len(groups) + 40, 240, 0, 1, 0, ymax_of([v for g in values for v in g]))
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: f"{v:g} MB")
     bar_groups(body, ax, groups, series, values, lambda v: f"{v:.0f} MB")
     ax.ylabel(body, "peak RSS")
-    caption(body, 420)
+    caption(body, 420, "mixed")
     write("demo_rss.svg", ax.x0 + ax.w + 40, 420, body)
 
 # ---- M12: thread scaling -----------------------------------------------------------------
@@ -679,11 +743,14 @@ def plot_scaling():
             "the largest point of each demonstrator, at 1, 2, 4 and 8 threads; wall time, lower is better")
     legend(body, 40, 74, series)
     demos = [d for d in ("B", "D") if any(r["demo"] == d for r in rows)]
+    # The point label carries its thread count ("large (..., 4 threads)");
+    # the name before the parenthesis is what the thread counts share.
+    name_of = lambda r: r["point"].split("(")[0].strip()
     x = 90
     for d in demos:
         drows = [r for r in rows if r["demo"] == d]
-        last = [r for r in drows if r["threads"] == drows[0]["threads"]][-1]["point"]
-        pts = [r for r in drows if r["point"] == last]
+        last = name_of([r for r in drows if r["threads"] == drows[0]["threads"]][-1])
+        pts = [r for r in drows if name_of(r) == last]
         ts = sorted({int(r["threads"]) for r in pts})
         ws = [num(r["wall_ms"]) for r in pts]
         ax = Axes(x, 110, 340, 260, 1, max(ts), 0, ymax_of(ws), True, False)
@@ -693,7 +760,7 @@ def plot_scaling():
             ax.line(body, sorted((int(r["threads"]), num(r["wall_ms"])) for r in pts if r["mode"] == mode), color)
         ax.xlabel(body, "threads")
         x += 440
-    caption(body, 470)
+    caption(body, 470, "multi")
     write("scaling.svg", x - 60, 470, body)
 
 def main():
@@ -713,4 +780,5 @@ def main():
     plot_demo_rss()
     plot_scaling()
 
-main()
+if __name__ == "__main__":
+    main()

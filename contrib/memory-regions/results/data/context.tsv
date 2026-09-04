@@ -1,0 +1,11 @@
+# key	value
+date	2026-09-04
+sha	48603f334c
+julia	1.13.0-rc4.7
+vanilla	8f33e09afe
+host	valarmorghulis
+cpu	AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
+kernel	7.0.0-30-generic
+core	29
+mtcores	24-31
+realtime	SCHED_FIFO 50

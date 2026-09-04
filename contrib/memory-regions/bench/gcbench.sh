@@ -8,12 +8,18 @@
 # Six serial benchmarks run on one thread, five multithreaded ones on four.
 # The two binaries alternate inside every round, so a change of the
 # machine's load shows in both. Each run is one process; its wall time is
-# the `times` field that the suite's @gctime macro prints. When REGIONS_TSV
-# names a file, one row per run goes there:
+# the `times` field that the suite's @gctime macro prints, a UInt64 in
+# hexadecimal (`times = 0x0000000075205ff5`). When REGIONS_TSV names a
+# file, one row per run goes there:
 #
 #   set  bench  threads  binary  round  wall_ns
 #
 # results/plot.py takes the minimum over the rounds and draws the ratio.
+# A run that prints no `times` field is reported as FAILED with the tail of
+# its output and gets no row. The suite aborts a run itself when the stock
+# collector reports memory pressure three times in ten seconds
+# (gc_cb_on_pressure in util/utils.jl); on a machine where a benchmark
+# thrashes the collector, that abort hits both binaries alike.
 # CORE (default 29) pins the one-thread runs; MTCORES (default 24-27) the
 # four-thread runs. GCBENCH_SCALE passes through to the suite (1 = full).
 set -uo pipefail
@@ -38,12 +44,13 @@ one() {
     out=$(timeout 900 taskset -c "$cores" "$julia" --startup-file=no --project="$dir" \
               --threads="$threads" "$dir/$(basename "$bench")" 2>&1)
     local ns
-    ns=$(printf '%s\n' "$out" | grep -oE 'times = [0-9]+' | head -1 | grep -oE '[0-9]+$')
+    ns=$(printf '%s\n' "$out" | grep -oE 'times = (0x[0-9a-fA-F]+|[0-9]+)' | head -1 | sed 's/times = //')
     if [ -z "$ns" ]; then
         echo "FAILED $name $set/$bench round $round:" >&2
-        printf '%s\n' "$out" | tail -5 >&2
+        printf '%s\n' "$out" | tail -12 >&2
         return 1
     fi
+    ns=$((ns))  # bash reads the 0x prefix; the row holds decimal nanoseconds
     echo "$name $set/$bench threads=$threads round $round $ns"
     row "$set" "$bench" "$threads" "$name" "$round" "$ns"
 }
