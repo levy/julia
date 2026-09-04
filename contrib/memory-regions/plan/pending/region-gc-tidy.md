@@ -817,8 +817,9 @@ question, its bound, and its plot, before it runs.
 
 - [ ] Move this plan to `plan/done/` on `region-demonstrators` (the
       development lineage keeps its plans). Push.
-- [ ] Update the memory `region-gc-maturation-branch.md`: the final branch,
-      the tags, the PR.
+- [x] Update the memory `region-gc-maturation-branch.md`: the final branch,
+      the tags, the PR. Done 2026-09-04; the memory says the PR is not
+      opened.
 
 ## Acceptance
 
