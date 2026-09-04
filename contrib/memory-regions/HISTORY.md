@@ -13,7 +13,8 @@ The development happened in ten plans on four branches of `levy/julia`, all on
 four tips onto `v1.13.0-rc4` as one flat tree, reviewed every line of the
 runtime delta, fixed what the review found, moved the scripts into tests and
 benchmarks, and cut the result into the commit series of the branch. The
-development branches stay under the tags in the last section.
+development branches are renamed `obsolete/<name>`; their tips stay under
+the tags of the section "The obsolete branches and their tags".
 
 ## The ten plans
 
@@ -641,19 +642,21 @@ batteries) became the five `regions_*.jl` scripts; `stage4_trap.jl` (the
 barrier trap, which passed when it exited 1) became the quarantine cases of
 `regions_escape.jl`; `ctor_gap_demo.jl` became `ctor_gap_quarantines_region5`.
 
-## The backup tags
+## The obsolete branches and their tags
 
-The four development branches are not rewritten. Their tips at the start of
-the tidy are tagged and pushed; `git log <tag>` shows the full record, with
-every plan under
-`contrib/memory-regions/plan/done/`.
+The four development branches are not rewritten. This branch supersedes
+them, so each one is renamed `obsolete/<name>`, and its tip at the start of
+the tidy is the tag `obsolete/<name>-2026-09-03`, pushed; `git log <tag>`
+shows the full record, with every plan under
+`contrib/memory-regions/plan/done/`. The tag `gc-regions-flat` marks the
+flat tree from which the commits of this branch were cut.
 
 | Tag | Tip | Holds |
 | --- | --- | --- |
-| `backup/memory-regions-2026-09-03` | `2d249ce25b` | the chain runtime, the Julia face, the real-time measurements (plans 1 to 6) |
-| `backup/region-maturation-2026-09-03` | `c0b8d4df4a` | soundness, coexistence, tasks, the inline fix, the refusals (plans 7, 8) |
-| `backup/region-tree-2026-09-03` | `a2521fbf57` | declared parentage, sibling isolation, the census of the open region (plan 9) |
-| `backup/region-demonstrators-2026-09-03` | `9915f3c7de` | demonstrators A to D and the tidy plan (plan 10); the truth of the tidy is its merge with `region-tree`, `e37c9c7cc4` |
+| `obsolete/memory-regions-2026-09-03` | `2d249ce25b` | the chain runtime, the Julia face, the real-time measurements (plans 1 to 6) |
+| `obsolete/region-maturation-2026-09-03` | `c0b8d4df4a` | soundness, coexistence, tasks, the inline fix, the refusals (plans 7, 8) |
+| `obsolete/region-tree-2026-09-03` | `a2521fbf57` | declared parentage, sibling isolation, the census of the open region (plan 9) |
+| `obsolete/region-demonstrators-2026-09-03` | `9915f3c7de` | demonstrators A to D and the tidy plan (plan 10); the truth of the tidy is its merge with `region-tree`, `e37c9c7cc4` |
 
 ## Vocabulary of the plans
 

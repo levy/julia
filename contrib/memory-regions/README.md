@@ -19,7 +19,7 @@ try the runtime, to measure it, and to know how it came to be.
 | --- | --- |
 | `doc/src/devdocs/gc-regions.md` | the model, the six rules, the barrier, the API with its return codes, the tree, the census, the limits, and one paragraph on cost. Present tense; describes what is. |
 | `MEASUREMENTS.md` | every measurement: the claim, the script, the data file, the plot, and the numbers. Twelve rows, M1 to M12. |
-| `HISTORY.md` | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, what the redone measurements changed, the deferred ideas, the audit of the entry points, and the backup tags. |
+| `HISTORY.md` | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, what the redone measurements changed, the deferred ideas, the audit of the entry points, and the obsolete branches with their tags. |
 | this file | the folder map and the build. |
 
 ## The folder
