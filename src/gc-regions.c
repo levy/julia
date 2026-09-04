@@ -5,15 +5,17 @@
 // ========================================================================= //
 //
 // A region is a numbered set of pool pages with its own allocation cursors.
-// A thread allocates into region n while a window on n is open. The stock
-// collector marks region objects like any other and never sweeps a region
-// page. The rules an application must keep, and why they make the entries
-// below sound, are in doc/src/devdocs/gc-regions.md.
+// A thread allocates into region n while a window on n is open, and a reset
+// frees the whole region without a trace. The stock collector marks region
+// objects like any other and never sweeps a region page. The rules an
+// application must keep, and why they make the entries below sound, are in
+// doc/src/devdocs/gc-regions.md.
 //
 // The state lives in two places: the per-heap region table in
 // jl_thread_heap_t (gc-tls-stock.h) and the page tag region_n in
-// jl_gc_pagemeta_t (gc-stock.h). The hooks in the allocator and the sweep
-// are in gc-stock.c; each one calls into this file through gc-regions.h.
+// jl_gc_pagemeta_t (gc-stock.h). The hooks in the allocator, the sweep and
+// the finalizer path are in gc-stock.c and gc-common.c; each one calls into
+// this file through gc-regions.h.
 
 #include "gc-common.h"
 #include "gc-stock.h"
@@ -26,6 +28,80 @@ extern "C" {
 STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
 {
     return n > 0 && n < JL_GC_MAX_REGIONS;
+}
+
+// --- the hooks of the allocator and the finalizer path -------------------------------
+
+int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
+{
+    int cr = ptls->gc_tls.heap.current_region;
+    if (__likely(cr == 0))
+        return 0;
+    small_arraylist_push(&ptls->gc_tls.heap.regions[cr].mallocarrays,
+                         (void*)(((uintptr_t)m) | !!isaligned));
+    return 1;
+}
+
+// A finalizer on a region object goes to the region's list, never to the
+// thread list the stock collector sweeps: the region's pages are not swept,
+// so the stock collector could never schedule it. The list holds the same
+// (tagged object, function) pairs as the thread list; a quiescent entry
+// (tag 2) names no object and stays on the thread list. A cross-thread
+// registration on a region object is an error of the program, not a
+// runtime condition: it throws here, before the caller takes the finalizer
+// lock and before any list changes.
+int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
+{
+    if ((uintptr_t)v & 2)
+        return 0;
+    jl_value_t *obj = (jl_value_t*)(((uintptr_t)v) & ~(uintptr_t)3);
+    jl_gc_pagemeta_t *pm = page_metadata((char*)obj);
+    int r = pm ? pm->region_n : 0;
+    if (__likely(r == 0))
+        return 0;
+    if (__unlikely(pm->thread_n != ptls->tid))
+        jl_errorf("finalizer: the object lives in region %d of another "
+                  "thread; cross-thread registration on a region object "
+                  "is not supported", r);
+    arraylist_t *lst = &ptls->gc_tls.heap.regions[r].finalizers;
+    arraylist_push(lst, v);
+    arraylist_push(lst, f);
+    return 1;
+}
+
+// Move a whole list into a fresh one, so a finalizer that registers a new
+// finalizer sees a consistent region list while the old entries run.
+static void region_take_list(arraylist_t *dst, arraylist_t *src) JL_NOTSAFEPOINT
+{
+    memcpy(dst, src, sizeof(arraylist_t));
+    if (src->items == src->_space)
+        dst->items = dst->_space;
+    arraylist_new(src, 0);
+}
+
+// Run the pairs of a taken list and free it. The finalizer runner parks the
+// window and raises finalizer_depth (gc-common.c), so the finalizers
+// allocate in region 0 and no region entry runs until they return.
+static void region_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
+{
+    if (list->len != 0)
+        jl_gc_run_finalizer_list(ct, list);
+    arraylist_free(list);
+}
+
+// Free the malloc'd data of a region's memories at a reset.
+static void region_free_malloced(small_arraylist_t *lst) JL_NOTSAFEPOINT
+{
+    size_t n = 0, l = lst->len;
+    void **items = lst->items;
+    while (n < l) {
+        jl_genericmemory_t *m = (jl_genericmemory_t*)((uintptr_t)items[n] & ~(uintptr_t)1);
+        int isaligned = (uintptr_t)items[n] & 1;
+        jl_gc_free_memory(m, isaligned);
+        l--;
+        items[n] = items[l];
+    }
+    lst->len = l;
 }
 
 // --- the brackets around a stock collection ----------------------------------------
@@ -96,6 +172,23 @@ void jl_gc_region_finish_stock_collection(void) JL_NOTSAFEPOINT
     }
 }
 
+// The region finalizer lists are roots of the stock mark, like the thread
+// lists: a finalizer function that only the list references must survive
+// until the reset or the census runs it. Called in the finalizer phase of
+// the stock mark, before the queue drains.
+void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+        if (ptls2 == NULL)
+            continue;
+        jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+        for (int n = 1; n < JL_GC_MAX_REGIONS; n++)
+            if (heap->regions[n].initialized)
+                gc_mark_finlist(mq, &heap->regions[n].finalizers, 0);
+    }
+}
+
 // --- windows -----------------------------------------------------------------------
 
 static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
@@ -108,14 +201,19 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
         heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
     }
     heap->regions[n].pages = NULL;
+    heap->regions[n].fresh_pages = NULL;
+    heap->regions[n].pages_tail = NULL;
     heap->regions[n].n_pages = 0;
+    heap->regions[n].n_fresh = 0;
+    small_arraylist_new(&heap->regions[n].mallocarrays, 0);
+    arraylist_new(&heap->regions[n].finalizers, 0);
     heap->regions[n].initialized = 1;
 }
 
 // Open a window on region n, or close it (n = 0). Every region's cursors
 // live in its own array, so the switch is one pointer store; the inlined
 // allocation fast path is untouched. Returns the region that was current;
-// EINVAL for a bad region number.
+// EINVAL for a bad region number, EBUSY while finalizers run on this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
 #ifdef JL_NO_REGION_ALLOC
@@ -131,6 +229,8 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
         return JL_GC_REGION_EINVAL;
     if (n == old)
         return old;
+    if (n != 0 && heap->finalizer_depth != 0)
+        return JL_GC_REGION_EBUSY;
     region_lazy_init(heap, n);
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
     heap->current_region = (uint8_t)n;
@@ -154,12 +254,69 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     heap->current_region = (uint8_t)n;
 }
 
+// --- reset ---------------------------------------------------------------------------
+
+// The per-heap reset body. The caller owns the preconditions. Everything in
+// the region dies: its finalizers run first, on whole objects; then the
+// malloc'd data of its memories is freed; the headers die with the pages.
+// The reset walks nothing: every page hangs on one chain with a tail, and a
+// fresh page's metadata is allowed to be stale because gc_add_page resets a
+// page when it claims it. So the pool cursors are cleared, the chain is
+// parked on the fresh list in O(1), and the page count comes from the
+// counters the claim path keeps.
+static uint64_t region_reset_heap(jl_task_t *ct, jl_thread_heap_t *heap, int n)
+{
+    if (!heap->regions[n].initialized)
+        return 0;
+    if (heap->regions[n].finalizers.len != 0) {
+        arraylist_t run;
+        region_take_list(&run, &heap->regions[n].finalizers);
+        region_run_finalizer_list(ct, &run);
+    }
+    region_free_malloced(&heap->regions[n].mallocarrays);
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        heap->regions[n].pools[i].freelist = NULL;
+        heap->regions[n].pools[i].newpages = NULL;
+    }
+    uint64_t pages = (uint64_t)heap->regions[n].n_pages + heap->regions[n].n_fresh;
+    jl_gc_pagemeta_t *head = heap->regions[n].pages;
+    if (head != NULL) {
+        heap->regions[n].pages_tail->region_next = heap->regions[n].fresh_pages;
+        heap->regions[n].fresh_pages = head;
+        heap->regions[n].pages = NULL;
+        heap->regions[n].pages_tail = NULL;
+        heap->regions[n].n_fresh += heap->regions[n].n_pages;
+        heap->regions[n].n_pages = 0;
+    }
+    return pages;
+}
+
+// Reset region n on the calling thread's heap: run its finalizers, free the
+// malloc'd data of its memories, and park its pages for reuse. A region
+// another thread filled is reset on that thread.
+// Returns the pages the region held (fresh pages included), 0 for a region
+// never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
+// EBUSY while the region is current or finalizers run on this thread.
+JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
+{
+    jl_task_t *ct = jl_current_task;
+    jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
+    if (!region_valid(n))
+        return (uint64_t)JL_GC_REGION_EINVAL;
+    if (n == heap->current_region || heap->finalizer_depth != 0)
+        return (uint64_t)JL_GC_REGION_EBUSY;
+    if (!heap->regions[n].initialized)
+        return 0;
+    return region_reset_heap(ct, heap, n);
+}
+
 // --- initialization ----------------------------------------------------------------------
 
 void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT
 {
     heap->current_region = 0;
     heap->saved_region = 0;
+    heap->finalizer_depth = 0;
     heap->active_pools = heap->norm_pools;
     memset(heap->regions, 0, sizeof(heap->regions));
     heap->regions[0].initialized = 1;
