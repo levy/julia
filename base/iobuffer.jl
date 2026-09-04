@@ -541,7 +541,16 @@ function _resize!(io::GenericIOBuffer, new_size::Int, exact::Bool)
         used_span = get_used_span(io)
         deleted = first(used_span) - 1
         compacted = deleted - get_offset(io)
-        new_data = _similar_data(io, new_size)
+        # The new data replaces the data the buffer holds, so it takes the
+        # region of the buffer, not the region of an open window
+        # (genericmemory.jl, `_region_borrow`).
+        lent = _region_borrow(io)
+        local new_data
+        try
+            new_data = _similar_data(io, new_size)
+        finally
+            _region_unborrow(lent)
+        end
         io.data = new_data
         iszero(new_size) && return io
         len_used = length(used_span)

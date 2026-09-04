@@ -68,13 +68,18 @@ function a_dict_rehashes_inside_a_window()
     check("the Dict is right after the reset", D[10_000] == 10_000)
 end
 
-const ID = IdDict{Any,Int}()
+const ID = IdDict{Any,Any}()
 const KEYS = Any[]
+const VALS = Any[]
 
+# The keys and the values are made before the window opens. An IdDict holds
+# both as `Any`, so a value made inside the window would be boxed there and
+# the box would be a region object in a region-0 table: an element escape,
+# not a buffer one. This case is about the table the rehash replaces.
 @noinline function grow_iddict_inside_window(n, count)
     region_set(n)
     for i in 1:count
-        ID[KEYS[i]] = i
+        ID[KEYS[i]] = VALS[i]
     end
     region_set(0)
 end
@@ -82,12 +87,13 @@ end
 function an_iddict_rehashes_inside_a_window()
     for i in 1:4_000
         push!(KEYS, Ref(i))
+        push!(VALS, Ref(-i))
     end
     grow_iddict_inside_window(GROW, 4_000)
     check("an IdDict rehash inside a window does not quarantine", quarantined(GROW) == 0)
-    check("the IdDict is right", length(ID) == 4_000 && ID[KEYS[4_000]] == 4_000)
+    check("the IdDict is right", length(ID) == 4_000 && ID[KEYS[4_000]][] == -4_000)
     check("the region resets", !refused(reset_via_call(GROW)))
-    check("the IdDict is right after the reset", ID[KEYS[1]] == 1)
+    check("the IdDict is right after the reset", ID[KEYS[1]][] == -1)
 end
 
 const BUF = IOBuffer()

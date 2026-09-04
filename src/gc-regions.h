@@ -63,6 +63,11 @@ enum {
 // ccall from Base; a third-party heap has no window to park.
 JL_DLLEXPORT int jl_gc_region_suspend(void);
 JL_DLLEXPORT void jl_gc_region_resume(int parked);
+// Borrow a region for the next allocations of this thread, and give it
+// back. The window is untouched: a borrow is not a window. A replacement
+// buffer is allocated in the region of the buffer it replaces this way.
+JL_DLLEXPORT int jl_gc_region_borrow(int n);
+JL_DLLEXPORT void jl_gc_region_unborrow(int lent);
 
 #ifndef WITH_THIRD_PARTY_HEAP
 

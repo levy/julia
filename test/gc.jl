@@ -102,6 +102,9 @@ end
     run_gctest("gc/regions_lifetime.jl")
     run_gctest("gc/regions_census.jl")
     run_gctest("gc/regions_tree.jl")
+    run_gctest("gc/regions_stores.jl")
+    run_gctest("gc/regions_safety.jl")
+    run_gctest("gc/regions_containers.jl")
 end
 end
 

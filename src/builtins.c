@@ -27,6 +27,7 @@
 #include "builtin_proto.h"
 #include "intrinsics.h"
 #include "julia_assert.h"
+#include "gc-regions.h"   // iddict.c borrows the region of the table it replaces
 
 #ifdef __cplusplus
 extern "C" {

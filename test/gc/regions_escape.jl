@@ -84,9 +84,11 @@ function chain_escape_quarantines_region7()
     check("the stored value still reads", p.f[] == 1)
 end
 
-# A Dict made in region 0 that grows inside a window stores its new table
-# (a region object) into itself: the barrier quarantines the region rather
-# than let the Dict dangle after the reset.
+# A Dict made in region 0 that grows inside a window allocates its new
+# tables where the Dict lives, not where the window is: a replacement buffer
+# takes the region of the container it belongs to. So the rehash is not an
+# escape and the region stays clean. The buffer follows its container; an
+# element does not, which regions_containers.jl fixes in both directions.
 @noinline function grow_into!(d, n)
     region_set(n)
     for k in 1:10_000
@@ -95,12 +97,11 @@ end
     region_set(0)
 end
 
-function dict_rehash_quarantines_region6()
+function dict_rehash_does_not_quarantine_region6()
     d = Dict{Int,Int}()
     grow_into!(d, 6)
-    check("the Dict's rehash inside the window quarantines its region", quarantined(6) == 1)
-    check("the quarantined reset refuses", code(region_reset(6)) == EQUARANTINED)
-    check("the Dict still reads correctly", all(d[k] == k for k in 1:10_000))
+    check("the Dict's rehash inside the window does not quarantine", quarantined(6) == 0)
+    check("the Dict reads correctly", all(d[k] == k for k in 1:10_000))
 end
 
 # A constructor call is a store too: the holder is built in region 0 after
@@ -167,7 +168,9 @@ end
 
 function quarantine_mask_is_as_expected()
     check("region 1 is not quarantined", quarantined(1) == 0)
-    for n in (2, 3, 4, 5, 6, 7)
+    # Region 6 held the Dict rehash, which is no longer an escape.
+    check("region 6 is not quarantined", quarantined(6) == 0)
+    for n in (2, 3, 4, 5, 7)
         check("region $n is quarantined", quarantined(n) == 1)
     end
 end
@@ -178,7 +181,7 @@ region1_child_into_region1_parent()
 region1_child_into_region2_parent()
 reset_clean_regions()
 chain_escape_quarantines_region7()
-dict_rehash_quarantines_region6()
+dict_rehash_does_not_quarantine_region6()
 ctor_gap_quarantines_region5()
 iddict_key_quarantines_region4()
 serialize_quarantines_region3()
