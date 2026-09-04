@@ -252,6 +252,57 @@ threads; concurrent sweep off or on). A script passes when it exits 0. The
   cut, which is the tag `obsolete/gc-regions-cut4-2026-09-04`). Outside
   `contrib/memory-regions/` the tree is the fourth cut's, so the gate
   stands. `retake.sh` takes a first stage now.
+- **D17. The stock-only build folds the census filter out; the documents
+  say what each define keeps (2026-09-04, the user's direction).** The
+  user asked whether a switch to chain regions would make the unused cost
+  zero. The answer: the unused cost comes from the barrier's armed-flag
+  check, the construction-store barrier, and the census filter of the mark
+  loops, none of which reads the shape; the chain is the default shape
+  already, and the shape is read only in the cold path of the armed
+  barrier. Zero cost exists at build time only, and the review of the two
+  defines found one gap: the mark loops loaded
+  `jl_gc_region_census_target` under `JL_NO_REGION_ALLOC` too, a build that
+  can never run a census, while the PR text said the defines "compile both
+  halves to nothing". Fix, in the flat commit `4efd0bd38c`: the loops read
+  the filter through `jl_gc_region_census_filter()`, the constant 0 under
+  the define. Proof at the object level: `gc-stock.o` compiled with
+  `-DJL_NO_REGION_ALLOC` holds 0 references to the target against 43
+  without it, and the default compile is instruction-identical to the
+  object before the change (`objdump -d` differs in the file name line
+  only). The devdoc Cost section, the README and HISTORY (C21) say what
+  each define removes and what a build with both keeps: one page tag per
+  page and a store and a compare at a task switch, nothing per object;
+  the region tests fail on both builds by design. The series is cut a
+  sixth time from stage 7 (the census commit)
+  with `retake.sh`, which now takes the runtime stages through
+  `reveal.py`: commits 1 to 6 keep their SHAs; 7 `16edc596d9`, 13
+  `e24c913184`, 14 `5d768c352c`, 15 `a5a1d28fa9`, 16 `b747323edd`, 17
+  `4afc22da24`, 18 `1e8cd82fd3`, 19 `f2ac61920d`, 20 `3087f0cfc5`. The
+  fifth cut is the tag `obsolete/gc-regions-cut5-2026-09-04`. Because the
+  default build's code is identical, the `core threads misc` gate of the
+  third cut stands; Check 2/3 runs again on commits 7 to 20 and the `gc`
+  group on the new tip binary.
+- **D18. No build-time chain switch (2026-09-04, recommended; the user's
+  decision is open).** The user asked whether a build that promises a
+  chain, with the simpler check `cr <= pr`, is worth having. Recommended
+  no: the check that differs runs only in the cold path of the armed
+  barrier, after two page-map walks, and the tree test is one load of a
+  64-bit word from an eight-entry array in L1, a shift and an `and`, below
+  the noise of the `store_region` row; the chain is the default shape from
+  the same code; each build switch is one more configuration for the
+  gate, and a chain-only binary must refuse `region_parent!`, so a library
+  that uses sibling leaves fails on it. One barrier, one shape, no switch,
+  unless a measurement ever shows the uptree load.
+- **D19. MEASUREMENTS.md shows each plot (2026-09-04, the user's
+  direction).** The user asked why the plots were not visible in the
+  document. The document named each plot by its path in a code span and
+  never used the image syntax, so a reader saw a file name. Fix, in the
+  flat commit `d543cb834a` (tag `gc-regions-flat`): each of the eighteen
+  plots stands under the table that holds its data, as an image whose
+  alternative text is the heading of the plot; the path stays in the
+  prose. `tables.py` rewrites only between its markers, and a run after
+  the change leaves the document as it is. The change is in stage 19
+  alone, so it goes into the sixth cut with the retake of stages 15 to 20.
 
 ## Target layout
 
@@ -752,9 +803,23 @@ question, its bound, and its plot, before it runs.
       `gc-regions`). Outside `contrib/memory-regions/` the tree of the tip
       equals the tree of the third cut's tip (`git diff --quiet 555227c4ea
       HEAD -- . ':!contrib/memory-regions'`), so every build and test input
-      of the tip is the one the gate ran on.
+      of the tip is the one the gate ran on. The sixth cut (D17), from the
+      flat tip `c6f8bc566c` on 2026-09-04 14:40, keeps commits 1 to 6 and
+      takes stages 7 to 20 again (`retake.sh <worktree> add66926fb 7`):
+      every commit from 7 to 13 differs from its fifth-cut twin by the same
+      two-file change, and the tip differs from the fifth cut's tip by
+      exactly the flat commit (checked with `git diff --stat` pairwise and
+      at line level for commit 7). Check 2/3 ran on that cut's commits 7
+      to 20 (14:28 to 15:27); then stages 15 to 20 were taken again from
+      the flat tag `d543cb834a` (the devdoc and HISTORY wording of D17,
+      the plot embeds of D19), which changes no file under `src/`, `base/`
+      or `test/`: the final commits are 15 `9226b04b9e`, 16 `a58a86fd3b`,
+      17 `70f04d1598`, 18 `f7bcfb6730`, 19 `d0d9966cb1`, 20 `3577055ee6`
+      (the tip of `gc-regions`, pushed 15:36 with `--force-with-lease` on
+      the fifth cut). The tip differs from the checked commit `3087f0cfc5`
+      by three documentation files only.
 - [x] Check 1: `git diff gc-regions-flat gc-regions` is empty (build.sh
-      asserts it). Passed on both cuts.
+      asserts it). Passed on every cut, the sixth included.
 - [x] Check 2: every commit builds — loop over the 20 commits, `make -j8`
       on cores 16-23, `julia -e 1` runs. Bound: 20 incremental builds, about
       three hours. Log the loop. Not before `run_all.sh` ends. Passed
@@ -780,7 +845,11 @@ question, its bound, and its plot, before it runs.
       `series/check23.log`, `series/check23/test-N-*.log`. Passed again on
       the second cut with the same pattern; the scripts were the flat tip's
       at 10:37, before the spawn case of D14, which the `gc` group on the
-      third cut's tip covers.
+      third cut's tip covers. Checks 2 and 3 passed again on the sixth cut
+      (D17), commits 7 to 20, 2026-09-04 14:28 to 15:27
+      (`julia-gc-series-tooling/check23.log`): every commit `make=0
+      run=ok`, 240 to 273 s each; at commits 7 to 12 the five scripts stop
+      with `could not load symbol`, at commit 13 all five exit 0.
 - [x] Reset `gc-regions-flat` to the same tree as a tag `gc-regions-flat`
       for the record; the branch itself is deleted. Done 2026-09-04: the
       branch is deleted; the tag points at the flat tip `8c1bb50b50`; the
@@ -810,13 +879,22 @@ question, its bound, and its plot, before it runs.
       `core threads misc` groups pass 12:23 to 12:36
       (`gate/runtests-tip-cut3-core-threads-misc.log`: 8,635,852 pass, 8
       broken, 0 fail, 0 error, `SUCCESS`). The fourth cut's tip has the same
-      build and test inputs (Step 7), so the gate stands for it.
+      build and test inputs (Step 7), so the gate stands for it. The sixth
+      cut (D17) changes `src/gc-regions.h` and `src/gc-stock.c` with no
+      change to the default build's code (the objects are
+      instruction-identical), so the `core threads misc` result stands;
+      the `gc` group ran again on the binary of the sixth cut's tip
+      2026-09-04 15:32 to 15:33 (`gate/runtests-tip-cut6-gc.log`, 129 of
+      129, `SUCCESS`, 60 script runs).
 - [x] `make -C doc html` builds the devdoc. Passed 2026-09-04 on the flat
       tree (exit 0); the only warnings are the size warnings of the stock
       manual. `devdocs/gc-regions.html` renders with its 16 sections. Run
       again 2026-09-04 12:38 on the series tip after the rule of D14
       (`gate/doc-tip-cut4.log`, exit 0, the same seven stock warnings); the
-      rule "Make tasks outside the window" is in the rendered page.
+      rule "Make tasks outside the window" is in the rendered page. The
+      build ran once more on the tip of the sixth cut, 2026-09-04 15:34
+      (`gate/doc-tip-cut6.log`, exit 0, the seven stock size warnings
+      only), and the rendered page holds the Cost paragraph of D17.
 - [x] Every `results/` plot opens and reads at a glance (open each SVG).
       Done in Step 6: every SVG was rendered to PNG and read against its
       data after the fixes (H7 and the nine layout defects).
@@ -827,7 +905,9 @@ question, its bound, and its plot, before it runs.
 - [x] Push `gc-regions`. Write the PR text into this file, final. Pushed
       2026-09-04: the third cut `555227c4ea` first, then the fourth cut
       `6159d71b25` with `--force-with-lease` on the third. The PR text below
-      is final.
+      is final. The fifth cut `4b02199e76` and the sixth cut `3577055ee6`
+      followed, each with `--force-with-lease` on the one before; the tag
+      `gc-regions-flat` on origin follows the flat tip (`d543cb834a`).
 - [ ] Tell the user. Open the pull request (`gh pr create --repo levy/julia
       --base release-1.13 --head gc-regions`) only on the user's go. The
       report went to the user 2026-09-04; the PR is not opened.
@@ -927,9 +1007,13 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > trigger). The unit costs are not zero (M2): a pointer store pays one flag
 > load and a predicted branch (0.41 ns against 0.32 ns); an object
 > constructed with two pointer fields pays a barrier that vanilla omits
-> (8.2 ns against 7.1 ns); the stock mark pays about 1 %.
-> `JL_NO_REGION_ALLOC` and `JL_NO_REGION_STORE_BARRIER` compile both halves
-> to nothing.
+> (8.2 ns against 7.1 ns); the stock mark pays about 1 %. Two build
+> defines exist for measurement, not for production:
+> `JL_NO_REGION_STORE_BARRIER` takes the barrier out (a store and a
+> construction compile as vanilla compiles them), `JL_NO_REGION_ALLOC`
+> takes the region pools out and folds the census filter out of the mark
+> loops; a build with both keeps one page tag per page and nothing per
+> object. The region tests fail on both builds by design.
 >
 > **Cost when used.** A window pair 10.5 ns, a reset under 30 ns (the two
 > clock reads are 10 of it), an armed store 1.4 ns, an allocation in a
