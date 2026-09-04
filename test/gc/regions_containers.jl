@@ -114,6 +114,108 @@ function an_iobuffer_grows_inside_a_window()
     check("the buffer reads after the reset", length(take!(BUF)) == 100_000)
 end
 
+# `take!` hands the data out and marks the buffer for a reinit: the next
+# write, or a truncate, makes new data. The new data replaces the data the
+# buffer held, so it takes the region of the buffer, not the region of the
+# open window. A cached buffer that is emptied with `take!` and written to
+# inside a window is the everyday shape of this case.
+const TAKEN = IOBuffer()
+
+@noinline function write_after_take_inside_window(n)
+    region_set(n)
+    write(TAKEN, "after the take")
+    region_set(0)
+end
+
+function an_iobuffer_reinits_inside_a_window()
+    write(TAKEN, "before the take")
+    take!(TAKEN)
+    write_after_take_inside_window(GROW)
+    check("a write after take! inside a window does not quarantine", quarantined(GROW) == 0)
+    check("the new data of the buffer is in region 0", region_of(TAKEN.data) == 0)
+    check("the buffer reads", String(take!(TAKEN)) == "after the take")
+    check("the region resets", !refused(reset_via_call(GROW)))
+end
+
+@noinline function truncate_after_take_inside_window(n)
+    region_set(n)
+    truncate(TAKEN, 16)
+    region_set(0)
+end
+
+function an_iobuffer_truncates_inside_a_window()
+    write(TAKEN, "before the take")
+    take!(TAKEN)
+    truncate_after_take_inside_window(GROW)
+    check("a truncate after take! inside a window does not quarantine", quarantined(GROW) == 0)
+    check("the truncated data of the buffer is in region 0", region_of(TAKEN.data) == 0)
+    check("the buffer holds the zeros", take!(TAKEN) == zeros(UInt8, 16))
+    check("the region resets", !refused(reset_via_call(GROW)))
+end
+
+# `empty!` gives an IdDict a fresh table; the table replaces the one the
+# dictionary held and takes the dictionary's region.
+@noinline function empty_iddict_inside_window(n)
+    region_set(n)
+    empty!(ID)
+    region_set(0)
+end
+
+function an_iddict_empties_inside_a_window()
+    empty_iddict_inside_window(GROW)
+    check("empty! of an IdDict inside a window does not quarantine", quarantined(GROW) == 0)
+    check("the fresh table of the IdDict is in region 0", region_of(ID.ht) == 0)
+    check("the IdDict is empty", isempty(ID))
+    ID[KEYS[1]] = VALS[1]
+    check("the IdDict takes a key after the empty!", ID[KEYS[1]][] == -1)
+    check("the region resets", !refused(reset_via_call(GROW)))
+end
+
+# An IdSet grows two buffers: the key list (jl_idset_put_key) and the index
+# table (jl_idset_put_idx, a smallintset rehash). Both replace the ones the
+# set held and take the set's region. The keys are made before the window
+# opens, as for the IdDict above.
+const IDS = Base.IdSet{Any}()
+
+@noinline function grow_idset_inside_window(n, count)
+    region_set(n)
+    for i in 1:count
+        push!(IDS, KEYS[i])
+    end
+    region_set(0)
+end
+
+function an_idset_grows_inside_a_window()
+    grow_idset_inside_window(GROW, 4_000)
+    check("an IdSet growth inside a window does not quarantine", quarantined(GROW) == 0)
+    check("the key list of the IdSet is in region 0", region_of(IDS.list) == 0)
+    check("the index table of the IdSet is in region 0", region_of(IDS.idxs) == 0)
+    check("the IdSet is right", length(IDS) == 4_000 && KEYS[4_000] in IDS && !(VALS[1] in IDS))
+    check("the region resets", !refused(reset_via_call(GROW)))
+    check("the IdSet is right after the reset", KEYS[1] in IDS)
+end
+
+# The runtime grows its own region-0 vectors through jl_array_grow_end, the
+# C growth path, while a task holds a window (a backedge list, a method
+# table's entries). The grown buffer takes the region of the array.
+const RUNTIME_GROWN = Any[]
+
+@noinline function c_push_inside_window(n, count)
+    region_set(n)
+    for i in 1:count
+        ccall(:jl_array_ptr_1d_push, Cvoid, (Any, Any), RUNTIME_GROWN, KEYS[i])
+    end
+    region_set(0)
+end
+
+function a_c_growth_inside_a_window()
+    c_push_inside_window(GROW, 4_000)
+    check("jl_array_grow_end inside a window does not quarantine", quarantined(GROW) == 0)
+    check("the buffer grown by C is in region 0", region_of(RUNTIME_GROWN.ref.mem) == 0)
+    check("the vector is right", length(RUNTIME_GROWN) == 4_000 && RUNTIME_GROWN[4_000] === KEYS[4_000])
+    check("the region resets", !refused(reset_via_call(GROW)))
+end
+
 # The buffer follows its container; an element does not. A region object
 # stored into a region-0 vector outlives its region, and the barrier is
 # right to quarantine it.
@@ -136,6 +238,11 @@ a_vector_grows_at_both_ends()
 a_dict_rehashes_inside_a_window()
 an_iddict_rehashes_inside_a_window()
 an_iobuffer_grows_inside_a_window()
+an_iobuffer_reinits_inside_a_window()
+an_iobuffer_truncates_inside_a_window()
+an_iddict_empties_inside_a_window()
+an_idset_grows_inside_a_window()
+a_c_growth_inside_a_window()
 an_element_still_quarantines()
 
 finish("regions_containers")
