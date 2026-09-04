@@ -310,6 +310,31 @@ function runtime_binding_stays_in_region_0()
           Base.invokelatest(getglobal, @__MODULE__, name) == 7)
 end
 
+# The first throw on a task makes the task's exception stack, a buffer the
+# task keeps and every later throw reuses. Made inside a window, it would be
+# a region buffer held by a region-0 task: an escape at the first throw
+# inside a window, and a quarantine. A fresh task has no exception stack
+# yet, so the case throws for the first time inside its window. The task is
+# sticky, so its window and its buffer are on this thread's heap.
+@noinline function first_throw_in_window()
+    region_set(SIM)
+    caught = try
+        throw(ErrorException("the first throw inside a window"))
+    catch e
+        e isa ErrorException
+    end
+    region_set(0)
+    return caught
+end
+
+function first_throw_stays_in_region_0()
+    t = Task(first_throw_in_window)
+    schedule(t)
+    check("the task caught its first throw inside the window", fetch(t) === true)
+    check("the first throw inside a window does not quarantine the region", quarantined(SIM) == 0)
+    check("the region resets after the first throw inside it", !refused(region_reset(SIM)))
+end
+
 # The reserve claims page blocks up front so a later allocation inside a
 # region never first-touch-faults; a second call must be a no-op, not an
 # error, and a window can still allocate normally afterward.
@@ -352,6 +377,7 @@ live_object_survives_gc()
 first_time_code_stays_in_region_0()
 lazy_state_stays_in_region_0()
 runtime_binding_stays_in_region_0()
+first_throw_stays_in_region_0()
 heap_reserve_then_window()
 
 finish("regions_window")
