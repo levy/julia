@@ -51,6 +51,13 @@ finish(script) = println(script, ": ", CHECKS[], " checks passed")
 # `escape` hands it to the runtime, which the compiler cannot see through.
 @noinline escape(x) = region_of(x)
 
+# The reset must run as a real call, with the caller's live references
+# spilled where the precise stack scan can see them. A bare ccall is not a
+# safepoint, so the compiler may keep a reference in a register alone.
+unsafe_region_reset(n)     = ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n)
+@noinline reset_via_call(n)        = region_reset(n)
+@noinline unsafe_reset_via_call(n) = unsafe_region_reset(n)
+
 # Allocate and drop pool objects in region 0, so freed cells get reused.
 @noinline function churn(n = 2_000_000)
     v = Vector{Any}(undef, 1024)
