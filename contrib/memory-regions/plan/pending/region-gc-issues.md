@@ -284,6 +284,61 @@ already carries the state (`jl_gc_region_task_switch`,
 whose `region` field is not 0. The owning commit is stage 6, "a window
 belongs to its task".
 
+### I13 — The reset is unchecked, and it is the plain name
+
+**Rank: first among the design changes. Class: safety.**
+
+The barrier sees the heap. It does not see the stack. A reference to a
+region object in a stack slot, in a register, or on the stack of a parked
+task is invisible, and `jl_gc_region_reset` frees the region under it. The
+next collection meets the freed cell and aborts with `CORPSE`. The reset is
+the last unchecked operation of the design: it is `free()` with a warning
+label, and it carries the plain name.
+
+The runtime holds both halves of the answer already. `jl_gc_region_check(n)`
+stops the world, marks from the execution roots with the region filter, and
+counts every marked cell of the region. `jl_gc_region_reset(n)` frees. A
+checked reset is the two in one call.
+
+Today the check runs only behind `jl_gc_region_set_debug`, a process-wide
+flag. That is the wrong shape. A flag is global, so a library cannot choose
+per call site, and a reader of the code cannot tell which behaviour a given
+reset got.
+
+**Fix shape. Two entries, not a mode.**
+
+1. `jl_gc_region_reset(n)` checks the roots and refuses with `EROOT` when
+   one points into the region.
+2. `jl_gc_region_unsafe_reset(n)` is today's reset. A program types the
+   longer name on purpose, and a review sees it.
+3. The check and the free run in **one** stop-the-world pause. Two calls
+   would mean two pauses and a gap between them.
+4. `jl_gc_region_set_debug` goes away, or it keeps only the extra reporting.
+   The behaviour it used to select is now the default.
+5. `regions.jl` follows with `region_reset` and `unsafe_region_reset`, and
+   `@with_region` uses the safe one.
+
+The plain name must be the safe one. A reader who does not know the model
+must land on the safe entry by default.
+
+**What it does not fix.** A reset with no live root today still has no live
+root after the change; the check refuses a program that was already wrong.
+The parked-task case of the deferred list is caught by the same scan,
+because a parked task's stack is an execution root.
+
+**The measurement that this needs.** The cost of the scan is not measured. A
+region that is empty at its reset finds nothing in the heap, so the cost is
+the root walk over the task stacks, not the live set. M5 puts a whole scoped
+census at about 5 µs at a small live set, so the scan alone should be a few
+microseconds and near constant in the region's size. Measure it on the M3
+and M4 loops, at one thread and at four, and add the row to
+`MEASUREMENTS.md`. The number does not decide the design any more. It
+decides which entry the demonstrators use, and it must be published, because
+a reader will ask what the safe default costs.
+
+The owning commit is stage 4, "reset a region in O(1)", with the check that
+stage 13 owns moved forward or shared.
+
 ### I5 — Guards that detect but do not prevent
 
 **Class: robustness.**
@@ -356,7 +411,9 @@ Cost section of the developer documentation.
 ## Decisions
 
 - **D1. Fix the bug, do not add a feature.** Every change of this plan
-  closes a hole that exists. No new entry point, no new mode.
+  closes a hole that exists. The one exception is I13, which renames the
+  reset and makes the check the default. It adds no capability; it changes
+  which behaviour a program gets when it does not choose.
 - **D2. Each fix goes into its owning stage.** The series is a staged
   reveal; a fix that lands as a later commit would leave its own stage
   wrong. Take the stages again with `retake.sh` of
@@ -426,6 +483,9 @@ did. Build with `nice -n 10 taskset -c 16-23 make -j8`.
 - [ ] I2: the second quarantine test after the finalizers.
 - [ ] I3: one compare-exchange.
 - [ ] I4: close the window of a task that finishes.
+- [ ] I13: one entry that checks and frees in one pause, and
+      `jl_gc_region_unsafe_reset` for the program that opts out. Measure the
+      scan on the M3 and M4 loops and publish the row.
 - [ ] I10 parts 1 and 2: refuse a window on a quarantined region; wrap the
       state in `regions.jl` and say in the documentation that a loop must
       test it.
