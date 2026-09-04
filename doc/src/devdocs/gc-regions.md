@@ -309,6 +309,10 @@ see the execution roots, so the program keeps the following rules.
 - **Do not block inside a window.** A task that waits inside a window keeps
   the region live and, through the stickiness, keeps its thread. The window
   is for the unit of work, not for the loop around it.
+- **Make tasks outside the window.** A task made inside a window is a region
+  object, and its schedule stores it into the scheduler's queues, which are
+  stock objects: an escape, which the barrier reports and quarantines. The
+  task is made outside, and opens its own window inside.
 - **Do not weak-reference a region object.** `WeakRef` on a region object
   throws while the barrier is armed: a weak reference is a stock-heap
   reference the reset does not clear.

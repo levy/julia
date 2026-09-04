@@ -6,7 +6,7 @@ using Serialization
 # A quarantine is permanent, and a quarantined region stays live, which
 # blocks its parent's reset. The clean cases use regions 1 to 3 first and
 # reset them; the quarantine cases then burn one region each, from 7 down
-# to 3. The mask check at the end fixes the outcome of every case.
+# to 2. The mask check at the end fixes the outcome of every case.
 
 const SIM = 1
 const EVENT = 2
@@ -147,11 +147,27 @@ function serialize_quarantines_region3()
     check("the quarantined reset refuses", code(region_reset(3)) == EQUARANTINED)
 end
 
+# A task made inside a window is a region object, and its schedule stores it
+# into the scheduler's queues, region-0 objects. Tasks are made outside the
+# window; a task opens its own window inside.
+@noinline function spawn_in_region(n)
+    region_set(n)
+    t = Threads.@spawn 1 + 1
+    r = fetch(t)
+    region_set(0)
+    return r
+end
+
+function spawn_quarantines_region2()
+    r = spawn_in_region(2)
+    check("the task spawned inside the window still computes", r == 2)
+    check("a task spawned inside a window quarantines its region", quarantined(2) == 1)
+    check("the quarantined reset refuses", code(region_reset(2)) == EQUARANTINED)
+end
+
 function quarantine_mask_is_as_expected()
-    for n in (1, 2)
-        check("region $n is not quarantined", quarantined(n) == 0)
-    end
-    for n in (3, 4, 5, 6, 7)
+    check("region 1 is not quarantined", quarantined(1) == 0)
+    for n in (2, 3, 4, 5, 6, 7)
         check("region $n is quarantined", quarantined(n) == 1)
     end
 end
@@ -166,6 +182,7 @@ dict_rehash_quarantines_region6()
 ctor_gap_quarantines_region5()
 iddict_key_quarantines_region4()
 serialize_quarantines_region3()
+spawn_quarantines_region2()
 quarantine_mask_is_as_expected()
 
 finish("regions_escape")

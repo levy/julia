@@ -581,8 +581,8 @@ allocate later. Every test resets a region after its window for that reason.
 
 The development runtime exported twenty region entries from `gc-stock.c` and
 `gc-pages.c`, and three hooks. The tidy keeps eighteen entries and every
-hook. Every kept entry is used by a test under `test/gc/` or by a program
-under `bench/` or `demo/`.
+hook, and adds one exported pair for Base (B16). Every kept entry is used by
+a test under `test/gc/` or by a program under `bench/` or `demo/`.
 
 | Entry point | Fate | Reason |
 | --- | --- | --- |
@@ -610,6 +610,7 @@ under `bench/` or `demo/`.
 | `jl_gc_region_track_malloced` (hook) | keep | tracks a memory with malloc'd data allocated in a region |
 | `jl_gc_install_task_region` (hook) | renamed `jl_gc_region_install_task` | one prefix for the whole runtime |
 | `jl_gc_region_task_switch` (inline) | new name | the park and install of the window at a task switch, in one place |
+| `jl_gc_region_suspend`, `jl_gc_region_resume` | new (B16) | the bracket Base puts around its lazily initialized state; exported for the `ccall`, not part of the application API |
 | `jl_gc_region_finalizers_begin/end` (inline) | new | B11: finalizers run with region 0 installed under the finalizer depth |
 | `jl_gc_region_prepare_stock_collection` | keep | parks the windows before a stock collection |
 | `jl_gc_region_clear_stock_marks` | new | B12: clears the marks on region pages after every pass |
