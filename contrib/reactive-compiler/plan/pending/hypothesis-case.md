@@ -134,6 +134,37 @@ machine: the wall clock of a build moves by a factor of two or three with the
 other work on the machine. Interleave A, B, A, B. Prefer the CPU-time and
 cost-in-seconds metrics, which do not depend on the load.
 
+## The property, proved
+
+Before any measurement of scale, prove the property the whole idea rests on:
+**an edit to `f` must leave unrelated code compiled.** If Julia recompiled
+everything, no cache design would help, because invalidation would not follow the
+dependency graph.
+
+`tool/prove_unrelated.jl` sets up four functions, each with a body of 400
+statements so the cost is visible:
+
+- `f` — the leaf that is edited;
+- `h` — calls `f`, so it must lose its compiled code;
+- `g` — unrelated to `f`, so it must keep it;
+- `k` — calls `g` and not `f`, so it must keep it too.
+
+Every check passes on Julia 1.13.0-rc3:
+
+- The forward-edge graph predicts the cone `{f, h}`. The invalidation log of
+  `jl_debug_method_invalidation` names exactly `{f, h}`. **The paper cone and the
+  real one agree.**
+- `g` and `k` keep the very same `CodeInstance` object, by identity, and their
+  `max_world` stays open.
+- `h` has its `max_world` closed, and gains a second `CodeInstance` afterwards.
+- `g` and `k` gain no new `CodeInstance`, and `g` answers the same value.
+
+**Julia pays for an edit at the edit.** The redefinition itself took 5.5 ms,
+while the first call of `h` afterwards took 0.01 ms. Julia re-infers what it
+invalidates when the method is redefined, not when the code is next called. Any
+measurement of "time to rebuild after an edit" must therefore time the edit or
+the load, and not the call that follows.
+
 ## Phase 1 — answer the question before you build anything
 
 This is the highest-value step, and it needs no cache, no store and no fork.
