@@ -597,25 +597,35 @@ says so — its plot.
 A row that a finding of the review makes necessary is added here with its
 question, its bound, and its plot, before it runs.
 
-- [ ] Run `run_all.sh`. Total bound about four and a half hours. Log to
-      `results/run_all.log` (not committed).
-- [ ] Read every result as a reviewer before it goes into a table: a number
-      that contradicts a claim of the documents is a finding, not a typo.
-      Follow it to its cause (a rerun on the spare core, then the code)
-      before the step continues.
-- [ ] Fill every table of `MEASUREMENTS.md`. Under each table, one line: the
-      date, the SHA, the core, the command.
-- [ ] Add a drift table to `HISTORY.md`: the headline numbers before (from
-      the old documents) and after, side by side. A drift beyond 10 % on any
-      headline gets one sentence of explanation or a rerun.
-- [ ] `python3 results/plot.py` writes every plot. Every plot has a title
-      that states the claim, both series named in the plot, axis labels
-      with units, and a caption line with the SHA and the core.
-- [ ] Put the headline figure and its plot into `README.md`.
-- [ ] Commit on `gc-regions-flat`.
-- [ ] Check: `results/data/` holds one file per row of the table; every
+- [x] Run `run_all.sh`. *Done 2026-09-03 (full) and 2026-09-04 (`ONLY="M1
+      M2 M3 M6"` after the harness fixes). The full run takes about one
+      hour, not four and a half: `status.tsv` sums to 2843 s, of which the
+      endurance row is 1801 s. Logs in `results/log/` (git ignores it).*
+- [x] Read every result as a reviewer before it goes into a table. *Seven
+      harness faults (H1 to H7) and five changed claims; see "The
+      measurements, redone" in `HISTORY.md`. Each fault was followed to its
+      cause and fixed before the affected rows ran again.*
+- [x] Fill every table of `MEASUREMENTS.md`. *Decision: no per-table line
+      of date, SHA, core and command. `results/tables.py` writes every
+      table from the data files between markers; `context.tsv` holds the
+      date, SHA, host, cores and scheduling class once; each section names
+      its script, data file and plot; `run_all.sh` is the command. A
+      hand-typed line under each table is what H6 removed.*
+- [x] Add a drift table to `HISTORY.md`. *Fourteen rows, old against new,
+      each change beyond the spread with its cause named.*
+- [x] `python3 results/plot.py` writes every plot. *Eighteen plots. The
+      caption names the core per kind of row (`rt`, `single`, `multi`,
+      `mixed`), because the multi-thread rows do not run on core 29. Every
+      SVG was rendered to PNG and read; the pass found the H7 legend fault,
+      overlapping labels on five plots, a clipped legend, and markers that
+      hid one another where two values coincide; all fixed.*
+- [x] Put the headline figure and its plot into `README.md`. *Three claims
+      and demonstrator C.*
+- [x] Commit on `gc-regions-flat`. *`c1cf27eeb0`.*
+- [x] Check: `results/data/` holds one file per row of the table; every
       number in `MEASUREMENTS.md` has a data file; every plot is regenerated
-      by `plot.py` from those files with no other input.
+      by `plot.py` from those files with no other input. *26 data files, 18
+      plots; `tables.py` and `plot.py` read `data/` only.*
 
 ### Step 7 — the series
 
