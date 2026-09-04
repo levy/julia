@@ -1,5 +1,13 @@
 # A reactive, persistent Julia compiler — the hypothesis case
 
+This plan asks one question and answers it: **is the invalidation cone of an edit
+small enough to build on?** It is. Gate 1 is passed.
+
+What to build on that answer is in
+[reactive-materialization.md](reactive-materialization.md). Phases 2 to 5 below
+are superseded by the stages of that plan; they are kept because they say what
+was intended and why the order changed.
+
 ## The claim
 
 > If compiler results are persistent, content-addressed cells with explicit
@@ -112,11 +120,22 @@ every content-addressed key that mentions it changes. The cache sees everything
 as new work, correctly. Do not treat a poor result here as a defect. Report it as
 a limit of the approach and say so early.
 
-**Class E depends on how the constant reaches the code.** If inference put the
-value into the IR, the edit invalidates every user. If the code reads the binding
-at run time, it invalidates nothing. Record which of the two happened. Julia 1.13
-tracks binding invalidation in `Compiler/src/bindinginvalidations.jl`; read it
-before you interpret the result.
+**Class E is measured, and the answer is not what it looked like.**
+`tool/prove_const.jl` defines `const SCALE = 10`, `f(x) = x * SCALE` and
+`h(x) = f(x) + 1`, then changes the constant to 20.
+
+- The forward edges record **no** dependency on `SCALE` at all.
+- Julia invalidates correctly anyway: the worlds of `f` and of `h` closed, the
+  unrelated `g` stayed open, and both callers answered the new value.
+- The mechanism is `Core.BindingPartition`, which carries `min_world` and
+  `max_world`. A redefinition opens a new partition and closes the old one.
+- The `backedges` field of the binding was **undefined**, so the users of a
+  constant can not be enumerated from the binding.
+
+So a constant is a **validity condition, not an edge**. A cache must record the
+binding partitions an artifact was compiled against and check their worlds on
+load. A cache that stores only edges will serve stale code after a constant
+changes, and no amount of graph work will catch it.
 
 ## Phase 0 — freeze the baseline
 
