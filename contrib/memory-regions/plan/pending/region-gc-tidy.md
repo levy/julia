@@ -204,35 +204,68 @@ contrib/memory-regions/
 ## The runtime series
 
 Each commit builds. The message describes the state after the commit and
-the reason, never the history. Original commits absorbed are listed for the
-person who writes the series, not for the message.
+the reason, never the history. The original commits absorbed are listed for
+the person who writes the series, not for the message.
+
+The series is cut with stage markers, not with hand-cut patches. Every
+final runtime file is annotated once (`//@[N`, `//@[N-M`, `//@]`; `#@[` in
+the Makefile); an unmarked line belongs to every stage, a removed base line
+is wrapped `//@[0-K`. `reveal.py stage k` writes the tree of stage k;
+`reveal.py check` asserts that stage 0 equals the base and the last stage
+equals the flat tip for every file, so the final tree stays the single
+source. `xstage.py` asserts that no identifier appears before the stage
+that declares it. The series repository lives in the scratchpad
+(`series/`: `annotated/src/*`, `annotate_*.py`, `reveal.py`, `xstage.py`,
+`messages/01..20.txt`, `build.sh`).
 
 | # | commit | contents | absorbs |
 | --- | --- | --- | --- |
-| 1 | `gc: region state in the thread heap, and the window` | `gc-regions.c/h`, `gc-tls-stock.h` fields, page tag `region_n` (`gc-stock.h`, `gc-pages.c`), the allocation path routes to the region's pools, `jl_gc_region_set` / `jl_gc_region_current`, `JL_NO_REGION_ALLOC`, compiler allocations go to region 0 (`gf.c`) | 52969ba846, 5875176376, 953f4fd71f |
-| 2 | `gc: the stock collector and open regions coexist` | the mark filter and sweep guard skip region pages, a deferred collection re-arms with a real interval, no contract between the two | 13989e9665, eab67d8fab |
-| 3 | `gc: reset a region in O(1)` | `jl_gc_region_reset`, page return, the region's own malloc'd list (`gc-common.c`) and finalizer list, both run by the reset | f0848c8936, d345768b80, 0e463ce373 |
-| 4 | `gc: the escape barrier - a shorter lifetime stored into a longer one quarantines the region` | `jl_gc_region_wb`, `jl_region_barrier_on`, `gc-wb-stock.h`, the codegen hooks for stores and construction (`cgutils.cpp`, `llvm-late-gc-lowering.cpp`), the quarantine, the child-first test, `JL_NO_REGION_STORE_BARRIER` | 91601592e0, b10b78f0d2, 0121cb9049 (barrier half) |
-| 5 | `gc: a region window follows its task` | `task.c`, `julia_threads.h`, stickiness across the window | e4432f4ccd |
-| 6 | `gc: the census - collect one region alone` | `jl_gc_region_collect`, `jl_gc_region_collect_coop`, the scoped mark filter (outlined `gc_scoped_claim`, forced-inline queue operations in `work-stealing-queue.h`), parked task stacks as roots, finalizers of dead objects, the reset precondition check | 2b8180c5df, fb83dc7af2, 4a6ef66b23, a34a779bef, 9620d5972d, d4bbdd6e55 |
-| 7 | `gc: refuse what a region cannot hold` | `WeakRef` on a region object, a system image inside a window (`staticdata.c`) | 72a8ba92e2, 0121cb9049 (image half) |
-| 8 | `gc: a tree of regions - declared parentage and sibling isolation` | `jl_gc_region_declare_parent`, `jl_gc_region_parent_of`, the up-tree mask in the barrier, `JL_GC_MAX_REGIONS`, the per-heap live and has-child masks, the reset refuses on a live child, `jl_gc_region_reset_global` | 2d1a8f9e28, 0a7eeb47ec, b9c1c11330 |
-| 9 | `gc: the open region censuses itself on growth` | `region_maybe_census` in `maybe_collect`, `jl_gc_region_census_threshold`, `jl_gc_region_pages` | e09e184daa |
-| 10 | `gc: a populated heap reserve, so a loop never faults` | `jl_gc_heap_reserve` (renamed), the prefault flag, the block table in `gc-pages.c` | 19bf8a1e36 |
-| 11 | `gc: region diagnostics` | `jl_gc_region_of`, `jl_gc_region_stat`, `jl_gc_region_overflow`, `jl_gc_region_verify`, `jl_gc_region_quarantined`, and whatever the audit keeps of `set_debug` / `check` | f6ab9319d1 |
-| 12 | `gc: the region rules in one place` | the header comment of `gc-regions.c`: the model, the six rules, the discipline the barrier does not remove, the API in one table | DESIGN.md |
+| 1 | `gc: region state in the thread heap, and the window` | `gc-regions.c/h`, the region table and `active_pools` in `gc-tls-stock.h`, the page tag `region_n` and chain `region_next` (`gc-stock.h`), the allocation path routes to the region's pools, the sweep guard, `jl_gc_region_set` / `jl_gc_region_current`, `JL_NO_REGION_ALLOC`, `jl_gc_region_init_heap`, the Makefile | 52969ba846, 5875176376 |
+| 2 | `gc: a stock collection and open windows coexist` | the brackets `prepare` / `finish`, `clear_stock_marks` after every pass, `saved_region`, `jl_gc_region_install_task` | 13989e9665 |
+| 3 | `gc: the runtime's own work allocates in region 0` | `gf.c` (`jl_type_infer`, `jl_compile_method_internal`, the lookup slow path), `jltypes.c` (`inst_datatype_new`) | 953f4fd71f |
+| 4 | `gc: reset a region in O(1)` | `jl_gc_region_reset`, the fresh list and its reuse in `gc_add_page`, the region's finalizer list and malloc'd list, `finalizer_depth` and the finalizer brackets (`gc-common.c/h`), `jl_gc_free_memory` exported, `mark_finalizer_lists`, EBUSY | f0848c8936, d345768b80, 0e463ce373 |
+| 5 | `gc: the escape barrier quarantines the region of an escaped child` | `jl_gc_region_wb`, `jl_gc_region_barrier_on`, `gc-wb-stock.h`, `cgutils.cpp`, `llvm-late-gc-lowering.cpp`, the quarantine mask, `jl_gc_region_quarantined`, EQUARANTINED, `JL_NO_REGION_STORE_BARRIER` | 91601592e0, b10b78f0d2, 0121cb9049 (barrier half) |
+| 6 | `gc: a window belongs to its task` | `task.c`, `julia_threads.h` (`sticky_before_region`), `jl_gc_region_task_switch`, the sticky block in `jl_gc_region_set` | e4432f4ccd |
+| 7 | `gc: the census collects one region alone` | `jl_gc_region_collect` / `_collect_coop`, the census filter, `gc_scoped_claim` and the forced-inline queue (`work-stealing-queue.h`), `gc_queue_execution_roots`, `region_windows_open`, `jl_gc_region_stat`, `jl_gc_region_init`, ERACE / EUNSAFE / EFINALIZERS | 2b8180c5df, fb83dc7af2, 4a6ef66b23, a34a779bef, 9620d5972d, d4bbdd6e55 |
+| 8 | `gc: refuse what a region cannot hold` | the `WeakRef` refusal, `staticdata.c` | 72a8ba92e2, 0121cb9049 (image half) |
+| 9 | `gc: a tree of regions` | `jl_gc_region_declare_parent` / `_parent_of`, the up-tree mask in the barrier, the live / has-child masks and child counts, ECHILD, `jl_gc_region_reset_global` | 2d1a8f9e28, 0a7eeb47ec, b9c1c11330 |
+| 10 | `gc: the open region censuses itself on growth` | `jl_gc_region_census_threshold`, `jl_gc_region_maybe_census` in `maybe_collect`, `jl_gc_region_census_open`, `jl_gc_region_pages` | e09e184daa |
+| 11 | `gc: a deferred collection re-arms the trigger` | `gc_defer_collection` | eab67d8fab |
+| 12 | `gc: a populated heap reserve, so a loop never faults` | `jl_gc_heap_reserve`, the prefault flag and the block table in `gc-pages.c` | 19bf8a1e36 |
+| 13 | `gc: region diagnostics` | `jl_gc_region_of`, `jl_gc_region_verify`, `jl_gc_region_set_debug` / `_check`, EROOT, the corpse report in `gc_setmark_pool`, the tagged-page report in `jl_gc_free_page` | f6ab9319d1 |
 
-Then, on top:
+Then, on top, whole directories from the flat tip:
 
 | # | commit | contents |
 | --- | --- | --- |
-| 13 | `test: the region collector` | the five scripts, `regions_api.jl`, the `@testset` in `test/gc.jl` |
-| 14 | `doc: memory regions in the developer documentation` | `doc/src/devdocs/gc-regions.md`, the `doc/make.jl` entry |
-| 15 | `contrib: the Julia face of the region collector` | `regions.jl`, `README.md`, `tools/` |
-| 16 | `contrib: region benchmarks` | `bench/` |
-| 17 | `contrib: region demonstrators` | `demo/` |
-| 18 | `contrib: the measurements of the region collector` | `results/`, `MEASUREMENTS.md`, the plots |
-| 19 | `contrib: the history of the region collector` | `HISTORY.md` |
+| 14 | `test: the region collector` | the five scripts, `regions_api.jl`, the `@testset` in `test/gc.jl` |
+| 15 | `doc: memory regions in the developer documentation` | `doc/src/devdocs/gc-regions.md`, the `doc/make.jl` entry |
+| 16 | `contrib/memory-regions: the Julia face of the region collector` | `regions.jl`, `README.md`, `tools/` |
+| 17 | `contrib/memory-regions: the benchmarks` | `bench/` |
+| 18 | `contrib/memory-regions: the demonstrators` | `demo/` |
+| 19 | `contrib/memory-regions: the measurements` | `results/`, `MEASUREMENTS.md`, the plots |
+| 20 | `contrib/memory-regions: the history of the region collector` | `HISTORY.md` |
+
+Decisions the cut forced (2026-09-04):
+
+- The order of the first three commits is window, coexistence, region 0.
+  The sweep guard is in commit 1: a region page must never be swept from
+  the first commit, or the window alone is unsound. The brackets and the
+  clear are in commit 2, before the runtime's own work moves to region 0:
+  a stock collection leaves a region object marked; without the clear, a
+  second collection across a held window does not traverse the object
+  again and sweeps its region-0 children from under it.
+- The planned commit "the region rules in one place" does not exist. The
+  rules live in the devdoc (commit 15); the header comment of
+  `gc-regions.c` grows with each stage and states the model of that stage.
+- `gc_defer_collection` is its own commit (11). It fixes the disabled
+  path of the stock collector and touches no region entry.
+- The census stats and `jl_gc_region_init` arrive with the census (7);
+  the third-party-heap stubs in `gc-regions.h` grow per stage; the enum of
+  refusal codes grows per stage.
+- The 13 runtime commits add 20 to 557 lines each; the census is the
+  largest. A dry run of `build.sh` on 2026-09-04 passed Check 1 with the
+  results not yet on the flat tip; the real run follows Step 6.
 
 ## Steps
 
@@ -586,22 +619,27 @@ question, its bound, and its plot, before it runs.
 
 ### Step 7 — the series
 
-- [ ] Build the patch stack: for each of commits 1 to 12, one patch file
-      cut from `git diff <base> gc-regions-flat -- src`, by hand, hunk by
-      hunk, into a `series/` directory in the scratchpad (a git repository
-      of its own, so nothing is lost). Commits 13 to 19 are whole-directory
-      patches.
-- [ ] `series/build.sh`: from `<base>`, apply and commit each patch with its
-      message, in order, onto `gc-regions`.
-- [ ] Check 1: `git diff gc-regions-flat gc-regions` is empty.
-- [ ] Check 2: every commit builds — loop over the 19 commits, `make -j8`
-      on cores 16-23, `julia -e 1` runs. Bound: 19 incremental builds, about
-      three hours. Log the loop.
-- [ ] Check 3: at commits 1 to 12, the tests that exist at that point pass
+- [x] Cut the series: stage markers in the 18 final runtime files
+      (`series/annotated/src`), `reveal.py check` passes for every file
+      (`last stage 13; OK`), `xstage.py` passes (`OK 0`). Done 2026-09-04;
+      the method and the decisions are recorded under "The runtime series".
+- [x] `series/build.sh`: a worktree on `gc-regions` from `<base>`; stages
+      1 to 13 from `reveal.py stage k`, commits 14 to 20 from
+      `git checkout gc-regions-flat -- <paths>`; each commit takes
+      `messages/NN.txt`. A dry run passed on 2026-09-04 and was removed.
+- [ ] Run `build.sh` after Step 6 commits the results on the flat tip:
+      `build.sh /home/projectured/workspace/julia-gc-regions
+      /home/projectured/workspace/julia-gc-series`.
+- [ ] Check 1: `git diff gc-regions-flat gc-regions` is empty (build.sh
+      asserts it).
+- [ ] Check 2: every commit builds — loop over the 20 commits, `make -j8`
+      on cores 16-23, `julia -e 1` runs. Bound: 20 incremental builds, about
+      three hours. Log the loop. Not before `run_all.sh` ends.
+- [ ] Check 3: at commits 1 to 13, the tests that exist at that point pass
       (run the five scripts from the tip at each commit; a script that calls
       an entry point the commit does not have yet is expected to fail, and
       the loop records which; the count of failures must fall to zero at
-      commit 12).
+      commit 13).
 - [ ] Reset `gc-regions-flat` to the same tree as a tag `gc-regions-flat`
       for the record; the branch itself is deleted.
 
