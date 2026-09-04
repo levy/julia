@@ -111,6 +111,7 @@ JL_DLLEXPORT jl_genericmemory_t *jl_string_to_genericmemory(jl_value_t *str)
     m->length = jl_string_len(str);
     m->ptr = jl_string_data(str);
     jl_genericmemory_data_owner_field(m) = str;
+    jl_gc_wb_fresh(m, str);
     return m;
 }
 
@@ -282,6 +283,10 @@ JL_DLLEXPORT jl_genericmemory_t *jl_genericmemory_copy_slice(jl_genericmemory_t 
         if (data == NULL) {
             assert(len * elsz / sizeof(void*) == 0); // make static analyzer happy
         }
+        // The copy moves the references of `mem` into a memory the caller
+        // allocated now. One check of the pair covers every element, for the
+        // reason gc-wb-stock.h gives for the two copy barriers.
+        jl_gc_wb_fresh(new_mem, mem);
         memmove_refs((_Atomic(void*)*)new_mem->ptr, (_Atomic(void*)*)data, len * elsz / sizeof(void*));
     }
     else if (data != NULL) {
@@ -307,6 +312,7 @@ jl_genericmemoryref_t *jl_new_memoryref(jl_value_t *typ, jl_genericmemory_t *mem
     jl_task_t *ct = jl_current_task;
     jl_genericmemoryref_t *m = (jl_genericmemoryref_t*)jl_gc_alloc(ct->ptls, sizeof(jl_genericmemoryref_t), typ);
     m->mem = mem;
+    jl_gc_wb_fresh(m, mem);
     m->ptr_or_offset = data;
     return m;
 }

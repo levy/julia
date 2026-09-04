@@ -12,29 +12,44 @@ include(joinpath(@__DIR__, "regions_api.jl"))
 # temporary of the call, and a check there would quarantine a region for
 # ordinary correct code. It must stay unchecked.
 
+# The default tree is the chain 0 <- 1 <- 2 <- ..., so a region that stays
+# live blocks the reset of every region below it. The case that resets runs
+# first, on the lowest region; the cases that burn a region run after, from
+# 7 down.
+const SPLAT = 1
 const TASKR = 7
 const COPYTO = 6
 const COPYR = 5
-const SPLAT = 4
 
-# A closure made inside a window is a region object. The task is made
-# outside the window, as the discipline demands, so the task is a region-0
-# object and `t.start` holds the region closure.
-@noinline function make_closure(n)
+# A callable object made inside a window is a region object. The task is
+# made outside the window, as the discipline demands, so the task is a
+# region-0 object and its `start` field holds the region object.
+#
+# The callable is a mutable struct, not a closure. A closure with captured
+# fields is immutable, so every pass as `Any` boxes it again and the box,
+# not the closure, is what a region holds.
+mutable struct Callable
+    x::Int
+end
+(c::Callable)() = c.x + 1
+
+@noinline function make_callable(n)
     region_set(n)
-    r = Ref(41)
-    f = () -> r[] + 1
+    c = Callable(41)
     region_set(0)
-    escape(f)
-    return f
+    escape(c)
+    return c
 end
 
 function task_start_quarantines()
-    f = make_closure(TASKR)
-    t = Task(f)
+    c = make_callable(TASKR)
+    check("the callable lives in its region", region_of(c) == TASKR)
+    check("nothing escaped it yet", quarantined(TASKR) == 0)
+    t = Task(c)
     escape(t)
-    check("a region closure in a region-0 task quarantines its region", quarantined(TASKR) == 1)
-    check("the closure still runs", f() == 42)
+    check("the task holds the region object", region_of(t) == 0)
+    check("a region callable in a region-0 task quarantines its region", quarantined(TASKR) == 1)
+    check("the callable still runs", c() == 42)
 end
 
 # A vector built inside a window holds region objects, legally: the parent
@@ -81,10 +96,10 @@ function splat_does_not_quarantine()
     check("the region of the arguments still resets", !refused(reset_via_call(SPLAT)))
 end
 
+splat_does_not_quarantine()
 task_start_quarantines()
 copyto_quarantines()
 copy_quarantines()
-splat_does_not_quarantine()
 
 check("exactly the three stores quarantined",
       quarantined(TASKR) == 1 && quarantined(COPYTO) == 1 && quarantined(COPYR) == 1 &&

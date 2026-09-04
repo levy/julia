@@ -36,6 +36,26 @@ STATIC_INLINE void jl_gc_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT
         jl_gc_queue_root((jl_value_t*)parent);
 }
 
+// The three annotations of gc-interface.h. Each one names a store whose
+// generational half is unnecessary, so the body here is the region check
+// alone: a fresh parent takes the region of the open window, the current
+// task is a region-0 object in every supported program, and an old child
+// says nothing about which region holds it.
+STATIC_INLINE void jl_gc_wb_fresh(const void *parent, const void *ptr) JL_NOTSAFEPOINT
+{
+    jl_gc_region_wb_check(parent, ptr);
+}
+
+STATIC_INLINE void jl_gc_wb_current_task(const void *parent, const void *ptr) JL_NOTSAFEPOINT
+{
+    jl_gc_region_wb_check(parent, ptr);
+}
+
+STATIC_INLINE void jl_gc_wb_knownold(const void *parent, const void *ptr) JL_NOTSAFEPOINT
+{
+    jl_gc_region_wb_check(parent, ptr);
+}
+
 STATIC_INLINE void jl_gc_wb_back(const void *ptr) JL_NOTSAFEPOINT // ptr isa jl_value_t*
 {
     // if ptr is old
@@ -63,10 +83,17 @@ STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_
         jl_gc_queue_multiroot((jl_value_t*)parent, ptr, dt);
 }
 
+// A bulk copy needs one region check, not one per element. Every element of
+// the source keeps the reference rule against the source, so it is in the
+// source's region or in an ancestor of it. If the source is legal under the
+// destination, every element is legal under it too, because the ancestors of
+// a legal region are legal. So the check of the pair (destination, source)
+// covers the whole copy, and the copy keeps its speed.
 STATIC_INLINE void jl_gc_wb_genericmemory_copy_boxed(const jl_value_t *dest_owner, _Atomic(void*) ** dest_pp,
                                           jl_genericmemory_t *src, _Atomic(void*) ** src_pp,
                                           size_t* n) JL_NOTSAFEPOINT
 {
+    jl_gc_region_wb_check(dest_owner, src);
     if (__unlikely(jl_astaggedvalue(dest_owner)->bits.gc == 3 /* GC_OLD_MARKED */ )) {
         jl_value_t *src_owner = jl_genericmemory_owner(src);
         size_t done = 0;
@@ -112,9 +139,11 @@ STATIC_INLINE void jl_gc_wb_genericmemory_copy_boxed(const jl_value_t *dest_owne
     }
 }
 
+// One check for the whole copy, for the reason above.
 STATIC_INLINE void jl_gc_wb_genericmemory_copy_ptr(const jl_value_t *owner, jl_genericmemory_t *src, char* src_p,
                                           size_t n, jl_datatype_t *dt) JL_NOTSAFEPOINT
 {
+    jl_gc_region_wb_check(owner, src);
     if (__unlikely(jl_astaggedvalue(owner)->bits.gc == 3 /* GC_OLD_MARKED */)) {
         if (__unlikely(jl_astaggedvalue(owner)->bits.in_image == 1 /* GC_IN_IMAGE_NOT_REMSET */)) {
             // GC_MARKED optimizations are invalid for generations >= 2
