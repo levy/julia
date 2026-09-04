@@ -302,7 +302,7 @@ JL_DLLEXPORT int jl_gc_region_borrow(int n)
     jl_ptls_t ptls = jl_current_task->ptls;
     int lent = ptls->gc_tls.heap.current_region;
     if (lent != n)
-        jl_gc_region_install_task(ptls, n);
+        jl_gc_region_install_borrow(ptls, n);
     return lent;
 #endif
 }

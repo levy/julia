@@ -142,6 +142,9 @@ int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f);
 int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT;
 // Install a task's parked region on a thread at a task switch.
 void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT;
+// Install a borrowed region on a thread (jl_gc_region_borrow); the region
+// becomes live on this heap.
+void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT;
 // The brackets around a stock collection: park every open window before it,
 // install the windows again after it. Between them, every pass of the
 // collection clears the marks it left on region pages after its sweep.

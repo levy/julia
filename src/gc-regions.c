@@ -567,6 +567,22 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     heap->current_region = (uint8_t)n;
 }
 
+// Install a borrowed region on this thread (jl_gc_region_borrow in
+// gc-common.c). A task switch installs a region the task opened a window
+// on, so the region is live on this heap already. A borrow can bring a
+// region number to a heap that never opened a window on it: the borrow of a
+// container that another thread made. The region becomes live on this heap
+// here, so its parent refuses a reset while the borrowed buffer lives, and
+// a tree declaration refuses while it holds pages.
+void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
+{
+    jl_thread_heap_t *heap = &ptls->gc_tls.heap;
+    region_lazy_init(heap, n);
+    region_mark_live(heap, n);
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->current_region = (uint8_t)n;
+}
+
 // Close the window of a task that reaches its end, whether it returns or
 // throws (jl_finish_task in task.c). The count of open windows is
 // process-wide and only a close lowers it, so a task that died holding one
