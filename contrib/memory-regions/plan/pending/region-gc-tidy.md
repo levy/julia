@@ -170,6 +170,69 @@ threads; concurrent sweep off or on). A script passes when it exits 0. The
 - **D12. The pull request opens on `levy/julia`**, from `gc-regions` to a
   branch `release-1.13` that step 0 pushes at the base SHA, so the diff is
   exactly the series. It opens only on the user's go.
+- **D13. The gate found a sixteenth bug (2026-09-04); the fix is a suspend
+  of the window, in Base.** The `gc` group on the series tip failed twice
+  at `JULIA_NUM_THREADS=2,0`: `a Task of region 2 was stored into a
+  GenericMemory of region 0` at the `wait` of the `interleave` case. A
+  120-run loop of `regions_window.jl` at `2,0` failed 8 times; a probe in
+  `jl_new_task` gave the backtrace: `wait` → `get_sched_task` →
+  `OncePerThread` → `Task(wait_forever)`. Julia 1.13 makes a thread's
+  scheduler task at the first idle wait on that thread, on behalf of the
+  task that waits, inside its window when it holds one; the sticky work
+  queue of a thread (`Workqueues`) is made the same way. Three fixes were
+  weighed. (a) Allocate every `Task` in region 0 in `jl_new_task`: wrong
+  layer, `Task(f)` allocates the `ThreadSynchronizer` for `donenotify` in
+  Julia before the `ccall`, so a region-0 `Task` would point at a region
+  object, and a `Task` made and never scheduled inside a window is legal
+  today. (b) Bracket the two scheduler sites: leaves every other
+  `OncePerProcess` / `OncePerThread` with the same escape. (c) Bracket the
+  slow path of every `Once` in `base/lock.jl`: the value and the tables
+  are runtime state in a table that outlives every window. Chosen: (c).
+  The bracket cannot be `jl_gc_region_set(0)`: `init_perprocesss` takes a
+  `ReentrantLock` and can park the task, and a closed window unpins the
+  task, which could then migrate and reopen the window on another thread
+  heap. So the runtime gets one pair, `jl_gc_region_suspend` and
+  `jl_gc_region_resume` in `gc-common.c` (exported for the `ccall`, a
+  no-op on a third-party heap): region 0 installed, the window still open
+  and counted, the task still pinned; a `finally` runs the resume on the
+  exception path. The C brackets of B14, B15 and inference keep
+  `jl_gc_region_set(0)`: they never park, and an exception past them leaves
+  the window closed, which is coherent, while a suspend there would leave a
+  window counted open with no way to close it after an exception (a
+  conversion was written and reverted for that reason). Test:
+  `lazy_state_stays_in_region_0` in `regions_window.jl`, deterministic. The
+  flat tree changed, so the series is cut again and Checks 1 to 3 and the
+  gate run again on the new tip. Recorded as B16 in `HISTORY.md`.
+- **D14. A task spawned inside a window is an escape; the devdoc says so
+  and a test fixes it (2026-09-04).** The review of B16 asked what a
+  `Threads.@spawn` inside a window does: the `Task` and its synchronizer
+  are region objects, and the schedule stores the task into the
+  scheduler's queues, stock objects. A probe confirmed a deterministic
+  `REGION-ESCAPE` at 1 and at 2 threads, the result still computed, the
+  region quarantined. That is the barrier as designed, not a bug, and no
+  rule of the devdoc named it. Added: the rule "make tasks outside the
+  window" and `spawn_quarantines_region2` in `regions_escape.jl` (36 checks,
+  33 before; region 2 is burned, region 1 stays the one clean region). No
+  runtime change. The flat commit is `9c4eca80ee`; the series is cut a
+  third time, and only the trees of commits 14, 15 and 20 change, so Checks
+  2 and 3 of the second cut carry over to commits 1 to 13 by tree identity;
+  the tip binary is rebuilt and the `gc` group runs on it.
+- **D15. The measurements are not run again after B16; the document names
+  the measured commit (2026-09-04).** `MEASUREMENTS.md` said that the
+  `src/` of the measured commit `48603f334c` is the `src/` of the tip. After
+  B16 that is false: the tip differs in `src/gc-common.c`, `src/gc-regions.h`,
+  `src/task.c` and `base/lock.jl`. The fix runs at most once per process and
+  once per thread, in the slow path of `OncePerProcess` and `OncePerThread`,
+  which ran before the fix and after it; the fix adds one suspend and one
+  resume around it, and two stores in `jl_init_root_task`. No script under
+  `bench/` waits or spawns, and the multi-thread rows of M1 and M4 make the
+  scheduler state once per thread in both binaries. A rerun of every row
+  takes hours on cores that the user needs now. The paragraph names the
+  measured commit and the difference; the acceptance item "measured on the
+  tip's SHA" is not met to the letter and this entry says why. The rerun is
+  one command, `results/run_all.sh` on a quiet machine, and the user can ask
+  for it. The flat commit is `8c1bb50b50`; the series is cut a fourth time,
+  and only the trees of commits 19 and 20 change.
 
 ## Target layout
 
@@ -621,7 +684,9 @@ question, its bound, and its plot, before it runs.
       hid one another where two values coincide; all fixed.*
 - [x] Put the headline figure and its plot into `README.md`. *Three claims
       and demonstrator C.*
-- [x] Commit on `gc-regions-flat`. *`c1cf27eeb0`.*
+- [x] Commit on `gc-regions-flat`. *`c1cf27eeb0`; the B16 fix (D13) is
+      `3c4f0686ac` on top, the spawn rule (D14) `9c4eca80ee`, and the
+      corrected measurement statement (D15) `8c1bb50b50`, the flat tip.*
 - [x] Check: `results/data/` holds one file per row of the table; every
       number in `MEASUREMENTS.md` has a data file; every plot is regenerated
       by `plot.py` from those files with no other input. *26 data files, 18
@@ -633,37 +698,120 @@ question, its bound, and its plot, before it runs.
       (`series/annotated/src`), `reveal.py check` passes for every file
       (`last stage 13; OK`), `xstage.py` passes (`OK 0`). Done 2026-09-04;
       the method and the decisions are recorded under "The runtime series".
+      The second cut (D13) adds `base/lock.jl` as the nineteenth staged
+      file, with `#@[` markers; the B16 fix folds into stage 6, the commit
+      that lets a window park with its task, because the suspend exists for
+      the pinning that stage introduces. `reveal.py check` and `xstage.py`
+      pass again.
 - [x] `series/build.sh`: a worktree on `gc-regions` from `<base>`; stages
       1 to 13 from `reveal.py stage k`, commits 14 to 20 from
       `git checkout gc-regions-flat -- <paths>`; each commit takes
       `messages/NN.txt`. A dry run passed on 2026-09-04 and was removed.
-- [ ] Run `build.sh` after Step 6 commits the results on the flat tip:
+      For the second cut the script also accepts the existing worktree and
+      resets the branch to the base with `checkout -B`, so the build
+      products stay and Check 2 runs incrementally.
+- [x] Run `build.sh` after Step 6 commits the results on the flat tip:
       `build.sh /home/projectured/workspace/julia-gc-regions
-      /home/projectured/workspace/julia-gc-series`.
-- [ ] Check 1: `git diff gc-regions-flat gc-regions` is empty (build.sh
-      asserts it).
-- [ ] Check 2: every commit builds — loop over the 20 commits, `make -j8`
+      /home/projectured/workspace/julia-gc-series`. Done 2026-09-04 from the
+      flat tip `c1cf27eeb0`; the 20 commits are `1544632201` (1) to
+      `9e9edbda41` (20, the tip of `gc-regions`). That first cut is kept as
+      the local tag `backup/gc-regions-cut1-2026-09-04`. The second cut, from
+      the flat tip `3c4f0686ac` on 2026-09-04 10:45: `fcb36e783e` (1),
+      `b6c5a32d80` (6, with the B16 fix), `d29d7cd322` (13), `0ac093b8d7`
+      (20), kept as the local tag `backup/gc-regions-cut2-2026-09-04`. The
+      third cut (D14), from the flat tip `9c4eca80ee` on 2026-09-04 12:12:
+      `d46b90515a` (1), `add66926fb` (6), `fdf84973a2` (13), `19ef466bde`
+      (14), `555227c4ea` (20, the tip of `gc-regions`). The trees of commits
+      1 to 13 of the third cut equal those of the second cut (checked with
+      `git rev-parse <commit>^{tree}` pairwise); commits 14 to 20 differ by
+      the test, the devdoc and the history only. The third cut is kept as
+      the local tag `backup/gc-regions-cut3-2026-09-04`. The fourth cut
+      (D15), from the flat tip `8c1bb50b50` on 2026-09-04 12:37, keeps
+      commits 1 to 18 of the third cut as they are (`retake.sh` resets the
+      branch to commit 18 `b226b3e441` and takes stages 19 and 20 again from
+      the flat tag): `85abba0de8` (19), `6159d71b25` (20, the tip of
+      `gc-regions`). Outside `contrib/memory-regions/` the tree of the tip
+      equals the tree of the third cut's tip (`git diff --quiet 555227c4ea
+      HEAD -- . ':!contrib/memory-regions'`), so every build and test input
+      of the tip is the one the gate ran on.
+- [x] Check 1: `git diff gc-regions-flat gc-regions` is empty (build.sh
+      asserts it). Passed on both cuts.
+- [x] Check 2: every commit builds — loop over the 20 commits, `make -j8`
       on cores 16-23, `julia -e 1` runs. Bound: 20 incremental builds, about
-      three hours. Log the loop. Not before `run_all.sh` ends.
-- [ ] Check 3: at commits 1 to 13, the tests that exist at that point pass
+      three hours. Log the loop. Not before `run_all.sh` ends. Passed
+      2026-09-04 08:20 to 09:47 on the first cut (`9e9edbda41`): all 20
+      commits `make=0 run=ok`, 456 s for the first build and 234 to 267 s
+      for each later one; log `series/check23.log`. Passed again on the
+      second cut (D13) 2026-09-04 10:37 to 12:09: all 20 commits `make=0
+      run=ok`, 238 to 327 s each; the first cut's per-commit logs are in
+      `series/check23-cut1/`. The third cut carries the result over for
+      commits 1 to 13 by tree identity; its tip is built alone
+      (`gate/build-tip-cut3.log`).
+- [x] Check 3: at commits 1 to 13, the tests that exist at that point pass
       (run the five scripts from the tip at each commit; a script that calls
       an entry point the commit does not have yet is expected to fail, and
       the loop records which; the count of failures must fall to zero at
-      commit 13).
-- [ ] Reset `gc-regions-flat` to the same tree as a tag `gc-regions-flat`
-      for the record; the branch itself is deleted.
+      commit 13). Passed 2026-09-04: at commits 1 to 12 every script stops
+      with `could not load symbol` at an entry point of a later commit
+      (`jl_gc_region_reset` at 1, `_collect` before 7, `_reset_global` and
+      `_parent_of` before 9, `_of` before 13); the one exception is the
+      escape script at commit 1, which segfaults inside inference, because
+      the compiler still allocates inside the window until commits 2 and 3.
+      At commit 13 all five scripts exit 0. Logs: scratchpad
+      `series/check23.log`, `series/check23/test-N-*.log`. Passed again on
+      the second cut with the same pattern; the scripts were the flat tip's
+      at 10:37, before the spawn case of D14, which the `gc` group on the
+      third cut's tip covers.
+- [x] Reset `gc-regions-flat` to the same tree as a tag `gc-regions-flat`
+      for the record; the branch itself is deleted. Done 2026-09-04: the
+      branch is deleted; the tag points at the flat tip `8c1bb50b50`; the
+      worktree `julia-gc-regions` stays detached there.
 
 ### Step 8 — the gate
 
-- [ ] `taskset -c 24-27 ./julia test/runtests.jl gc core threads misc`
+- [x] `taskset -c 24-27 ./julia test/runtests.jl gc core threads misc`
       under `MemoryMax=16G`, 90-minute timeout. Zero fail, zero error.
-- [ ] `make -C doc html` builds the devdoc.
-- [ ] Every `results/` plot opens and reads at a glance (open each SVG).
-- [ ] The PR text below is complete: every ⟨placeholder⟩ replaced with the
-      measured number and the real link.
-- [ ] Push `gc-regions`. Write the PR text into this file, final.
+      Passed 2026-09-04 08:22 to 08:35 on the flat binary, whose code is
+      the tip's (the later changes to build inputs are a comment and one
+      Makefile dependency line): 8,635,981 pass, 8 broken (stock markers),
+      0 fail, 0 error, `SUCCESS`. The `gc` group runs again on the binary
+      of the series tip after Check 2 (see Step 7). That rerun failed
+      2026-09-04 09:47 to 09:48 (`gate/runtests-tip-gc.log`): two of the
+      twelve configurations of `regions_window.jl`, both at
+      `JULIA_NUM_THREADS=2,0`, with `FAIL: the event region is not
+      quarantined`. The cause is B16 (D13). The repro loop
+      (`gate/repro/loop.sh`, `regions_window.jl` 120 times at `2,0`) fails 8
+      of 120 on the first cut and 0 of 120 on the fixed flat binary; the
+      `gc` group on the fixed flat binary passes 2026-09-04 10:34 to 10:35
+      (`gate/runtests-flat-fixed-gc.log`, 129 of 129, `SUCCESS`, 60 script
+      runs). On the binary of the third cut's tip (`555227c4ea`, built
+      alone, `gate/build-tip-cut3.log`): the `gc` group passes 2026-09-04
+      12:16 (`gate/runtests-tip-cut3-gc.log`, 129 of 129, `SUCCESS`, the
+      spawn case of D14 included) and the repro loop passes 0 of 40; the
+      `core threads misc` groups pass 12:23 to 12:36
+      (`gate/runtests-tip-cut3-core-threads-misc.log`: 8,635,852 pass, 8
+      broken, 0 fail, 0 error, `SUCCESS`). The fourth cut's tip has the same
+      build and test inputs (Step 7), so the gate stands for it.
+- [x] `make -C doc html` builds the devdoc. Passed 2026-09-04 on the flat
+      tree (exit 0); the only warnings are the size warnings of the stock
+      manual. `devdocs/gc-regions.html` renders with its 16 sections. Run
+      again 2026-09-04 12:38 on the series tip after the rule of D14
+      (`gate/doc-tip-cut4.log`, exit 0, the same seven stock warnings); the
+      rule "Make tasks outside the window" is in the rendered page.
+- [x] Every `results/` plot opens and reads at a glance (open each SVG).
+      Done in Step 6: every SVG was rendered to PNG and read against its
+      data after the fixes (H7 and the nine layout defects).
+- [x] The PR text below is complete: every ⟨placeholder⟩ replaced with the
+      measured number and the real link. Done 2026-09-04; the text names
+      the `collect` / `reset` asymmetry as a question, and the nonzero
+      costs of an unused runtime with their numbers.
+- [x] Push `gc-regions`. Write the PR text into this file, final. Pushed
+      2026-09-04: the third cut `555227c4ea` first, then the fourth cut
+      `6159d71b25` with `--force-with-lease` on the third. The PR text below
+      is final.
 - [ ] Tell the user. Open the pull request (`gh pr create --repo levy/julia
-      --base release-1.13 --head gc-regions`) only on the user's go.
+      --base release-1.13 --head gc-regions`) only on the user's go. The
+      report went to the user 2026-09-04; the PR is not opened.
 
 ### Step 9 — close
 
@@ -676,7 +824,7 @@ question, its bound, and its plot, before it runs.
 
 The plan is implemented when all of these hold:
 
-1. `gc-regions` exists on `origin`, 19 commits on `origin/release-1.13`,
+1. `gc-regions` exists on `origin`, 20 commits on `origin/release-1.13`,
    every commit builds, and `git diff gc-regions-flat gc-regions` is empty.
 2. `test/runtests.jl gc core threads misc` is green on the tip.
 3. `MEASUREMENTS.md` holds M1 to M12 with data files under `results/data/`,
@@ -689,6 +837,19 @@ The plan is implemented when all of these hold:
 7. `HISTORY.md` has "Found during the tidy" and "Deferred". Every bug in
    the first has a test and a fix in the series; or the section says, in
    one sentence, that the review found none.
+
+Status on 2026-09-04 12:40: items 1, 2, 4, 5, 6 and 7 hold. Item 1:
+`origin/gc-regions` is `6159d71b25`, 20 commits on `origin/release-1.13`,
+Check 1 empty; every commit builds by Check 2 on the second cut for commits
+1 to 13 (tree identity with the fourth cut), and the build inputs of commits
+14 to 20 equal those of commit 13 (`git diff --quiet fdf84973a2 6159d71b25
+-- . ':!test' ':!doc' ':!contrib'`), and the tip built alone. Item 2: the
+four groups pass on the binary of the third cut's tip, whose build and test
+inputs are the fourth cut's. Item 3 holds except "measured on the tip's
+SHA": the tables ran on `48603f334c`, before the B16 fix, and
+`MEASUREMENTS.md` says so and says why they stand (D15). Item 5: the four
+`backup/*-2026-09-03` tags and `release-1.13` are on `origin`; the three
+cut tags and `gc-regions-flat` are local.
 
 ## Risks
 
@@ -711,13 +872,16 @@ The plan is implemented when all of these hold:
 
 ## The pull request text
 
-Title: **GC: memory regions — free one lifetime's objects in O(1), beside the stock collector**
+Final on 2026-09-04. Every number repeats a table of `MEASUREMENTS.md`.
 
-> This adds regions to the stock collector. A region is the set of objects
-> a thread allocates while a region window is open. A reset returns the
-> region's pages in O(1), with no trace. The stock collector never traces a
-> region's pages; the two coexist with no contract between them. Regions
-> form a declared tree (eight today); sibling regions are isolated.
+Title: **GC: memory regions — free the objects of one lifetime in O(1), beside the stock collector**
+
+> This branch adds regions to the stock collector. A region is the set of
+> objects that a thread allocates while a region window is open. A reset
+> returns the pages of the region in O(1), with no trace. The stock collector
+> never traces the pages of a region; the two coexist with no contract
+> between them. Regions form a declared tree (eight today); sibling regions
+> are isolated.
 >
 > One rule keeps it safe: a reference must point to an object of equal or
 > longer lifetime. A checked write barrier turns a violation into a
@@ -727,42 +891,68 @@ Title: **GC: memory regions — free one lifetime's objects in O(1), beside the 
 > without bound.
 >
 > **Why.** Hard real-time loops: a discrete-event simulation that drives
-> hardware. On a 5-million-event loop with ~1.7 KB of garbage per event, on
-> an isolated core, the longest pause goes from ⟨3957⟩ µs (stock) to ⟨12⟩ µs
-> (regions, no census) — [MEASUREMENTS.md](⟨link⟩), figure 1.
+> hardware. On a 5-million-event loop with about 1.7 KB of garbage per
+> event, on an isolated core, the longest pause goes from 3,831 µs (stock)
+> to 16 µs (regions, no census) or 55 µs (regions, with a census):
+> [MEASUREMENTS.md](https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/MEASUREMENTS.md),
+> M4, `results/plots/max_pause.svg`.
 >
-> **Cost when unused.** ⟨M1 range⟩ against vanilla on the GCBenchmarks
-> subset, 1 and 4 threads; one predicted branch per pointer store (the
-> barrier is armed only while a region exists); `JL_NO_REGION_ALLOC` and
-> `JL_NO_REGION_STORE_BARRIER` compile both to literal zero.
+> **Cost when unused.** On the GCBenchmarks subset (nine benchmarks, 1 and
+> 4 threads) the ratio regions / vanilla is 0.96 to 1.03 on eight of them,
+> inside the round-to-round spread of each; `many_refs` runs at 0.92 because
+> of a stock-path fix in this branch (a deferred collection re-arms its
+> trigger). The unit costs are not zero (M2): a pointer store pays one flag
+> load and a predicted branch (0.41 ns against 0.32 ns); an object
+> constructed with two pointer fields pays a barrier that vanilla omits
+> (8.2 ns against 7.1 ns); the stock mark pays about 1 %.
+> `JL_NO_REGION_ALLOC` and `JL_NO_REGION_STORE_BARRIER` compile both halves
+> to nothing.
 >
-> **Cost when used.** A window pair ⟨n⟩ ns, a reset ⟨n⟩ ns per page, the
-> armed barrier ⟨n⟩ ns, a construction store +⟨1.4⟩ ns worst case. The
-> wall-time win appears only where discarded allocation per unit of work
-> dominates: the demonstrators show the crossover honestly (a bare
-> optimistic insert loses at 0.44x; heavy speculation wins up to 1.63x).
-> A region holds its garbage until the reset, so peak memory is ⟨M10 RSS
-> ratio⟩ of the stock run on the demonstrators.
+> **Cost when used.** A window pair 10.5 ns, a reset under 30 ns (the two
+> clock reads are 10 of it), an armed store 1.4 ns, an allocation in a
+> region 3.7 ns against 3.3 ns in the stock pool of the same process (M2).
+> The wall-time win appears only where the discarded allocation per unit of
+> work dominates, and the demonstrators show the crossover (M10): a bare
+> optimistic insert loses at 0.44x; the same insert with heavy speculation
+> wins at 1.98x. A region holds its garbage until the reset, so the peak RSS
+> of the demonstrators is within 9 % of the stock run, above it on one point
+> (C at work=256, 594 MB against 547 MB).
 >
-> **What it is not.** No Base API yet — the Julia face is a `ccall` wrapper
-> in `contrib/memory-regions/regions.jl` and uses region integers. No
-> compilation inside a window (compiler allocations go to region 0). A
+> **What it is not.** No Base API: the Julia face is a `ccall` wrapper in
+> `contrib/memory-regions/regions.jl`, and the runtime API takes region
+> integers. Base changes in one place: the slow path of `OncePerProcess`
+> and `OncePerThread` in `base/lock.jl` runs with the window suspended, so
+> the scheduler task and the sticky work queue a first `wait` on a thread
+> makes land in region 0. No compilation inside a window: inference,
+> compilation, the method-cache miss path, and a new type instantiation run
+> in region 0. A
 > `WeakRef` to a region object and a system image inside a window are
 > refused. Measured on Linux x86-64 only. Based on `v1.13.0-rc4`; a port to
 > `master` is separate work.
 >
-> **How to read it.** Twelve runtime commits, one idea each, in
-> `src/gc-regions.c` with small hooks in the stock collector; then tests
+> **How to read it.** Thirteen runtime commits, one idea each, in
+> `src/gc-regions.c` with small hooks in the stock collector; then the tests
 > (`test/gc/regions_*.jl`), the devdoc (`doc/src/devdocs/gc-regions.md`), the
 > benchmarks, the demonstrators, the measurements with their data and plots,
-> and the history. The history document records every detour, every
-> rejected idea, and ⟨the bugs the final review found, with their tests⟩;
-> the four development branches are kept under `backup/` tags.
+> and the history.
+> [HISTORY.md](https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/HISTORY.md)
+> records every detour and every rejected idea, and the sixteen bugs that
+> the final review and its test gate found in the development runtime, each
+> with a test in the series; three of them were silent heap corruption. The
+> tables of `MEASUREMENTS.md` ran on `48603f334c`, a commit of the flat
+> tree before the last fix; the document says what the tip adds and why the
+> tables stand for it. The four
+> development branches are kept under `backup/` tags.
 >
-> Branch: ⟨link to gc-regions⟩ · Design: ⟨link to devdoc⟩ · Measurements:
-> ⟨link⟩ · History: ⟨link⟩ · contrib README: ⟨link⟩
+> Branch: https://github.com/levy/julia/tree/gc-regions ·
+> Design: https://github.com/levy/julia/blob/gc-regions/doc/src/devdocs/gc-regions.md ·
+> Measurements: https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/MEASUREMENTS.md ·
+> History: https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/HISTORY.md ·
+> contrib README: https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/README.md
 >
-> Questions I would like answered by review: whether the barrier's placement
-> in `cgutils.cpp` and `llvm-late-gc-lowering.cpp` is the one you would
-> choose; whether the task-follows-window rule in `task.c` is acceptable;
-> whether a Base API is wanted before or after the runtime.
+> Questions for the review: whether the placement of the barrier in
+> `cgutils.cpp` and `llvm-late-gc-lowering.cpp` is the one you would choose;
+> whether the task-follows-window rule in `task.c` is acceptable; whether
+> `jl_gc_region_collect` on a region never used on a heap must return
+> `EINVAL`, as it does, where `jl_gc_region_reset` returns 0 for the same
+> region; whether a Base API is wanted before or after the runtime.
