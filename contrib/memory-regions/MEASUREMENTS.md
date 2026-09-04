@@ -7,13 +7,19 @@ other input. `results/run_all.sh` runs every measurement below in order and
 writes the data files; the logs go to `results/log/`, which git ignores. A
 number in the prose repeats a number of a table.
 
-The two binaries: **regions** is a julia built from the tip of this branch;
-**vanilla** is a julia built from the base commit, `8f33e09afe`
-(`v1.13.0-rc4`), with nothing else changed. A row that names only one binary
-ran on regions. The `sha` in `context.tsv` names the commit of the working
-tree that the run used: a commit of the flat tree from which the commits of
-this branch were built, reachable from the tag `gc-regions-flat`. Its `src/`
-is the `src/` of the tip.
+The two binaries: **regions** is a julia built from `48603f334c`, a commit of
+the flat tree from which the commits of this branch were built, reachable
+from the tag `gc-regions-flat`; **vanilla** is a julia built from the base
+commit, `8f33e09afe` (`v1.13.0-rc4`), with nothing else changed. A row that
+names only one binary ran on regions. The `sha` in `context.tsv` names the
+regions commit. The tip of this branch differs from that commit, in `src/`
+and `base/`, by one fix that came out of the final test gate: the slow path
+of `OncePerProcess` and `OncePerThread` in `base/lock.jl` runs with the window
+suspended, through two entry points in `src/gc-common.c`, and
+`jl_init_root_task` initializes the two region fields of the root task. That
+slow path runs at most once per process and once per thread, before the fix
+and after it; the fix adds one suspend and one resume around it. No measured
+loop runs it more than once, so the tables stand for the tip.
 
 The machine: one Linux x86-64 host, shared. Single-thread rows run pinned to
 CPU 29, a core the kernel keeps quiet: `nohz_full=13,29`, `rcu_nocbs=13,29`,
