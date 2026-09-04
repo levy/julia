@@ -31,7 +31,7 @@
 # the region, so only the task stacks are walked.
 
 region_set(n)     = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-region_reset(n)   = ccall(:jl_gc_region_reset, UInt64, (Cint,), n)
+unsafe_region_reset(n)   = ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n)
 region_collect(n) = ccall(:jl_gc_region_collect, Int64, (Cint,), n)
 region_coop(n)    = ccall(:jl_gc_region_collect_coop, Int64, (Cint,), n)
 region_verify(n)  = ccall(:jl_gc_region_verify, Cint, (Cint,), n)
@@ -122,7 +122,7 @@ end
     _touch(scratch)
     acc = scratch[1] + scratch[end]
     use_regions && region_set(0)
-    use_regions && region_reset(EVENT)
+    use_regions && unsafe_region_reset(EVENT)
     # Simulation-region turnover: the replaced record becomes garbage.
     use_regions && region_set(SIM)
     slot = (i - 1) % K + 1
@@ -142,7 +142,7 @@ end
     _touch(scratch)
     acc = scratch[1] + scratch[end]
     region_set(0)
-    region_reset(EVENT)
+    unsafe_region_reset(EVENT)
     slot = (i - 1) % K + 1
     r = table[slot]
     r.id = i
@@ -205,7 +205,7 @@ function main()
                 handle!(warm, i, use_regions)
             end
         end
-        use_regions && region_reset(EVENT)
+        use_regions && unsafe_region_reset(EVENT)
     end
     # Per-event wall time, for the pair a simulator compares: `real` and
     # `auto` (and the in-place pair `batch` / `autopool`). Preallocated
@@ -258,7 +258,7 @@ function main()
         end
         if (variant == "batch" || variant == "real") && i % B == 0
             region_set(0)
-            region_reset(EVENT)
+            unsafe_region_reset(EVENT)
             # The real-world census: at a slice boundary the engine owns,
             # with the window closed, cooperative - no stop-the-world.
             if variant == "real" && census_on && i % every == 0
@@ -313,7 +313,7 @@ function main()
 
     if (variant == "batch" || variant == "real") && events % B != 0
         region_set(0)
-        region_reset(EVENT)
+        unsafe_region_reset(EVENT)
     end
     if variant == "sched"
         f0 = time_ns(); GC.gc(true); f1 = time_ns()

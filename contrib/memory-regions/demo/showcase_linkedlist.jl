@@ -5,7 +5,7 @@
 # tracing it to death.
 # Run:  julia showcase_linkedlist.jl [stock|region] [mb]
 region_set(n)   = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-region_reset(n) = ccall(:jl_gc_region_reset, UInt64, (Cint,), n)
+unsafe_region_reset(n) = ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n)
 const EVENT = 2
 
 # When REGIONS_TSV names a file, append one row of numbers to it; the first
@@ -49,7 +49,7 @@ function run(mode, n)
         region_set(EVENT)
         k = list(n)
         region_set(0)
-        region_reset(EVENT)
+        unsafe_region_reset(EVENT)
         GC.enable(true)
         return k
     end

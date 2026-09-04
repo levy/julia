@@ -5,7 +5,7 @@
 # the census disarmed the region grows without bound; armed, it stays bounded
 # and the live accumulator survives intact.
 @noinline region_set(n)             = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n)           = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n)           = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline region_pages(n)           = Int(ccall(:jl_gc_region_pages, Cint, (Cint,), n))
 @noinline region_census!(pages)     = ccall(:jl_gc_region_census_threshold, Cvoid, (Cint,), pages)
 @noinline quarantined(n)            = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
@@ -39,7 +39,7 @@ mutable struct Sm; v::Int; end
         r % 100 == 0 && (pages_out[r ÷ 100] = p)
     end
     region_set(0)
-    region_reset(LEAF)
+    unsafe_region_reset(LEAF)
     (acc, peak, pages_out)
 end
 

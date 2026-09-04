@@ -51,7 +51,7 @@ function run_paced!(network, use_regions::Bool, latencies_ns::Vector{Int64},
         gc0 = Base.gc_num().total_time
         t1 = time_ns()
         event.action(network, event.environment)
-        use_regions && region_reset(1)
+        use_regions && unsafe_region_reset(1)
         t2 = time_ns()
         gc1 = Base.gc_num().total_time
         @inbounds latencies_ns[count] = Int64(t2 - t1)
@@ -106,7 +106,7 @@ function main()
         network, sink = ModelScratch.build(relays, deliveries; use_regions = true)
         warm_late = Vector{Int64}(undef, warm_n)
         run_paced!(network, true, warm_lat, warm_late, warm_gc)
-        region_reset(1)
+        unsafe_region_reset(1)
         # No collection happens once region pages exist. The report path
         # compiles here, before the measured phase.
         report("warm", warm_lat, warm_late, warm_gc, warm_n)

@@ -19,7 +19,7 @@ using .DemoCommon
 using Printf
 
 @noinline region_set(n)        = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n)      = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n)      = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline region_parent!(c, p) = ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), c, p)
 @noinline region_of(x)         = Int(ccall(:jl_gc_region_of, Cint, (Any,), x))
 @noinline quarantined(n)       = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
@@ -78,13 +78,13 @@ function commit_insert!(sh::Shared, key::Int, leaf::Int, work::Int)
         cand = pinsert(old, key)                 # the path-copy, in the leaf
         leaf != 0 && region_set(0)
         if (@atomic sh.root) !== old             # validate: someone committed first
-            leaf != 0 && region_reset(leaf)      # discard the attempt, leaf-only garbage
+            leaf != 0 && unsafe_region_reset(leaf)      # discard the attempt, leaf-only garbage
             retries += 1
             continue
         end
         newroot = leaf != 0 ? copy_spine_r0(cand) : cand   # winner copies its spine to r0
         repl = @atomicreplace sh.root old => newroot
-        leaf != 0 && region_reset(leaf)
+        leaf != 0 && unsafe_region_reset(leaf)
         repl.success && return retries
         retries += 1                              # rare CAS race: retry
     end

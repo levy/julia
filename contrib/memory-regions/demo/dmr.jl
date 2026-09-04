@@ -15,7 +15,7 @@ using .DMRCore, .DemoCommon
 using Printf
 
 @noinline region_set(n)        = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n)      = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n)      = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline region_parent!(c, p) = ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), c, p)
 @noinline quarantined(n)       = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
 leaf_of(tid) = tid
@@ -79,7 +79,7 @@ function refine_optimistic!(m, nworkers, tree::Bool, work::Int; maxtris=200000)
         Threads.@threads for k in 1:length(batch)
             leaf = tree ? leaf_of(Threads.threadid()) : 0
             plans[k] = speculate(m, batch[k], leaf, work)
-            leaf != 0 && region_reset(leaf)          # the speculation's leaf garbage, dropped
+            leaf != 0 && unsafe_region_reset(leaf)          # the speculation's leaf garbage, dropped
         end
         # PHASE 2: commit in deterministic seed order; overlapping cavities abort
         consumed = Set{Int}()

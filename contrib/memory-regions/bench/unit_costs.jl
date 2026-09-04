@@ -18,7 +18,8 @@
 #   construct_two     Two(Ref(i), Ref(i+1)): two boxed fields, constructed   ns/object
 #   alloc_stock       Ref(i) into a ring in region 0, slices of 100 000       ns/object
 #   alloc_region      the same slices in region 1, one reset per slice        ns/object
-#   reset_slice       the reset of a region that holds 1000 Refs             ns/reset
+#   reset_slice       the unsafe reset of a region that holds 1000 Refs      ns/reset
+#   reset_slice_checked  the same reset through the checked entry              ns/reset
 #   stock_mark        GC.gc() over a live set of 2^21 tree nodes + 10^6 Refs ms/collection
 #
 # The children of the stores vary, so the compiler cannot hoist the barrier
@@ -46,8 +47,8 @@ region_quarantined(n) = ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)
 # A refused reset (a code above typemax - 16) leaves the region full, and
 # the next slice then grows the region instead of reusing its pages: the
 # row would measure page faults. Every reset of the script is checked.
-function region_reset(n)
-    r = ccall(:jl_gc_region_reset, UInt64, (Cint,), n)
+function unsafe_region_reset(n)
+    r = ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n)
     r > typemax(UInt64) - 16 && error("the reset of region $n was refused with code $(reinterpret(Int64, r))")
     return r
 end
@@ -133,7 +134,7 @@ end
     dst = make_ring()
     copy_loop(dst, src, iters)
     region_set(0)
-    region_reset(1)
+    unsafe_region_reset(1)
     return iters
 end
 
@@ -154,8 +155,8 @@ end
         region_set(1)
     end
     region_set(0)
-    region_reset(2)
-    region_reset(1)
+    unsafe_region_reset(2)
+    unsafe_region_reset(1)
     return iters
 end
 
@@ -180,7 +181,7 @@ end
         fill!(ring, nothing)
         alloc_loop(ring, SLICE)
         region_set(0)
-        region_reset(1)
+        unsafe_region_reset(1)
     end
     return iters
 end
@@ -204,8 +205,28 @@ function reset_slice()
         for _ in 1:2000
             fill_slice()
             t0 = time_ns()
-            region_reset(1)
+            unsafe_region_reset(1)
             t = min(t, Float64(time_ns() - t0))
+        end
+    end
+    return t
+end
+
+# The same reset through the checked entry, which stops the world, marks
+# from the execution roots of every thread with the region filter, and frees
+# in the same pause. That check is what stands between a live local and a
+# freed object, and this row is its price. The two rows are the two entries
+# a program chooses between, so the table carries both.
+function reset_slice_checked()
+    t = Inf
+    for _ in 1:N
+        for _ in 1:200
+            fill_slice()
+            t0 = time_ns()
+            r = ccall(:jl_gc_region_reset, UInt64, (Cint,), 1)
+            t = min(t, Float64(time_ns() - t0))
+            r > typemax(UInt64) - 16 &&
+                error("the checked reset was refused with code $(reinterpret(Int64, r))")
         end
     end
     return t
@@ -248,10 +269,10 @@ foreach(loop -> loop(DST, 1000), CONSTRUCT_LOOPS)
 foreach(loop -> alloc_stock_round(loop, 1000), ALLOC_LOOPS)
 if !STOCK
     make_ring()
-    window_loop(10); region_reset(1); switch_loop(10)
+    window_loop(10); unsafe_region_reset(1); switch_loop(10)
     foreach(loop -> copy_region_round(loop, 1000), COPY_LOOPS)
     foreach(loop -> alloc_region_round(loop, 1000), ALLOC_LOOPS)
-    fill_slice(); region_reset(1)
+    fill_slice(); unsafe_region_reset(1)
 end
 
 row("store_disarmed", parse(Float64, strip(child)), "ns/store")
@@ -266,6 +287,7 @@ row("alloc_stock", best_copy(loop -> alloc_stock_round(loop, ITERS), ALLOC_LOOPS
 if !STOCK
     row("alloc_region", best_copy(loop -> alloc_region_round(loop, ITERS), ALLOC_LOOPS), "ns/object")
     row("reset_slice", reset_slice(), "ns/reset")
+    row("reset_slice_checked", reset_slice_checked(), "ns/reset")
 end
 row("stock_mark", stock_mark(), "ms/collection")
 

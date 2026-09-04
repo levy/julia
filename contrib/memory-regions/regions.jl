@@ -5,7 +5,7 @@
 
 module Regions
 
-export region_set, region_reset, region_reserve, @with_region, region_current, region_of,
+export region_set, region_reset, unsafe_region_reset, region_reserve, @with_region, region_current, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
        region_parent!, region_tree!, region_parent_of, region_reset_global,
        region_census_threshold!, region_pages
@@ -70,12 +70,32 @@ end
 # references in registers where the precise stack scan cannot see them. A
 # Julia call is a safepoint boundary -- the caller spills every live value
 # into its GC frame, which is exactly what the rule-5 scan reads.
-# region_reset returns the pages reclaimed, or a refusal code cast to
-# UInt64 (reinterpret(Int64, r) reads it): -1 a bad region number, -2 the
-# region is current or finalizers run on this thread, -5 quarantined by an
-# escape, -7 a live child region exists (reset it first), -8 an execution
-# root references into the region (debug mode).
+# region_reset checks the execution roots before it frees: the escape
+# barrier sees the heap and not the stack, so this check is what stands
+# between a live local and a freed object. It stops the world for the scan
+# and the free together.
+#
+# The reset must not run in a frame that still names one of the region's
+# objects. A Julia frame roots a local until the frame ends, whether or not
+# the program still reads it, so build and use the region's objects in one
+# function and reset after it returned. A reset under such a root returns
+# -8; run region_debug(1) to have the runtime name the objects it found.
+#
+# It returns the pages reclaimed, or a refusal code cast to UInt64
+# (reinterpret(Int64, r) reads it): -1 a bad region number, -2 the region is
+# current or finalizers run on this thread, -3 the safepoint race was lost
+# too often, -5 quarantined by an escape, -7 a live child region exists
+# (reset it first), -8 an execution root references into the region.
 @noinline region_reset(n::Int)   = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+# The reset without the root check and without its pause. A reference from a
+# stack slot, a register or a parked task's stack is left pointing into freed
+# memory, and the next collection reports CORPSE and aborts.
+#
+# Use it where the pause of the checked entry is the thing being measured, or
+# in a loop that has shown with the checked entry that no root survives its
+# window. The benchmarks and the demonstrators of this folder use it for that
+# reason; a program that has not made that case uses region_reset.
+@noinline unsafe_region_reset(n::Int) = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 # The cross-heap reset of a shared region (a trunk): stops the world and
 # resets every thread heap's instance as one act, because trunk objects on
 # different heaps legally reference each other. The same codes as the

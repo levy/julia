@@ -61,7 +61,7 @@ function run_paced!(network, events::Int, hist::Vector{Int64},
         while time_ns() < deadline; end
         t1 = time_ns()
         event.action(network, event.environment)
-        pages = region_reset(1)
+        pages = unsafe_region_reset(1)
         t2 = time_ns()
         lat = Int64(t2 - t1)
         @inbounds hist[hist_index(lat)] += 1
@@ -106,7 +106,7 @@ function main()
     run_paced!(network, 10_000, hist,
                sample_t_s, sample_rss_mb, sample_live_mb,
                sample_pages, sample_misses)
-    region_reset(1)
+    unsafe_region_reset(1)
     GC.gc()                        # legal: quiesced, no window open
     GC.enable(false)
     fill!(hist, 0)

@@ -43,7 +43,7 @@ function run_regions!(network, latencies_ns::Vector{Int64}, gc_ns::Vector{Int64}
         gc0 = Base.gc_num().total_time
         t0 = time_ns()
         event.action(network, event.environment)   # the model scopes region 1
-        region_reset(1)
+        unsafe_region_reset(1)
         t1 = time_ns()
         gc1 = Base.gc_num().total_time
         @inbounds latencies_ns[count] = Int64(t1 - t0)
@@ -93,7 +93,7 @@ function main()
         count = run_measured!(network, latencies, gc_ns)
     elseif variant == "regions"
         run_regions!(network, warm_lat, warm_gc)
-        region_reset(1)
+        unsafe_region_reset(1)
         # Once region pages exist, the collector must not run again in this
         # process: reset is the region pages' only collector. The warm phase
         # is small, so nothing needs collecting; the report path is compiled

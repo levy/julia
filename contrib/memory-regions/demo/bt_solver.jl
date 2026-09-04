@@ -2,7 +2,7 @@
 # collector, on the SAME code. A batch of independent random instances; each
 # instance's search allocates freely (a `Set` of used colours per node, a
 # fresh assignment per instance), and in region mode the whole instance's
-# garbage dies at one `region_reset`. The answer copied out is a small Int
+# garbage dies at one `unsafe_region_reset`. The answer copied out is a small Int
 # checksum (region 0). In stock mode the same garbage falls to the collector.
 #
 # This is the natural, readable, allocating form -- the form a non-expert
@@ -15,7 +15,7 @@ using .DemoCommon
 using Printf
 
 @noinline region_set(n)   = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n) = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n) = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline quarantined(n)  = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
 const LEAF = 1
 
@@ -77,7 +77,7 @@ function batch_region(ninst, n, p, K)
         region_set(LEAF)
         acc += solve_one(idx, n, p, K)     # all of solve_one's garbage is in the leaf
         region_set(0)
-        region_reset(LEAF)                 # dropped wholesale
+        unsafe_region_reset(LEAF)                 # dropped wholesale
     end
     acc
 end

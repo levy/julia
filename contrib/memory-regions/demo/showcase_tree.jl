@@ -17,7 +17,7 @@
 # count.
 #   run with: julia -t4 showcase_tree.jl
 @noinline region_set(n)        = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n)      = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n)      = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline region_parent!(c, p) = ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), c, p)
 @noinline quarantined(n)       = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
 
@@ -62,7 +62,7 @@ mutable struct Message; payload::Vector{Int}; target::Node; end
             m.target.state += length(m.payload)   # a region-0 node write: legal
         end
         leaf != 0 && region_set(0)
-        leaf != 0 && region_reset(leaf)            # the whole event dies at once
+        leaf != 0 && unsafe_region_reset(leaf)            # the whole event dies at once
     end
 end
 

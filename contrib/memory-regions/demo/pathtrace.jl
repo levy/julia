@@ -3,7 +3,7 @@
 # Each pixel's samples allocate per-bounce hit records (the natural allocating
 # form -- a mutable Hit per intersection, dynamic dispatch on an abstract
 # Material); in region mode the pixel's whole bounce garbage dies at one
-# region_reset. The surviving output is a Vec3 colour (isbits) stored into the
+# unsafe_region_reset. The surviving output is a Vec3 colour (isbits) stored into the
 # region-0 image buffer -- a legal store. In stock mode the same garbage falls
 # to the collector.
 #
@@ -15,7 +15,7 @@ using .DemoCommon
 using Printf
 
 @noinline region_set(n)        = ccall(:jl_gc_region_set, Cint, (Cint,), n)
-@noinline region_reset(n)      = UInt64(ccall(:jl_gc_region_reset, UInt64, (Cint,), n))
+@noinline unsafe_region_reset(n)      = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 @noinline region_parent!(c, p) = ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), c, p)
 @noinline quarantined(n)       = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n)) != 0
 
@@ -106,7 +106,7 @@ function render!(image, spheres, samples, leaf_for)
                 col = col + ray_color(spheres, origin, d, DEPTH, r)   # Hits land in the leaf
             end
             leaf != 0 && region_set(0)
-            leaf != 0 && region_reset(leaf)
+            leaf != 0 && unsafe_region_reset(leaf)
             @inbounds image[j, i] = col * (1.0 / samples)             # isbits store into region 0
         end
     end
