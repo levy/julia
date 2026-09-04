@@ -293,10 +293,18 @@ One commit that holds the whole runtime on the new base, before any split.
 
 ### Step 2 — the file move and the critical review
 
-- [ ] Create `src/gc-regions.c` and `src/gc-regions.h`; move the region block
+- [x] Create `src/gc-regions.c` and `src/gc-regions.h`; move the region block
       and the region-only helpers out of `gc-stock.c`; add `gc-regions` to
-      the `SRCS` list of `src/Makefile`. Apply the D4 bound.
-- [ ] Review the runtime, function by function, with the questions of "The
+      the `SRCS` list of `src/Makefile`. Apply the D4 bound. Done: the move
+      made one `static` function of `gc-stock.c` visible
+      (`jl_gc_free_memory`) and added one non-static helper
+      (`gc_queue_execution_roots`, the thread-local roots plus the parked
+      tasks of one thread, for the census); both are declared in
+      `gc-stock.h`. Well under the bound of 15. The other stock helpers the
+      region code uses were already non-static (`gc_mark_finlist`,
+      `gc_mark_loop_serial`) or are `STATIC_INLINE` in `gc-stock.h`.
+      `gc-stock.c` keeps the hooks listed at the end of the audit table.
+- [x] Review the runtime, function by function, with the questions of "The
       stance along the way". Keep a review log in the scratchpad: one line
       per function, the verdict (clean / cleanup / bug / deferred idea).
       Known places to look first: the `gf.c` wrappers (the window across an
@@ -305,71 +313,169 @@ One commit that holds the whole runtime on the new base, before any split.
       meaning each), `jl_error` reached from a `JL_NOTSAFEPOINT` path, the
       `saved_region` of the census across a task switch, the census hook on
       the allocation path, the quarantine mask against `JL_GC_MAX_REGIONS`.
-- [ ] Fix every bug the review finds, as the stance says: test first, fix
-      in the flat tree, finding in `HISTORY.md`.
-- [ ] Clean the source against three rules: it describes what is (no
+      Done: `review.md` in the scratchpad: 12 bugs (B1 to B12), 15
+      cleanups, 5 stock-path changes that need their own series commit,
+      3 deferred items. The findings go into `HISTORY.md` in step 5.
+- [x] Fix every bug the review finds, as the stance says: test first, fix
+      in the flat tree, finding in `HISTORY.md`. Done: 12 fixes, each with
+      a test case (`newtests/b*.jl`, 9 scripts). Every case fails on the
+      truth's binary (one hang, three segfaults, one abort, four failed
+      checks) and passes on the new binary. The cases become part of the
+      five test scripts in step 3.
+- [x] Clean the source against three rules: it describes what is (no
       "prototype", no "was", no dates, no stage numbers); every exported
       entry point has a doc comment that states its contract, its return
       codes, and its thread rules; every entry point is used by a test or a
       measurement. Write the audit table into `HISTORY.md`: entry point,
-      fate (keep / rename / drop), reason. Apply D10.
-- [ ] Build. Run the 14 scripts again, plus the new cases.
-- [ ] Measure the four unit costs (window open and close, reset, disarmed
+      fate (keep / rename / drop), reason. Apply D10. Done: the audit table
+      is `audit.md` in the scratchpad (18 entry points kept, 1 renamed, 2
+      dropped, every hook listed); the refusal codes are one enum in
+      `gc-regions.h` (EINVAL -1 to EROOT -8). It moves into `HISTORY.md` in
+      step 5.
+- [x] Build. Run the 14 scripts again, plus the new cases. Done: 14/14
+      `ALL PASS` and 9/9 `ALL PASS` on the new binary
+      (`correctness-out-flat2.log`, `newtests-out-flat2.log`).
+- [x] Measure the four unit costs (window open and close, reset, disarmed
       barrier, allocation in a region) and the zero-cost sweep on core 29,
       against the truth's binary, interleaved, min of 5. The move must not
-      change them beyond noise (2 %).
-- [ ] Commit on `gc-regions-flat`.
-- [ ] Check: `git diff <truth> gc-regions-flat -- src` contains only lines
-      that the audit table or a finding in `HISTORY.md` explains.
+      change them beyond noise (2 %). Done, twice (`bench/unit_costs.jl`,
+      10 rows, `unit-costs-out/`, `unit-costs-out2/`). The first run found
+      two things worth a fix and a rule:
+      - The stock mark was +6.4 %: the B10 fix loaded the census filter
+        once more per object. Fixed: `gc_mark_obj8/16/32` load the filter
+        once per object and pass it down, like the array loop. After the
+        rebuild the stock mark is at parity (64.45 vs 64.55 ms, 1.002).
+      - A tight JIT loop's cost is quantized by code placement: the same
+        native code runs at 1.37, 1.44 or 1.64 ns per store in different
+        positions (`smoke/store_armed_layout.jl`, four pads, two binaries).
+        The script compiles 8 copies of each tight loop and reports the min
+        over the copies. Rule for `bench/README.md`: an A/B on one copy
+        compares placements, not code.
+      Second run: `store_disarmed` 1.000, `construct_two` 1.007,
+      `window_pair` 0.981, `reset_slice` 1.000, `stock_mark` 1.002. Beyond
+      the bound with a cause: `store_region` 0.870, `alloc_region` 0.840,
+      `switch_pair` 0.927 are gains because GCC inlines `page_metadata` in
+      the slow path of `jl_gc_region_wb` in its own translation unit;
+      `store_armed` 1.054 and `alloc_stock` 1.046 (+0.07 and +0.15 ns per
+      armed store) are the placement of the C fast path, which is
+      instruction-identical in both libraries (`wb_*.s` in the scratchpad)
+      and starts 16-byte aligned in both. Not a source change. The full
+      tables and the reasons are in `review.md` ("Unit costs"), for
+      `HISTORY.md`.
+- [x] Commit on `gc-regions-flat`. Done: `fe0c579e36` (the flat port),
+      `dad6679f67` (the review), `c061516430` (the doc comments),
+      `33beda0084` (the census-filter hoist); the wip commits become the
+      series in step 7.
+- [x] Check: `git diff <truth> gc-regions-flat -- src` contains only lines
+      that the audit table or a finding in `HISTORY.md` explains. Done, as
+      an interdiff, because the truth sits on an older base than rc4: the
+      region diff of the truth against `a861d5fe28` versus the region diff
+      of the flat against `8f33e09afe`, file by file (`interdiff/` in the
+      scratchpad). Every differing line is named by the audit table, a bug
+      B1 to B12, or a cleanup; the check found four cleanups that the
+      review log did not list yet, now C16 to C19 (the `saved > 0` restore
+      in gf.c, the `JL_NO_REGION_STORE_BARRIER` macro of the C-side barrier
+      hooks, the `jl_gc_region_barrier_on` rename, the
+      `jl_gc_region_task_switch` call in task.c).
 
 ### Step 3 — the tests
 
-- [ ] Write the five scripts and `regions_api.jl` from the 14 contrib tests.
+- [x] Write the five scripts and `regions_api.jl` from the 14 contrib tests.
       Each assertion keeps its message. A script exits 1 at the first
-      failure and prints the assertion. `regions_tree.jl` and
-      `regions_census.jl` skip the cases that need a thread count the run
-      does not have, and print `skip: needs -t4` for each.
-- [ ] Review each test as a reviewer: does it assert the property, or does
-      it only run? Add the negative case where one is missing (the store
-      that must quarantine, the reset that must refuse, the census that
-      must not free a live object). A property the documents promise and no
-      test covers gets a test, or the promise leaves the documents.
-- [ ] Add `@testset "regions"` to `test/gc.jl` with five `run_gctest` lines.
-- [ ] `taskset -c 24-27 ./julia test/runtests.jl gc` under `MemoryMax=8G`
-      with a 30-minute timeout. Green.
-- [ ] Remove the 14 scripts from `contrib/`; `ctor_gap_demo.jl` becomes a
-      case of `regions_escape.jl`.
-- [ ] Commit on `gc-regions-flat`.
-- [ ] Check: the five scripts run in the matrix of `run_gctest` (60 runs),
-      all exit 0; the count of assertions equals the count in the 14 scripts
-      (write both numbers here).
+      failure and prints the assertion. Done. No case needs a thread count:
+      every case runs at every thread count of the matrix, so no script
+      prints a skip line. The two multi-thread cases (`tree_multithread_leaves`,
+      `census_parked_task`) use `Threads.@threads :static` and
+      `Threads.@spawn` and hold at `-t 1` as well.
+- [x] Review each test as a reviewer: does it assert the property, or does
+      it only run? Done, one pass per script. Findings that changed a
+      script: the 5000-task census case moved from the top level into
+      `census_many_tasks()` (its top-level placement had a rationale that
+      was not a property); the parked-task handshake uses `Base.Event`
+      instead of `Channel{Nothing}(1)` (a `put!` inside a window grows the
+      channel's buffer in the region, see the test pitfalls) and lost an
+      unexplained `GC.enable(false)`; `tree_multithread_leaves` runs
+      `:static` because a region is reset on the heap that allocated it and
+      a worker that waits for the lock must not migrate; the helper
+      `tree_make_b7` lost its bug-number name. The review of the census
+      script found bug **B13** (`review.md`): the census leaves every old
+      task in the remset of the census thread, and the next stock
+      collection frees the page of a task that sits alone on its page (the
+      root task of a GC mark thread). Root-caused with trace
+      instrumentation (reverted), fixed in `region_census_mark` (the remset
+      length and pointer count are restored), test `census_leaves_remsets`
+      for the stop-the-world and the cooperative census. Without the fix
+      the script dies with SIGSEGV at `-t 2 --gcthreads=2` and `-t 4
+      --gcthreads=4`; with it every configuration passes.
+- [x] Add `@testset "regions"` to `test/gc.jl` with five `run_gctest` lines.
+- [x] `taskset -c 24-27 ./julia test/runtests.jl gc` under `MemoryMax=8G`
+      with a 30-minute timeout. Green: `Overall | 129 | 129`, 70 s
+      (`gc-suite-run.log` in the scratchpad).
+- [x] Remove the 14 scripts from `contrib/`; `ctor_gap_demo.jl` becomes a
+      case of `regions_escape.jl`. Done as: step 4 does not port the 14
+      scripts nor `ctor_gap_demo.jl` to the new branch (the flat branch has
+      no `contrib/memory-regions/` yet); the ctor-gap case is
+      `ctor_gap_quarantines_region5` in `regions_escape.jl`.
+- [x] Commit on `gc-regions-flat`. Done: `37e94a877d` (the B13 fix, folds
+      into series commit 6) and `3de985b15c` (the tests, series commit 13).
+- [x] Check: the five scripts run in the matrix of `run_gctest` (60 runs),
+      all exit 0 — 12 passes per script in the log. Assertion counts: the
+      14 contrib scripts hold 91 static assertion lines (`check(` and
+      `@test`), the 9 `newtests/b*.jl` scripts 60 more; the five new
+      scripts hold 226 static `check(` lines and run 624 checks per process
+      (window 72, escape 33, lifetime 50, census 50, tree 419; loops count
+      each round).
 
 ### Step 4 — the contrib folder
 
-- [ ] Make `bench/`, `demo/`, `tools/`, `results/`. Move and rename as the
+- [x] Make `bench/`, `demo/`, `tools/`, `results/`. Move and rename as the
       target layout says. Fix every `include` and every `../../julia` path
       (the scripts find the binary from `Sys.BINDIR`).
-- [ ] Write `bench/unit_costs.jl`: the microbenchmarks behind the unit-cost
+- [x] Write `bench/unit_costs.jl`: the microbenchmarks behind the unit-cost
       table, one function per cost, min of N, printed as a TSV row.
-- [ ] Write `bench/gcbench.sh`: the zero-cost sweep — the GCBenchmarks
+- [x] Write `bench/gcbench.sh`: the zero-cost sweep — the GCBenchmarks
       subset used before (`big_arrays`, `many_refs`, `binarytree`,
       `linkedlist`, `mergesort_parallel`, `mm_divide_and_conquer`,
       `issue-52937`), vanilla binary against region binary, 1 and 4
       threads, interleaved, min of 5, one TSV.
-- [ ] Write `results/run_all.sh`: every measurement of the table below, in
+      *Done as eleven benchmarks, not seven: the six serial ones the
+      maturation and tree plans used (`append`, `linked/tree`, `strings`,
+      `pollard`, `single_ref`, `many_refs`) on one thread on `CORE`, and
+      five multithreaded ones (`tree_mutable`, `mergesort_parallel`,
+      `mm_divide_and_conquer`, `objarray`, `issue-52937`) on four threads
+      on `MTCORES`. The two binaries alternate inside every round.*
+- [x] Write `results/run_all.sh`: every measurement of the table below, in
       order, each with its core, its `MemoryMax`, its timeout, and its data
       file. Write `results/plot.py`: every plot of the table, from the data
       files, plain Python, one function per plot, shared style with the
       current `plot_realworld.py`.
-- [ ] Write the three folder READMEs: one line per file, the command that
-      runs it, what it prints.
-- [ ] Delete `logs/`, `plan/`, `stage*` names, `run.sh`, `hil_isolation.sh`
+      *`plot.py` got a `decade_bounds` helper: the log axis of the CCDF
+      divided by zero on a data file with one decade.*
+- [x] Write the three folder READMEs: one line per file, the command that
+      runs it, what it prints. *Each README has a second table, "Files that
+      the programs include", so a reader knows which files are not
+      programs.*
+- [x] Delete `logs/`, `plan/`, `stage*` names, `run.sh`, `hil_isolation.sh`
       from the root (moved), the six old documents (replaced in step 5).
-- [ ] Commit on `gc-regions-flat`.
-- [ ] Check: `bench/README.md`, `demo/README.md`, `tools/README.md` name
+- [x] Commit on `gc-regions-flat`. *`6983351ce5`, 37 files.*
+- [x] Check: `bench/README.md`, `demo/README.md`, `tools/README.md` name
       every file in their folder and nothing else; every script starts with
       `julia`, `julia -t4`, or `python3` as its README says, on the new
-      binary, without an edit.
+      binary, without an edit. *Checked 2026-09-04: 21 items, every one
+      exit 0, on cores 24-27 under `MemoryMax=8G`; 16 items wrote their
+      TSV rows; `unit_costs.jl` prints its rows to stdout and `run_all.sh`
+      collects them from the log; the checker and `hil_isolation.sh status`
+      print reports, not rows. The checker found 20015 stores at 3 sites in
+      the allocating model and 0 in the clean one.*
+      *The runtime fix of step 3 grew during this step: a dynamic dispatch
+      on a new signature (`jl_lookup_generic_`) and a type first
+      instantiated at run time (`inst_datatype_inner`) inside a window put
+      the argument tuple type or the new `DataType` into the region, and the
+      runtime's cache then held a reference into it: an escape, a
+      quarantine. Both cache-miss paths now run in region 0 (`6c517decd4`);
+      `regions_window.jl` covers four first-time paths. A window opened at
+      top level still quarantines (a `BindingPartition` stored into a
+      `Binding`); that stays the documented discipline rule.*
 
 ### Step 5 — the documents
 
