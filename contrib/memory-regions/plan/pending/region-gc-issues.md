@@ -9,12 +9,29 @@ not opened.
 The tidy plan is `region-gc-tidy.md` in this folder. That plan built the
 series and its gate. This plan changes the runtime.
 
+A third plan, `region-gc-parent-region-buffers.md`, is independent of this
+one. It makes a replacement buffer belong to the region of the buffer it
+replaces, so a container that grows inside a window no longer escapes at
+all. This plan closes holes in the barrier; that plan removes the largest
+class of stores that hit the barrier by accident.
+
 ## Status of the evidence
 
 Every issue below comes from a read of the source at `d543cb834a`. **No
 issue below is reproduced by a test.** The place and the code path are
 facts; the consequence is a deduction from the code. Step 1 of the work is
 to turn each consequence into a test that fails, before any fix.
+
+## How the issues are ranked
+
+A leak is a robustness failure, and it is ranked with a corruption, not
+below it. A bounded program that leaks becomes an unbounded program: it dies
+of memory exhaustion, and the only recovery is a restart of the process. A
+leak that no code path can undo is worse than one a later collection clears.
+
+The first version of this plan ranked the leaks below the corruptions and
+described them as a cost. That was wrong, and the ranking below is the
+corrected one.
 
 ## The rule that every issue is measured against
 
@@ -121,9 +138,91 @@ and a predicted branch at each site. Two of the sites are hot
 (`jl_new_memoryref`, the splat copy). M1 and M2 must run again after the
 fix. Read "The cost gate" below before the site list grows.
 
+### I10 — A quarantine leaks the region without bound
+
+**Rank: second. Class: robustness.**
+
+A quarantine stops every path that frees the region, and it stops no path
+that fills it.
+
+- `jl_gc_region_reset`, `jl_gc_region_reset_global`, `jl_gc_region_collect`
+  and `jl_gc_region_collect_coop` refuse with `EQUARANTINED`
+  (`src/gc-regions.c:536`, `:575`, `:871`, `:901`).
+- The allocator's own census declines a quarantined region
+  (`src/gc-regions.c:950`), so the growth bound of stage 10 is off as well.
+- The stock sweep never sweeps a region page (`src/gc-stock.c:1078`).
+- `jl_gc_region_set` does **not** refuse a quarantined region
+  (`src/gc-regions.c:433`), so the program keeps opening windows on it.
+- The mark is process-wide and permanent, and no entry point clears it
+  (`src/gc-regions.c:45`).
+
+So an event loop whose region is quarantined by one innocuous store runs
+correctly and grows at the rate of the loop until the process dies. This is
+the common outcome of a rule violation, not a rare one: it follows every
+escape, including the `push!` on a long-lived vector that a reviewer named.
+
+**Fix shape, three parts, each usable alone.**
+
+1. Refuse a window on a quarantined region, or refuse the second one. A
+   program that ignores the printed line then fails fast at its next window
+   instead of at its memory limit. This changes an entry point's contract,
+   so it needs a line in the API table.
+2. Give the program a way to see the state at the boundary of its unit of
+   work. `jl_gc_region_quarantined(n)` exists; `regions.jl` must wrap it,
+   and the documentation must tell a server loop to test it.
+3. Let a program recover the memory when it can prove the escaped reference
+   is gone. A `jl_gc_region_uncondemn(n)` that runs the debug root check,
+   walks the heap for a reference into the region, and clears the bit when
+   it finds none, would turn a permanent leak into a recoverable one. This
+   is a new entry point. Decide it separately from parts 1 and 2.
+
+The owning commit for parts 1 and 2 is stage 5, "the escape barrier
+quarantines the region of an escaped child". Part 3 needs its own design.
+
+### I11 — A quarantined region pins stock memory through its finalizer list
+
+**Rank: third. Class: robustness.**
+
+`jl_gc_region_mark_finalizer_lists` marks the finalizer list of every
+initialized region as a root of the stock mark
+(`src/gc-regions.c:357`). Only a reset or a census drains that list, and a
+quarantine refuses both. So every pair the program registered on the region
+stays a root for the life of the process, and so does everything the
+finalizer function captures. Those closures are region-0 objects, so the
+leak reaches the stock heap: a quarantine costs more than the region's own
+pages.
+
+**Fix shape.** Decide what a quarantine means for a finalizer. Either run
+the finalizers of a quarantined region once, on whole objects, and drop the
+list, or state in the documentation that a quarantine pins the list and give
+the program a way to see it. The owning commit is stage 4, which owns the
+reset that drains the list today.
+
+### I12 — Parked pages and the stock heuristic
+
+**Rank: after the three above. Class: robustness.**
+
+A reset parks the region's pages for the next window on that region
+(`src/gc-regions.c:504`). The pages never return to the operating system,
+and they never return to the stock pool either. The documentation states
+the first half. The second half matters as much: a program that uses a
+region for one phase and then never again holds those pages for its whole
+run.
+
+The collector's heuristic reads `gc_heap_stats.heap_size`, which counts
+every region page, parked or in use (developer documentation, "Counters").
+So a large parked region raises the heap size the stock collector aims at,
+and the stock collector runs against memory it can never reclaim.
+
+**Fix shape.** Return a region's parked pages to the stock free list at a
+reset, or at a second reset that finds them still parked. Measure the cost:
+the O(1) reset relies on the park, so a return must not walk the chain in
+the hot path. State the interaction with `heap_size` in the Counters
+section whatever the outcome.
+
 ### I2 — The reset frees a region a finalizer quarantined
 
-**Rank: second. Class: correctness and safety.**
+**Rank: fourth. Class: correctness and safety.**
 
 `jl_gc_region_reset` tests the quarantine at `src/gc-regions.c:536` and runs
 the debug root check at `:545`. It then calls `region_reset_heap`, which
@@ -146,7 +245,7 @@ stage 4, "reset a region in O(1)".
 
 ### I3 — Two cooperative censuses can pass the same gate
 
-**Rank: third. Class: correctness.**
+**Rank: fifth. Class: correctness.**
 
 `jl_gc_region_collect_coop` reads the window count at
 `src/gc-regions.c:904` and increments it at `:909`. The read and the
@@ -164,7 +263,9 @@ The owning commit is stage 7, "the census collects one region alone".
 
 ### I4 — A task that dies inside a window leaks the window count
 
-**Class: robustness.**
+**Rank: sixth. Class: robustness.** The consequence is a leak as well as a
+refusal: with the census and the global reset disabled, a region that the
+program meant to census grows without bound.
 
 Only `jl_gc_region_set(0)` decrements `region_windows_open`
 (`src/gc-regions.c:452`), and no task-exit hook closes a window. A task that
@@ -221,9 +322,10 @@ belongs to its task".
 - A census marks region objects on **every** heap, because
   `region_census_mark` walks the execution roots of every thread
   (`src/gc-regions.c:793`), and `region_scoped_sweep` clears the marks of
-  the calling heap alone. Dead cells on the other heaps look live until the
-  next stock collection clears them. The result is a delay, not a
-  corruption.
+  the calling heap alone. A stale mark makes a dead cell look live on the
+  other heap, so its census keeps the cell. The leak is bounded: the next
+  stock collection clears the marks. A program that never runs a stock
+  collection, which is the point of the region model, never clears them.
 - `jl_gc_region_reset` does not test whether another heap holds the same
   region. "Use the global reset for a region several threads fill" is a
   limit in the documentation, not a refusal in the code.
@@ -299,6 +401,12 @@ the first thing a reviewer will test. So:
 - [ ] Write a failing test for I4: run a task that opens a window and throws
       past it, then assert that `jl_gc_region_collect` does not return
       `EBUSY`.
+- [ ] Write a failing test for I10: quarantine a region, then allocate in it
+      in a loop and assert that `jl_gc_region_pages` stops growing. It grows
+      without bound today.
+- [ ] Write a failing test for I11: register a finalizer on a region object,
+      quarantine the region, drop every reference, run `GC.gc()` twice, and
+      assert that the finalizer closure is collected. It is pinned today.
 - [ ] Record which tests fail as expected and which do not. An issue whose
       test passes today is downgraded and its entry above is corrected.
 - [ ] I3, I6 and I7 need a race or several heaps. Write a stress script for
@@ -318,6 +426,13 @@ did. Build with `nice -n 10 taskset -c 16-23 make -j8`.
 - [ ] I2: the second quarantine test after the finalizers.
 - [ ] I3: one compare-exchange.
 - [ ] I4: close the window of a task that finishes.
+- [ ] I10 parts 1 and 2: refuse a window on a quarantined region; wrap the
+      state in `regions.jl` and say in the documentation that a loop must
+      test it.
+- [ ] I11: decide what a quarantine means for a finalizer list, and make the
+      code and the documentation agree.
+- [ ] I12: measure what the parked pages cost a long run, then decide
+      whether a reset returns them.
 - [ ] I5: keep a tagged page instead of freeing it; decide the abort.
 - [ ] I6: atomics for the two globals; make the declaration atomic against a
       window.
