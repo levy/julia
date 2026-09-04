@@ -33,14 +33,18 @@ typedef struct {
 #define JL_GC_N_MAX_POOLS 51 // conservative. must be kept in sync with `src/julia_internal.h`
     jl_gc_pool_t norm_pools[JL_GC_N_MAX_POOLS];
 
-    // --- region prototype -----------------------------------------------------
-    // A region is a saved set of pool heads plus the pages claimed while it
-    // was current. Swapping regions swaps the pool heads; the inlined
-    // allocation fast path is untouched. Region 0 is the default heap.
+    // --- regions ---------------------------------------------------------------
+    // A region is a numbered set of pool pages with its own allocation
+    // cursors (see gc-regions.h and doc/src/devdocs/gc-regions.md). Region 0
+    // is the default heap: norm_pools and the pages the stock collector sweeps.
 #define JL_GC_MAX_REGIONS 8
     uint8_t current_region;
     uint8_t saved_region;   // parked by a stock collection: every thread
                             // runs the collection with region 0 installed
+    uint8_t finalizer_depth; // > 0 while finalizers run on this thread: the
+                            // window is parked and region 0 installed, no
+                            // window opens and no region entry runs until
+                            // they return (jl_gc_region_finalizers_begin)
     // The live pool array of the current region: norm_pools for region 0,
     // regions[n].pools for region n. Allocation paths decode their stable
     // norm_pools-relative offset into an index and address through this
@@ -62,15 +66,14 @@ typedef struct {
                                            // registered on this region's
                                            // objects: the reset runs them all
                                            // before it frees; the cooperative
-                                           // census runs the dead ones between
-                                           // its mark and its sweep
+                                           // census runs the dead ones after
+                                           // its sweep, with the filter off
         small_arraylist_t mallocarrays;    // memories with malloc'd data
                                            // allocated in this region: their
                                            // data is freed by the reset (all
                                            // of it) and by the census (the
                                            // dead), never by the stock sweep
         uint8_t initialized;
-        uint32_t overflow_pages;           // pages beyond one per pool at reset
     } regions[JL_GC_MAX_REGIONS];
     // The tree's reset bookkeeping, per heap (a region's pages are per heap).
     // A region is "live" between a region_set onto it and its reset. Its

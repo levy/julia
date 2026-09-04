@@ -669,9 +669,6 @@ jl_svec_t *jl_perm_symsvec(size_t n, ...);
 #endif
 #endif
 
-void jl_gc_install_task_region(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT;
-int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT;
-int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f);
 void jl_gc_track_malloced_genericmemory(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT;
 size_t jl_genericmemory_nbytes(jl_genericmemory_t *a) JL_NOTSAFEPOINT;
 size_t memory_block_usable_size(void *mem, int isaligned) JL_NOTSAFEPOINT;

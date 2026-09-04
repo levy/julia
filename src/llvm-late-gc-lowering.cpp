@@ -1986,19 +1986,20 @@ void LateLowerGCFrame::CleanupWriteBarriers(Function &F, State *S, const SmallVe
 
         IRBuilder<> builder(CI);
         builder.SetCurrentDebugLocation(CI->getDebugLoc());
-        // The region escape barrier: one load-and-branch on a runtime flag,
-        // cold call into jl_gc_region_wb per child when armed. Emitted
+        // The escape barrier of the GC regions (gc-regions.h): one
+        // load-and-branch on a runtime flag, and a cold call into
+        // jl_gc_region_wb per child when the flag is armed. Emitted
         // independently of the generational condition below, because region
         // lifetime and generational age are orthogonal. The guard is not
-        // free on store-dense code (measured up to +28 % on a pointer-store
-        // microbench), so a build that wants the stock collector alone
-        // compiles it out: make with JL_NO_REGION_STORE_BARRIER defined,
-        // and this binary's stores are exactly vanilla.
+        // free on store-dense code (see doc/src/devdocs/gc-regions.md for
+        // the measurement), so a build that wants the stock collector alone
+        // leaves it out: make with JL_NO_REGION_STORE_BARRIER defined, and
+        // the stores of that binary are exactly the stock ones.
 #ifndef JL_NO_REGION_STORE_BARRIER
         {
             auto M = F.getParent();
             auto flagTy = Type::getInt8Ty(F.getContext());
-            auto flag = M->getOrInsertGlobal("jl_region_barrier_on", flagTy);
+            auto flag = M->getOrInsertGlobal("jl_gc_region_barrier_on", flagTy);
             auto flagVal = builder.CreateLoad(flagTy, flag, "region_barrier_on");
             auto flagOn = builder.CreateICmpNE(flagVal, ConstantInt::get(flagTy, 0), "region_barrier_armed");
             MDBuilder MDBR(F.getContext());

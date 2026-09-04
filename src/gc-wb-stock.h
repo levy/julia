@@ -11,14 +11,25 @@
 extern "C" {
 #endif
 
-extern _Atomic(uint8_t) jl_region_barrier_on;
+// The escape barrier of the GC regions (gc-regions.h): armed at the first
+// window, it compares the page tags of parent and child. Disarmed it costs
+// one load-and-branch per store; a build with JL_NO_REGION_STORE_BARRIER
+// defined leaves it out of every barrier, here and in the generated code.
+extern JL_DLLIMPORT _Atomic(uint8_t) jl_gc_region_barrier_on;
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT;
+#ifndef JL_NO_REGION_STORE_BARRIER
+#define jl_gc_region_wb_check(parent, ptr) do {                         \
+        if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) \
+            jl_gc_region_wb((parent), (ptr));                           \
+    } while (0)
+#else
+#define jl_gc_region_wb_check(parent, ptr) do { } while (0)
+#endif
 
 STATIC_INLINE void jl_gc_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT
 {
     // parent and ptr isa jl_value_t*
-    if (__unlikely(jl_atomic_load_relaxed(&jl_region_barrier_on)))
-        jl_gc_region_wb(parent, ptr);
+    jl_gc_region_wb_check(parent, ptr);
     if (__unlikely(jl_astaggedvalue(parent)->bits.gc == 3 /* GC_OLD_MARKED */ && // parent is old and not in remset
                    (jl_astaggedvalue(parent)->bits.in_image == 1 /* GC_IN_IMAGE_NOT_REMSET */ || // parent in image and not in remset
                     (jl_astaggedvalue(ptr)->bits.gc & 1 /* GC_MARKED */) == 0))) // ptr is young
@@ -36,8 +47,7 @@ STATIC_INLINE void jl_gc_wb_back(const void *ptr) JL_NOTSAFEPOINT // ptr isa jl_
 STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_NOTSAFEPOINT
 {
     // ptr is an immutable object
-    if (__unlikely(jl_atomic_load_relaxed(&jl_region_barrier_on)))
-        jl_gc_region_wb(parent, (const void*)ptr);
+    jl_gc_region_wb_check(parent, (const void*)ptr);
     if (__likely(jl_astaggedvalue(parent)->bits.gc != 3 /* GC_OLD_MARKED */))
         return; // parent is young or in remset
     if (__unlikely(jl_astaggedvalue(parent)->bits.in_image == 1 /* GC_IN_IMAGE_NOT_REMSET */)) {

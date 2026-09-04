@@ -34,6 +34,7 @@
 #include <inttypes.h>
 #include "julia.h"
 #include "julia_internal.h"
+#include "gc-regions.h"
 #include "threading.h"
 #include "julia_assert.h"
 
@@ -519,11 +520,7 @@ JL_NO_ASAN static void ctx_switch(jl_task_t *lastt)
     jl_signal_fence();
     jl_set_pgcstack(&t->gcstack);
     jl_signal_fence();
-    // The region window follows the task: park the current region on the
-    // task that leaves, install the arriving task's region.
-    lastt->region = ptls->gc_tls.heap.current_region;
-    if (t->region != lastt->region)
-        jl_gc_install_task_region(ptls, t->region);
+    jl_gc_region_task_switch(ptls, lastt, t);
     lastt->ptls = NULL;
 #ifdef MIGRATE_TASKS
     ptls->previous_task = lastt;

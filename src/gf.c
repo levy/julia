@@ -12,6 +12,7 @@
 #include <string.h>
 #include "julia.h"
 #include "julia_internal.h"
+#include "gc-regions.h"
 #ifndef _OS_WINDOWS_
 #include <unistd.h>
 #endif
@@ -5377,19 +5378,16 @@ JL_DLLEXPORT void jl_drop_all_caches(void)
 }
 #endif
 
-
-// --- region prototype ---------------------------------------------------------
-// The runtime's own allocations belong to region 0, whatever region the
-// mutator is in: inference and compilation triggered mid-event otherwise
-// allocate compiler state into the event region, and the next reset kills it.
-// An exception past the restore leaves region 0, which is the safe direction.
-JL_DLLEXPORT int jl_gc_region_set(int n);
-
+// The runtime's own allocations belong to region 0, whatever window the
+// caller holds: inference and compilation triggered inside a window would
+// otherwise allocate compiler state into the region, and the next reset
+// would free it. An exception past the restore leaves region 0 current,
+// which is the safe direction.
 jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
 {
     int saved = jl_gc_region_set(0);
     jl_code_instance_t *ci = jl_type_infer_impl(mi, world, source_mode, trim_mode);
-    if (saved != 0)
+    if (saved > 0)
         jl_gc_region_set(saved);
     return ci;
 }
@@ -5398,8 +5396,7 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
 {
     int saved = jl_gc_region_set(0);
     jl_code_instance_t *ci = jl_compile_method_internal_impl(mi, world);
-    if (saved != 0)
+    if (saved > 0)
         jl_gc_region_set(saved);
     return ci;
 }
-// ------------------------------------------------------------------------------

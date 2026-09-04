@@ -33,12 +33,14 @@ static int block_pg_cnt = DEFAULT_BLOCK_PG_ALLOC;
 // and none takes what a first touch pays on top of the fault once per few
 // MB of new pages: the refill of the core's per-CPU free list from the
 // zone, under the zone lock with interrupts off, 300-500 us. Set by
-// jl_gc_region_reserve: a hard real-time loop claims its heap before it
+// jl_gc_heap_reserve: a hard real-time loop claims its heap before it
 // starts and never faults inside.
 static int gc_prefault_blocks = 0;
 // The blocks mapped so far, so that a reserve can populate what the runtime
 // already holds - the startup block above all, whose untouched pages a loop
-// reaches long after the pools claimed them. A block is never unmapped.
+// reaches long after the pools claimed them. A block is never unmapped. The
+// table holds the first GC_MAX_BLOCKS blocks (64 GB at the default block
+// size); a block past the table is mapped but not populated by a reserve.
 #define GC_MAX_BLOCKS 4096
 static char *gc_block_start[GC_MAX_BLOCKS];
 static size_t gc_block_size[GC_MAX_BLOCKS];
@@ -195,7 +197,7 @@ exit:
 // reserve maps nothing and faults nothing while it runs. The region tag of
 // a page is set at its pool claim, so a page can wait here untagged.
 // Returns the bytes mapped, rounded up to whole blocks.
-JL_DLLEXPORT uint64_t jl_gc_region_reserve(uint64_t bytes) JL_NOTSAFEPOINT
+JL_DLLEXPORT uint64_t jl_gc_heap_reserve(uint64_t bytes) JL_NOTSAFEPOINT
 {
     gc_prefault_blocks = 1;
     // First what is already mapped: populate every block the runtime holds,
