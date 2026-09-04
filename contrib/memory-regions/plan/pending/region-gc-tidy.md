@@ -476,10 +476,14 @@ One commit that holds the whole runtime on the new base, before any split.
       `regions_window.jl` covers four first-time paths. A window opened at
       top level still quarantines (a `BindingPartition` stored into a
       `Binding`); that stays the documented discipline rule.*
+      *The sysimage was rebuilt from the bootstrap on 2026-09-04, because
+      `sys.so` predated `src/jltypes.c`: the second build had only relinked
+      the libraries. On the rebuilt binary the five scripts pass: window 75,
+      escape 33, lifetime 50, census 50, tree 419 checks.*
 
 ### Step 5 — the documents
 
-- [ ] `doc/src/devdocs/gc-regions.md`: the goal, the model in one page, the
+- [x] `doc/src/devdocs/gc-regions.md`: the goal, the model in one page, the
       six rules, the API table (the entry points the audit keeps, with
       integers and return codes), the tree, the census, the growth bound, the heap
       reserve, the discipline the barrier does not remove, the limits (no
@@ -487,7 +491,13 @@ One commit that holds the whole runtime on the new base, before any split.
       regions, Linux x86-64 measured only), and one paragraph on cost with
       a link to `MEASUREMENTS.md`. Present tense, no history. Register in
       `doc/make.jl` after `devdocs/gc.md`. `make -C doc html` builds it.
-- [ ] `contrib/memory-regions/HISTORY.md`: one section per done plan (ten),
+      *347 lines. The window section names the four runtime paths that run
+      in region 0 (inference, compilation, the dispatch cache miss, the type
+      instantiation cache miss) and the top-level rule. `make -C doc html`
+      exit 0 on 2026-09-04; the page renders with its `@ref` resolved. The
+      cost paragraph names `MEASUREMENTS.md` by path, not by a URL: a link
+      to `JuliaLang/julia/blob/master` would carry no such file.*
+- [x] `contrib/memory-regions/HISTORY.md`: one section per done plan (ten),
       in date order, each a paragraph: the question, what was tried, what
       was rejected and why, what landed. Then the detours as their own
       list: the deferral re-arm, the inline-budget mark regression,
@@ -498,17 +508,36 @@ One commit that holds the whole runtime on the new base, before any split.
       "The review found no bug", if that is true. Then "Deferred": the
       feature ideas the tidy did not build, one line each. Then the audit
       table of step 2. Then the four backup tags with one line each.
-- [ ] `contrib/memory-regions/README.md`: the folder map, the build, the
-      four documents, the headline figure (filled in step 6).
-- [ ] `contrib/memory-regions/MEASUREMENTS.md`: the skeleton — one section
+      *Written as eleven plan sections (the tidy is the eleventh), the
+      seven named detours plus the 22-row table of every detour, the bug
+      table B1 to B15 with B1′ (symptom, cause, fix, test case), the
+      cleanups C1 to C20, the stock-path changes S1 to S5, the pitfalls of
+      the tests and the benchmarks, the deferred list, the audit table, the
+      tags, and a vocabulary. `preserve_most` is NOT in the detours: no
+      source file, document, or plan of the four branches names it, only
+      this plan's text did. The detour that is sourced is the inline IR
+      tag-compare rejected in the chain-residuals plan, and that one is
+      listed. The drift table is added in step 6.*
+- [x] `contrib/memory-regions/README.md`: the folder map, the build, the
+      four documents, the headline figure (filled in step 6). *The build
+      section names `CPPFLAGS += -DJL_NO_...` in `Make.user`: `src/Makefile`
+      adds `CPPFLAGS` to every C and C++ compile; `CFLAGS` would miss the
+      C++ half. The headline section states the three claims and points at
+      M1 to M10; the numbers and the plot come in step 6.*
+- [x] `contrib/memory-regions/MEASUREMENTS.md`: the skeleton — one section
       per measurement of the table below, each with the claim in one
       sentence, the script, the data file, the plot, and an empty table
-      that step 6 fills.
-- [ ] Commit on `gc-regions-flat`.
-- [ ] Check: no document links to a file that does not exist on the branch
+      that step 6 fills. *Twelve sections. The data and plot names are the
+      ones `run_all.sh` and `plot.py` write; the table columns are the TSV
+      columns each script emits.*
+- [x] Commit on `gc-regions-flat`. *`ba3cf22cd4`.*
+- [x] Check: no document links to a file that does not exist on the branch
       (`grep -o '\]([^)]*)'` over the four documents, every target resolved);
       no document contains "prototype", "stage 3", "was rejected" outside
-      `HISTORY.md`.
+      `HISTORY.md`. *The three contrib documents carry no markdown links;
+      the devdoc carries one `@ref`, resolved. Two GitHub links to
+      `src/gc-regions.c/.h` on master were replaced by plain paths: the
+      files do not exist on master. No banned word outside `HISTORY.md`.*
 
 ### Step 6 — the measurements, redone
 
