@@ -769,12 +769,27 @@ static void region_split_dead_finalizers(arraylist_t *lst, arraylist_t *dead) JL
 // caller names. The census filter is set by the caller. The scanned-byte
 // counters of the marking thread are restored, so a census does not enter
 // the stock collector's estimate of the live heap.
+//
+// The remset of the marking thread is restored as well. The stock task scan
+// (the Task branch of gc_mark_outrefs) ends in gc_mark_push_remset, which
+// adds an old task to the remset of the marking thread. The census scans
+// every task, so every old task lands in the remset, but the census sets no
+// mark bit on a task. The next stock collection would then find the task in
+// the remset first and scan it as a remset object, which sets no page
+// metadata; the later claim from the thread-local roots fails because the
+// task is already marked; the page of the task keeps has_marked == 0 and the
+// sweep frees the page with the live task in it. The census pushes nothing
+// else to the remset: a region cell is never old, and the filter drops an
+// out-of-region cell that is not a task. Truncation to the entry length
+// removes exactly the pushes of the census.
 static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthreads,
                                jl_thread_heap_t *heap, int n, arraylist_t *dead)
 {
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     size_t scanned = ptls->gc_tls.gc_cache.scanned_bytes;
     size_t perm_scanned = ptls->gc_tls.gc_cache.perm_scanned_bytes;
+    size_t remset_len = ptls->gc_tls.heap.remset.len;
+    int remset_nptr = ptls->gc_tls.heap.remset_nptr;
     for (int t_i = 0; t_i < nthreads; t_i++) {
         jl_ptls_t ptls2 = tls_states[t_i];
         if (ptls2 != NULL)
@@ -789,6 +804,9 @@ static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthrea
     }
     ptls->gc_tls.gc_cache.scanned_bytes = scanned;
     ptls->gc_tls.gc_cache.perm_scanned_bytes = perm_scanned;
+    assert(ptls->gc_tls.heap.remset.len >= remset_len);
+    ptls->gc_tls.heap.remset.len = remset_len;
+    ptls->gc_tls.heap.remset_nptr = remset_nptr;
 }
 
 // The stop-the-world census on region n, from the execution roots of every
