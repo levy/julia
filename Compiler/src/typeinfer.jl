@@ -1610,12 +1610,37 @@ function typeinf_ext_toplevel(mi::MethodInstance, world::UInt, source_mode::UInt
     return typeinf_ext_toplevel(interp, mi, source_mode)
 end
 
+# Reactive reuse: the image this process booted from is the previous build.
+# A code instance of that image that is still valid keeps its native code:
+# the next image links the previous build's text objects and the code
+# instance takes its function ids there. Only the code that changed is
+# emitted again. The runtime says whether reuse is on (`JULIA_REACTIVE_REUSE=1`
+# with a `.so` image loaded) and which code instances have image ids.
+reactive_reuse_enabled() = ccall(:jl_reactive_reuse_enabled, Cint, ()) != 0
+reactive_base_world() = ccall(:jl_reactive_base_world, Csize_t, ())
+
+function ci_reactive_reusable(code::CodeInstance, world::UInt)
+    code.owner === nothing || return false
+    (code.min_world <= world <= code.max_world) || return false
+    return ccall(:jl_reactive_image_ids, Cint, (Any, Ptr{Int32}, Ptr{Int32}), code, C_NULL, C_NULL) != 0
+end
+
+# The cached code instance of `mi` when the previous build's native code
+# serves it in `world`, else nothing
+function reactive_cached_ci(interp::AbstractInterpreter, mi::MethodInstance, world::UInt)
+    ci = get(code_cache(interp), mi, nothing)
+    ci isa CodeInstance && ci_reactive_reusable(ci, world) && return ci
+    return nothing
+end
+
 function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
     external_linkage::Bool,
+    reused::Union{Vector{Any},Nothing} = nothing,
 )
     interp = workqueue.interp
     world = get_inference_world(interp)
+    reactive = reused !== nothing
     while !isempty(workqueue)
         item = pop!(workqueue)
         # each item in this list is either a MethodInstance indicating something
@@ -1626,7 +1651,8 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             # and this is either the primary world, or not applicable in the primary world
             # then we want to compile and emit this
             if item.def.primary_world <= world
-                ci = typeinf_ext(interp, item, SOURCE_MODE_GET_SOURCE)
+                ci = reactive ? reactive_cached_ci(interp, item, world) : nothing
+                ci === nothing && (ci = typeinf_ext(interp, item, SOURCE_MODE_GET_SOURCE))
                 ci isa CodeInstance && push!(workqueue, ci)
             end
             markinspected!(workqueue, item)
@@ -1637,17 +1663,26 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             mi = ccall(:jl_get_specialization1, Any,
                         (Any, Csize_t, Cint),
                         sig, world, #= mt_cache =# 0)
+            in_previous_build = false
             if mi !== nothing
                 mi = mi::MethodInstance
-                ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE)
+                ci = reactive ? reactive_cached_ci(interp, mi, world) : nothing
+                ci === nothing && (ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE))
                 ci isa CodeInstance && push!(invokelatest_queue, ci)
+                # the previous build defined the alias of a method it knew
+                in_previous_build = reactive && mi.def.primary_world <= reactive_base_world()
             end
             # additionally enqueue the ccallable entrypoint / adapter, which implicitly
             # invokes the above ci
-            push!(codeinfos, item)
+            in_previous_build || push!(codeinfos, item)
         elseif item isa CodeInstance
             callee = item
             isinspected(workqueue, callee) && continue
+            if reactive && ci_reactive_reusable(callee, world)
+                markinspected!(workqueue, callee)
+                push!(reused, callee)
+                continue
+            end
             mi = get_ci_mi(callee)
             # now make sure everything has source code, if desired
             if use_const_api(callee)
@@ -1697,6 +1732,15 @@ const TRIM_UNSAFE_WARN = 0x3
 function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_mode::UInt8, external_linkage::Bool)
     inf_params = InferenceParams(; force_enable_inference = trim_mode != TRIM_NO)
 
+    # Reactive reuse returns the reused code instances beside the code to emit.
+    # It serves a system image only: a package image links no previous build,
+    # and a trimmed image must see every callee.
+    reused = nothing
+    if !external_linkage && reactive_reuse_enabled()
+        trim_mode == TRIM_NO || error("reactive reuse does not support --trim")
+        reused = Any[]
+    end
+
     # Create an "invokelatest" queue to enable eager compilation of speculative
     # invokelatest calls such as from `Core.finalizer` and `ccallable`
     invokelatest_queue = CompilationQueue(;
@@ -1711,19 +1755,20 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
         )
 
         append!(workqueue, methods)
-        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage)
+        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage, reused)
     end
 
     if invokelatest_queue !== nothing
         # This queue is intentionally aliased, to handle e.g. a `finalizer` calling `Core.finalizer`
         # (it will enqueue into itself and immediately drain)
-        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage)
+        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage, reused)
     end
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE
         verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
     end
-    return codeinfos
+    reused === nothing && return codeinfos
+    return Core.svec(codeinfos, reused)
 end
 
 const _verify_trim_world_age = RefValue{UInt}(typemax(UInt))

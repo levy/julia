@@ -421,6 +421,7 @@ function compile_and_emit_native(worlds::Vector{UInt},
     end
 
     # Step 4: Perform type inference on tocompile to create codeinfos
+    # (with reactive reuse: svec(codeinfos, the reused code instances))
     codeinfos = try
         typeinf_ext_toplevel(tocompile, worlds, trim_mode, external_linkage)
     catch exc
