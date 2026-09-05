@@ -2,9 +2,10 @@
 
 This plan collects the robustness, correctness and safety issues of the
 region collector that a review of the sixth cut found, and it says how to
-close them. The series `gc-regions` on levy/julia is at `c3c26b66d2`, cut
-again from the flat tree of 2026-09-05; the flat tree is the tag
-`gc-regions-flat` at `abaf2f7fe7`. The pull request is not opened.
+close them. The series `gc-regions` is cut again from the flat tree and
+sits at `687df2dd29` locally, with the flat tag `gc-regions-flat` at
+`6f57aa81ce`. Neither is pushed yet: both pushes rewrite published history
+and wait for the user. The pull request is not opened.
 
 The tidy plan is `region-gc-tidy.md` in this folder. That plan built the
 series and its gate. This plan changes the runtime.
@@ -842,18 +843,32 @@ test; the prose to the stage of the documents.
 - [x] `core threads misc` on the tip binary: 8635852 pass, 8 broken, 0 fail,
       0 error, in 43 minutes.
 - [x] `make -C doc html` builds.
-- [ ] M1 and M2 again, with the tables and the Cost section updated. The
-      user's direction: measure when the machine is idle. This is where the
-      work stops for now.
+- [x] M1 and M2 again, on an idle machine, with the tables and the Cost
+      section updated. M1: nine benchmarks, ratios 0.92 to 1.07, every one
+      inside the spread of its rounds. M2, against vanilla with no window:
+      +0.09 ns per store, +0.28 ns per pool allocation, +0.43 ns on a
+      construction from shared children, +0.20 ns on a boxed copy of an
+      inline value, +0.65 ns on a construction of three allocations. The
+      stock mark row moves by 2 % between the processes of one run, so the
+      documents say 1 to 3 % and name the spread. Only the two plots of
+      these rows are redrawn; `MEASUREMENTS.md` states that a plot's footer
+      names the run that produced its own data.
 
 ### Step 5 — Close
 
-- [ ] Add a bug row for each fixed issue to `HISTORY.md`, in the shape the
-      B-numbers use, and a stock-path row for I5 if the abort changes.
-- [ ] Update the pull request text in `region-gc-tidy.md` if a cost number
-      moved.
-- [ ] Push `gc-regions` with `--force-with-lease`, and the flat tag.
-- [ ] Move this plan to `plan/done/`.
+- [x] Every fixed issue has its row: the seven issues of the first review
+      are the table `R1` to `R7` of `HISTORY.md`, the nine of the second
+      review the table `F1` to `F9`, each in the shape the B-numbers use.
+      The page guard of I5 keeps the page now, which is a stock-path
+      change: the new row `S9`.
+- [x] The pull request text of `region-gc-tidy.md` takes the new cost
+      numbers.
+- [ ] Push `gc-regions` with `--force-with-lease`, and the flat tag. The
+      two pushes rewrite published history, so they wait for the user:
+      `git push --force-with-lease origin gc-regions` and
+      `git push -f origin gc-regions-flat`, from
+      `workspace/julia-gc-series`.
+- [x] Move this plan to `plan/done/`.
 
 ## Acceptance
 

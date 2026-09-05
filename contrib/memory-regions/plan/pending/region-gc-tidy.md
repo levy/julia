@@ -1001,13 +1001,14 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > M4, `results/plots/max_pause.svg`.
 >
 > **Cost when unused.** On the GCBenchmarks subset (nine benchmarks, 1 and
-> 4 threads) the ratio regions / vanilla is 0.96 to 1.03 on eight of them,
+> 4 threads) the ratio regions / vanilla is 0.99 to 1.07 on eight of them,
 > inside the round-to-round spread of each; `many_refs` runs at 0.92 because
 > of a stock-path fix in this branch (a deferred collection re-arms its
 > trigger). The unit costs are not zero (M2): a pointer store pays one flag
-> load and a predicted branch (0.41 ns against 0.32 ns); an object
-> constructed with two pointer fields pays a barrier that vanilla omits
-> (8.2 ns against 7.1 ns); the stock mark pays about 1 %. Two build
+> load and a predicted branch (0.41 ns against 0.32 ns); a pool allocation
+> pays 2.40 ns against 2.12 ns; an object constructed from two shared
+> children pays a flag check that vanilla omits (3.98 ns against 3.55 ns);
+> the stock mark pays between 1 and 3 %. Two build
 > defines exist for measurement, not for production:
 > `JL_NO_REGION_STORE_BARRIER` takes the barrier out (a store and a
 > construction compile as vanilla compiles them), `JL_NO_REGION_ALLOC`
@@ -1015,9 +1016,9 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > loops; a build with both keeps one page tag per page and nothing per
 > object. The region tests fail on both builds by design.
 >
-> **Cost when used.** A window pair 10.5 ns, a reset under 30 ns (the two
+> **Cost when used.** A window pair 10.8 ns, a reset of 30 ns (the two
 > clock reads are 10 of it), an armed store 1.4 ns, an allocation in a
-> region 3.7 ns against 3.3 ns in the stock pool of the same process (M2).
+> region 4.0 ns against 3.4 ns in the stock pool of the same process (M2).
 > The wall-time win appears only where the discarded allocation per unit of
 > work dominates, and the demonstrators show the crossover (M10): a bare
 > optimistic insert loses at 0.44x; the same insert with heavy speculation
