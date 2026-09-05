@@ -12,7 +12,7 @@ include(joinpath(@__DIR__, "regions_api.jl"))
 # ---- declarations and their refusals, before any region is used ----
 
 @noinline function tree_bad_declarations()
-    for n in (-1, 8, 99)
+    for n in (-1, MAX_REGIONS, 99)
         check("parent_of($n) is 0", parent_of(n) == 0)
         check("declare_parent($n, 0) refuses", declare_parent(n, 0) == EINVAL)
     end

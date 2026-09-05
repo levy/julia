@@ -6,10 +6,10 @@ const SIM = 1
 const EVENT = 2
 const RESERVE = 3
 
-# Every entry refuses a region number outside 1:7 without touching any
-# region's state.
+# Every entry refuses a region number outside 1 to MAX_REGIONS - 1 without
+# touching any region's state.
 function bad_region_numbers()
-    for n in (-1, 8, 99)
+    for n in (-1, MAX_REGIONS, 99)
         check("set($n) refuses", region_set(n) == EINVAL)
         check("set($n) leaves region 0 current", region_current() == 0)
         check("reset($n) refuses", code(region_reset(n)) == EINVAL)

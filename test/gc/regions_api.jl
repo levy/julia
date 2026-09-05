@@ -1,6 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-# The runtime entries of the GC regions (src/gc-regions.h), as the five
+# The runtime entries of the GC regions (src/gc-regions.h), as the
 # regions_*.jl scripts call them, and the harness the scripts share. The
 # scripts run under test/gc.jl's run_gctest, one process each, and exit 1
 # at the first failed check.
@@ -22,6 +22,10 @@ region_debug!(on)          = ccall(:jl_gc_region_set_debug, Cvoid, (Cint,), on)
 region_check(n)            = Int(ccall(:jl_gc_region_check, Int64, (Cint,), n))
 region_verify(n)           = Int(ccall(:jl_gc_region_verify, Cint, (Cint,), n))
 heap_reserve(bytes)        = ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes)
+
+# The region count of gc-tls-stock.h: region 0 and MAX_REGIONS - 1 regions
+# a program can open.
+const MAX_REGIONS = 64
 
 # The refusal codes of gc-regions.h.
 const EINVAL = -1; const EBUSY = -2; const ERACE = -3; const EUNSAFE = -4

@@ -13,7 +13,7 @@ include(joinpath(@__DIR__, "regions_api.jl"))
 # ---- collect and coop refuse a bad region number and the current region ----
 
 @noinline function census_bad_number_refusals()
-    for n in (-1, 8, 99)
+    for n in (-1, MAX_REGIONS, 99)
         check("collect($n) refuses with EINVAL", region_collect(n) == EINVAL)
         check("coop($n) refuses with EINVAL", region_collect_coop(n) == EINVAL)
     end

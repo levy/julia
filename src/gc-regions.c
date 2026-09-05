@@ -42,7 +42,7 @@ static _Atomic(int) region_windows_open = 0;
 // child's region is quarantined - its reset and census refuse from then on,
 // so an escape costs memory, never a dangling pointer.
 JL_DLLEXPORT _Atomic(uint8_t) jl_gc_region_barrier_on = 0;
-static _Atomic(uint32_t) region_quarantined_mask = 0;
+static _Atomic(uint64_t) region_quarantined_mask = 0;
 
 // The census filter: the region whose census runs now, 0 otherwise. The mark
 // loop reads it once per object array and passes it down, so a stock mark
@@ -132,8 +132,8 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
     if (jl_atomic_load_relaxed(&region_windows_open) != 0)
         return JL_GC_REGION_EBUSY;
 
-    // The world stops for the test and the rebuild together. The eight
-    // uptree words change one at a time, so a thread that opened a window
+    // The world stops for the test and the rebuild together. The uptree
+    // words change one at a time, so a thread that opened a window
     // between a test and a rebuild done apart could read a half-built tree
     // and judge a store against it. A declaration is a startup act and runs
     // a handful of times, so the pause costs nothing that matters.
@@ -247,8 +247,8 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
     int cr = 0, pr = 0;
     if (__likely(!region_store_escapes(parent, child, &cr, &pr)))
         return;
-    uint32_t bit = (uint32_t)1 << cr;
-    uint32_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
+    uint64_t bit = (uint64_t)1 << cr;
+    uint64_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
     if (!(seen & bit))
         jl_safe_printf("REGION-ESCAPE: a %s of region %d was stored into a %s "
                        "of region %d; region %d is quarantined - its reset and "

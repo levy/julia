@@ -37,7 +37,7 @@ typedef struct {
     // A region is a numbered set of pool pages with its own allocation
     // cursors (see gc-regions.h and doc/src/devdocs/gc-regions.md). Region 0
     // is the default heap: norm_pools and the pages the stock collector sweeps.
-#define JL_GC_MAX_REGIONS 8
+#define JL_GC_MAX_REGIONS 64
     uint8_t current_region;
     uint8_t saved_region;   // parked by a stock collection: every thread
                             // runs the collection with region 0 installed
