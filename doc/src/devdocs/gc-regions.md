@@ -493,6 +493,14 @@ the program's own to keep.
   object, and its schedule stores it into the scheduler's queues, which are
   stock objects: an escape, which the barrier reports and quarantines. The
   task is made outside, and opens its own window inside.
+- **Do not capture a region object in a task closure.** `Threads.@threads`,
+  `Threads.@spawn` and `@async` build a closure in the caller's region and
+  store every captured variable into it. A closure made outside the window
+  that captures a region object is a stock object with a region reference: an
+  escape, which the barrier reports and quarantines, even when the closure
+  dies before the reset. Hand the object to the task as a raw pointer
+  (`pointer_from_objref` under `GC.@preserve`), and turn it back into a
+  reference inside the task, in a frame that ends before the reset.
 - **Do not weak-reference a region object.** `WeakRef` on a region object
   throws while the barrier is armed: a weak reference is a stock-heap
   reference the reset does not clear.

@@ -100,22 +100,24 @@ end
 
 # The chain stays in this frame, which has returned before the reset runs:
 # the reset checks the execution roots, and a local that still names one of
-# the region's objects refuses it.
-@noinline function tree_round!(leaf, trunk)
+# the region's objects refuses it. The trunk arrives as a raw pointer (see
+# tree_run_workers) and becomes an object reference only here, in the frame
+# that stores the legal edge.
+@noinline function tree_round!(leaf, trunk_ptr::Ptr{Cvoid})
     region_set(leaf)
     c = TreeNode(nothing)
     for _ in 1:500
         c = TreeNode(c)
     end
     region_set(0)
-    c.f = trunk                         # leaf -> trunk: legal, an edge into an ancestor
+    c.f = unsafe_pointer_to_objref(trunk_ptr)   # leaf -> trunk: legal, an edge into an ancestor
     return nothing
 end
 
-@noinline function tree_worker(w, trunk)
+@noinline function tree_worker(w, trunk_ptr::Ptr{Cvoid})
     leaf = tree_leaf_of(w)
     for round in 1:50
-        tree_round!(leaf, trunk)
+        tree_round!(leaf, trunk_ptr)
         lock(tree_counter_lock) do
             tree_counter[] += 1
         end
@@ -130,13 +132,23 @@ end
 # :static: a worker that waits for the lock stays on its thread. Runs at
 # any thread count, including one.
 #
+# The workers get the trunk as a raw pointer, not as the object. The closure
+# that Threads.@threads builds is a region-0 object, and it stores every
+# captured variable into itself: a closure that captured the trunk would
+# hold a region-1 reference in a region-0 object, an escape by the rule,
+# and the barrier would quarantine the trunk. The raw pointer carries no
+# reference; GC.@preserve keeps the trunk alive while the workers run.
+#
 # The trunk object is a local of this frame, and the frame has returned
 # before the global reset runs: the global reset checks the execution roots
 # like the per-heap reset, and a local that names a trunk object refuses it.
 @noinline function tree_run_workers()
     trunk_obj = tree_build_trunk()
-    Threads.@threads :static for w in 1:3
-        tree_worker(w, trunk_obj)
+    GC.@preserve trunk_obj begin
+        trunk_ptr = pointer_from_objref(trunk_obj)
+        Threads.@threads :static for w in 1:3
+            tree_worker(w, trunk_ptr)
+        end
     end
     return trunk_obj.f
 end

@@ -641,6 +641,15 @@ or the benchmarks meets again.
   `nocapture` on the parent restores the forwarding, and the memory
   attribute, `readonly` and the vararg shape change nothing. The barrier
   only reads the page tag of the parent, so the attribute is true.
+- A task closure is a heap object that stores its captured variables.
+  `regions_tree.jl` handed the region-1 trunk to `Threads.@threads` workers
+  through the closure, and the fresh-object barrier reported an escape: the
+  closure of `threading_run` is a region-0 object, and it holds the user's
+  closure, with the trunk, as an inline field. The old barrier missed the
+  store because the closure is fresh. The escape is real by the rule and
+  harmless in this test, and the barrier knows no lifetime. The test now
+  hands the trunk as a raw pointer under `GC.@preserve` and turns it back
+  into a reference in the worker's frame. The devdoc states the rule.
 
 ### The measurements, redone
 
