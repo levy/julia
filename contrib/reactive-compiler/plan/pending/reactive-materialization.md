@@ -1273,16 +1273,16 @@ image threads, after the Julia rebuild with the ccallable rule.
   the image, and the child ran the edited `driver` once. The reverse edit
   starts at 3. This is the `@compile_workload` semantics of a package
   image, plus accumulation: a package image starts every precompile from
-  a clean load, and a chain of rebuilds does not. Open decision, with two
-  ways: accept and document (the workload must leave no state, as it
-  must in a `@compile_workload`), or a trace child before the build child
-  — the same apply of the tracked diffs, the workload under
-  `--trace-compile`, and the build child then executes the statements and
-  runs nothing. The second way gives the founding semantics exactly, at
-  the cost of one more process start and the workload once more; the
-  build child then compiles the statements and does not run the
-  simulation, so the routing rebuild moves from about 12 s to an
-  estimated 16 s to 20 s.
+  a clean load, and a chain of rebuilds does not. Two ways: accept and
+  document (the workload must leave no state, as it must in a
+  `@compile_workload`), or a trace child before the build child — the
+  same apply of the tracked diffs, the workload under `--trace-compile`,
+  and the build child then executes the statements and runs nothing. The
+  second way gives the founding semantics exactly, at the cost of one
+  more process start and the workload once more; the build child then
+  compiles the statements and does not run the simulation, so the
+  routing rebuild moves from about 12 s to an estimated 16 s to 20 s.
+  Decided 2026-09-05: the first way, see the entry below.
 - *A test file must be committed before a gate restores it.* The gate's
   restore step is `git checkout`; an uncommitted edit of the test package
   is undone by it, and the restored run then tests the old text.
@@ -1325,3 +1325,14 @@ numbers below are from `$OUT/m7/build-*.log`.
   its SMT sibling is CPU 0, and the machine reported 63% frequency scaling.
   Observed, not reproduced: the store holds the restored image now, not
   the founded one. A re-founding on a quiet lane would settle it.
+
+**2026-09-05, the rebuild workload leaves no state.** The user chose the
+first way for now: accept and document. The rule is the one that
+`@compile_workload` already puts on a package: a rebuild workload calls
+package functions, and every global it touches is back at its value when
+it returns. The routing workload complies; it runs a simulation to its end
+and keeps nothing. The harness does not check the rule — a check would
+need a snapshot of the heap before and after the workload, and the cost
+of that is the cost of the trace child. The trace child stays the
+documented other way, for a workload that needs state it cannot undo.
+Recorded as harness rule 8 in `doc/architecture.md`.

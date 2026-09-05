@@ -156,8 +156,11 @@ These rules came out of the gates, each after a measured failure.
    build executes precompile statements only. So a global that the
    workload mutates starts the rebuilt binary at the mutated value, and
    the next rebuild adds to it (M6: a counter at 0, 2, 3 along founding,
-   edit, reverse edit). Rule until the open decision below is made: a
-   workload must leave no state, as a `@compile_workload` must.
+   edit, reverse edit). The rule, decided 2026-09-05: a rebuild workload
+   must leave no state, as a `@compile_workload` must. It calls package
+   functions, and every global it touches is back at its value when it
+   returns. The routing workload complies: it runs a simulation to its
+   end and keeps nothing.
 
 ## The two entry points
 
@@ -220,13 +223,14 @@ call to the reused specialization by its suffixed symbol is the fix, open.
   that reuse skips. The trimmed flagship binary is its own milestone.
 - **Method removals are not applied**; dead methods stay until a full
   build.
-- **The rebuild workload's side effects persist** (rule 8). The fix with
-  the founding semantics is a trace child before the build child: the
-  same apply of the tracked diffs, the workload under `--trace-compile`,
-  and a build child that executes the statements and runs nothing. It
-  costs one more process start and the workload once more; the build
-  child then compiles and does not run the simulation. Estimated for the
-  routing rebuild: 12 s → 16-20 s. Not decided.
+- **The rebuild workload's side effects persist** (rule 8). Accepted
+  2026-09-05: the rule on the workload is the fix for now. The other way,
+  with the founding semantics exactly, is a trace child before the build
+  child: the same apply of the tracked diffs, the workload under
+  `--trace-compile`, and a build child that executes the statements and
+  runs nothing. It costs one more process start and the workload once
+  more; estimated for the routing rebuild: 12 s → 16-20 s. Take it when
+  a workload needs state that it cannot undo.
 - **The trampoline costs 40 ns per non-inlined call from the delta into
   reused code.** Stage 2 of the plan names the direct call by symbol.
 - **No cross-process store without an image.** The recorded-read (cell
