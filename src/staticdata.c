@@ -2031,6 +2031,22 @@ static uintptr_t get_reloc_for_item(uintptr_t reloc_item, size_t reloc_offset)
 }
 
 // Compute target location at deserialization
+// The stub table of the program: `jl_prelink_stubs` is an array of jumps, each
+// through a pointer of `jl_prelink_stub_targets`, which the runtime fills at
+// every start. The image of a prelinked program points at the stubs, which are
+// at a fixed address in it, and not at the entry points of `libjulia-internal`,
+// which move. `prelink_stubs_init` below fills the table and says what the
+// index of an entry point is.
+static char *prelink_stub_base = NULL;
+static size_t prelink_stub_stride = 0;
+static int prelink_recording = 0;
+#define PRELINK_STUB_CONVENTIONS 5
+
+static uintptr_t prelink_stub(size_t index) JL_NOTSAFEPOINT
+{
+    return (uintptr_t)(prelink_stub_base + index * prelink_stub_stride);
+}
+
 static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t base, uintptr_t reloc_id, jl_array_t *link_ids, int *link_index) JL_NOTSAFEPOINT
 {
     enum RefTags tag = (enum RefTags)(reloc_id >> RELOC_TAG_OFFSET);
@@ -2064,29 +2080,46 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         assert(0 && "corrupt relocation item id");
         jl_unreachable(); // terminate control flow if assertion is disabled.
     case FunctionRef:
+        // A prelink writes the image into a file, and an entry point of the
+        // runtime has no address that a file can hold, so it takes the stub of
+        // the program that stands for it.
         if (offset & BuiltinFunctionTag) {
             offset &= ~BuiltinFunctionTag;
             assert(offset < jl_n_builtins && "unknown function pointer ID");
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(PRELINK_STUB_CONVENTIONS + offset);
             return (uintptr_t)jl_builtin_f_addrs[offset];
         }
         switch ((jl_callingconv_t)offset) {
         case JL_API_BOXED:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(0);
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_fptr_args;
             return (uintptr_t)NULL;
         case JL_API_WITH_PARAMETERS:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(1);
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_fptr_sparam;
             return (uintptr_t)NULL;
         case JL_API_OC_CALL:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(2);
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_f_opaque_closure_call;
             return (uintptr_t)NULL;
         case JL_API_CONST:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(3);
             return (uintptr_t)jl_fptr_const_return;
         case JL_API_INTERPRETED:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(4);
             return (uintptr_t)jl_fptr_interpret_call;
         case JL_API_BUILTIN:
+            if (prelink_recording && prelink_stub_base != NULL)
+                return prelink_stub(0);
             return (uintptr_t)jl_fptr_args;
         case JL_API_NULL:
         case JL_API_MAX:
@@ -2206,6 +2239,33 @@ static inline uintptr_t jl_apply_reloc(jl_serializer_state *s, uintptr_t base, u
 // runs the atexit hook of a runtime that is not there yet, so this ends the
 // process itself.
 #define PRELINK_FATAL(...) do { jl_printf(JL_STDERR, "ERROR: prelink: " __VA_ARGS__); jl_printf(JL_STDERR, "\n"); exit(1); } while (0)
+
+// Find the stub table of the program and fill it. A program that carries none
+// keeps the entry points of the runtime in its residual list.
+static void prelink_stubs_init(void) JL_NOTSAFEPOINT
+{
+    void **targets = NULL;
+    size_t *count = NULL, *stride = NULL;
+    char *stubs = NULL;
+    prelink_stub_base = NULL;
+    if (!jl_dlsym(jl_exe_handle, "jl_prelink_stubs", (void**)&stubs, 0, 0) ||
+        !jl_dlsym(jl_exe_handle, "jl_prelink_stub_targets", (void**)&targets, 0, 0) ||
+        !jl_dlsym(jl_exe_handle, "jl_prelink_stub_count", (void**)&count, 0, 0) ||
+        !jl_dlsym(jl_exe_handle, "jl_prelink_stub_stride", (void**)&stride, 0, 0))
+        return;
+    if (*count < PRELINK_STUB_CONVENTIONS + (size_t)jl_n_builtins)
+        PRELINK_FATAL("the program has %zu stubs and the runtime needs %zu",
+                      *count, PRELINK_STUB_CONVENTIONS + (size_t)jl_n_builtins);
+    targets[0] = (void*)jl_fptr_args;
+    targets[1] = (void*)jl_fptr_sparam;
+    targets[2] = (void*)jl_f_opaque_closure_call;
+    targets[3] = (void*)jl_fptr_const_return;
+    targets[4] = (void*)jl_fptr_interpret_call;
+    for (size_t i = 0; i < (size_t)jl_n_builtins; i++)
+        targets[PRELINK_STUB_CONVENTIONS + i] = (void*)jl_builtin_f_addrs[i];
+    prelink_stub_base = stubs;
+    prelink_stub_stride = *stride;
+}
 
 typedef struct {
     uintptr_t lo, hi;         // one loadable segment of the program that holds the image
@@ -3578,8 +3638,10 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         write_uint32(f, jl_array_len(s.link_ids_external_fnvars));
         ios_write(f, (char*)jl_array_data(s.link_ids_external_fnvars, uint32_t), jl_array_len(s.link_ids_external_fnvars) * sizeof(uint32_t));
         write_uint32(f, external_fns_begin);
-        // The prelink record; the base stays zero until a prelink writes the image back.
+        // The prelink record; the two bases stay zero until a prelink writes
+        // the image back.
         write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
+        write_uint(f, 0);
         write_uint(f, 0);
         write_uint(f, residual_pos);
         write_uint(f, residual_capacity);
@@ -4249,6 +4311,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     size_t prelink_record_pos = ios_pos(f);
     uintptr_t prelink_base = read_uint(f);
+    uintptr_t prelink_stubs = read_uint(f);
     size_t residual_pos = read_uint(f);
     size_t residual_capacity = read_uint(f);
     size_t fixup_objs_pos = read_uint(f);
@@ -4275,6 +4338,12 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         PRELINK_FATAL("the image is prelinked already");
     if (prelink_output != NULL && residual_capacity == 0)
         PRELINK_FATAL("the image has no residual zone");
+    if (!s.incremental)
+        prelink_stubs_init();
+    if (prelinked && prelink_stubs != (uintptr_t)prelink_stub_base)
+        PRELINK_FATAL("the image points at the stubs of the program at %p and they are at %p",
+                      (void*)prelink_stubs, (void*)prelink_stub_base);
+    prelink_recording = prelink_output != NULL;
     if (prelink_output != NULL)
         prelink_locate(f->buf);
     prelink_residual_t residual = {0};
@@ -4339,10 +4408,13 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
             jl_update_all_fptrs(&s, image); // fptr relocs and registration
         if (prelink_output != NULL) {
             uintptr_t base = (uintptr_t)f->buf;
+            uintptr_t stubs = (uintptr_t)prelink_stub_base;
             memcpy(f->buf + prelink_record_pos, &base, sizeof(base));
+            memcpy(f->buf + prelink_record_pos + sizeof(base), &stubs, sizeof(stubs));
             jl_printf(JL_STDERR, "prelink: %zu of %zu pointers residual (%zu type tags, %zu general), zone of %zu\n",
                       residual.n, residual.total, (size_t)residual.zone[0], (size_t)residual.zone[1], residual.capacity);
             prelink_write_back(f->buf, f->size, prelink_output);
+            prelink_recording = 0;
         }
     }
     // Perform the uniquing of objects that we don't "own" and consequently can't promise
