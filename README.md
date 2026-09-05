@@ -5,171 +5,177 @@
 </a>
 </div>
 
-<table>
-    <!-- Docs -->
-    <tr>
-        <td>Documentation</td>
-        <td>
-            <a href="https://docs.julialang.org"><img src='https://img.shields.io/badge/docs-v1-blue.svg'/></a>
-        </td>
-    </tr>
-    <!-- Continuous integration
-    To change the badge to point to a different pipeline, it is not sufficient to simply change the `?branch=` part.
-    You need to go to the Buildkite website and get the SVG URL for the correct pipeline. -->
-    <tr>
-        <td>Continuous integration</td>
-        <td>
-            <a href="https://buildkite.com/julialang/julia-master"><img src='https://badge.buildkite.com/f28e0d28b345f9fad5856ce6a8d64fffc7c70df8f4f2685cd8.svg?branch=master'/></a>
-            <a href="https://perf.julialang.org/"><img src='https://img.shields.io/badge/tracking-performance-blue'/></a>
-        </td>
-    </tr>
-    <!-- Coverage -->
-    <tr>
-        <td>Code coverage</td>
-        <td>
-            <a href='https://coveralls.io/github/JuliaLang/julia?branch=master'><img src='https://coveralls.io/repos/github/JuliaLang/julia/badge.svg?branch=master' alt='Coverage Status'/></a>
-            <a href="https://codecov.io/gh/JuliaLang/julia"><img src="https://codecov.io/gh/JuliaLang/julia/branch/master/graph/badge.svg?token=TckCRxc7HS"/></a>
-        </td>
-    </tr>
-</table>
+# A Julia fork: four pieces of compiler and runtime work
 
-## The Julia Language
+This is a fork of [JuliaLang/julia](https://github.com/JuliaLang/julia). It
+holds four lines of work on the garbage collector, on how a system image
+loads, on how a system image rebuilds, and on ahead-of-time compilation.
 
-Julia is a high-level, high-performance dynamic language for technical
-computing. The main homepage for Julia can be found at
-[julialang.org](https://julialang.org/). This is the GitHub
-repository of Julia source code, including instructions for compiling
-and installing Julia, below.
+Each one lives on its own branch, from `release-1.13`. Each one carries its
+own documentation, its own measurements and its own tests, in a folder under
+`contrib/`. Follow the link in the table to that folder: it is the landing
+page of the feature, and it says what the feature does, how to build it, how
+to run it and what it was measured at.
 
-## Resources
+The Julia README is [README.upstream.md](README.upstream.md). Nothing on this
+page describes Julia itself.
 
-- **Homepage:** <https://julialang.org>
-- **Install:** <https://julialang.org/downloads/>
-- **Source code:** <https://github.com/JuliaLang/julia>
-- **Documentation:** <https://docs.julialang.org>
-- **Packages:** <https://julialang.org/packages/>
-- **Discussion forum:** <https://discourse.julialang.org>
-- **Zulip:** <https://julialang.zulipchat.com/>
-- **Slack:** <https://julialang.slack.com> (get an invite from <https://julialang.org/slack/>)
-- **YouTube:** <https://www.youtube.com/user/JuliaLanguage>
-- **Code coverage:** <https://coveralls.io/r/JuliaLang/julia>
+| Feature | Branch | Landing page | What it gives you |
+| --- | --- | --- | --- |
+| **Region garbage collection** | [`gc-regions-fixes`](https://github.com/levy/julia/tree/gc-regions-fixes) | [contrib/memory-regions](https://github.com/levy/julia/tree/gc-regions-fixes/contrib/memory-regions) | free a whole phase of a program at once, with no mark and no sweep |
+| **Fast system image rebuild** | [`reactive-compiler`](https://github.com/levy/julia/tree/reactive-compiler) | [contrib/reactive-compiler/doc](https://github.com/levy/julia/blob/reactive-compiler/contrib/reactive-compiler/doc/architecture.md) | rebuild an image after an edit in seconds instead of minutes |
+| **Sealed and trimmed AOT** | [`sealed-aot`](https://github.com/levy/julia/tree/sealed-aot) | [contrib/sealed-abstract](https://github.com/levy/julia/tree/sealed-aot/contrib/sealed-abstract) | `--trim=safe` accepts a program that dispatches on abstract types |
+| **Faster system image load** | *not published yet* | — | shorten the relocation work a process does before it runs |
 
+---
 
-## Contributing to Julia
+## Region garbage collection
 
-We welcome contributions from developers of all experience levels, including bug fixes,
-documentation improvements, tests, and performance enhancements.
+**Branch [`gc-regions-fixes`](https://github.com/levy/julia/tree/gc-regions-fixes) ·
+[read it here](https://github.com/levy/julia/tree/gc-regions-fixes/contrib/memory-regions) ·
+[the developer documentation](https://github.com/levy/julia/blob/gc-regions-fixes/doc/src/devdocs/gc-regions.md)**
 
-New contributors are encouraged to start by reading [CONTRIBUTING.md](https://github.com/JuliaLang/julia/blob/master/CONTRIBUTING.md).
+A region is a numbered part of the pool heap that a program frees as one act.
+A program opens a window on a region, allocates into it, closes the window,
+and later resets the region. Every object the window allocated goes at once.
+There is no mark and no sweep.
 
-> [!IMPORTANT]
-> If your pull request contains substantive contributions from a generative AI tool, please disclose so with details, and review all changes before opening. This also applies to other content, such as issues, discussions, and comments.
+An escape barrier holds the rule that no object in a region refers to an
+object in a younger region. A census reclaims the dead cells of a region that
+must live on. The stock collector runs as before, and a program that opens no
+window pays one predicted branch on each managed pointer store.
 
-### Learning Julia
+**Use it when a program has phases and each phase throws away what it made.**
+A discrete-event simulator that allocates per event, a request loop, a solver
+that speculates and then discards. The work is measured against exactly such a
+loop.
 
-- [**Learning resources**](https://julialang.org/learning/)
+Measured on an event loop that allocates about 1.7 KB per event:
 
-## Binary Installation
+| collector | events/s | p99 | longest pause |
+| --- | --- | --- | --- |
+| stock, own heuristics | 7.2 M | 361 ns | 3.83 ms |
+| regions, with census | 14.8 M | 70 ns | **55 µs** |
 
-The recommended way of installing Julia is to use `juliaup` which will install
-the latest stable `julia` for you and help keep it up to date. It can also let
-you install and run different Julia versions simultaneously. Instructions for
-this can be found [here](https://julialang.org/downloads/). If you want to manually
-download specific Julia binaries, you can find those on the [Manual Downloads
-page](https://julialang.org/downloads/manual-downloads/). The downloads page also provides
-details on the [different tiers of
-support](https://julialang.org/downloads/support) for OS and
-platform combinations.
+The longest pause falls by a factor of about 69, and the throughput doubles.
+[MEASUREMENTS.md](https://github.com/levy/julia/blob/gc-regions-fixes/contrib/memory-regions/MEASUREMENTS.md)
+holds twelve such measurements with the script and the data file of each.
+[COST.md](https://github.com/levy/julia/blob/gc-regions-fixes/contrib/memory-regions/COST.md)
+says what a program that never opens a window pays for the runtime being
+there.
 
-If everything works correctly, you will get a `julia` program and when you run
-it in a terminal or command prompt, you will see a Julia banner and an
-interactive prompt into which you can enter expressions for evaluation. You can
-read about [getting
-started](https://docs.julialang.org/en/v1/manual/getting-started/) in the
-manual.
+```julia
+include("contrib/memory-regions/regions.jl")
 
-**Note**: Although some OS package managers provide Julia, such
-installations are neither maintained nor endorsed by the Julia
-project. They may be outdated, broken and/or unmaintained. We
-recommend you use the official Julia binaries instead.
+@with_region region begin
+    simulate_one_slice(model)   # everything allocated here
+end
+region_reset(region)            # goes at once
+```
 
-## Building Julia
+Build it with `make -j8`, as any Julia. Two defines,
+`JL_NO_REGION_ALLOC` and `JL_NO_REGION_STORE_BARRIER`, compile parts of the
+runtime out, for a build that measures what each part costs.
 
-First, make sure you have all the [required
-dependencies](https://github.com/JuliaLang/julia/blob/master/doc/src/devdocs/build/build.md#required-build-tools-and-external-libraries) installed.
-Then, acquire the source code by cloning the git repository:
+Regions beat the stock collector on wall time only when the allocation a unit
+of work discards is the larger part of what it allocates. A loop that keeps
+most of what it makes does not gain. Read `COST.md` before you adopt it.
 
-    git clone https://github.com/JuliaLang/julia.git
+The branch [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) holds
+the same runtime as an ordered series, one mechanism per commit, for a reader
+who wants to review it rather than run it. `gc-regions-fixes` is the one to
+build.
 
-and then use the command prompt to change into the resulting julia directory. By default, you will be building the latest unstable version of
-Julia. However, most users should use the [most recent stable version](https://github.com/JuliaLang/julia/releases)
-of Julia. You can get this version by running: (replace `[tag]` with the desired tag)
+---
 
-    git checkout [tag]
+## Fast system image rebuild
 
-To build the `julia` executable, run `make` from within the julia directory.
+**Branch [`reactive-compiler`](https://github.com/levy/julia/tree/reactive-compiler) ·
+[read it here](https://github.com/levy/julia/blob/reactive-compiler/contrib/reactive-compiler/doc/architecture.md)**
 
-Building Julia requires 2GiB of disk space and approximately 4GiB of virtual memory.
+A build is a snapshot of a store, the way a commit is a snapshot of a Git
+object database. After a source edit, a rebuild boots from the image before
+it, applies only the expressions that changed, and emits only the
+invalidation cone of the edit. Everything else links again from the object
+code of the earlier snapshots.
 
-**Note:** The build process will fail badly if any of the build directory's parent directories have spaces or other shell meta-characters such as `$` or `:` in their names (this is due to a limitation in GNU make).
+**Use it when you compile a system image or a binary again and again while you
+work.** Today an edit to one function costs a full image build, so a person
+who builds binaries stops building them.
 
-Once it is built, you can run the `julia` executable. From within the julia directory, run
+Measured on a routing simulation:
 
-    ./julia
+| | before | after |
+| --- | --- | --- |
+| system image rebuild | 117 s | **21 s** |
+| binary bundle rebuild | 155 s | **12 s** |
 
-Your first test of Julia determines whether your build is working
-properly. From the julia
-directory, type `make testall`. You should see output that
-lists a series of running tests; if they complete without error, you
-should be in good shape to start using Julia.
+A rebuilt binary runs the edit at full speed. `JULIA_REACTIVE_REUSE=1` turns
+the runtime patch on and `JULIA_REACTIVE_TIMINGS=1` prints what each part of a
+rebuild cost.
 
-You can read about [getting
-started](https://docs.julialang.org/en/v1/manual/getting-started/)
-in the manual.
+The work is staged, and each stage has a gate that must pass before the next
+one starts. The plans under
+[contrib/reactive-compiler/plan](https://github.com/levy/julia/tree/reactive-compiler/contrib/reactive-compiler/plan)
+say which stages are done and which are not. **This is the least finished of
+the four.** Read the plans before you rely on it.
 
-Detailed build instructions, should they be necessary,
-are included in the [build documentation](https://github.com/JuliaLang/julia/blob/master/doc/src/devdocs/build/build.md).
+---
 
-### Uninstalling Julia
+## Sealed and trimmed ahead-of-time compilation
 
-By default, Julia does not install anything outside the directory it was cloned
-into and `~/.julia`. Julia and the vast majority of Julia packages can be
-completely uninstalled by deleting these two directories.
+**Branch [`sealed-aot`](https://github.com/levy/julia/tree/sealed-aot) ·
+[read it here](https://github.com/levy/julia/tree/sealed-aot/contrib/sealed-abstract) ·
+[the design](https://github.com/levy/julia/blob/sealed-aot/contrib/sealed-abstract/DESIGN.md)**
 
-## Source Code Organization
+`juliac --trim=safe` refuses a binary that could reach code the image does not
+hold. A dynamic dispatch on an abstract type is exactly that: inference can
+not name the targets, so the verifier reports an unresolved call and the build
+fails. The stock answer is to rewrite the program, replacing every abstract
+element type with a union of concrete types and threading that union through
+every container and every signature.
 
-The Julia source code is organized as follows:
+This branch makes the compiler carry that knowledge instead. At build time the
+world is closed: every package is loaded, and no new subtype of the program's
+own abstract types can appear. So the compiler treats an abstract argument
+type as the union of its concrete subtypes, enumerates the targets of each
+call and compiles them. It then either resolves the call statically, or leaves
+it dynamic with a **verified** target set — the verifier accepts a dynamic
+call when every matched method has a compiled instance in the image.
 
-| Directory         | Contents                                                           |
-| -                 | -                                                                  |
-| `base/`           | source code for the Base module (part of Julia's standard library) |
-| `cli/`            | source for the command line interface/REPL                         |
-| `contrib/`        | miscellaneous scripts                                              |
-| `deps/`           | external dependencies                                              |
-| `doc/src/`        | source for the user manual                                         |
-| `etc/`            | contains `startup.jl`                                              |
-| `src/`            | source for Julia language core                                     |
-| `stdlib/`         | source code for other standard library packages                    |
-| `test/`           | test suites                                                        |
+Where enumeration is too wide the build does not refuse. The call falls down a
+lattice of evidence — proven by inference, enumerated from the sealed world,
+observed by a recorded trace, promised by the program in a seal file — and
+every step of that descent is bounded and reported.
 
-## Terminal, Editors and IDEs
+**Use it when you want a small self-contained binary from a program that was
+not written for one.** The program this was built against is a discrete-event
+simulator with a projectional editor, about 300 000 lines.
 
-The Julia REPL is quite powerful. See the section in the manual on
-[the Julia REPL](https://docs.julialang.org/en/v1/stdlib/REPL/)
-for more details.
+| toolchain | verifier errors | binary |
+| --- | --- | --- |
+| stock `juliac` | 8, no binary | — |
+| sealed | 0 | 1 800 632 B, runs |
 
-On Windows, we highly recommend running Julia in a modern terminal,
-such as [Windows Terminal from the Microsoft Store](https://aka.ms/terminal).
+Everything sits behind `SEALED_*` switches. `SEALED_WORLD=0` turns the whole
+apparatus off and the toolchain behaves as stock `juliac`.
+[MEASUREMENTS.md](https://github.com/levy/julia/blob/sealed-aot/contrib/sealed-abstract/MEASUREMENTS.md)
+holds the numbers and how to reproduce each.
 
-Support for editing Julia is available for many
-[widely used editors](https://github.com/JuliaEditorSupport):
-[Emacs](https://github.com/JuliaEditorSupport/julia-emacs),
-[Vim](https://github.com/JuliaEditorSupport/julia-vim),
-[Sublime Text](https://github.com/JuliaEditorSupport/Julia-sublime), and many
-others.
+---
 
-For users who prefer IDEs, we recommend using VS Code with the
-[julia-vscode](https://www.julia-vscode.org/) plugin.\
-For notebook users, [Jupyter](https://jupyter.org/) notebook support is available through the
-[IJulia](https://github.com/JuliaLang/IJulia.jl) package, and
-the [Pluto.jl](https://github.com/fonsp/Pluto.jl) package provides Pluto notebooks.
+## Faster system image load
+
+**Not published as a branch yet.**
+
+A Julia process spends time before it runs your code applying relocations to
+the system image it just mapped. Measured on this machine, that fix-up is 88
+to 105 ms, and the kernel spends a further 38 ms copying pages on write.
+
+The cost is per page, so it does not fall by making the image smaller. A
+prelink pass has to finalize every class of relocation to remove it; one class
+left over keeps the whole cost.
+
+The work is in progress and it is not committed, so there is no branch to link
+to. This section is here because the other three are, and because the
+measurement above is the reason the work exists.
