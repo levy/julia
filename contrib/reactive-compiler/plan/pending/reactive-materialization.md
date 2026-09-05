@@ -383,23 +383,27 @@ Build cost on this machine, the numbers to beat: eight threads 103 s and
 
 ### Stage 1 — layout-independent objects
 
-The Julia patch, in `src/aotcompile.cpp` and `src/staticdata.c`:
+The Julia patch, in `src/aotcompile.cpp`, `src/staticdata.c`,
+`Compiler/src/typeinfer.jl` and `Compiler/src/precompile.jl`. The design is
+the entry "2026-09-05, Stage 1 design" below; the parts:
 
-- name every emitted function and global slot by identity, not by counter;
-- name a merged constant and a string by content, not by `_j_const#<count>`;
-- replace the weight-balanced partition by the unit of reuse chosen above;
-- build the `jl_fvars` table in `metadata.o` from symbol names, so that a reused
-  object needs no index table of its own;
-- make the global slots re-bindable: record, for every `jl_global#` slot, the
-  object it names in a form a new process can resolve, so that a new heap can
-  fill the slots of an old object;
-- keep a process-random `build_id` out of the emitted code: derive the build id
-  from content, or compute the type hash without it. Without this, a reused
-  `hash(::MyEnum)` disagrees with a fresh one (fact 14);
-- order the roots of `ColorRoots` by instruction order, not by pointer, so that
-  two builds of the same function give the same bytes. This is not needed for
-  reuse, which the key decides and never a byte comparison, but it is needed to
-  measure reuse, and a reproducible build is worth the small patch.
+- [ ] the new build B boots from the image A (`julia -J A.so --output-o B.a`)
+      with `JULIA_REACTIVE_REUSE=1`; the runtime keeps a copy of the parsed
+      image and the world counter after the restore;
+- [ ] `jl_reactive_image_ids(ci, ...)` maps a code instance whose native
+      pointers are in A's function table to A's function ids;
+- [ ] `compile!` reuses a code instance that is valid in the world and has
+      image ids, and returns the reused list beside `codeinfos`;
+- [ ] `jl_create_native` rewrites the ids of the delta to the append-only id
+      spaces of A: function ids `+ nfvarsA`, global slots `+ ngvarsA`, shards
+      `+ nshardsA`, and prepends A's live slot values to the roots;
+- [ ] every defined global object of the delta gets the suffix `.r<nshardsA>`
+      after `makeSafeName`, so that A's objects and B's objects link together;
+- [ ] the image header and the shard table of B count A's shards and B's
+      shards together; the delta calls a reused function through the
+      `emit_tojlinvoke` trampoline;
+- [ ] link A's text objects with B's `sysimg.o`, `metadata.o` and delta into
+      `B.so`; boot; run the routing example.
 
 **Gate 1.** A rebuild with no edit links every text object of the previous
 build with a fresh `sysimg.o` and `metadata.o`, boots, and runs the
@@ -593,3 +597,85 @@ and never the target.
   280 s and 6.3 GB to 8.2 GB. The key run costs 75 s of wall time and 0.6 GB
   of memory, of which the keys are 5.4 s; the rest is the load and two runs of
   the scenario.
+
+**2026-09-05, Stage 1 design.** Found by a read of `aotcompile.cpp`,
+`staticdata.c`, `processor.cpp`, `codegen.cpp`, `typeinfer.jl` and
+`precompile.jl`. It replaces the seven bullets of the first draft.
+
+- *The new build boots from the old image.* B is `julia -J A.so --output-o
+  B.a script.jl`, not a fresh process that loads the packages from source.
+  The reused code instances are then live objects with a native pointer, and
+  the runtime knows their function ids. A fresh process would have to match
+  code instances across two heaps by content; the image does that for free.
+  The delta of a build with no edit is the cone that the harness itself JITs.
+- *No image format change.* A's objects keep their tables, `jl_fvar_idxs_<i>`,
+  `jl_gvar_offsets_<i>` and the rest. B's image uses three append-only id
+  spaces, each based on A's count: function ids start at `nfvarsA`, global
+  slot ids at `ngvarsA`, shard numbers at `nshardsA`. The header of B says
+  `nshardsA + threadsB` shards, `nfvarsA + nfvarsB` functions, `ngvarsA +
+  ngvarsB` slots; the shard table of B declares the extern tables of every
+  shard, and the linker resolves A's from A's objects. The loader,
+  `parse_sysimg`, fills `fvars[fidxs[i]]` per shard and asserts that no slot
+  is empty; A's objects hold every function, so no hole appears. Every image
+  has at least one shard, so `nshardsA` grows strictly across A, B, C and
+  serves as the tag of a build.
+- *Symbol uniqueness by a suffix, not by counter seeding.* The rename loop of
+  `jl_create_native_impl` gives every defined global object internal linkage
+  and a safe name; when `nshardsA > 0`, the name gets `.r<nshardsA>`. The
+  aliases of `@ccallable` names are not touched. The partitioner promotes a
+  private constant that a second partition references to a hidden external
+  symbol, so the suffix must cover the constants too; it does. The unnamed
+  globals of the multi-thread path, `jl_ext_<n>`, and the shard suffixes
+  `_<i>` get the same treatment. No name-based lookup of these globals exists
+  after the rename: `jl_fvars`, `jl_gvars` and the index tables are created
+  later, and `jl_small_typeof` is a declaration.
+- *The ids.* `get_fvars_gvars` reads the position of a function in `jl_fvars`
+  as its id and ignores the contents of `jl_fvar_idxs`; `verify_partitioning`
+  indexes vectors of the delta's size. Both keep the local positions.
+  `construct_vars` writes `jl_fvar_idxs_<i>` and `jl_gvar_idxs_<i>` as the
+  position plus the base; the one-thread path writes an iota from the base.
+  The bases travel as module flags on the data module, absent on a stock
+  build and on the `sysimg` and `metadata` modules, so those paths do not
+  change. The descriptor gets the three bases as fields, copied to locals
+  before `compile` deletes it.
+- *The runtime side.* `jl_restore_system_image` copies the parsed image into a
+  static before the stream restore sets `gvars_base` to `NULL`; the world
+  counter after the restore is the base world. `jl_reactive_image_ids(ci,
+  &invoke_id, &spec_id)` returns nonzero when `ci->specptr.fptr` is an entry
+  of A's function table, found by a sorted address map built once, and
+  `ci->invoke` is `jl_fptr_args`, `jl_fptr_sparam`,
+  `jl_f_opaque_closure_call`, or an entry with a smaller id. The debug assert
+  of the writer, `specfptr_id > invokeptr_id`, holds for A's ids because the
+  wrapper of a function is emitted before the function. A's live slot values,
+  `*(gvars_base + gvars_offsets[i])`, are prepended to the roots of B, so that
+  the serializer records the object each reused slot names; the runtime of B
+  fills A's slots from B's heap, in B's process, as it does today.
+- *The Julia side.* `compile!` asks `ci_reactive_reusable(ci, world)`: the
+  owner is `nothing`, `max_world` is infinite, `min_world` is at most the
+  world, and the runtime returns image ids. A reusable code instance is marked
+  inspected, pushed to `reused`, and skipped; its edges are not walked,
+  because A's object already holds its callees. The MI branch takes the cached
+  code instance when it is reusable, else infers. `typeinf_ext_toplevel` and
+  `compile_and_emit_native` return `Core.svec(codeinfos, reused)` in reactive
+  mode, which `jl_create_native_impl` tells apart from a `Vector{Any}`. A
+  `@ccallable` item is skipped when its method's `primary_world` is at most the
+  base world: its alias and wrapper are in A's objects. Const-API code
+  instances stay on the stock path: the writer handles them by flag and never
+  looks them up.
+- *Calls from the delta into A.* `resolve_workqueue` gives a callee that is not
+  in `compiled_functions` the `emit_tojlinvoke` trampoline through the code
+  instance's `invoke` pointer. That is the correct fallback for Stage 1; a
+  direct call to the reused symbol, or an external-function slot, is a Stage 2
+  choice. The slot route needs the external-function part of
+  `jl_root_new_gvars` to run for a non-incremental image after
+  `jl_update_all_fptrs`; it runs only for the incremental path today.
+- *Withdrawn.* The `build_id` bullet and the `ColorRoots` bullet: reuse is
+  decided by the world age and by the positional identity of the image, never
+  by a byte comparison, so a non-reproducible byte is not a blocker. The
+  content-named constants: the suffix makes the counter names link, and the
+  M0 tools already fold the counters. The counter seeding in `codegen.cpp`:
+  a suffix does the same with no change to the counter.
+- *Scope.* One target, `-C native`, on the same machine; B's
+  `jl_dispatch_target_ids` replaces A's. The switch is the environment
+  variable `JULIA_REACTIVE_REUSE=1`; `JULIA_REACTIVE_TIMINGS=1` prints the
+  time of the front, of `jl_emit_native` and of each dump phase.
