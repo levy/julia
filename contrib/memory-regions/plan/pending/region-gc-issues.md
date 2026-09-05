@@ -749,6 +749,11 @@ world than the function.
 
 ### Step 3 — Fold into the series
 
+The fold also carries the two commits of `region-gc-64-regions.md`,
+`1e71388e75` (the constant, the mask, the tests) and `75fd633ce8` (the
+documents), which sit on `gc-regions-fixes` after the fix commits. They
+belong to the stage that owns `gc-tls-stock.h` and `regions_api.jl`.
+
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
       each change appears at its stage.
