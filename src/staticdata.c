@@ -87,6 +87,12 @@ External links:
 #include <dlfcn.h>
 #include <sys/mman.h>
 #endif
+#if defined(_OS_LINUX_)
+#include <errno.h>
+#include <fcntl.h>
+#include <link.h>
+#include <unistd.h>
+#endif
 
 #include "valgrind.h"
 #include "julia_assert.h"
@@ -2124,7 +2130,208 @@ static void jl_write_arraylist(ios_t *s, arraylist_t *list)
     ios_write(s, (const char*)list->items, list->len * sizeof(void*));
 }
 
-static void jl_read_reloclist(jl_serializer_state *s, jl_array_t *link_ids, uint8_t bits)
+// Resolve one pointer slot of the image. `id` is the relocation id the writer
+// left in the slot; the return value is the target, before the small-tag
+// substitution that a type tag gets.
+static inline uintptr_t jl_apply_reloc(jl_serializer_state *s, uintptr_t base, uintptr_t *pv, uintptr_t id,
+                                       uint8_t bits, jl_array_t *link_ids, int *link_index) JL_NOTSAFEPOINT
+{
+    uintptr_t v = get_item_for_reloc(s, base, id, link_ids, link_index);
+    uintptr_t stored = v;
+    if (bits && v && ((jl_datatype_t*)v)->smalltag)
+        stored = (uintptr_t)((jl_datatype_t*)v)->smalltag << 4; // TODO: should we have a representation that supports sweep without a relocation step?
+    *pv = stored | bits;
+    return v;
+}
+
+// --- Prelink ---
+//
+// A system image linked into an `ET_EXEC` program sits at one address at every
+// start, so a restore done once at that address can stay done: the prelink
+// mode restores the image and writes the blob back into a copy of the program
+// file. Every pointer whose target is inside the program is then final in the
+// file. The pointers whose targets are made at run time — symbols, boxed
+// integers, `nothing`, the root task, and the entry points of libjulia — go to
+// a residual list, and a start of the prelinked image applies that list and
+// nothing else of the relocation work.
+//
+// The prelink mode is entered when `JULIA_PRELINK_OUTPUT` names the file to
+// write. The fast path is taken when the image says it was prelinked for the
+// address it is at; an image prelinked for another address is refused, because
+// its slots hold pointers, not relocation ids, and cannot be restored again.
+//
+// The record of a prelink is the last four words of the image stream:
+// `prelink_base`, and the position in the relocation section of the residual
+// zone, the zone's capacity in pairs, and the position of the fixup list. The
+// writer reserves the zone at the size of its upper bound — every relocation
+// whose target is not in the image data — and leaves it zero.
+
+// The restore is half-way through when a prelink check fails, and `jl_exit`
+// runs the atexit hook of a runtime that is not there yet, so this ends the
+// process itself.
+#define PRELINK_FATAL(...) do { jl_printf(JL_STDERR, "ERROR: prelink: " __VA_ARGS__); jl_printf(JL_STDERR, "\n"); exit(1); } while (0)
+
+typedef struct {
+    uintptr_t lo, hi;         // one loadable segment of the program that holds the image
+    uintptr_t file_offset;    // its offset in the program file
+    uintptr_t file_size;      // the bytes of it that come from the file
+} prelink_segment_t;
+
+static struct {
+    uintptr_t blob;           // the image being located
+    int located;
+    int fixed;                // the program is at its link address
+    size_t n;
+    prelink_segment_t segments[32];
+} prelink_program;
+
+#if defined(_OS_LINUX_)
+static int prelink_visit_program(struct dl_phdr_info *info, size_t size, void *data) JL_NOTSAFEPOINT
+{
+    int holds = 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        uintptr_t lo = info->dlpi_addr + ph->p_vaddr;
+        if (ph->p_type == PT_LOAD && lo <= prelink_program.blob && prelink_program.blob < lo + ph->p_memsz)
+            holds = 1;
+    }
+    if (!holds)
+        return 0;
+    prelink_program.fixed = info->dlpi_addr == 0;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type != PT_LOAD || prelink_program.n == sizeof(prelink_program.segments) / sizeof(prelink_segment_t))
+            continue;
+        prelink_segment_t *seg = &prelink_program.segments[prelink_program.n++];
+        seg->lo = info->dlpi_addr + ph->p_vaddr;
+        seg->hi = seg->lo + ph->p_memsz;
+        seg->file_offset = ph->p_offset;
+        seg->file_size = ph->p_filesz;
+    }
+    return 1;
+}
+#endif
+
+// Find the segments of the program (or library) that holds the image blob.
+static void prelink_locate(const char *blob) JL_NOTSAFEPOINT
+{
+    memset(&prelink_program, 0, sizeof(prelink_program));
+    prelink_program.blob = (uintptr_t)blob;
+    prelink_program.located = 1;
+#if defined(_OS_LINUX_)
+    dl_iterate_phdr(prelink_visit_program, NULL);
+#endif
+}
+
+// A pointer is final when its target is inside the program that holds the
+// image: the image data, its constants, and the native code.
+static int prelink_is_final(uintptr_t v) JL_NOTSAFEPOINT
+{
+    if (v == 0)
+        return 1;
+    for (size_t i = 0; i < prelink_program.n; i++)
+        if (prelink_program.segments[i].lo <= v && v < prelink_program.segments[i].hi)
+            return 1;
+    return 0;
+}
+
+// The residual zone: `zone[0]` and `zone[1]` count the pairs of the type-tag
+// pass and of the general pass; the pairs `(position, relocation id)` follow,
+// those of the type-tag pass first.
+typedef struct {
+    uintptr_t *zone;
+    size_t capacity;          // pairs the zone holds
+    size_t n;                 // pairs recorded
+    size_t total;             // slots seen while recording
+} prelink_residual_t;
+
+static void prelink_record(prelink_residual_t *r, int pass, uintptr_t pos, uintptr_t id)
+{
+    if (r->n == r->capacity)
+        PRELINK_FATAL("the residual zone of the image is full at %zu pairs", r->capacity);
+    r->zone[2 + 2 * r->n] = pos;
+    r->zone[3 + 2 * r->n] = id;
+    r->n += 1;
+    r->zone[pass] += 1;
+}
+
+// The fast path: apply the pairs of one pass of the residual list.
+static void prelink_apply_residual(jl_serializer_state *s, const prelink_residual_t *r, int pass,
+                                   jl_array_t *link_ids, uint8_t bits) JL_NOTSAFEPOINT
+{
+    uintptr_t base = (uintptr_t)s->s->buf;
+    size_t first = pass == 0 ? 0 : r->zone[0];
+    size_t n = r->zone[pass];
+    const uintptr_t *pairs = r->zone + 2 + 2 * first;
+    int link_index = 0;
+    for (size_t i = 0; i < n; i++)
+        jl_apply_reloc(s, base, (uintptr_t*)(base + pairs[2 * i]), pairs[2 * i + 1], bits, link_ids, &link_index);
+    assert(!link_ids || link_index == jl_array_len(link_ids));
+}
+
+// Copy the running program to `output` and write the restored blob over its
+// image bytes. The program is read through `/proc/self/exe`, because Linux
+// refuses to open a running program for writing.
+static void prelink_write_back(const char *blob, size_t size, const char *output)
+{
+#if defined(_OS_LINUX_)
+    if (!prelink_program.located)
+        prelink_locate(blob);
+    if (prelink_program.n == 0)
+        PRELINK_FATAL("the image is not inside a loaded program");
+    if (!prelink_program.fixed)
+        PRELINK_FATAL("the program is not at its link address: link it as ET_EXEC (-no-pie)");
+    uintptr_t lo = (uintptr_t)blob, hi = lo + size;
+    const prelink_segment_t *seg = NULL;
+    for (size_t i = 0; i < prelink_program.n; i++) {
+        const prelink_segment_t *candidate = &prelink_program.segments[i];
+        if (candidate->lo <= lo && hi <= candidate->lo + candidate->file_size)
+            seg = candidate;
+    }
+    if (seg == NULL)
+        PRELINK_FATAL("the image is not inside one file-backed segment of the program");
+    off_t file_offset = (off_t)(seg->file_offset + (lo - seg->lo));
+    int in = open("/proc/self/exe", O_RDONLY);
+    if (in < 0)
+        PRELINK_FATAL("cannot open /proc/self/exe: %s", strerror(errno));
+    int out = open(output, O_WRONLY | O_CREAT | O_TRUNC, 0755);
+    if (out < 0)
+        PRELINK_FATAL("cannot create %s: %s", output, strerror(errno));
+    size_t chunk = 1 << 20;
+    char *buffer = (char*)malloc_s(chunk);
+    while (1) {
+        ssize_t got = read(in, buffer, chunk);
+        if (got < 0)
+            PRELINK_FATAL("cannot read /proc/self/exe: %s", strerror(errno));
+        if (got == 0)
+            break;
+        for (ssize_t done = 0; done < got; ) {
+            ssize_t put = write(out, buffer + done, got - done);
+            if (put < 0)
+                PRELINK_FATAL("cannot write %s: %s", output, strerror(errno));
+            done += put;
+        }
+    }
+    free(buffer);
+    for (size_t done = 0; done < size; ) {
+        ssize_t put = pwrite(out, blob + done, size - done, file_offset + done);
+        if (put < 0)
+            PRELINK_FATAL("cannot write the image into %s: %s", output, strerror(errno));
+        done += put;
+    }
+    if (close(out) != 0)
+        PRELINK_FATAL("cannot close %s: %s", output, strerror(errno));
+    close(in);
+    jl_printf(JL_STDERR, "prelink: %zu image bytes written at offset %zu of %s, base %p\n",
+              size, (size_t)file_offset, output, (void*)blob);
+#else
+    PRELINK_FATAL("the prelink needs Linux");
+#endif
+}
+
+// `residual` is the recording list of the prelink mode, or NULL.
+static void jl_read_reloclist(jl_serializer_state *s, jl_array_t *link_ids, uint8_t bits,
+                              prelink_residual_t *residual, int pass)
 {
     uintptr_t base = (uintptr_t)s->s->buf;
     uintptr_t last_pos = 0;
@@ -2150,16 +2357,20 @@ static void jl_read_reloclist(jl_serializer_state *s, jl_array_t *link_ids, uint
         uintptr_t pos = last_pos + pos_diff;
         last_pos = pos;
         uintptr_t *pv = (uintptr_t *)(base + pos);
-        uintptr_t v = *pv;
-        v = get_item_for_reloc(s, base, v, link_ids, &link_index);
-        if (bits && v && ((jl_datatype_t*)v)->smalltag)
-            v = (uintptr_t)((jl_datatype_t*)v)->smalltag << 4; // TODO: should we have a representation that supports sweep without a relocation step?
-        *pv = v | bits;
+        uintptr_t id = *pv;
+        uintptr_t v = jl_apply_reloc(s, base, pv, id, bits, link_ids, &link_index);
+        if (residual != NULL) {
+            residual->total += 1;
+            if (!prelink_is_final(v))
+                prelink_record(residual, pass, pos, id);
+        }
     }
     assert(!link_ids || link_index == jl_array_len(link_ids));
 }
 
-static void jl_read_memreflist(jl_serializer_state *s)
+// `check_final` is set by the prelink mode: a memory reference that leaves the
+// program cannot be written back, and none is expected.
+static void jl_read_memreflist(jl_serializer_state *s, int check_final)
 {
     uintptr_t base = (uintptr_t)s->s->buf;
     uintptr_t last_pos = 0;
@@ -2186,6 +2397,8 @@ static void jl_read_memreflist(jl_serializer_state *s)
         jl_genericmemoryref_t *pv = (jl_genericmemoryref_t*)(base + pos);
         size_t offset = (size_t)pv->ptr_or_offset;
         pv->ptr_or_offset = (void*)((char*)pv->mem->ptr + offset);
+        if (check_final && !prelink_is_final((uintptr_t)pv->ptr_or_offset))
+            PRELINK_FATAL("a memory reference at image offset %zu points outside the program", (size_t)pos);
     }
 }
 
@@ -2257,15 +2470,30 @@ static jl_value_t *jl_delayed_reloc(jl_serializer_state *s, uintptr_t offset) JL
 }
 
 
-static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
+// Tell the runtime about the native code of the image. The fptr record holds
+// the MethodInstance of each entry: `jl_update_all_fptrs` put them there, or
+// a prelink did, in the file.
+static void jl_register_image_fptrs(jl_serializer_state *s, jl_image_t *image)
 {
     jl_image_fptrs_t fvars = image->fptrs;
     // make these NULL now so we skip trying to restore GlobalVariable pointers later
     image->gvars_base = NULL;
     if (fvars.nptrs == 0)
         return;
-
     memcpy(image->jl_small_typeof, &jl_small_typeof, sizeof(jl_small_typeof));
+    int img_fvars_max = s->fptr_record->size / sizeof(void*);
+    jl_method_instance_t **linfos = (jl_method_instance_t**)&s->fptr_record->buf[0];
+    // Tell LLVM about the native code
+    jl_register_fptrs(image->base, &fvars, linfos, img_fvars_max);
+}
+
+static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
+{
+    jl_image_fptrs_t fvars = image->fptrs;
+    if (fvars.nptrs == 0) {
+        jl_register_image_fptrs(s, image);
+        return;
+    }
 
     int img_fvars_max = s->fptr_record->size / sizeof(void*);
     size_t i;
@@ -2307,8 +2535,7 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
             }
         }
     }
-    // Tell LLVM about the native code
-    jl_register_fptrs(image->base, &fvars, linfos, img_fvars_max);
+    jl_register_image_fptrs(s, image);
 }
 
 static uint32_t write_gvars(jl_serializer_state *s, arraylist_t *globals, arraylist_t *external_fns) JL_GC_DISABLED
@@ -3227,7 +3454,27 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         jl_write_arraylist(s.relocs, &s.uniquing_objs);
         jl_write_arraylist(s.relocs, &s.fixup_types);
     }
+    size_t fixup_objs_pos = ios_pos(s.relocs);
     jl_write_arraylist(s.relocs, &s.fixup_objs);
+    // The residual zone of a prelink: room for every relocation whose target
+    // can be outside the program. The image data (`DataRef`) and the constant
+    // data (`ConstDataRef`) are in it; every other class is made at run time,
+    // `jl_nothing` and the boxed integers of `TagRef` included.
+    write_padding(s.relocs, LLT_ALIGN(ios_pos(s.relocs), 8) - ios_pos(s.relocs));
+    size_t residual_pos = ios_pos(s.relocs);
+    size_t residual_capacity = 0;
+    if (!s.incremental) {
+        arraylist_t *lists[2] = {&s.gctags_list, &s.relocs_list};
+        for (int l = 0; l < 2; l++) {
+            for (size_t i = 0; i < lists[l]->len; i += 2) {
+                uintptr_t item = (uintptr_t)lists[l]->items[i + 1];
+                enum RefTags tag = (enum RefTags)(item >> RELOC_TAG_OFFSET);
+                if (tag != DataRef && tag != ConstDataRef)
+                    residual_capacity += 1;
+            }
+        }
+        write_padding(s.relocs, (2 + 2 * residual_capacity) * sizeof(uintptr_t));
+    }
     write_uint(f, relocs.size);
     write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
     ios_seek(&relocs, 0);
@@ -3294,6 +3541,12 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         write_uint32(f, jl_array_len(s.link_ids_external_fnvars));
         ios_write(f, (char*)jl_array_data(s.link_ids_external_fnvars, uint32_t), jl_array_len(s.link_ids_external_fnvars) * sizeof(uint32_t));
         write_uint32(f, external_fns_begin);
+        // The prelink record; the base stays zero until a prelink writes the image back.
+        write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
+        write_uint(f, 0);
+        write_uint(f, residual_pos);
+        write_uint(f, residual_capacity);
+        write_uint(f, fixup_objs_pos);
     }
 
     assert(object_worklist.len == 0);
@@ -3930,6 +4183,12 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         ios_read(f, (char*)jl_array_data(s.link_ids_external_fnvars, uint32_t), nlinks_external_fnvars * sizeof(uint32_t));
     }
     uint32_t external_fns_begin = read_uint32(f);
+    ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
+    size_t prelink_record_pos = ios_pos(f);
+    uintptr_t prelink_base = read_uint(f);
+    size_t residual_pos = read_uint(f);
+    size_t residual_capacity = read_uint(f);
+    size_t fixup_objs_pos = read_uint(f);
     if (s.incremental) {
         assert(restored && init_order && extext_methods && internal_methods && new_ext_cis && method_roots_list);
         *restored = (jl_array_t*)jl_delayed_reloc(&s, offset_restored);
@@ -3941,6 +4200,26 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     }
     s.s = NULL;
 
+    // The prelink modes (see `prelink_locate`): `prelink_output` names the file
+    // the prelink mode writes; `prelinked` takes the fast path.
+    const char *prelink_output = s.incremental ? NULL : getenv("JULIA_PRELINK_OUTPUT");
+    int prelinked = prelink_base != 0;
+    if (prelinked && prelink_base != (uintptr_t)f->buf)
+        PRELINK_FATAL("the image was prelinked for address %p and is at %p", (void*)prelink_base, (void*)f->buf);
+    if (prelinked && image->fptrs.nptrs == 0)
+        PRELINK_FATAL("a prelinked image needs its native code");
+    if (prelink_output != NULL && prelinked)
+        PRELINK_FATAL("the image is prelinked already");
+    if (prelink_output != NULL && residual_capacity == 0)
+        PRELINK_FATAL("the image has no residual zone");
+    if (prelink_output != NULL)
+        prelink_locate(f->buf);
+    prelink_residual_t residual = {0};
+    if (residual_capacity != 0) {
+        residual.zone = (uintptr_t*)(relocs.buf + residual_pos);
+        residual.capacity = residual_capacity;
+    }
+
     // step 3: apply relocations
     assert(!ios_eof(f));
     jl_read_symbols(&s);
@@ -3950,12 +4229,25 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     reloc_t *relocs_base = (reloc_t*)&relocs.buf[0];
 
     s.s = &sysimg;
-    jl_read_reloclist(&s, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE); // gctags
-    size_t sizeof_tags = ios_pos(&relocs);
+    size_t sizeof_tags = 0;
+    if (prelinked) {
+        // The fast path: the pointers into the program are final in the file,
+        // the memory references with them. The residual list is applied, and
+        // the gvar slots are filled: they are in the zero section of the
+        // program, which no file holds.
+        prelink_apply_residual(&s, &residual, 0, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE);
+        prelink_apply_residual(&s, &residual, 1, s.link_ids_relocs, 0);
+        ios_seek(&relocs, fixup_objs_pos);
+    }
+    else {
+        prelink_residual_t *recording = prelink_output != NULL ? &residual : NULL;
+        jl_read_reloclist(&s, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE, recording, 0); // gctags
+        sizeof_tags = ios_pos(&relocs);
+        jl_read_reloclist(&s, s.link_ids_relocs, 0, recording, 1); // general relocs
+        jl_read_memreflist(&s, recording != NULL); // memowner_list relocs (must come before memref_list reads the pointers and after general relocs computes the pointers)
+        jl_read_memreflist(&s, recording != NULL); // memref_list relocs
+    }
     (void)sizeof_tags;
-    jl_read_reloclist(&s, s.link_ids_relocs, 0); // general relocs
-    jl_read_memreflist(&s); // memowner_list relocs (must come before memref_list reads the pointers and after general relocs computes the pointers)
-    jl_read_memreflist(&s); // memref_list relocs
     // s.link_ids_gvars will be processed in `jl_update_all_gvars`
     // s.link_ids_external_fns will be processed in `jl_update_all_gvars`
     jl_update_all_gvars(&s, image, external_fns_begin); // gvars relocs
@@ -3968,8 +4260,26 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         arraylist_new(&s.uniquing_types, 0);
         arraylist_new(&s.uniquing_objs, 0);
         arraylist_new(&s.fixup_types, 0);
+        assert(ios_pos(&relocs) == fixup_objs_pos);
     }
     jl_read_arraylist(s.relocs, &s.fixup_objs);
+    if (!s.incremental) {
+        // The system image resolves its function pointers here, before the
+        // fixup loop below puts the first run-time pointer into the image: the
+        // prelink mode writes the image back at this point. A package image
+        // resolves them after the uniquing of its objects, below.
+        if (prelinked)
+            jl_register_image_fptrs(&s, image);
+        else
+            jl_update_all_fptrs(&s, image); // fptr relocs and registration
+        if (prelink_output != NULL) {
+            uintptr_t base = (uintptr_t)f->buf;
+            memcpy(f->buf + prelink_record_pos, &base, sizeof(base));
+            jl_printf(JL_STDERR, "prelink: %zu of %zu pointers residual (%zu type tags, %zu general), zone of %zu\n",
+                      residual.n, residual.total, (size_t)residual.zone[0], (size_t)residual.zone[1], residual.capacity);
+            prelink_write_back(f->buf, f->size, prelink_output);
+        }
+    }
     // Perform the uniquing of objects that we don't "own" and consequently can't promise
     // weren't created by some other package before this one got loaded:
     // - iterate through all objects that need to be uniqued. The first encounter has to be the
@@ -4315,9 +4625,11 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         cachesizes->fptrlist = sizeof_fptr_record;
     }
 
-    s.s = &sysimg;
-    jl_update_all_fptrs(&s, image); // fptr relocs and registration
-    s.s = NULL;
+    if (s.incremental) {
+        s.s = &sysimg;
+        jl_update_all_fptrs(&s, image); // fptr relocs and registration
+        s.s = NULL;
+    }
 
     ios_close(&fptr_record);
     ios_close(&sysimg);
