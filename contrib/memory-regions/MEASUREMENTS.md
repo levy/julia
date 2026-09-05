@@ -80,9 +80,10 @@ every allocation of that phase. This branch re-arms `heap_target`
 **Claim.** On a program that never opens a window, a pointer store pays one
 flag load and a predicted branch (about 0.09 ns), a pool allocation pays the
 active-pool indirection and the region test of `maybe_collect` (about
-0.3 ns), an object constructed with two pointer fields pays the construction
-barrier that vanilla omits (about 1 ns per object), and the stock mark pays
-about 1 %. With a window open, an armed store pays one page-map walk in a
+0.3 ns), an object constructed with boxed children pays one flag check for
+all of them, and the stock mark pays about 1 %. An object with two pointer
+fields and two fresh children pays the three allocations, not a barrier.
+With a window open, an armed store pays one page-map walk in a
 cold call, a window pair and a reset cost tens of nanoseconds, and an
 allocation in a region costs what an allocation in the stock pool costs in
 the same process. The costs are small; they are not zero.
@@ -98,15 +99,30 @@ first window and stays armed, so in the third column the rows that run
 after `window_pair` pay the armed store: `construct_two` writes three
 pointers per object, `alloc_stock` one. The second column against the first
 is what a program that never opens a window pays. The `construct_two` row
-there is the largest of these costs: vanilla emits no write barrier for the
-two children stored at construction, because a fresh object is young; this
-branch emits the barrier for them, so that the region check runs. The flag
-check itself accounts for about 0.26 ns of the 1 ns (three stores at 0.09 ns);
-the rest is the generational barrier at construction, which the region check
-does not need. A construction-only barrier that emits the region check alone
-would cut it; it is not built. The `reset_slice` row times one call between
-two clock reads, and the pair of reads costs about 10 ns on this host: the
-row is an upper bound on the reset.
+there is the largest of these costs, and it is three allocations: the loop
+allocates two `Ref`s and one `Two` per object, and each pays the allocation
+cost of the `alloc_stock` row. The construction itself pays the region check
+alone. Vanilla emits no write barrier for the two children stored at
+construction, because a fresh object is young; this branch emits the region
+guard for them through `julia.region_write_barrier`, one flag load and one
+branch per object, and no generational part. The `construct_shared` row
+isolates it: the same `Two` with two children that already exist, so one
+allocation and one construction per object. The `reset_slice` row times one
+call between two clock reads, and the pair of reads costs about 10 ns on
+this host: the row is an upper bound on the reset.
+
+The table below predates the construction-only barrier and has no
+`construct_shared` row; the next run on an idle machine replaces it. Three
+runs on the day the barrier landed, in the order they ran, with the test
+suites on other cores during the first two (all in ns per object, vanilla
+against regions with no window): `construct_two` 7.50 → 8.52, 7.73 → 8.35,
+7.17 → 7.76; `construct_shared` 3.82 → 4.05, 3.49 → 3.83; `alloc_stock`
+2.32 → 2.57, 2.18 → 2.39, 2.07 → 2.38. The `construct_shared` delta is the
+`alloc_stock` delta and a flag check. The `construct_two` delta of the
+table, +1.05 ns, and the deltas of the day, +1.02, +0.62 and +0.59 ns, do
+not separate the old barrier from the new one: the spread of the row across
+runs is as large as the difference. What the day establishes is the
+attribution, not a gain.
 
 <!-- table M2 -->
 | cost | unit | vanilla | regions, no window | regions |

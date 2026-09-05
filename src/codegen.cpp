@@ -1199,6 +1199,27 @@ static const auto jl_write_barrier_func = new JuliaFunction<>{
     },
 };
 
+// The escape barrier of the GC regions alone (gc-regions.h), without the
+// generational check: for the stores into a fresh object, whose parent is
+// young and needs no generational barrier, but whose child may belong to a
+// younger region. Same shape as julia.write_barrier: the parent, then the
+// children. Lowered in llvm-late-gc-lowering.cpp next to the write barrier.
+static const auto jl_region_write_barrier_func = new JuliaFunction<>{
+    "julia.region_write_barrier",
+    [](LLVMContext &C) { return FunctionType::get(getVoidTy(C),
+            {JuliaType::get_prjlvalue_ty(C)}, true); },
+    [](LLVMContext &C) {
+        AttrBuilder FnAttrs(C);
+        FnAttrs.addMemoryAttr(MemoryEffects::inaccessibleMemOnly());
+        FnAttrs.addAttribute(Attribute::NoUnwind);
+        FnAttrs.addAttribute(Attribute::NoRecurse);
+        return AttributeList::get(C,
+            AttributeSet::get(C, FnAttrs),
+            AttributeSet(),
+            {Attributes(C, {Attribute::ReadOnly})});
+    },
+};
+
 static const auto jlisa_func = new JuliaFunction<>{
     XSTR(jl_isa),
     [](LLVMContext &C) {
@@ -10195,6 +10216,7 @@ static void init_jit_functions(void)
     add_named_global(jl_newbits_func, (void*)jl_new_bits);
     add_named_global(jl_typeof_func, (void*)NULL);
     add_named_global(jl_write_barrier_func, (void*)NULL);
+    add_named_global(jl_region_write_barrier_func, (void*)NULL);
     add_named_global(jldlsym_func, &jl_load_and_lookup);
     add_named_global("jl_adopt_thread", &jl_adopt_thread);
     add_named_global(jlgetcfunctiontrampoline_func, &jl_get_cfunction_trampoline);

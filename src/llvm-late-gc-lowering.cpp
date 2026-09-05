@@ -1318,7 +1318,8 @@ State LateLowerGCFrame::LocalScan(Function &F) {
                             callee == pgcstack_getter || callee->getName() == XSTR(jl_egal__unboxed) ||
                             callee->getName() == XSTR(jl_lock_value) || callee->getName() == XSTR(jl_unlock_value) ||
                             callee->getName() == XSTR(jl_lock_field) || callee->getName() == XSTR(jl_unlock_field) ||
-                            callee == write_barrier_func || callee == gc_loaded_func || callee == pop_handler_noexcept_func ||
+                            callee == write_barrier_func || callee == region_write_barrier_func ||
+                            callee == gc_loaded_func || callee == pop_handler_noexcept_func ||
                             callee->getName() == "memcmp") {
                             continue;
                         }
@@ -1995,6 +1996,10 @@ void LateLowerGCFrame::CleanupWriteBarriers(Function &F, State *S, const SmallVe
         // the measurement), so a build that wants the stock collector alone
         // leaves it out: make with JL_NO_REGION_STORE_BARRIER defined, and
         // the stores of that binary are exactly the stock ones.
+        // julia.region_write_barrier is this guard alone: codegen emits it
+        // for a store into a fresh object, whose parent is young and needs
+        // no generational barrier. Its lowering ends here.
+        bool region_only = CI->getCalledOperand() == region_write_barrier_func;
 #ifndef JL_NO_REGION_STORE_BARRIER
         {
             auto M = F.getParent();
@@ -2016,6 +2021,10 @@ void LateLowerGCFrame::CleanupWriteBarriers(Function &F, State *S, const SmallVe
             builder.SetInsertPoint(CI);
         }
 #endif
+        if (region_only) {
+            CI->eraseFromParent();
+            continue;
+        }
         auto parTag = EmitLoadTag(builder, T_size, parent);
         auto parBits = builder.CreateAnd(parTag, GC_OLD_MARKED, "parent_bits");
         auto parOldMarked = builder.CreateICmpEQ(parBits, ConstantInt::get(T_size, GC_OLD_MARKED), "parent_old_marked");
@@ -2229,7 +2238,8 @@ bool LateLowerGCFrame::CleanupIR(Function &F, State *S, bool *CFGModified) {
                 typ->takeName(CI);
                 CI->replaceAllUsesWith(typ);
                 UpdatePtrNumbering(CI, typ, S);
-            } else if (write_barrier_func && callee == write_barrier_func) {
+            } else if ((write_barrier_func && callee == write_barrier_func) ||
+                       (region_write_barrier_func && callee == region_write_barrier_func)) {
                 // The replacement for this requires creating new BasicBlocks
                 // which messes up the loop. Queue all of them to be replaced later.
                 assert(CI->arg_size() >= 1);

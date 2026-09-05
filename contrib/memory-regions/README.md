@@ -100,9 +100,9 @@ Three claims, each with its measurement in `MEASUREMENTS.md`:
 
 1. Unused, the runtime runs the GCBenchmarks within noise of vanilla (M1).
    Its unit costs on a program that never opens a window are one flag check
-   per pointer store (about 0.09 ns), about 0.3 ns per pool allocation,
-   about 1 ns per object constructed with pointer fields, and about 1 % on
-   the stock mark (M2). Small, not zero.
+   per pointer store (about 0.09 ns), the same check once per object
+   constructed with boxed children, about 0.3 ns per pool allocation, and
+   about 1 % on the stock mark (M2). Small, not zero.
 2. Used alone, a reset frees a region in constant time, a window pair costs
    about 10 ns, and the collector's tail leaves the per-event latency of an
    event loop: at one event per 100 µs slot the regions run misses no slot

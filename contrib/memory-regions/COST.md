@@ -28,10 +28,10 @@ the base commit `8f33e09afe` (`v1.13.0-rc4`) with nothing else changed, and
    pool page. Nothing per object and nothing per task. No heap memory is
    allocated for regions until a first window opens: the region table of a
    thread heap is 64 `NULL` pointers until then.
-3. **A dynamic cost, per operation.** A flag test on each pointer store, a
-   barrier at object construction that vanilla omits, one indirection on
-   each pool allocation, and one relaxed load per object in the mark loop.
-   Each is a nanosecond or less.
+3. **A dynamic cost, per operation.** A flag test on each pointer store and
+   one on each construction of an object with boxed children, one
+   indirection on each pool allocation, and one relaxed load per object in
+   the mark loop. Each is a fraction of a nanosecond.
 
 ## Memory
 
@@ -59,7 +59,8 @@ instruction cache by their share of the text.
 | Operation | Vanilla | Regions, no window | Delta | Relative |
 | --- | --- | --- | --- | --- |
 | Pointer store with a write barrier | 0.32 ns | 0.41 ns | +0.09 ns | +26 % of the barrier |
-| Construction of an object with two pointer fields | 7.1 ns | 8.2 ns | +1.0 ns | +15 % |
+| Construction of an object with two pointer fields and two fresh children (three allocations) | 7.1 ns | 8.2 ns | +1.0 ns | +15 %; the three allocations, see below |
+| Construction of the same object with two shared children (one allocation), preliminary | 3.5 ns | 3.8 ns | +0.3 ns | +10 %; the allocation and a flag check |
 | Pool allocation | 2.07 ns | 2.35 ns | +0.3 ns | +13 % |
 | Stock mark, one collection | 64.4 ms | 65.2 ms | +0.8 ms | +1.2 % |
 | Stock sweep | — | one byte test per page | not measurable | — |
@@ -76,11 +77,16 @@ Where each cost comes from:
   `jl_gc_wb` (`src/gc-wb-stock.h`).
 - **The construction.** Vanilla emits no write barrier for the fields of a
   fresh object, because a fresh object is young. This branch emits the
-  barrier for a boxed pointer child at construction (`src/cgutils.cpp`), so
-  that the region check runs. The flag check is about 0.26 ns of the 1 ns:
-  three stores at 0.09 ns. The rest is the generational barrier at
-  construction, which the region check does not need. A construction-only
-  barrier that emits the region check alone would cut it. It is not built.
+  region check for the boxed children of a fresh object through a second
+  intrinsic, `julia.region_write_barrier` (`src/cgutils.cpp`,
+  `src/llvm-late-gc-lowering.cpp`): one call per object that names every
+  boxed child, lowered to the flag load, the branch, and a cold call per
+  child; no generational part. The +1.0 ns of the first construction row is
+  not this check: the row allocates two children and the object, and each
+  allocation pays the +0.3 ns of the allocation row. The second row makes
+  the same object from two shared children and pays one allocation and the
+  check. The numbers of the second row are from the day the barrier landed
+  and wait for the idle-machine rerun.
 - **The allocation.** `jl_gc_small_alloc_inner` decodes its pool offset to
   an index and addresses the pools through `active_pools`, one dependent
   load from the thread-local state, in place of a fixed offset. Then
@@ -110,17 +116,20 @@ Where each cost comes from:
   developers guard most: the write barrier and the allocation fast path. A
   13 to 15 % change on an allocation microbenchmark starts a discussion in
   a pull request, even when the application benchmarks stay inside noise.
-  The answer that discussion expects is the construction-only barrier, so
-  that the residual is 0.09 ns per store and 0.3 ns per allocation. Those
-  two are the price of a feature that is off.
+  The residual is 0.09 ns per store, the same check once per construction
+  of an object with boxed children, and 0.3 ns per allocation. Those are
+  the price of a feature that is off, and the allocation is the largest of
+  them: `active_pools` is one dependent load from the thread-local state in
+  place of a fixed offset, and no switch short of `JL_NO_REGION_ALLOC`
+  removes it.
 - **Mark and sweep:** 1 % on the mark is at the edge of what a collector
   developer accepts without a switch. `JL_NO_REGION_ALLOC` below folds the
   census branches out of the mark loops.
 
 In one sentence: unused regions cost a few hundred bytes per thread, 3 % of
-the image code, and about one nanosecond per constructed object; the memory
-is free, the code size is acceptable, and the construction barrier is the
-one item to fix before an upstream review.
+the image code, a tenth of a nanosecond per pointer store and 0.3 ns per
+allocation; the memory is free, the code size is acceptable, and the
+allocation indirection is the one number an upstream review will ask about.
 
 ## The switches and their effect on the cost
 
@@ -144,8 +153,8 @@ the runtime, because the lowered write barrier is part of the compiler.
 
 | Define | What it turns off | What it removes from the table above | What stays |
 | --- | --- | --- | --- |
-| `JL_NO_REGION_STORE_BARRIER` | The escape barrier, in the compiler (`llvm-late-gc-lowering.cpp`, `cgutils.cpp`) and in the C-side hooks (`gc-wb-stock.h`). A pointer store and a construction compile exactly as vanilla compiles them. | The store guard (0.09 ns per store), the construction barrier (1 ns per object with pointer fields), the store guards of the system image (0.6 MB of `.text`). | The allocation indirection, the mark filter, the page tag, the structs. Rule 4 of the model is gone, and rule 3 rests on the static checker `tools/region_check.jl` alone: a window can open, but no escape is ever seen. |
-| `JL_NO_REGION_ALLOC` | The region pools. `jl_gc_small_alloc_inner` takes the stock pool by its fixed offset, `jl_gc_region_set` refuses with `EINVAL`, and the census filter of the mark loops is the constant 0, which folds the census branches out. | The allocation indirection and the `maybe_collect` test (0.3 ns per allocation), the mark filter (1 % of the mark). | The store guard and the construction barrier, the page tag, the structs. No window opens, so no region state is ever made and no census runs. |
+| `JL_NO_REGION_STORE_BARRIER` | The escape barrier, in the compiler (`llvm-late-gc-lowering.cpp`, `cgutils.cpp`) and in the C-side hooks (`gc-wb-stock.h`). A pointer store and a construction compile exactly as vanilla compiles them. | The store guard (0.09 ns per store), the construction guard (the same check once per object with boxed children), the store guards of the system image (0.6 MB of `.text`). | The allocation indirection, the mark filter, the page tag, the structs. Rule 4 of the model is gone, and rule 3 rests on the static checker `tools/region_check.jl` alone: a window can open, but no escape is ever seen. |
+| `JL_NO_REGION_ALLOC` | The region pools. `jl_gc_small_alloc_inner` takes the stock pool by its fixed offset, `jl_gc_region_set` refuses with `EINVAL`, and the census filter of the mark loops is the constant 0, which folds the census branches out. | The allocation indirection and the `maybe_collect` test (0.3 ns per allocation), the mark filter (1 % of the mark). | The store guard and the construction guard, the page tag, the structs. No window opens, so no region state is ever made and no census runs. |
 | Both | Everything per object. | Every row of the time table except the sweep, the brackets and the task switch. | One region tag per page, which the page allocator writes and the sweep reads; a store and a compare of the region fields at a task switch; the 608 bytes per thread heap and the 8 bytes per page, because the structs do not change; the runtime code that no path reaches. |
 
 The region tests fail on both builds by design: every window refused on the

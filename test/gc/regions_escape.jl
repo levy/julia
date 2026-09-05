@@ -123,6 +123,31 @@ function ctor_gap_quarantines_region5()
     check("the quarantined reset refuses", code(region_reset(5)) == EQUARANTINED)
 end
 
+# The barrier at construction is the region guard alone. A fresh parent is
+# young, so vanilla emits no generational barrier for its boxed children,
+# and the region check must not bring one back: the lowered constructor
+# holds the guard's block, `region_wb`, and no `may_trigger_wb` block. A
+# `setfield!` on an old parent holds both. An object with two boxed children
+# pays one guard (one load of the armed flag) and one call per child.
+mutable struct Two
+    a::Any
+    b::Any
+end
+@noinline construct_two(c, d) = Two(c, d)
+using InteractiveUtils: code_llvm
+lowered_ir(f, types) = sprint(io -> code_llvm(io, f, types; optimize=true, debuginfo=:none))
+function ctor_barrier_is_region_only()
+    ctor = lowered_ir(construct_holder, (Base.RefValue{Int},))
+    check("the constructor holds the region guard", occursin("region_wb", ctor))
+    check("the constructor holds no generational barrier", !occursin("may_trigger_wb", ctor))
+    two = lowered_ir(construct_two, (Base.RefValue{Int}, Base.RefValue{Int}))
+    check("two boxed children share one guard", count("load i8, ptr @jl_gc_region_barrier_on", two) == 1)
+    check("two boxed children get one check each", count("jl_gc_region_wb", two) == 2)
+    store = lowered_ir(store!, (Holder, Base.RefValue{Int}))
+    check("the setfield! holds the region guard", occursin("region_wb", store))
+    check("the setfield! holds the generational barrier", occursin("may_trigger_wb", store))
+end
+
 mutable struct Box
     v::Int
 end
@@ -183,6 +208,7 @@ reset_clean_regions()
 chain_escape_quarantines_region7()
 dict_rehash_does_not_quarantine_region6()
 ctor_gap_quarantines_region5()
+ctor_barrier_is_region_only()
 iddict_key_quarantines_region4()
 serialize_quarantines_region3()
 spawn_quarantines_region2()

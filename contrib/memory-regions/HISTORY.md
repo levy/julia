@@ -300,7 +300,8 @@ them lists every detour of the ten plans.
   construction-only intrinsic (A) and discipline alone (C) lost to widening
   `need_wb` (B), at +1.4 ns per two-pointer-field construction as plan 8
   measured it; the flat tree measures +1.05 ns in a process without a window
-  (M2). The intrinsic is a deferred item below.
+  (M2). The intrinsic (A) landed later in the tidy, and its measurement
+  showed that the +1 ns was the three allocations of the row (S4).
 - **The out-of-memory hazard and the census.** A search whose dead branches
   die inside a window grows its region without bound. The demonstrators
   first bounded the search by a node cap; the tree plan then built the census
@@ -464,6 +465,29 @@ window opened, and the multi-thread runs of the sweep meet the `NULL`
 states of the other heaps in the brackets of a stock collection, the global
 reset and the global root scan.
 
+The construction-only barrier came last. Until then `emit_new_struct` set
+`need_wb` for a boxed pointer child, so that the region check ran at the
+store, and the one intrinsic it had, `julia.write_barrier`, lowered to the
+region guard and then the generational check of a parent that is young by
+construction. A second intrinsic, `julia.region_write_barrier`, has the
+type and the attributes of the first; `emit_new_struct` keeps the vanilla
+`need_wb` and, after the field loop, emits one call that names the fresh
+object and every boxed child it stored. `CleanupWriteBarriers` lowers the
+call to the guard block alone and erases it; every pass that knows the
+first intrinsic treats the second the same way: not a safepoint, a use that
+dies with an elided allocation, a call that LICM hoists. A constructor with
+two boxed children compiles to the stores, one load of the flag, one branch,
+and a cold call per child. `regions_escape.jl` pins the shape from the
+lowered IR: the constructor holds a `region_wb` block and no
+`may_trigger_wb` block, two children share one load, and a `setfield!`
+holds both blocks. The measurement that motivated the intrinsic then
+corrected itself. The `construct_two` row of M2 allocates two `Ref`s and
+one `Two` per object, and the new `construct_shared` row, the same object
+from two shared children, pays the delta of one allocation and a flag
+check: the +1 ns of the row was three allocations, not a barrier. The
+documents say so now; the gain of the intrinsic itself is inside the spread
+of the row.
+
 ### Cleanups
 
 | # | Where | Finding | Action |
@@ -500,8 +524,8 @@ commit in the series, with the reason in the message.
 | S1 | `gc_defer_collection` | Re-arms `heap_target` when a collection is deferred. | Without it a disabled collector re-enters `jl_gc_collect` on every allocation; a `GC.enable(false)` loop allocates at full speed with it. A visible behavior change. |
 | S2 | `work-stealing-queue.h`, `gc_ptr_queue_push/pop` | `FORCE_INLINE`. | The census filter moved the inliner's budget and the stock mark loop lost its inlining; the hot code is otherwise byte-identical. |
 | S3 | `gc_setmark_pool` | `gc_region_corpse_report` on `NULL` page metadata. | Names the object that a bad reset dangled, on a path that already crashes. |
-| S4 | `cgutils.cpp`, `emit_new_struct` | `need_wb = true` for boxed pointer children at construction. | The escape barrier needs the store checked; off under `JL_NO_REGION_STORE_BARRIER`. |
-| S5 | `llvm-late-gc-lowering.cpp` | A flag-guarded call to `jl_gc_region_wb` after the generational barrier. | The escape barrier; off under the same define. |
+| S4 | `cgutils.cpp`, `emit_new_struct`; `codegen.cpp`; `llvm-pass-helpers.{h,cpp}`, `llvm-alloc-opt.cpp`, `llvm-alloc-helpers.cpp`, `llvm-julia-licm.cpp` | A second intrinsic, `julia.region_write_barrier`, emitted once per constructed object with every boxed pointer child it stores; the passes treat it as `julia.write_barrier`. | The escape barrier needs the store checked, and the fresh parent needs no generational barrier; nothing emitted under `JL_NO_REGION_STORE_BARRIER`. |
+| S5 | `llvm-late-gc-lowering.cpp` | A flag-guarded call to `jl_gc_region_wb` before the generational barrier; `julia.region_write_barrier` lowers to that guard alone. | The escape barrier; off under the same define. |
 | S6 | `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_wb_fresh`, `jl_gc_wb_current_task`, `jl_gc_wb_knownold` | The three empty annotations become declarations, and the stock collector defines them with the region check. | Each one names a store whose *generational* half a property of the parent or of the child removes. None of those properties says anything about a region, and a fresh parent takes the region of the open window while the child can come from an earlier one. The mmtk build keeps them empty. |
 | S7 | `base/array.jl`, `base/dict.jl`, `base/iobuffer.jl`, `src/iddict.c` | A replacement buffer is allocated in the region of its container, through `jl_gc_region_borrow`. | Without it a `push!` to a long-lived vector inside a window quarantines the region for an operation the program has every right to make. With no region in use the borrow reads region 0 and installs region 0: two field writes on the growth path, none on the allocation path. |
 
@@ -544,6 +568,24 @@ or the benchmarks meets again.
   compiles eight copies of each tight loop and reports the minimum. The rows
   that spend their time in the runtime's C code have one placement per
   binary; a difference there needs the disassembly as a second witness.
+- `src/Makefile` lists the header dependencies of the pass objects by hand
+  and does not follow an include. A change to `llvm-pass-helpers.h` rebuilds
+  the objects that name it, and leaves `llvm-final-gc-lowering.o` and
+  `llvm-late-gc-lowering-stock.o`, which reach it through
+  `llvm-gc-interface-passes.h`. The stale objects hold the old layout of
+  `JuliaPassContext`, and the first compiled function spins in the symbol
+  table of the module. Removing the two objects is not enough: `make` treats
+  a missing object of a pattern rule as up to date when its source is older
+  than the library. After a change to that header, touch the two sources,
+  or name the objects as goals (`make -C src llvm-final-gc-lowering.o
+  llvm-late-gc-lowering-stock.o`), or run `make -C src clean`.
+- The system image does not depend on the codegen library in `sysimage.mk`.
+  A change to `src/cgutils.cpp` or `src/codegen.cpp` alone rebuilds
+  `libjulia-codegen.so` and leaves `sys.so` with the code the old codegen
+  emitted. A test of a codegen change against the image (the IR of a
+  function that Base compiled, the size of `.text`) reads the old image.
+  Remove `usr/lib/julia/{basecompiler,sysbase,sys}{-o.a,.so}` before the
+  rebuild.
 
 ### The measurements, redone
 
@@ -575,8 +617,10 @@ changed.
   vanilla: +0.085 ns per pointer store, +0.28 ns per pool allocation,
   +1.05 ns per object constructed with two pointer fields, and +1.2 % on the
   stock mark. The claim now names them: small, not zero. The construction
-  cost is the largest; the flag check is about a quarter of it, the rest is
-  the generational barrier that vanilla omits at construction (S4).
+  row was read as the cost of the barrier at construction; the
+  `construct_shared` row of the construction-only barrier (S4, S5) later
+  showed that the row is three allocations, and that the barrier at
+  construction is a flag check.
 - *M5, the throughput.* The old claim was that a census-paced region loop
   keeps the throughput of the stock loop. The `batch` rows run no census,
   and the `pooled` row (a window and a reset per event, a scoped collection
@@ -643,12 +687,16 @@ correct under its documented rules.
   `gc_setmark_buf_` on each task's exception stack and copy-stack buffer. The
   direction is safe: a set `has_marked` only makes the sweep walk the page,
   and a stale mark on a young buffer promotes it to old at worst. No fix.
-- **A construction-only barrier intrinsic.** An object constructed with two
-  pointer fields costs +1.05 ns on this branch in a process that never opens
-  a window (M2, `construct_two`, 8.19 ns against 7.13 ns on vanilla). The
-  flag checks are about 0.26 ns of it; the rest is the generational barrier,
-  which a fresh object does not need. An intrinsic that emits the region
-  check alone at construction would cut the cost to the flag checks.
+- **The barrier at a fresh-object copy.** Two paths store a region pointer
+  into a fresh object without a check, and vanilla emits no barrier on
+  either, because the parent is young: a child that a struct stores inline
+  (`TwinHolder(Twin(c, c))`, the inline `Twin` holds two pointers), and a
+  child that a fresh box copies from an unboxed value (`Any[Twin(c, c)]`).
+  The C side has the same shape in `jl_new_bits`. The construction-only
+  barrier is the tool to close the compiler-side holes, at one guard per
+  tracked pointer of the copied aggregate, but the closing widens the
+  coverage of rule 4 and needs an audit of every fresh-object copy. A
+  probe and a plan hold the two cases.
 - **A postorder subtree reset and a subtree census.** The two-level shape
   (a trunk and leaves) needs neither.
 - **An in-process test of the image refusal.** `jl_create_system_image`

@@ -101,6 +101,15 @@ the flag `jl_gc_region_barrier_on` and a well-predicted branch. The first
 window of the process arms the flag, and it stays armed. Before the first
 window, the barrier is the load and the branch only.
 
+At the fields of a fresh object in `new`, vanilla emits no write barrier for
+a boxed child: the parent is young. The escape barrier still applies, because
+region lifetime and generational age are orthogonal, so the compiler emits it
+there through a second intrinsic, `julia.region_write_barrier`, which lowers
+to the guard alone and to no generational part. One call names every boxed
+child of the object, so a constructor with boxed children compiles to the
+stores, one load and one branch, and a cold call per child when the flag is
+armed.
+
 With the flag armed, the store calls `jl_gc_region_wb(parent, child)`. The
 call reads the region of the child from its page tag. A child of region 0 is
 legal under any parent, and almost every store in ordinary code has one, so
@@ -532,7 +541,7 @@ one and no escape ever seen on the other.
 | `src/gc-stock.c` | The region page tag, the allocation into the active pools, the census filter in the mark loops, the sweep that skips region pages, the `WeakRef` refusal. |
 | `src/gc-common.c` | Finalizer lists and malloc'd data of a region; the suspend and resume of a window around the runtime's own allocation. |
 | `src/gc-pages.c` | The heap reserve. |
-| `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. |
+| `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. `src/codegen.cpp` declares `julia.region_write_barrier`, the guard alone for the stores into a fresh object; `src/llvm-alloc-opt.cpp`, `src/llvm-alloc-helpers.cpp` and `src/llvm-julia-licm.cpp` treat it as they treat `julia.write_barrier`. |
 | `src/task.c` | The window follows the task. |
 | `src/gf.c` | Inference, compilation, and the cache-miss path of a dynamic dispatch run in region 0. |
 | `src/jltypes.c` | The cache-miss path of a type instantiation runs in region 0. |

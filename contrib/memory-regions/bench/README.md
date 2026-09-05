@@ -10,7 +10,7 @@ measurement below and `../results/plot.py` draws from the rows.
 
 | File | Command | Prints |
 | --- | --- | --- |
-| `unit_costs.jl` | `julia unit_costs.jl [N]` | one TSV row per unit cost of the runtime (store, window pair, switch, alloc, reset slice, stock mark), min of N. `julia unit_costs.jl stock [N]` runs only the rows that need no region entry point, so it also runs on a vanilla julia. |
+| `unit_costs.jl` | `julia unit_costs.jl [N]` | one TSV row per unit cost of the runtime (store, window pair, switch, construction, alloc, reset slice, stock mark), min of N. `julia unit_costs.jl stock [N]` runs only the rows that need no region entry point, so it also runs on a vanilla julia. |
 | `gcbench.sh` | `gcbench.sh <vanilla julia> <region julia> <GCBenchmarks checkout> [rounds]` | the wall time of every GCBenchmarks run, both binaries in every round: six serial benchmarks on one thread, five multithreaded ones on four. The zero-cost sweep. |
 | `yardstick.jl` | `julia yardstick.jl alloc\|pooled <events>` | the per-event latency distribution of one model variant under the stock collector, against the 100 µs pacing target. |
 | `tail.jl` | `julia tail.jl baseline\|regions <events>` | the tail latencies of the pooled model: `baseline` leaves the scratch to the collector, `regions` resets the Event region after each event. |
