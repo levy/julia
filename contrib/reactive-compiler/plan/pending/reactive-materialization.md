@@ -543,6 +543,96 @@ machinery, and the rebuilt binary must run. The 390 s of the incremental
 full build on the same lane, and the rebuilt binary doubles the measured
 hop mean exactly.
 
+### Stage 6 — the two Stage 1 hazards
+
+Gate 2 left two hazards open, because the routing edit does not reach them.
+
+**Hazard (a), a direct call from the delta to a reused symbol.** A read of
+`resolve_workqueue` and of the call emitters of `codegen.cpp` finds that the
+system-image path never emits a call by symbol name to a function that is not
+in `compiled_functions` of the same build: a callee without code in the
+module gets the `emit_tojlinvoke` trampoline, or the `invoke` pointer of its
+code instance. So the hazard is not a link error. It is two questions: does
+every call shape reach the reused code through that route, and what does
+the trampoline cost per call. Both are answered by a test package,
+`tool/m6_hazard/HazardApp`, whose one tracked file `src/shapes.jl` holds
+fourteen call shapes across the reuse boundary: a `@noinline` callee, an
+inlined callee, a `@nospecialize` callee, a constant, a `@cfunction`,
+keyword arguments, varargs, `invoke`, an opaque closure, a static parameter,
+a finalizer, a reverse call (reused code dispatches into a function of the
+delta), the cone (a reused caller inlined the edited leaf), and a
+`@ccallable` method. A `bench` line measures nanoseconds per call for a
+reused callee against a callee of the delta. `shapes-after.jl` is the
+edited file: every shape changes its value in a way that only the new code
+gives.
+
+**Hazard (b), the alias of a redefined `@ccallable` method.** Stage 1
+skipped the ccallable item when the method was older than the base world.
+That rule is wrong for a redefined method: its `primary_world` is new, so
+the item is emitted, `jl_generate_ccallable` defines the alias with the
+plain name again, and the link sees the symbol twice. The rule moves to the
+C side and asks the previous image: `jl_reactive_image_exports(name)` looks
+the name up in the loaded image (`staticdata.c` keeps the handle of the
+image), and `jl_generate_ccallable` returns without a wrapper and without
+an alias when the image exports the name. The Julia side always pushes the
+ccallable item. The alias of the previous image stays correct for a
+redefined method: the wrapper behind it resolves its target through
+`jl_get_abi_converter` in the current world. `JULIA_REACTIVE_TIMINGS=2`
+reports `reactive: ccallable <name> is exported by the previous image; no
+new alias`; `julia_main` gets the same line on every rebuild.
+
+**Gate 6.** `tool/m6_gate.sh`: `materialize_app` founds the store of
+HazardApp, the binary prints the before-values of the fourteen shapes; the
+edit replaces `shapes.jl`, the rebuild must report the skipped alias of
+`hazard_entry`, the binary prints the after-values; the reverse edit gives
+the before-values again. The bench line gives the trampoline cost.
+**Passed 2026-09-05**: 14 of 14 shapes in each of the three runs, the alias
+skipped on both rebuilds, the trampoline at 43 ns per call against 2.6 ns.
+The numbers and one new finding — the side effects of the rebuild workload
+persist in the image — are in the entry "2026-09-05, M6" below.
+
+### Stage 7 — the builder
+
+The M5 gate drove PackageCompiler by hand. Stage 7 puts the reactive build
+behind the builder of omnet-julia, on the branch `reactive-builder` of the
+`omnet-julia-m1` worktree: `build_executable(; reactive = true)` and
+`bin/build_omnet_legacy_sample routing --reactive`.
+
+- `source/build/Reactive.jl`. `tracked_sources(package)` walks the root
+  file of a package for every literal `include("…")` at the top level of a
+  module, follows the included files, and names the dotted module of each.
+  The root file is not tracked: its top level is `module Pkg … end`,
+  evaluated in `Main`, and the app image binds no package in `Main`. An
+  `include` outside every module, or with an argument that is not a string
+  literal, is named in a warning and not tracked. `write_rebuild_workload`
+  writes `rebuild_workload.jl` beside the app package: `using` of every
+  package, then the workload expression. `_materialize!` is the counterpart
+  of `_compile!`: the same arguments reach `materialize_app`.
+- `Executable.jl`. `reactive` refuses `trim`, `incremental = false`, and a
+  `tracked` list without `reactive`. A store that was founded for another
+  app package is refused: the builder compares the modification times of
+  the app `Project.toml` and module file before and after it writes them,
+  and a store under an output whose app files changed is not a rebuild of
+  that store. The build record says `reactive: founded by
+  PackageCompiler.materialize_app; a later build of the same output
+  compiled the edit only`.
+- `build_binary.jl`. `--reactive` refuses `--distribution` and
+  `--no-incremental`.
+- `environment/tool/Project.toml` takes PackageCompiler from
+  `workspace/package-compiler-reactive`, a superset of the
+  `cached-base-sysimage` branch that the environment used before.
+
+**Gate 7.** `tool/m7_gate.sh`: the tool environment resolves; `--reactive
+--no-compile` writes the app package and names the tracked files; the
+founding build; the binary runs the Backbone configuration at hop mean
+2.308011; the `+= 2` edit of `Routing.jl`; the same command rebuilds the
+delta; hop mean 4.616022; the reverse edit and 2.308011 again.
+
+**Passed 2026-09-05**: the founding build in 6 min 22 s, the edit rebuilt in
+17.9 s, the reverse edit in 16.7 s, and the hop mean went 2.308011 →
+4.616022 → 2.308011; the numbers are in the entry **2026-09-05, M7** of the
+decision record.
+
 ## Development mode and release mode
 
 Julia already has a development mode: package images and Revise. What this
@@ -609,6 +699,12 @@ and never the target.
   the key run. They stay, because Stage 1 and Stage 2 are measured with them.
 - `tool/m4_child.jl` and `tool/m4_gate.sh` — the materialize child and the M4
   gate.
+- `tool/m5_gate.sh` — the routing sample binary through `materialize_app`.
+- `tool/m6_hazard/` and `tool/m6_gate.sh` — the HazardApp package (every
+  call shape across the reuse boundary, a redefined `@ccallable`) and its
+  gate.
+- `tool/m7_gate.sh` — the routing sample through the builder of omnet-julia
+  (branch `reactive-builder` of `omnet-julia-m1`).
 
 ## Milestones
 
@@ -646,6 +742,19 @@ and never the target.
       155 s and 9.7 GB for the full build through the same entry point; the
       rebuilt binary runs at once and its `hopCount` mean doubles exactly
       with the edit, and returns exactly with the reverse edit.
+- [x] **M6** — every call shape reaches reused code across the reuse
+      boundary, the rebuild of a redefined `@ccallable` method links, and
+      the trampoline cost per call is measured. Done 2026-09-05 by
+      `tool/m6_gate.sh`: 14 of 14 shapes before, after and after the reverse
+      edit; the alias of `hazard_entry` skipped on both rebuilds; a call
+      from the delta into reused code costs 43 ns against 2.6 ns inside
+      the reused code. Found on the way: the rebuild workload's side
+      effects persist in the image and accumulate along the chain.
+- [x] **M7** — `bin/build_omnet_legacy_sample routing --reactive` founds the
+      store on the first build and rebuilds the delta on the second, through
+      the builder alone. Gate 7 is `tool/m7_gate.sh`. Done 2026-09-05: the
+      founding in 6 min 22 s, the rebuild of the edit in 17.9 s, the reverse
+      edit in 16.7 s; the hop mean doubled and came back.
 
 ## Decisions found during the work
 
@@ -1070,3 +1179,149 @@ writes `build/app/routing` with `--no-compile`, and every build goes through
   carries the Main bindings of its own build; the child resolves the root
   module of a tracked file through `Base.loaded_modules`, and the warm
   exercises that branch.
+
+**2026-09-05, M6, the test package.** Facts found while `HazardApp` was
+written and run on the JIT, before the gate.
+
+- *A `const` opaque closure at the top level of a precompiled package is a
+  stock fault.* `const reused_oc = @opaque (x::Int) -> x + 100` in a package
+  faults at the call in a fresh process, on the reactive Julia and on the
+  stock 1.13.0-rc3 alike. The package makes the closure in a function
+  (`make_oc()`) instead. This is a bug of Julia and not of the patch; it is
+  not reported upstream.
+- *The workload of the founding build and the workload of a rebuild are two
+  arguments.* The `workload` of `materialize_app` drives the rebuild child
+  only; the founding build compiles what `precompile_execution_file` runs.
+  The gate passes one file, `workload.jl`, as both: `using HazardApp;
+  HazardApp.report()`, plain calls, as rule 3 of the harness says.
+- *One specialization for the binary and the workload.* `run_all(io)` on
+  `stdout` would compile at run time, because `stdout` has no fixed type.
+  `report()` runs the shapes into an `IOBuffer` and `julia_main` prints the
+  string, so the workload and the binary share one code path.
+- *A missing `@ccallable` entry is not an error in the REPL.* The shapes run
+  in a session whose image has no `hazard_entry`; the `ccallable` shape
+  answers `-1` there and the real value in the built binary.
+
+**2026-09-05, M7, the builder.** Facts found while the builder was
+integrated, before the gate.
+
+- *The root file of a package is not tracked.* Its top level is evaluated in
+  `Main`, which binds no package in the app image; an edit to the root file
+  (a new `include`, a new `using`) needs a founding build. The routing
+  sample gives 34 tracked files; `Imports.jl` is tracked three times,
+  once per module that includes it, and each entry names its own module.
+- *The rebuild workload is the founding workload, written as a file.* The
+  builder already has the workload as an `Expr` for the `@compile_workload`
+  of the app module; `write_rebuild_workload` writes the same expression
+  after a `using` of every package, so the two workloads cannot drift.
+- *A store belongs to one app package.* The builder writes the app package
+  with `write_if_changed`; when the write changed the `Project.toml` or the
+  module file and a store exists under the output, the store was founded
+  for another package, and the build refuses instead of linking a delta of
+  the wrong program in front of the wrong image.
+- *`--reactive` refuses what the reactive path cannot serve.* A distribution
+  is a copy of a bundle tested outside the checkout, and a store inside the
+  copy would be a store of the copy; `--no-incremental` and any `trim` are
+  refused by the compiler itself.
+- *The tool environment moved to the reactive PackageCompiler.* The branch
+  `reactive` of `package-compiler-reactive` holds every commit of
+  `cached-base-sysimage`, so a stock build through the same environment
+  does not change.
+- *`test/build.jl` covers the text and the refusals, not a build.* The one
+  error of the suite in this environment is older than the change: the
+  source build of the reactive Julia ships no `juliac` script.
+
+**2026-09-05, M6.** Passed by `tool/m6_gate.sh` on the build lane, eight
+image threads, after the Julia rebuild with the ccallable rule.
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| founding build of HazardApp | 127 s to 134 s | 5.9 GB | `create_app` with the base image from the depot cache; front 47.9 s to 49.3 s, `jl_emit_native` 18.3 s to 19.0 s |
+| run, before | 0.5 s | 0.22 GB | 14 of 14 shapes; bench 2.62 ns/call reused, 3.24 ns/call the other loop |
+| rebuild, the edit | 25.5 s to 25.8 s | 0.75 GB | 5 expressions applied in 64 ms, cone 5 replaced, 6 closed; 36 new method instances; delta 185 roots, 4 edges (the first-rebuild residue); front 2.6 s, `jl_emit_native` 0.1 s; 27084 code instances reused |
+| run, after | 0.9 s | 0.26 GB | 14 of 14 shapes; bench 2.59 ns/call reused, **42.5 to 44.5 ns/call from the delta** |
+| rebuild, the reverse edit | 23.8 s to 24.1 s | 0.73 GB | delta 15 to 19 roots, 0 edges |
+| run, restored | 0.9 s | 0.26 GB | 14 of 14 shapes; bench 2.6 against 43.6 ns/call |
+
+- *Every call shape crosses the boundary.* A `@noinline` callee, an inlined
+  callee, `@nospecialize`, a constant, a `@cfunction`, keyword arguments,
+  varargs, `invoke`, an opaque closure, a static parameter, a finalizer,
+  the reverse direction through a dynamic call, the cone of an inlined
+  leaf, and the `@ccallable` method all give the new value after the edit
+  and the old value after the reverse edit. The link never sees a reused
+  symbol from the delta, so hazard (a) is not a link hazard; it is a cost.
+- *The trampoline costs 40 ns per call.* `bench_delta` is delta code that
+  calls the reused `@noinline bench_callee` through `emit_tojlinvoke`:
+  43 ns per call. `bench_reused`, the same loop inside the reused code,
+  costs 2.6 ns. So a non-inlined call from edited code into code that the
+  previous image holds is about 16 times a direct call: `jl_invoke` boxes
+  the arguments and goes through the generic wrapper. The routing model
+  does not see it (Gate 2: 14.55 s against 14.57 s), because its hot loop
+  is inside reused code. A direct call to the reused specialization by its
+  suffixed symbol is the Stage 2 fix, still open.
+- *The ccallable rule holds.* `jl_generate_ccallable` reports `reactive:
+  ccallable hazard_entry is exported by the previous image; no new alias`
+  on both rebuilds, the link has no
+  duplicate symbol, and `ccall` through the alias of the founding image
+  gives 2 after the edit and 1 after the reverse edit: the old wrapper
+  serves the redefined method. `julia_main` gets the same line.
+- *The side effects of the rebuild workload persist in the image.* The
+  finalizer shape adds to a global `Ref`. The founded binary starts at 0,
+  because `create_app` runs the workload in a trace process and the image
+  build executes precompile statements only. The rebuilt binary starts at
+  2: the rebuild child runs the workload in the process whose heap becomes
+  the image, and the child ran the edited `driver` once. The reverse edit
+  starts at 3. This is the `@compile_workload` semantics of a package
+  image, plus accumulation: a package image starts every precompile from
+  a clean load, and a chain of rebuilds does not. Open decision, with two
+  ways: accept and document (the workload must leave no state, as it
+  must in a `@compile_workload`), or a trace child before the build child
+  — the same apply of the tracked diffs, the workload under
+  `--trace-compile`, and the build child then executes the statements and
+  runs nothing. The second way gives the founding semantics exactly, at
+  the cost of one more process start and the workload once more; the
+  build child then compiles the statements and does not run the
+  simulation, so the routing rebuild moves from about 12 s to an
+  estimated 16 s to 20 s.
+- *A test file must be committed before a gate restores it.* The gate's
+  restore step is `git checkout`; an uncommitted edit of the test package
+  is undone by it, and the restored run then tests the old text.
+
+**2026-09-05, M7.** Passed by `tool/m7_gate.sh` on the build lane, eight
+image threads, through `bin/build_omnet_legacy_sample routing --reactive`
+of the `reactive-builder` branch (commit `d4352a0b` of `omnet-julia-m1`).
+The gate's own log holds the first 60 lines of each build log only; the
+numbers below are from `$OUT/m7/build-*.log`.
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| `--reactive --no-compile` | 9.4 s | 0.56 GB | the app package written; 34 tracked files, `Imports.jl` once for each module that includes it |
+| founding build | 6 min 22 s | 9.6 GB | `create_app` with a fresh depot: the base image cache is built first; the record says `founded by PackageCompiler.materialize_app` |
+| run, before | 3 min 1 s, user 180 s | 0.6 GB | `hopCount` mean 2.308011, 1222019 events, network hash `b21df42f…` |
+| rebuild, the `+= 2` edit | 17.9 s | 1.36 GB | 1 expression applied in 2.2 ms, world 39301 → 39302, cone 0 replaced, 0 closed; 47 new method instances; delta 392 roots, 7 edges, 1 shadowed (the first-rebuild residue); front 2.3 s; 42643 code instances reused |
+| run, after | 1 min 3 s, user 63 s | 0.6 GB | `hopCount` mean 4.616022, exactly double, same hash and event count |
+| rebuild, the reverse edit | 16.7 s | 1.32 GB | delta 16 roots, 0 edges; 7 new method instances |
+| run, restored | 1 min 3 s | 0.6 GB | `hopCount` mean 2.308011 |
+
+- *The builder rebuilds through the same command.* The user types the
+  command that founded the store, and the second build compiles the edit
+  only. The founding is slower than M5 (155 s) because the gate starts
+  from an empty depot and the base image cache is built first; a second
+  founding in the same depot would cost the M5 number.
+- *The steady rebuild is 17 s.* The M5 gate measured 12 s to 13 s by hand
+  with the same edit. The builder adds the `--no-compile` front of the
+  tool script: `Pkg.instantiate`, the load of `OmnetBuilder`, the walk of
+  the tracked sources, and the writes of the app package. The
+  `--no-compile` step alone takes 9.4 s with the Julia start; about 5 s of
+  it is in addition to what the M5 gate paid.
+- *The founded binary ran three times slower, in every phase.* The
+  before-run took 180 s of user time against 63 s for the rebuilt binary
+  and 63 s for the founded binary of M5. The setup phase, which runs no
+  edited code, was also three times slower (`network=3.21 initialize=11.37`
+  against `1.10/3.88`), the network hash and the event count are the same,
+  and the restored binary on the same lane ran in 63 s. A uniform slowdown
+  of the setup and the run is an external cause, not a difference of the
+  image: CPU 16 of the lane carried a Java process at 52% for two hours,
+  its SMT sibling is CPU 0, and the machine reported 63% frequency scaling.
+  Observed, not reproduced: the store holds the restored image now, not
+  the founded one. A re-founding on a quiet lane would settle it.

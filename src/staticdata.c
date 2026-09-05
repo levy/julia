@@ -3689,6 +3689,9 @@ static jl_image_buf_t get_image_buf(void *handle, int is_pkgimage)
     return image;
 }
 
+// The handle of the loaded system image, kept for `jl_reactive_image_exports`.
+static void *reactive_image_handle = NULL;
+
 // Allow passing in a module handle directly, rather than a path
 JL_DLLEXPORT jl_image_buf_t jl_set_sysimg_so(void *handle)
 {
@@ -3696,6 +3699,7 @@ JL_DLLEXPORT jl_image_buf_t jl_set_sysimg_so(void *handle)
         return jl_sysimage_buf;
 
     jl_sysimage_buf = get_image_buf(handle, /* is_pkgimage */ 0);
+    reactive_image_handle = handle;
     return jl_sysimage_buf;
 }
 
@@ -4643,6 +4647,19 @@ JL_DLLEXPORT void *jl_reactive_base_gvar(uint32_t i) JL_NOTSAFEPOINT
 {
     assert(i < reactive_image.ngvars);
     return *(void**)sysimg_gvars(reactive_image.gvars_base, reactive_image.gvars_offsets, i);
+}
+
+// Whether A exports the symbol `name`: the alias of a `@ccallable` method that
+// A defined. The delta must not define it again, because A's text objects are
+// linked in front of the delta and the link sees the symbol twice. A's alias
+// stays correct for a redefined method: the wrapper behind it resolves its
+// target through `jl_get_abi_converter` in the current world.
+JL_DLLEXPORT int jl_reactive_image_exports(const char *name) JL_NOTSAFEPOINT
+{
+    if (!jl_reactive_reuse_enabled() || reactive_image_handle == NULL)
+        return 0;
+    void *addr = NULL;
+    return jl_dlsym(reactive_image_handle, name, &addr, 0, 0) && addr != NULL;
 }
 
 // The function ids of `ci` in A's function table, in the form `jl_get_function_id`

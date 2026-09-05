@@ -1687,18 +1687,16 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             mi = ccall(:jl_get_specialization1, Any,
                         (Any, Csize_t, Cint),
                         sig, world, #= mt_cache =# 0)
-            in_previous_build = false
             if mi !== nothing
                 mi = mi::MethodInstance
                 ci = reactive ? reactive_cached_ci(interp, mi, world) : nothing
                 ci === nothing && (ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE))
                 ci isa CodeInstance && push!(invokelatest_queue, ci)
-                # the previous build defined the alias of a method it knew
-                in_previous_build = reactive && mi.def.primary_world <= reactive_base_world()
             end
             # additionally enqueue the ccallable entrypoint / adapter, which implicitly
-            # invokes the above ci
-            in_previous_build || push!(codeinfos, item)
+            # invokes the above ci. In a reactive build, `jl_generate_ccallable`
+            # emits no alias that the previous image already exports.
+            push!(codeinfos, item)
         elseif item isa CodeInstance
             callee = item
             isinspected(workqueue, callee) && continue
