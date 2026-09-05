@@ -9,8 +9,10 @@
 #                                                   current world; without
 #                                                   gensym counters and
 #                                                   quoted line numbers
-#   root <signature> compiled|inferred|absent|unresolved
-#                                                   a statement of the trace
+#   root <signature> compiled|inferred|absent|unresolved|gensym
+#                                                   a statement of the trace;
+#                                                   `gensym` names a gensym
+#                                                   of a tracked module
 #   global <Module>.<name> = <value>                a non-function binding of
 #                                                   a tracked module
 #   info ...                                        counts; not compared
@@ -188,17 +190,23 @@ function oracle_main(args)
         value isa Union{Function, Type, Module} && continue
         push!(lines, string("global ", mod, ".", name, " = ", repr(value)))
     end
+    # A root that names a gensym of a tracked module (the generator of a
+    # generated method, a closure) names the counters of the trace process:
+    # no image has to know that name. Its state is `gensym`, not compared.
+    gensym_of = [Regex(string("\\b", mod, "\\.(?:[A-Za-z_]\\w*\\.)*var\"[^\"]*#\\d")) for mod in roots]
     if trace !== nothing
         for line in eachline(trace)
             startswith(line, "precompile(") || continue
+            text = line[12:end-1]
             ex = Meta.parse(line)
             sig = try
                 Core.eval(Main, ex.args[2])
             catch
                 nothing
             end
-            state = sig === nothing ? "unresolved" : oracle_root_state(sig, world)
-            push!(lines, string("root ", line[12:end-1], " ", state))
+            state = any(re -> occursin(re, text), gensym_of) ? "gensym" :
+                    sig === nothing ? "unresolved" : oracle_root_state(sig, world)
+            push!(lines, string("root ", oracle_canonical(text), " ", state))
         end
     end
     sort!(lines)

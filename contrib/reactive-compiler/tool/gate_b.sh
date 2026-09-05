@@ -255,7 +255,7 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-$1.log" "$OUT/oracle-$2.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-$1.log" "$OUT/oracle-$2.log" || failed=1
-    grep -E "^root .*HazardApp" "$OUT/oracle-$1.log" | grep -vq " compiled$" &&
+    grep -E "^root .*HazardApp" "$OUT/oracle-$1.log" | grep -vqE " (compiled|gensym)$" &&
         { echo "=== check 2: a root of HazardApp is not compiled in the chain"; failed=1; }
     check 3 "output" "^(shape|change): " "$OUT/run-$1.log" "$OUT/run-$2.log" "${4:-}" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-$1.log" "$OUT/oracle-$2.log" || failed=1
