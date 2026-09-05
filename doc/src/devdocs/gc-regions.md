@@ -505,7 +505,9 @@ root of the repository, put a julia that carries the region runtime, with no reg
 vanilla julia built from the same base, on the GCBenchmarks suite and on unit
 costs of the allocator, the mark, and the sweep. The same document measures the
 cost and the pause tail of a program that uses a region, on synthetic loops and
-on four demonstrators.
+on four demonstrators. `contrib/memory-regions/COST.md` puts the cost of the
+unused runtime in two tables, memory and time, with a judgment of each row and
+the effect of every switch.
 
 Two build defines exist for measurement; each takes one half of that cost
 out. `JL_NO_REGION_STORE_BARRIER` omits the escape barrier from the compiler
