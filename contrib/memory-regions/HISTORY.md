@@ -224,8 +224,9 @@ leaves on two threads would carry equal page tags and pass a cross-thread
 store undetected. A leaf resets on the fast per-heap path behind a one-bit
 precondition; a trunk resets as one stop-the-world act across every heap
 (`reset_global`), because a per-heap trunk reset would dangle the references
-of other threads. `JL_GC_MAX_REGIONS` went from 4 to 8. A postorder subtree
-reset and a subtree census were deferred: the two-level shape needs neither.
+of other threads. `JL_GC_MAX_REGIONS` went from 4 to 8, and to 64 after the
+third review. A postorder subtree reset and a subtree census were deferred:
+the two-level shape needs neither.
 
 The tree plan also closed the one hazard of the model that the demonstrators
 had named: a computation whose garbage dies inside a window, such as a deep
@@ -434,6 +435,17 @@ trunk object, and the F3 root scan refused it rightly. `tree_park_with_trunk`
 read its object through one field only, so the compiler scalar-replaced the
 allocation and nothing was on the frame; the case now forces the object with
 `escape`.
+
+After the fixes, `JL_GC_MAX_REGIONS` went from 8 to 64. Two things bounded
+the count: the constant, and the quarantine mask, a 32-bit word that widened
+to 64 bits. Everything else already held 64: the page tag, the task field,
+the parent table and the child counts are bytes, and the live, has-child and
+uptree masks are 64-bit words with bit 63 for region 63. No hot path reads
+the count. The three brackets of a stock collection skip 64 entries per heap
+instead of 8, and a thread heap carries 64 region entries, about 100 KB, in
+place of 8. `regions_many.jl` opens every region, stores toward the root at
+the top of the chain, quarantines region 32 and region 63, and declares a
+tree of 62 leaves under one trunk. The lazy per-heap state stays deferred.
 
 ### Cleanups
 

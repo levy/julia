@@ -26,7 +26,7 @@ frees the stock objects that region objects reference when nothing else does.
 ## The model
 
 Every managed object belongs to exactly one region for its whole lifetime.
-Region 0 is the stock heap. Regions 1 to `JL_GC_MAX_REGIONS - 1` (7) are the
+Region 0 is the stock heap. Regions 1 to `JL_GC_MAX_REGIONS - 1` (63) are the
 regions a program can open. There is no promotion and no migration.
 
 The regions form a tree of lifetimes. The parent of a region lives at least as
@@ -466,7 +466,7 @@ the program's own to keep.
 
 - There is no `Base` API. The entries are `ccall` targets; a program wraps
   them itself.
-- Eight regions: region 0 and seven regions a program can open
+- 64 regions: region 0 and 63 regions a program can open
   (`JL_GC_MAX_REGIONS`).
 - A region's pages belong to one thread heap. A region several threads fill
   is reset with the global reset, with the world stopped.
@@ -484,8 +484,8 @@ the program's own to keep.
   censuses refuse from then on, a window on the region is refused, and the
   region's finalizer list stays a root of the stock mark. The memory of a
   quarantined region is retained for the life of the process.
-- A window costs the thread heap eight pool arrays and the page metadata two
-  fields, whether or not a program ever opens one.
+- A window costs the thread heap 64 region entries, about 100 KB, and the
+  page metadata two fields, whether or not a program ever opens one.
 - The heap reserve prefaults at most `GC_MAX_BLOCKS` blocks (about 64 GB);
   blocks past that are mapped lazily.
 - `jl_gc_region_collect` returns `EINVAL` for a valid region that no window
