@@ -411,16 +411,30 @@ application. **Passed 2026-09-05**, by `tool/m1_gate1.sh`; the numbers are in
 the entry "2026-09-05, Gate 1" below. The delta of a rebuild with no edit is
 309 functions at the first rebuild, 6 at the second and 0 at the third.
 
-### Stage 2 — key-driven delta emission
+### Stage 2 — the delta of an edit is the cone
 
-The materializer computes the recorded-read key of every `CodeInstance` in the
-fresh process. A hit reuses the object from the store. A miss goes to the delta
-object. The cone is never computed as such; it falls out of the key comparison.
+A rebuild that boots from the previous image has the key for free. Julia's
+own invalidation bounds the `max_world` of every code instance that an edit
+reaches through the backedges, and a code instance that is not valid in the
+world of the build is not reusable. So the cone is never computed as such; it
+falls out of the reuse test of Stage 1. The recorded-read key of the design
+stays for the store of Stage 3 and Stage 4, where a fresh process has no
+image to inherit the invalidation from.
+
+- [x] `tool/m0_build.jl` applies the edit inside the build (`RC_EDIT=1`) and
+      prints the cone: the specializations of the replaced method, the code
+      instances that the edit closed, and the method instances that the
+      scenario makes after the edit;
+- [x] `tool/m1_gate1.sh` builds E from `D.so` with the edit, F from `sys.so`
+      with the edit, and compares the delta of E with the cone.
 
 **Gate 2.** After a one-function edit of the routing model, the number of
 emitted functions equals the size of the cone, and `create_sysimg_object_file`
 costs the heap, the link and the cone. The 343 s of a full emission is the
-number to beat.
+number to beat. **Passed 2026-09-05**; the numbers are in the entry
+"2026-09-05, Gate 2" below. The delta of E is 14 functions for 7 method
+instances, all in the cone; E takes 19.0 s and 1.1 GB, F 119.8 s and 8.0 GB,
+and both run the model to the same hash with the edit applied.
 
 ### Stage 3 — the serial front
 
@@ -521,11 +535,14 @@ and never the target.
       edit changes one object; key-changed = invalidated = `{routing_handle!}`.
 - [x] **M1** — a rebuild with no edit reuses every text object of the previous
       build and the image runs. Done 2026-09-05: B links A's eight text
-      objects, reuses 37284 code instances, emits 518 functions, and runs the
-      routing model with A's network hash; 19 s and 1.1 GB against 117 s and
-      7.7 GB for A.
-- [ ] **M2** — a rebuild after a one-function edit emits only the cone, and the
-      emission time is reported against 343 s.
+      objects, reuses 37334 code instances, emits 309 functions, and runs the
+      routing model with A's network hash; 19 s and 1.1 GB against 120 s and
+      8.0 GB for A. The third rebuild emits nothing.
+- [x] **M2** — a rebuild after a one-function edit emits only the cone, and the
+      emission time is reported against 343 s. Done 2026-09-05: E emits 14
+      functions for the 7 method instances of the cone, `jl_emit_native` takes
+      0.0 s against 10.2 s for the full build F on eight threads (343 s on one
+      thread in M0), and E.so runs the edit at the speed of D.so.
 - [ ] **M3** — the serial front is cut by the cheapest of the three ways.
 - [ ] **M4** — `materialize(store, snapshot)` links reused and new objects into a
       working application, and beats `create_app` with a warm base cache,
@@ -789,3 +806,69 @@ and the delta of C was 26 functions.
   first build that runs it. D reuses both. A skip for a code instance
   without code that is bounded below the base world would save the six
   functions of C, but the stock build compiles them, so the residue stays.
+
+**2026-09-05, Gate 2.** Passed by `tool/m1_gate1.sh` on the same worktree,
+lane and thread count as Gate 1. The chain A, B, C, D of Gate 1 ran again
+with the same deltas (309, 6, 0 functions), then two builds with the edit of
+M0, `pk.hop_count += 1` to `+= 2` in `routing_handle!`: E from `D.so`, and F
+from `sys.so` as the full build that E is measured against. The edit is
+applied inside the build, before the scenario, by `tool/m0_build.jl` with
+`RC_EDIT=1`: the definition is read back from the file of the method, the
+text is replaced, and the result is evaluated again in the module of the
+method; 2.7 ms, the world counter moves from 69212 to 69217.
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| build E from `D.so`, edit | 19.0 s | 1.1 GB | 37510 reused; **delta 14 functions, 49 slots** (8 roots, 0 edges); front 1.3 s, `jl_emit_native` 0.0 s; header 26 shards, 53334 functions, 14931 slots |
+| build F from `sys.so`, edit | 119.8 s | 8.0 GB | 8 shards, 53009 functions, 14637 slots; front 27.2 s, `jl_emit_native` 10.2 s |
+| run E.so | 14.8 s | 0.34 GB | Avg hops 6.09, hash `92a8205a91b44af2524c1b843e2df7b0`, sequential time 14.55 s |
+| run F.so | 14.9 s | 0.35 GB | Avg hops 6.09, the same hash, sequential time 14.69 s |
+
+- *The cone, measured.* The build script prints three sets. The replaced
+  method keeps one specialization, `routing_handle!(EventContext{Sequential},
+  Vector{RoutingNode}, Int, Packet, VectorFileWriter, Vector{NodeVectors})`.
+  The edit closes two code instances, the closures of `queue_receive!` and of
+  `app_generate!` that call it. The scenario then makes 27 new method
+  instances: the new `routing_handle!`, its two new closures, the two
+  specializations of the capture closure `CaptureModule.var"#16#17"` on the
+  new closure types, and 22 callees of the new code, such as
+  `schedule_event!` and `ScheduleRecord` on the new closure types.
+- *The delta is the cone.* The 8 root lines of E are 7 method instances: the
+  3 replaced or closed, and 5 of the new ones; `routing_handle!` is a root
+  once per world pass. No root is outside the cone, and every closed code
+  instance is emitted again. The 22 other new method instances are inlined
+  into the roots and get no function of their own, and no run compiles them
+  later: `--trace-compile` on a run of E.so and on a run of F.so lists only
+  the `print` calls of the harness. E emits 14 functions: a specialized
+  signature and a generic wrapper for each root. The calls from the delta
+  into the reused code go through 21 `tojlinvoke` trampolines, on
+  `schedule_event!`, `app_receive!`, `queue_start_tx!`, `_growend!` and
+  the throw helpers among others.
+- *The delta costs nothing measurable.* E takes 19.0 s, D took 19.0 s; 14.5 s
+  of both is the scenario, 1.3 s the front, the rest the heap. The full build
+  F takes 119.8 s with the same scenario inside, so the build around the
+  scenario is 4.5 s against 105 s. `jl_emit_native` is 0.0 s against 10.2 s
+  on eight threads, and 343 s on one thread in M0. The link of E.so takes
+  about 1 s.
+- *The image runs the edit at full speed.* The average hop count goes from
+  3.05 to 6.09 in the build of E, in the run of E.so and in the run of F.so;
+  the network hash does not cover hop counts, so it stays. The run of E.so
+  takes 14.55 s against 14.57 s for D.so and 14.69 s for F.so, so the
+  `emit_tojlinvoke` trampoline on the calls from the delta into the reused
+  code is not visible in this model. The run makes 3 method instances, the
+  `print` calls of the harness, as every run of the chain does.
+- *The edited method has no file.* A method evaluated from text has the file
+  `none`, so a run from E.so or F.so cannot read the definition back. The
+  harness skips the read when the file does not exist and refuses `RC_EDIT`
+  in that case: an edit on top of an edit is a later measurement.
+- *Every build carries the harness.* The two functions of the harness are
+  defined under `@isdefined`, so that a build that boots from a previous
+  image keeps the compiled functions and the delta holds the cone alone. The
+  price is that a change of the harness needs the chain from A again.
+- *The key of Stage 2 is the world.* No recorded read was needed: the edit
+  bounds the `max_world` of the closed code instances, the reuse test of
+  Stage 1 rejects them, and inference makes the new ones. The recorded-read
+  key stays in the design for the cross-process store. Two Stage 1 hazards
+  are still open and are not exercised by this edit: a direct call from the
+  delta to a reused symbol instead of the trampoline, and the alias of a
+  redefined `@ccallable` method.
