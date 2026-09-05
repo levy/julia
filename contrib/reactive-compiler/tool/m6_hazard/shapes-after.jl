@@ -66,6 +66,11 @@ delta_callee(x::Int) = x + 2000
 edited_leaf() = 2
 cone_caller() = edited_leaf() * 2
 
+# the chain: the first edit changes this function, the second edit changes
+# only its caller `driver`, so that the third build calls the second build's
+# delta by its symbol
+@noinline chained(x::Int) = x + 2
+
 # the bench: the same loop in reused code and in delta code; the difference
 # is the cost of the trampoline per call
 @noinline bench_callee(x::Int) = x + 1
@@ -126,6 +131,7 @@ function driver()
         ("state", state),
         ("reverse", apply_dynamic(delta_callee, 2)),
         ("cone", cone_caller()),
+        ("chained", chained(1)),
     ]
 end
 
