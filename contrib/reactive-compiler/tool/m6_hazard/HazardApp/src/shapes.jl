@@ -69,8 +69,10 @@ cone_caller() = edited_leaf() * 2
 
 # the chain: the first edit changes this function, the second edit changes
 # only its caller `driver`, so that the third build calls the second build's
-# delta by its symbol
-@noinline chained(x::Int) = x + 1
+# delta by its symbol. The `Ref` keeps the call: a foldable callee with a
+# constant argument leaves no call in its caller.
+const CHAIN_BASE = Ref(1)
+@noinline chained(x::Int) = x + CHAIN_BASE[]
 
 # the bench: the same loop in reused code and in delta code; the difference
 # is the cost of the trampoline per call
