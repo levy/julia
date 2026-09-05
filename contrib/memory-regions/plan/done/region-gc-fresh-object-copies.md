@@ -101,8 +101,17 @@ quarantines the region-1 trunk of the tree test. The test hands the trunk
 to `Threads.@threads` workers, and the closure of each worker, a region-0
 object, captures the trunk. That is a real escape by the rule; the old
 barrier did not see it because the closure is a fresh object. Whether a
-task closure that captures a region object is an escape is a model
-question for the user. Open.
+task closure that captures a region object is an escape was a model
+question for the user. Decision (2026-09-05): the rule stays. A closure
+that captures a region object is an escape; the barrier has no lifetime
+knowledge and gets no exception for one shape. The test hands the trunk to
+the workers as a raw pointer (`pointer_from_objref` under `GC.@preserve`)
+and turns it back into a reference in `tree_round!`, the frame that stores
+the legal leaf -> trunk edge. The devdoc has a new rule, "Do not capture a
+region object in a task closure", and `HISTORY.md` a new pitfall. Rejected
+alternatives: a region-1 `Ref` (the same escape), closures built inside
+region 1 (the Tasks become region-1 objects in region-0 scheduler queues),
+`WeakRef` (refused by design), a global (region 0, the same escape).
 
 (b) `regions_window.jl`: alloc-opt no longer elides a small fresh Array.
 Root cause, found with `/usr/bin/opt-20 -passes=gvn` on the module before
@@ -138,9 +147,16 @@ parameter of the intrinsic in `src/codegen.cpp`.
       `regions_tree` runs fail on regression (a)), the `gc` group (177
       pass, 12 errors: the twelve harness configurations of
       `regions_tree.jl`), `core` and `Compiler/codegen` (both SUCCESS).
-- [ ] Regression (a): the user's decision on a task closure that captures
-      a region object. `regions_tree.jl` fails until then.
+- [x] Regression (a): the user kept the rule. `regions_tree.jl` hands the
+      trunk as a raw pointer; the devdoc states the rule. One direct run at
+      4,1 threads: 424 checks, the four intended escapes only.
+- [x] Re-run the sweep and the `gc` group on the changed test: sweep 60 of
+      60; `gc` 189 pass, 0 errors. Commit `abaf2f7fe7` (the test, the
+      devdoc, `HISTORY.md`), pushed.
 - [x] Commit `e3eb502bb4` on `gc-regions-fixes`, pushed.
+
+The fold of both commits into the staged series is a step of
+`region-gc-issues.md`.
 
 ## Measurement (preliminary, shared machine, core 29 without FIFO)
 

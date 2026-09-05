@@ -786,7 +786,11 @@ sites in `datatype.c`, `genericmemory.c`, `runtime_intrinsics.c`,
 `results/tables.py`, and the prose of the devdoc and HISTORY.md. The
 compiler files and the runtime sites belong to the stages that add the
 escape barrier to the compiler and to the runtime; the bench and the
-documents to the stage of the measurement documents.
+documents to the stage of the measurement documents. Then `abaf2f7fe7`:
+`regions_tree.jl` hands the trunk to the workers as a raw pointer, the
+devdoc gets the rule "Do not capture a region object in a task closure",
+HISTORY.md the pitfall. The test belongs to the stage that adds the tree
+test; the prose to the stage of the documents.
 
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
