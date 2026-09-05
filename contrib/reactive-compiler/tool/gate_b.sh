@@ -17,15 +17,20 @@
 #   reformat     - changes-reformat.jl replaces changes.jl
 #   mat-s3       - the rebuild applies nothing (H1)
 #   run-s3       - the after-values again
+#   refresh      - refresh_trace: the workload from the chain image adds
+#                  the roots that the edit made (a dynamic dispatch that the
+#                  founding's trace never saw)
+#   mat-s4       - the rebuild applies nothing and precompiles the new roots
+#   run-s4       - the after-values again
 #   trace-final  - the roots at the edited sources
 #   found-final  - materialize_app founds $OUT/final/hazard at the edited sources
 #   run-final    - the founded binary
-#   compare-final - the four checks of the invariant: s3 against final
+#   compare-final - the four checks of the invariant: s4 against final
 #   restore      - git restores the tracked files; the added files go
-#   mat-s4       - the reverse edit
-#   run-s4       - the before-values, except `word` (a removed `using` keeps
+#   mat-s5       - the reverse edit
+#   run-s5       - the before-values, except `word` (a removed `using` keeps
 #                  its binding)
-#   compare-s1   - the four checks: s4 against the digest of s1
+#   compare-s1   - the four checks: s5 against the digest of s1
 #   refuse-option - an option of the module: the rebuild is refused, the
 #                  store keeps its snapshots, the binary still runs
 #   refuse-untracked - a type with an untracked dependent: the same
@@ -57,7 +62,7 @@ lane() {
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (change|cone|refuse|removed|applied|new [0-9])|reactive: (delta|front|[0-9]+ direct)|materialize_app|=== " "$OUT/$name.log"
+    grep -E "Elapsed \(wall|Maximum resident|rc: (change|cone|refuse|removed|applied|new [0-9])|reactive: (delta|front|[0-9]+ direct)|materialize_app|refresh_trace|=== " "$OUT/$name.log"
     return $rc
 }
 
@@ -101,6 +106,20 @@ EOF
 }
 
 mat() { write_mat && lane "$1" "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" "$2"; }
+
+# refresh_trace on the chain: the workload runs from the chain image under
+# --trace-compile, and the store's trace becomes the union.
+refresh() {
+    write_mat
+    cat > "$OUT/refresh.jl" <<EOF
+import Pkg; Pkg.instantiate()
+using PackageCompiler
+refresh_trace(ARGS[1])
+EOF
+    lane refresh "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/refresh.jl" "$CHAIN" || return 1
+    grep -q "refresh_trace: the trace is refreshed" "$OUT/refresh.log" || { echo "=== refresh: no refresh line"; return 1; }
+    grep -qE "added = [1-9]" "$OUT/refresh.log" || { echo "=== refresh: the refresh added no root"; return 1; }
+}
 
 # The binary prints one `change:` line per case. $1 = the log tag, $2 = the
 # bundle, $3 = before | after | restored: the expected values.
@@ -183,11 +202,18 @@ categories() {
     return $failed
 }
 
-# The reformat applies nothing.
+# The reformat, and the rebuild after a refresh, apply nothing.
 empty_apply() {
     grep -qE "^rc: applied 0 expressions and 0 removals" "$OUT/$1.log" ||
-        { echo "=== $1: the reformat did not give an empty apply set"; return 1; }
+        { echo "=== $1: the rebuild did not give an empty apply set"; return 1; }
     grep -E "^rc: applied" "$OUT/$1.log" | sed "s/^/=== $1: /"
+}
+
+# The rebuild after the refresh precompiles the roots that the refresh added.
+new_roots() {
+    grep -qE "^rc: new [1-9][0-9]* method instances after the trace" "$OUT/$1.log" ||
+        { echo "=== $1: the refreshed trace made no method instance"; return 1; }
+    grep -E "^rc: new [0-9]+ method instances" "$OUT/$1.log" | sed "s/^/=== $1: /"
 }
 
 # The workload once to precompile the package, then once under
@@ -253,7 +279,7 @@ refused() {
     runbin "$1" "$CHAIN" restored
 }
 
-steps=${*:-found-chain run-s1 trace-s0 oracle-s1 edit mat-s2 run-s2 reformat mat-s3 run-s3 trace-final found-final run-final compare-final restore mat-s4 run-s4 compare-s1 refuse-option refuse-untracked}
+steps=${*:-found-chain run-s1 trace-s0 oracle-s1 edit mat-s2 run-s2 reformat mat-s3 run-s3 refresh mat-s4 run-s4 trace-final found-final run-final compare-final restore mat-s5 run-s5 compare-s1 refuse-option refuse-untracked}
 for step in $steps; do
     case $step in
         found-chain) rm -rf "$OUT/chain" && mat mat-chain "$CHAIN" ;;
@@ -266,14 +292,17 @@ for step in $steps; do
         reformat) reformat ;;
         mat-s3) mat mat-s3 "$CHAIN" && empty_apply mat-s3 ;;
         run-s3) runbin s3 "$CHAIN" after ;;
+        refresh) refresh ;;
+        mat-s4) mat mat-s4 "$CHAIN" && empty_apply mat-s4 && new_roots mat-s4 ;;
+        run-s4) runbin s4 "$CHAIN" after ;;
         trace-final) trace trace-final.jl ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
         run-final) runbin final "$FINAL" after ;;
-        compare-final) oracle s3 "$CHAIN" trace-final.jl && oracle final "$FINAL" trace-final.jl && compare s3 final trace-final.jl ;;
+        compare-final) oracle s4 "$CHAIN" trace-final.jl && oracle final "$FINAL" trace-final.jl && compare s4 final trace-final.jl ;;
         restore) restore ;;
-        mat-s4) mat mat-s4 "$CHAIN" ;;
-        run-s4) runbin s4 "$CHAIN" restored ;;
-        compare-s1) oracle s4 "$CHAIN" trace-s0.jl && compare s4 s1 trace-s0.jl "^change: word = " ;;
+        mat-s5) mat mat-s5 "$CHAIN" ;;
+        run-s5) runbin s5 "$CHAIN" restored ;;
+        compare-s1) oracle s5 "$CHAIN" trace-s0.jl && compare s5 s1 trace-s0.jl "^change: word = " ;;
         refuse-option) cp "$HZ/HazardApp-optlevel.jl" "$SRC/HazardApp.jl" && refused option "F1 .*@optlevel is a module option"; rc=$?; restore; [ $rc == 0 ] ;;
         refuse-untracked) cp "$HZ/changes-corner.jl" "$SRC/changes.jl" && refused untracked "B2 .*the untracked untracked.jl:[0-9]+ corner_of names the type"; rc=$?; restore; [ $rc == 0 ] ;;
         *) echo "unknown step $step"; exit 2 ;;

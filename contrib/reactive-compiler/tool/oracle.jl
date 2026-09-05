@@ -6,7 +6,9 @@
 # One line per fact, sorted, so that `diff` compares two images:
 #   method <signature> <hash of the lowered code>   a method of a tracked
 #                                                   module, valid in the
-#                                                   current world
+#                                                   current world; without
+#                                                   gensym counters and
+#                                                   quoted line numbers
 #   root <signature> compiled|inferred|absent|unresolved
 #                                                   a statement of the trace
 #   global <Module>.<name> = <value>                a non-function binding of
@@ -98,13 +100,28 @@ function oracle_entries(f, world::UInt)
 end
 
 # The hash of the lowered code of a method: the statements and the slot
-# names, without the line information. A generated method has no lowered
-# code of its own; the code of its generator stands for it.
+# names, without the line information. A `LineNumberNode` inside a quoted
+# literal (the body of a macro, the answer of a generator) names the line of
+# the definition; it is stripped, because a rebuild that applies nothing
+# leaves the quoted lines where the last evaluation put them. A generated
+# method has no lowered code of its own; the code of its generator stands
+# for it.
 function oracle_lowered(m::Method)
     isdefined(m, :generator) && (m = only(methods(m.generator.gen)))
     ci = Base.uncompressed_ast(m)
-    return string(hash(repr(ci.code), hash(repr(ci.slotnames))); base = 16)
+    code = Any[oracle_strip_lines(stmt) for stmt in ci.code]
+    return string(hash(oracle_canonical(repr(code)), hash(repr(ci.slotnames))); base = 16)
 end
+
+oracle_strip_lines(x) = x
+oracle_strip_lines(::LineNumberNode) = LineNumberNode(0)
+oracle_strip_lines(q::QuoteNode) = QuoteNode(oracle_strip_lines(q.value))
+oracle_strip_lines(e::Expr) = Expr(e.head, Any[oracle_strip_lines(a) for a in e.args]...)
+
+# The name of an anonymous function, a closure or a generator carries the
+# gensym counters of its process (`var"##3#4"`, `var"#f##0#f##1"`); a chain
+# and a founding count differently. The digest drops the counters.
+oracle_canonical(text::AbstractString) = replace(text, r"#+\d+" => "#")
 
 # The state of a signature: `compiled` when a code instance valid in `world`
 # has native code, `inferred` when one exists without native code, `absent`
@@ -162,7 +179,7 @@ function oracle_main(args)
                 ci = isdefined(ci, :next) ? ci.next : nothing
             end
         end
-        push!(lines, string("method ", m.sig, " ", oracle_lowered(m)))
+        push!(lines, string("method ", oracle_canonical(string(m.sig)), " ", oracle_lowered(m)))
     end
     for mod in roots, name in names(mod; all = true, imported = false)
         startswith(string(name), '#') && continue
