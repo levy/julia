@@ -1342,6 +1342,19 @@ size_t external_blob_index(jl_value_t *v) JL_NOTSAFEPOINT;
 // Query if this object is perm-allocated in an image.
 JL_DLLEXPORT uint8_t jl_object_in_image(jl_value_t* v) JL_NOTSAFEPOINT;
 
+// Reactive reuse of the loaded system image (staticdata.c): a build with
+// JULIA_REACTIVE_REUSE=1 emits only the code that the loaded image does not
+// hold, with function ids, global slot ids and shard numbers that append to
+// the image's own.
+JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT uint32_t jl_reactive_base_ngvars(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT uint32_t jl_reactive_base_nshards(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT size_t jl_reactive_base_world(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT void *jl_reactive_base_gvar(uint32_t i) JL_NOTSAFEPOINT;
+JL_DLLEXPORT int jl_reactive_image_ids(jl_code_instance_t *ci, int32_t *invokeptr_id, int32_t *specfptr_id) JL_NOTSAFEPOINT;
+
 // the first argument to jl_idtable_rehash is used to return a value
 // make sure it is rooted if it is used after the function returns
 JL_DLLEXPORT jl_genericmemory_t *jl_idtable_rehash(jl_genericmemory_t *a, size_t newsz);

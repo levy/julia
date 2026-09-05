@@ -4519,6 +4519,156 @@ JL_DLLEXPORT jl_value_t *jl_restore_incremental(const char *fname, jl_array_t *d
     return ret;
 }
 
+// --- Reactive reuse of the loaded system image ---
+//
+// A build with JULIA_REACTIVE_REUSE=1 boots from a system image A and emits
+// only the code that A does not hold. The delta is linked with A's text
+// objects, so A's functions and global slots keep their ids and the delta
+// appends to them. This is the runtime side: a copy of the parsed image
+// (`jl_update_all_fptrs` clears `gvars_base` of the original), the world
+// counter after the restore, and a map from a native pointer to A's
+// function id.
+
+static jl_image_t reactive_image;
+static int reactive_image_loaded = 0;
+static uint32_t reactive_nshards = 0;
+static size_t reactive_base_world = 0;
+
+typedef struct {
+    void *addr;
+    uint32_t id; // 1-based position in A's function table
+} reactive_fptr_entry_t;
+static reactive_fptr_entry_t *reactive_fptr_map = NULL;
+static size_t reactive_fptr_map_len = 0;
+
+static int reactive_fptr_entry_cmp(const void *a, const void *b) JL_NOTSAFEPOINT
+{
+    uintptr_t x = (uintptr_t)((const reactive_fptr_entry_t*)a)->addr;
+    uintptr_t y = (uintptr_t)((const reactive_fptr_entry_t*)b)->addr;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+// The id of `addr` in A's function table, or 0 when it is not an entry.
+static uint32_t reactive_fptr_id(void *addr) JL_NOTSAFEPOINT
+{
+    if (addr == NULL)
+        return 0;
+    if (reactive_fptr_map == NULL) {
+        jl_image_fptrs_t *fptrs = &reactive_image.fptrs;
+        reactive_fptr_map = (reactive_fptr_entry_t*)malloc_s(sizeof(reactive_fptr_entry_t) * (fptrs->nptrs + 1));
+        size_t n = 0;
+        uint32_t clone_idx = 0;
+        for (uint32_t i = 0; i < fptrs->nptrs; i++) {
+            void *p = fptrs->ptrs[i];
+            // a cloned function is reached through its clone pointer; the
+            // clone indices are sorted, as in `jl_update_all_fptrs`
+            for (; clone_idx < fptrs->nclones; clone_idx++) {
+                uint32_t idx = fptrs->clone_idxs[clone_idx] & jl_sysimg_val_mask;
+                if (idx < i)
+                    continue;
+                if (idx == i)
+                    p = fptrs->clone_ptrs[clone_idx];
+                break;
+            }
+            if (p == NULL)
+                continue;
+            reactive_fptr_map[n].addr = p;
+            reactive_fptr_map[n].id = i + 1;
+            n++;
+        }
+        qsort(reactive_fptr_map, n, sizeof(reactive_fptr_entry_t), reactive_fptr_entry_cmp);
+        reactive_fptr_map_len = n;
+    }
+    size_t lo = 0, hi = reactive_fptr_map_len;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)reactive_fptr_map[mid].addr < (uintptr_t)addr)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    if (lo < reactive_fptr_map_len && reactive_fptr_map[lo].addr == addr)
+        return reactive_fptr_map[lo].id;
+    return 0;
+}
+
+JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
+{
+    if (!reactive_image_loaded)
+        return 0;
+    const char *env = getenv("JULIA_REACTIVE_REUSE");
+    return env != NULL && env[0] == '1' && env[1] == '\0';
+}
+
+JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT
+{
+    const char *env = getenv("JULIA_REACTIVE_TIMINGS");
+    return env != NULL && env[0] == '1' && env[1] == '\0';
+}
+
+JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT
+{
+    return jl_reactive_reuse_enabled() ? reactive_image.fptrs.nptrs : 0;
+}
+
+JL_DLLEXPORT uint32_t jl_reactive_base_ngvars(void) JL_NOTSAFEPOINT
+{
+    return jl_reactive_reuse_enabled() ? reactive_image.ngvars : 0;
+}
+
+JL_DLLEXPORT uint32_t jl_reactive_base_nshards(void) JL_NOTSAFEPOINT
+{
+    return jl_reactive_reuse_enabled() ? reactive_nshards : 0;
+}
+
+JL_DLLEXPORT size_t jl_reactive_base_world(void) JL_NOTSAFEPOINT
+{
+    return jl_reactive_reuse_enabled() ? reactive_base_world : 0;
+}
+
+// The value that A's global slot `i` holds now: the object the emitted code
+// of A names through that slot.
+JL_DLLEXPORT void *jl_reactive_base_gvar(uint32_t i) JL_NOTSAFEPOINT
+{
+    assert(i < reactive_image.ngvars);
+    return *(void**)sysimg_gvars(reactive_image.gvars_base, reactive_image.gvars_offsets, i);
+}
+
+// The function ids of `ci` in A's function table, in the form `jl_get_function_id`
+// gives them: the invoke id is the wrapper's id, or -1 for `jl_fptr_args`, -2
+// for `jl_fptr_sparam`, -4 for `jl_f_opaque_closure_call`; the spec id is the
+// id of the specialized function. Returns 0 when `ci` has no native code in A.
+// The out pointers can be NULL.
+JL_DLLEXPORT int jl_reactive_image_ids(jl_code_instance_t *ci, int32_t *invokeptr_id, int32_t *specfptr_id) JL_NOTSAFEPOINT
+{
+    if (!jl_reactive_reuse_enabled())
+        return 0;
+    if (!(jl_atomic_load_relaxed(&ci->flags) & JL_CI_FLAGS_FROM_IMAGE))
+        return 0;
+    uint32_t spec = reactive_fptr_id(jl_atomic_load_relaxed(&ci->specptr.fptr));
+    if (spec == 0)
+        return 0;
+    jl_callptr_t invoke = jl_atomic_load_relaxed(&ci->invoke);
+    int32_t inv;
+    if (invoke == jl_fptr_args_addr)
+        inv = -1;
+    else if (invoke == jl_fptr_sparam_addr)
+        inv = -2;
+    else if (invoke == jl_f_opaque_closure_call_addr)
+        inv = -4;
+    else {
+        uint32_t wrapper = reactive_fptr_id((void*)invoke);
+        if (wrapper == 0 || wrapper >= spec)
+            return 0;
+        inv = (int32_t)wrapper;
+    }
+    if (invokeptr_id)
+        *invokeptr_id = inv;
+    if (specfptr_id)
+        *specfptr_id = (int32_t)spec;
+    return 1;
+}
+
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;
@@ -4526,8 +4676,12 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
 
-    if (buf.kind == JL_IMAGE_KIND_SO)
+    if (buf.kind == JL_IMAGE_KIND_SO) {
         assert(image->fptrs.ptrs); // jl_init_processor_sysimg should already be run
+        reactive_image = *image;
+        reactive_nshards = ((const jl_image_pointers_t*)buf.pointers)->header->nshards;
+        reactive_image_loaded = 1;
+    }
 
     JL_SIGATOMIC_BEGIN();
     ios_static_buffer(&f, (char *)buf.data, buf.size);
@@ -4536,6 +4690,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 
     ios_close(&f);
     JL_SIGATOMIC_END();
+    reactive_base_world = jl_atomic_load_acquire(&jl_world_counter);
 }
 
 JL_DLLEXPORT jl_value_t *jl_restore_package_image_from_file(const char *fname, jl_array_t *depmods, int completeinfo, const char *pkgname, int ignore_native)
