@@ -165,6 +165,31 @@ scans its lowered source for the `GlobalRef`
 the object of `g` depends on — the calling convention of its callee `f`, type
 layouts, the code generation parameters, the target — is written down nowhere.
 
+**14. Two builds of the same source give different object code, for three
+reasons, and none of them is the code.** Measured in M0 on the routing model,
+one partition, 55 306 functions, with the tools in `tool/m0_*.py`:
+
+- The LLVM module that code generation emits is identical in 99.98% of its
+  functions. The 10 that differ are `_enum_hash` instances: `@enum` folds
+  `hash(T)` into an immediate, and `tn->hash` mixes in `build_id.lo`, which
+  `module.c` draws from `jl_hrtime()` and `jl_rand()` for every module the
+  process creates (`datatype.c:84`, `module.c:512`, `base/Enums.jl:219`). A
+  reused object would carry the hash of an old process.
+- After the LLVM pipeline, 96.3% are identical. Every difference is the slot
+  that a root got in the GC frame: `ColorRoots` in
+  `src/llvm-late-gc-lowering.cpp` walks `std::map<Value*, int>` containers
+  ordered by pointer. The back end adds nothing of its own: the stack offsets,
+  the `vmovups`/`vmovaps` choice, the schedule, the register assignment and the
+  spills all follow the slot layout. With the slot layout masked, 99.2% of the
+  functions are identical at the pass level and 98.5% at the object level.
+- With eight partitions, another 2.5 points are lost: a function is optimized
+  in the partition it landed in, so its inlining and its `_j_const` references
+  depend on the partition.
+
+Two more names are counters and not content: `get_pointer_to_constant` names a
+merged constant `_j_const#<count>` (`codegen.cpp:2093`), and a string is
+`_j_str_<content>#<count>`.
+
 ## The store is a cell store
 
 The plan of 2026-09-03 gave a hand-written key:
@@ -325,17 +350,56 @@ function with a script.
 and the key-changed set equals the invalidated set. If not, find why before
 building anything.
 
+**Done, 2026-09-05.** The builds are `tool/m0_build.jl`; the comparisons are
+`tool/m0_objdiff.py` (bytes with the relocations masked), `tool/m0_asmdiff.py`
+(the disassembly with every symbol reference canonical) and `tool/m0_bcdiff.py`
+(the bitcode before and after the pipeline); the keys are `tool/m0_keys.jl` on
+`src/ReadKey.jl`. `--output-unopt-bc`, `--output-bc` and `--output-o` can be
+written by one build.
+
+1. Same source, one partition: 96.4% identical; 98.5% with the frame slots
+   masked. Eight partitions: 93.9% and 95.3%. The causes are fact 14.
+2. One edit (`pk.hop_count += 1` to `+= 2` in `routing_handle!`): 96.3% and
+   98.4%, the same as the noise. Above the noise of a third build, the edit
+   changes one function, `julia_routing_handle!`; its `jfptr` adapter is
+   unchanged. The cone of a class C edit is one object.
+3. Keys, 16 011 nodes in 15 790 components, the largest 173, computed in
+   5.4 s: the key-changed set is `{routing_handle!}`, the invalidated set is
+   `{routing_handle!}`, and both differences are empty. Julia invalidates the
+   replaced method by killing its typemap entry; the code instances of the
+   replaced method keep `max_world == ∞`, and no caller had a backedge to it.
+4. Nothing differs because of a read that the key misses. The differences are
+   the three causes of fact 14, and one read that code generation folds: the
+   `build_id` of a module, through the type hash of an `@enum`.
+
+The gate is passed for the keys exactly, and for the objects at 98.5% with
+the frame slots masked, with the remainder explained. One lesson of the
+harness: the key computation runs Julia code, `sprint(show, ::Expr)` among it,
+and that code is a node of the graph. Compile the harness before the first
+harvest, or twelve nodes of `Base` change key without an edit.
+
+Build cost on this machine, the numbers to beat: eight threads 103 s and
+8.3 GB; one thread 265 s to 280 s and 6.3 GB to 8.2 GB.
+
 ### Stage 1 — layout-independent objects
 
 The Julia patch, in `src/aotcompile.cpp` and `src/staticdata.c`:
 
 - name every emitted function and global slot by identity, not by counter;
+- name a merged constant and a string by content, not by `_j_const#<count>`;
 - replace the weight-balanced partition by the unit of reuse chosen above;
 - build the `jl_fvars` table in `metadata.o` from symbol names, so that a reused
   object needs no index table of its own;
 - make the global slots re-bindable: record, for every `jl_global#` slot, the
   object it names in a form a new process can resolve, so that a new heap can
-  fill the slots of an old object.
+  fill the slots of an old object;
+- keep a process-random `build_id` out of the emitted code: derive the build id
+  from content, or compute the type hash without it. Without this, a reused
+  `hash(::MyEnum)` disagrees with a fresh one (fact 14);
+- order the roots of `ColorRoots` by instruction order, not by pointer, so that
+  two builds of the same function give the same bytes. This is not needed for
+  reuse, which the key decides and never a byte comparison, but it is needed to
+  measure reuse, and a reproducible build is worth the small patch.
 
 **Gate 1.** A rebuild with no edit links every text object of the previous
 build with a fresh `sysimg.o` and `metadata.o`, boots, and runs the
@@ -420,7 +484,10 @@ restriction as the value.
 A code generation read names what the recorder saw: the calling convention of
 every callee, the layout of every type it touched, the `cgparams`, the `ccall`
 targets and the identity of every object behind a global slot. The list grows
-as Stage 0 finds reads.
+as the stages find reads. Stage 0 found one: the `build_id` of a module, which
+enters the hash of every type of the module and is folded as an immediate into
+`hash(::MyEnum)`. Stage 1 removes the read rather than records it; a read of a
+random value would give every key a new value in every process.
 
 An object key hashes all three levels. An inference key hashes the first two,
 and never the target.
@@ -432,15 +499,20 @@ and never the target.
   `src/aotcompile.cpp`, `src/staticdata.c` and a few accessors of
   `src/codegen.cpp`.
 - `ReactiveCompiler` — the store, the recorded reads, the keys, the replay and
-  the cache policy. `src/GraphHarvest.jl` and `src/MethodEdit.jl` in this
-  directory are its first pieces.
+  the cache policy. `src/GraphHarvest.jl`, `src/MethodEdit.jl` and
+  `src/ReadKey.jl` in this directory are its first pieces: the graph, the edit
+  and the inference key of a component.
 - `ReactivePackageCompiler` — the materialize entry point and the delta
   handling. Sits beside the `parallel-build` branch.
+- `tool/m0_*` — the Stage 0 measurement: the builds, the three comparisons and
+  the key run. They stay, because Stage 1 and Stage 2 are measured with them.
 
 ## Milestones
 
-- [ ] **M0** — the ceiling is measured: determinism, the identical fraction after
-      one edit, and key-changed equals invalidated.
+- [x] **M0** — the ceiling is measured: determinism, the identical fraction after
+      one edit, and key-changed equals invalidated. Done 2026-09-05: 98.5% of
+      the objects identical with the frame slots masked, 96.4% without; one
+      edit changes one object; key-changed = invalidated = `{routing_handle!}`.
 - [ ] **M1** — a rebuild with no edit reuses every text object of the previous
       build and the image runs.
 - [ ] **M2** — a rebuild after a one-function edit emits only the cone, and the
@@ -478,3 +550,46 @@ and never the target.
   naming and the index tables (fact 8).
 - Symbols are named by identity and store keys by content. The two were one
   thing in the first draft.
+
+**2026-09-05, M0.**
+
+- The routing example of omnet-julia, sequential mode, is the subject: 16 011
+  method instances in the graph that the edges reach from the two root modules,
+  55 306 functions in the image, because the image also holds all of Base.
+- Three comparison tools, because each hides a different thing. Bytes with the
+  relocations masked (`m0_objdiff.py`) still see a resolved same-section call.
+  The disassembly with every symbol canonical (`m0_asmdiff.py`) sees only the
+  instructions. The bitcode (`m0_bcdiff.py`) at both levels says where a
+  difference is born. The numbers of the plan are the disassembly numbers.
+- Two builds of the same source, one partition: 96.4% identical, 98.5% with
+  the frame slots masked. Eight partitions: 93.9% and 95.3%. Unoptimized
+  bitcode: 99.98%, ten functions, all `_enum_hash`. Optimized bitcode: 96.3%,
+  and 99.2% with the slot mask, the rest phi order and `jfptr` slot indexes.
+  Object: 96.4%. The codegen is deterministic but for the enum hash, the
+  pipeline is not (fact 14), and the backend adds no noise.
+- One edit changes one object, `julia_routing_handle!`, and no adapter. Third
+  build against the second: the same 96.3%. The cone of a class C edit is one
+  function, as the design assumes.
+- The keys: 15 790 components, the largest 173 (the `show`/`print` cluster of
+  Base), 5.4 s for all, deterministic in one process. After the edit: one key
+  changed, one node invalidated, the same node, zero on each side of the
+  difference. Gate 0 holds exactly for the keys.
+- Constants are named by counter, `_j_const#<count>` and `_j_str_<content>#N`,
+  in `get_pointer_to_constant`. `m0_objdiff.canonical` folds both. Stage 1
+  names them by content.
+- Julia's replacement semantics, `jl_method_table_invalidate`: the callers'
+  code instances get a `max_world`, the typemap entry dies, and the replaced
+  method's own code instances keep `max_world == ∞`. A harness that counts
+  invalidated nodes by `max_world` alone reports zero; count the replaced
+  method by identity as well.
+- The key computation is Julia code and is part of the graph it measures:
+  `sprint(show, ::Expr)` gets a code instance during the first key run, and
+  twelve nodes above it change key with no edit. The harness now compiles
+  itself before the first harvest. A store that keys its own methods has the
+  same hazard: harvest after the harness is warm, or key the harness apart.
+- The `Method` type of Julia 1.13 has no `deleted_world`; the replaced method
+  is found by identity of `def`.
+- Build cost to beat: eight threads 103 s and 8.3 GB; one thread 265 s to
+  280 s and 6.3 GB to 8.2 GB. The key run costs 75 s of wall time and 0.6 GB
+  of memory, of which the keys are 5.4 s; the rest is the load and two runs of
+  the scenario.

@@ -36,34 +36,45 @@ function line_offset(text::String, line::Int)
 end
 
 """
-    method_source(m::Method) -> (Expr, String)
+    method_source(m::Method; replace = nothing) -> (Expr, String)
 
 Parse the definition of `m` out of its file. Answer the expression and the path.
 
 The `line` of a method points at its signature. A definition may carry a
 docstring or a macro above it; this reads from the signature line, so what comes
 back is the bare definition.
+
+`replace` is a `"before" => "after"` pair applied to the text of the definition
+before it is parsed. This is a real edit. The text must contain `before` exactly
+once.
 """
-function method_source(m::Method)
+function method_source(m::Method; replace = nothing)
     path = string(m.file)
     isfile(path) || error("the file of $(m.name) is not readable: $path")
     text = read(path, String)
     offset = line_offset(text, Int(m.line))
-    expr, _ = Meta.parse(text, offset)
+    expr, stop = Meta.parse(text, offset)
     expr === nothing && error("nothing parsed at $path:$(m.line)")
+    if replace !== nothing
+        chunk = String(SubString(text, offset, prevind(text, stop)))
+        n = count(replace.first, chunk)
+        n == 1 || error("the definition of $(m.name) contains $(repr(replace.first)) $n times, not once")
+        expr = Meta.parse(Base.replace(chunk, replace))
+    end
     return expr, path
 end
 
 """
-    redefine!(m::Method) -> Float64
+    redefine!(m::Method; replace = nothing) -> Float64
 
 Evaluate the definition of `m` again in its own module. Answer the seconds it took.
 
 Julia re-infers what it invalidates during the redefinition, so the time this
-answers is the cost of the edit, including the cone.
+answers is the cost of the edit, including the cone. With `replace` the new
+definition differs from the old one; see `method_source`.
 """
-function redefine!(m::Method)
-    expr, _ = method_source(m)
+function redefine!(m::Method; replace = nothing)
+    expr, _ = method_source(m; replace)
     mod = m.module
     return @elapsed Core.eval(mod, expr)
 end
