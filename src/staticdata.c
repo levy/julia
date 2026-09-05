@@ -458,20 +458,27 @@ static int jl_needs_serialization(jl_serializer_state *s, jl_value_t *v) JL_NOTS
     if (s->incremental && jl_object_in_image(v))
         return 0;
 
-    if (v == NULL || jl_is_symbol(v) || v == jl_nothing) {
+    if (v == NULL || jl_is_symbol(v)) {
         return 0;
     }
-    else if (jl_typetagis(v, jl_int64_tag << 4)) {
+    // **The system image holds `nothing` and the boxed integers itself.** A
+    // package image points at the ones of the runtime that loads it, and says
+    // so with a tag; the system image IS the runtime's, so a tag would make
+    // every field that holds one a pointer to write at each start.
+    else if (s->incremental && v == jl_nothing) {
+        return 0;
+    }
+    else if (s->incremental && jl_typetagis(v, jl_int64_tag << 4)) {
         int64_t i64 = *(int64_t*)v + NBOX_C / 2;
         if ((uint64_t)i64 < NBOX_C)
             return 0;
     }
-    else if (jl_typetagis(v, jl_int32_tag << 4)) {
+    else if (s->incremental && jl_typetagis(v, jl_int32_tag << 4)) {
         int32_t i32 = *(int32_t*)v + NBOX_C / 2;
         if ((uint32_t)i32 < NBOX_C)
             return 0;
     }
-    else if (jl_typetagis(v, jl_uint8_tag << 4)) {
+    else if (s->incremental && jl_typetagis(v, jl_uint8_tag << 4)) {
         return 0;
     }
     else if (v == (jl_value_t*)s->ptls->root_task) {
@@ -1140,20 +1147,20 @@ static uintptr_t _backref_id(jl_serializer_state *s, jl_value_t *v, jl_array_t *
     else if (v == (jl_value_t*)s->ptls->root_task) {
         return (uintptr_t)TagRef << RELOC_TAG_OFFSET;
     }
-    else if (v == jl_nothing) {
+    else if (s->incremental && v == jl_nothing) {
         return ((uintptr_t)TagRef << RELOC_TAG_OFFSET) + 1;
     }
-    else if (jl_typetagis(v, jl_int64_tag << 4)) {
+    else if (s->incremental && jl_typetagis(v, jl_int64_tag << 4)) {
         int64_t i64 = *(int64_t*)v + NBOX_C / 2;
         if ((uint64_t)i64 < NBOX_C)
             return ((uintptr_t)TagRef << RELOC_TAG_OFFSET) + i64 + 2;
     }
-    else if (jl_typetagis(v, jl_int32_tag << 4)) {
+    else if (s->incremental && jl_typetagis(v, jl_int32_tag << 4)) {
         int32_t i32 = *(int32_t*)v + NBOX_C / 2;
         if ((uint32_t)i32 < NBOX_C)
             return ((uintptr_t)TagRef << RELOC_TAG_OFFSET) + i32 + 2 + NBOX_C;
     }
-    else if (jl_typetagis(v, jl_uint8_tag << 4)) {
+    else if (s->incremental && jl_typetagis(v, jl_uint8_tag << 4)) {
         uint8_t u8 = *(uint8_t*)v;
         return ((uintptr_t)TagRef << RELOC_TAG_OFFSET) + u8 + 2 + NBOX_C + NBOX_C;
     }
@@ -4123,6 +4130,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     assert(!ios_eof(f));
     s.s = f;
     uintptr_t offset_restored = 0, offset_init_order = 0, offset_extext_methods = 0, offset_new_ext_cis = 0, offset_method_roots_list = 0;
+    jl_value_t *init_nothing = jl_nothing;
     if (!s.incremental) {
         size_t i;
         for (i = 0; tags[i] != NULL; i++) {
@@ -4145,6 +4153,26 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         export_jl_sysimg_globals();
         jl_global_roots_list = (jl_genericmemory_t*)jl_read_value(&s);
         jl_global_roots_keyset = (jl_genericmemory_t*)jl_read_value(&s);
+        // **`nothing` comes from the image, and the root task holds another
+        // one.** `julia_init` makes a `nothing` of its own before it makes the
+        // root task, because the task has fields to fill, and the line above
+        // that reads the constant globals has just replaced it with the
+        // image's. There must be one `nothing` in the process, so the fields
+        // of the task that hold the first one take the image's.
+        if (init_nothing != jl_nothing) {
+            jl_task_t *root = s.ptls->root_task;
+            if (root->next == init_nothing)
+                root->next = jl_nothing;
+            if (root->queue == init_nothing)
+                root->queue = jl_nothing;
+            if (root->result == init_nothing)
+                root->result = jl_nothing;
+            if (root->donenotify == init_nothing)
+                root->donenotify = jl_nothing;
+            if (root->scope == init_nothing)
+                root->scope = jl_nothing;
+            jl_gc_wb(root, jl_nothing);
+        }
         s.ptls->root_task->tls = jl_read_value(&s);
         jl_gc_wb(s.ptls->root_task, s.ptls->root_task->tls);
 
