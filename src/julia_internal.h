@@ -1354,6 +1354,7 @@ JL_DLLEXPORT uint32_t jl_reactive_base_nshards(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT size_t jl_reactive_base_world(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT void *jl_reactive_base_gvar(uint32_t i) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_image_ids(jl_code_instance_t *ci, int32_t *invokeptr_id, int32_t *specfptr_id) JL_NOTSAFEPOINT;
+JL_DLLEXPORT const char *jl_reactive_image_fname(int32_t id) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_image_exports(const char *name) JL_NOTSAFEPOINT;
 
 // the first argument to jl_idtable_rehash is used to return a value

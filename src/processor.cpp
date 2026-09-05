@@ -658,11 +658,12 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
     }
     JL_GC_POP();
 
-    if (pointers->header->version != 1) {
+    if (pointers->header->version != 2) {
         jl_error("Image file is not compatible with this version of Julia");
     }
 
     llvm::SmallVector<void*, 0> fvars(pointers->header->nfvars);
+    llvm::SmallVector<const char*, 0> fnames(pointers->header->nfvars);
     llvm::SmallVector<const char*, 0> gvars(pointers->header->ngvars);
 
     llvm::SmallVector<std::pair<uint32_t, void*>, 0> clones;
@@ -758,8 +759,11 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
         }
 
         auto fidxs = shard.fvar_idxs;
+        const char *fname = shard.fvar_names;
         for (uint32_t i = 0; i < nfunc; i++) {
             fvars[fidxs[i]] = fvar_shard[i];
+            fnames[fidxs[i]] = fname;
+            fname += strlen(fname) + 1;
         }
 
         // .data base
@@ -774,11 +778,14 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
 
     if (!fvars.empty()) {
         auto ptrs = (void**) malloc(sizeof(void*) * fvars.size());
+        auto names = (const char**) malloc(sizeof(const char*) * fvars.size());
         for (size_t i = 0; i < fvars.size(); i++) {
             assert(fvars[i] && "Missing function pointer!");
             ptrs[i] = fvars[i];
+            names[i] = fnames[i];
         }
         res.fptrs.ptrs = ptrs;
+        res.fptrs.names = names;
         res.fptrs.nptrs = fvars.size();
     }
 

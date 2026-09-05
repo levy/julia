@@ -4697,6 +4697,18 @@ JL_DLLEXPORT int jl_reactive_image_ids(jl_code_instance_t *ci, int32_t *invokept
     return 1;
 }
 
+// The symbol name of the function with the 1-based id `id` in A's function
+// table: the name the delta declares to call it directly. The names are those
+// of A's base target.
+JL_DLLEXPORT const char *jl_reactive_image_fname(int32_t id) JL_NOTSAFEPOINT
+{
+    if (!jl_reactive_reuse_enabled() || id <= 0 || (uint32_t)id > reactive_image.fptrs.nptrs)
+        return NULL;
+    if (reactive_image.fptrs.names == NULL)
+        return NULL;
+    return reactive_image.fptrs.names[id - 1];
+}
+
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;

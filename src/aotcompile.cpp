@@ -440,6 +440,13 @@ static void aot_optimize_roots(jl_codegen_params_t &params, egal_set &method_roo
     }
 }
 
+// Reactive reuse: the marker in front of the name of a declaration that names
+// a function of the loaded image. The delta's own definitions get their tag
+// after codegen (`jl_create_native_impl`), so until then one of them can carry
+// the same raw name as the image's function; the marker keeps the two apart,
+// and the final name pass strips it. No generated name starts with it.
+static const char reactive_image_marker[] = "reactive.image.";
+
 static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_roots, jl_compiled_functions_t &compiled_functions)
 {
     jl_workqueue_t workqueue;
@@ -447,6 +454,7 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
     jl_code_instance_t *codeinst = NULL;
     JL_GC_PUSH1(&codeinst);
     assert(!params.cache);
+    size_t direct_calls = 0, trampolines = 0;
     while (!workqueue.empty()) {
         auto it = workqueue.pop_back_val();
         codeinst = it.first;
@@ -479,6 +487,41 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
             if (invokeName.empty())
                 invokeName = "jl_fptr_const_return";
             preal_decl = mod->getNamedValue(gf_thunk_name)->getName();
+        }
+        // Reactive reuse: the callee has native code in the loaded image, so
+        // the delta declares the image's symbol and calls it directly, in
+        // place of the `jl_invoke` trampoline that boxes every argument. A
+        // `jl_fptr_sparam` or opaque-closure callee keeps the trampoline, as
+        // it does when this build compiles the callee.
+        std::string reactive_name;
+        if (preal_decl.empty() && !proto.oc && jl_reactive_reuse_enabled()) {
+            int32_t invoke_id = 0, spec_id = 0;
+            if (jl_reactive_image_ids(codeinst, &invoke_id, &spec_id)) {
+                const char *fname = NULL;
+                if (invoke_id > 0) {
+                    // a specsig function and its boxed wrapper: a specsig
+                    // caller takes the function, a boxed caller the wrapper
+                    fname = jl_reactive_image_fname(proto.specsig ? spec_id : invoke_id);
+                    preal_specsig = proto.specsig;
+                }
+                else if (invoke_id == -1) {
+                    // jl_fptr_args: the function takes boxed arguments; a
+                    // specsig caller gets the adapter below
+                    fname = jl_reactive_image_fname(spec_id);
+                    preal_specsig = false;
+                    invokeName = "jl_fptr_args";
+                }
+                if (fname) {
+                    reactive_name = std::string(reactive_image_marker) + fname;
+                    preal_decl = reactive_name;
+                    direct_calls++;
+                    if (jl_reactive_timings() >= 2)
+                        jl_safe_printf("reactive: direct call %s\n", fname);
+                }
+                else {
+                    trampolines++;
+                }
+            }
         }
         if (preal_decl.empty()) {
             pinvoke = emit_tojlinvoke(codeinst, invokeName, mod, params);
@@ -543,6 +586,9 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
         params.workqueue.clear();
     }
     JL_GC_POP();
+    if (jl_reactive_timings() && jl_reactive_reuse_enabled())
+        jl_safe_printf("reactive: %zu direct calls into the loaded image, %zu reused callees through the trampoline\n",
+                       direct_calls, trampolines);
 }
 
 
@@ -835,6 +881,19 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
                         F->setPersonalityFn(juliapersonality_func);
                     }
                 }
+            }
+        }
+        // Reactive reuse: every definition carries its tag now, so a
+        // declaration of a function of the loaded image drops its marker.
+        // The name is the image's symbol, hidden in the objects that the
+        // delta links with; the call is direct.
+        for (Function &F : M.functions()) {
+            if (F.isDeclaration() && F.getName().starts_with(reactive_image_marker)) {
+                std::string name = F.getName().drop_front(strlen(reactive_image_marker)).str();
+                assert(!M.getNamedValue(name) && "the delta defines a symbol of the loaded image");
+                F.setName(name);
+                F.setVisibility(GlobalValue::HiddenVisibility);
+                F.setDSOLocal(true);
             }
         }
     });
@@ -1163,6 +1222,7 @@ static GlobalVariable *emit_shard_table(Module &M, Type *T_size, Type *T_psize, 
         table[offsetof(jl_image_shard_t, clone_slots) / sizeof(void*)] = create_gv("jl_clone_slots", true);
         table[offsetof(jl_image_shard_t, clone_ptrs) / sizeof(void*)] = create_gv("jl_clone_ptrs", true);
         table[offsetof(jl_image_shard_t, clone_idxs) / sizeof(void*)] = create_gv("jl_clone_idxs", true);
+        table[offsetof(jl_image_shard_t, fvar_names) / sizeof(void*)] = create_gv("jl_fvar_names", true);
     }
     auto tables_arr = ConstantArray::get(ArrayType::get(T_psize, tables.size()), tables);
     auto tables_gv = new GlobalVariable(M, tables_arr->getType(), false,
@@ -1201,7 +1261,7 @@ static GlobalVariable *emit_ptls_table(Module &M, Type *T_size, Type *T_ptr) {
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_header_t.
 static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned nfvars, unsigned ngvars) {
-    constexpr uint32_t version = 1;
+    constexpr uint32_t version = 2;
     std::array<uint32_t, 4> header{
         version,
         threads,
@@ -1978,11 +2038,31 @@ static SmallVector<AOTOutputs, 16> add_output(Module &M, TargetMachine &TM, Stri
     uint32_t fvar_base = reactive_base(M, "julia.reactive.fvar_base");
     uint32_t gvar_base = reactive_base(M, "julia.reactive.gvar_base");
     uint32_t shard_base = reactive_base(M, "julia.reactive.shard_base");
+    uint64_t counter = 0;
+    // Partitioning requires all globals to have names.
+    // We use a prefix to avoid name conflicts with user code.
+    for (auto &G : M.global_values()) {
+        if (!G.isDeclaration() && !G.hasName()) {
+            if (shard_base)
+                G.setName("jl_ext_" + Twine(counter++) + ".r" + Twine(shard_base));
+            else
+                G.setName("jl_ext_" + Twine(counter++));
+        }
+    }
     // Single-threaded case
     if (threads == 1) {
         output_timer.startTimer();
         {
             JL_TIMING(NATIVE_AOT, NATIVE_Opt);
+            // The definitions get the linkage that `partitionModule` gives
+            // them: a later build that reuses this image calls its functions
+            // by name, so every function must be a linkable symbol.
+            for (auto &G : M.global_values()) {
+                if (!G.isDeclaration() && G.hasLocalLinkage()) {
+                    G.setLinkage(GlobalValue::ExternalLinkage);
+                    G.setVisibility(GlobalValue::HiddenVisibility);
+                }
+            }
             // convert gvars to the expected offset table format for shard 0
             if (M.getGlobalVariable("jl_gvars")) {
                 auto gvars = consume_gv<Constant>(M, "jl_gvars", false);
@@ -2009,17 +2089,6 @@ static SmallVector<AOTOutputs, 16> add_output(Module &M, TargetMachine &TM, Stri
     }
 
     partition_timer.startTimer();
-    uint64_t counter = 0;
-    // Partitioning requires all globals to have names.
-    // We use a prefix to avoid name conflicts with user code.
-    for (auto &G : M.global_values()) {
-        if (!G.isDeclaration() && !G.hasName()) {
-            if (shard_base)
-                G.setName("jl_ext_" + Twine(counter++) + ".r" + Twine(shard_base));
-            else
-                G.setName("jl_ext_" + Twine(counter++));
-        }
-    }
     auto partitions = partitionModule(M, threads);
     partition_timer.stopTimer();
 

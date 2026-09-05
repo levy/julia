@@ -957,6 +957,21 @@ void CloneCtx::emit_metadata()
     // Store back the information about exported functions.
     emit_table(M, T_size, ArrayRef<Constant*>((Constant* const*)fvars.data(), fvars.size()), "jl_fvar", suffix);
     M.getGlobalVariable("jl_fvar_idxs")->setName("jl_fvar_idxs" + suffix);
+    // The symbol name of every function, in `jl_fvar_ptrs` order and each
+    // terminated by NUL: a later build that reuses this image declares its
+    // functions by name (`resolve_workqueue` in aotcompile.cpp). The base
+    // target keeps the original name; a clone has a suffix.
+    {
+        std::string names;
+        for (uint32_t i = 0; i < nfvars; i++) {
+            names += fvars[i]->getName();
+            names += '\0';
+        }
+        auto init = ConstantDataArray::getString(M.getContext(), names, false);
+        auto gv = new GlobalVariable(M, init->getType(), true, GlobalValue::ExternalLinkage, init, "jl_fvar_names" + suffix);
+        gv->setVisibility(GlobalValue::HiddenVisibility);
+        gv->setDSOLocal(true);
+    }
 
     uint32_t ntargets = specs.size();
 

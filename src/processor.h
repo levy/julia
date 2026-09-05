@@ -81,6 +81,10 @@ typedef struct _jl_image_fptrs_t {
     void **clone_ptrs;
     // sorted indices of the cloned functions (including the tag bit)
     const uint32_t *clone_idxs;
+
+    // the symbol name of each function of `ptrs`, in the same order: a later
+    // build that reuses this image calls its functions by name
+    const char **names;
 } jl_image_fptrs_t;
 
 struct _jl_image_t {
@@ -96,7 +100,7 @@ struct _jl_image_t {
 // Details important counts about the image
 typedef struct {
     // The version of the image format
-    // Most up-to-date version is 1
+    // Most up-to-date version is 2: it adds `fvar_names` to the shard table
     uint32_t version;
     // The number of shards in this image
     uint32_t nshards;
@@ -171,6 +175,11 @@ typedef struct {
     //  (Note that a tagged index could corresponds to a function's pointer that's the same as
     //  the base one since this is the only way we currently represent relocations.)
     const uint32_t *clone_idxs;
+    // The symbol name of each function of `fvar_ptrs`, in the same order, each
+    // terminated by NUL. The names are those of the base target: a later build
+    // that reuses this image calls its functions by name, and gets the base
+    // target's code.
+    const char *fvar_names;
 } jl_image_shard_t;
 
 // The TLS data for each image
