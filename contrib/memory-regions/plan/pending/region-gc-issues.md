@@ -764,7 +764,18 @@ documents table and the devdoc's Cost section. It is a documents-only
 commit and belongs to the stage that adds the measurement documents. Its
 timing rows are the last M1 and M2 run on the shared machine; the rerun on
 an idle machine refreshes them by hand, because `results/tables.py`
-rewrites `MEASUREMENTS.md` alone.
+rewrites `MEASUREMENTS.md` alone. The last commit of the branch is
+`19eee113c7`, the construction-only barrier of
+`region-gc-construction-barrier.md`: the intrinsic
+`julia.region_write_barrier` in `codegen.cpp`, `cgutils.cpp`,
+`llvm-pass-helpers.{h,cpp}`, `llvm-late-gc-lowering.cpp`,
+`llvm-alloc-opt.cpp`, `llvm-alloc-helpers.cpp` and `llvm-julia-licm.cpp`,
+with its test in `regions_escape.jl`, the `construct_shared` row of
+`bench/unit_costs.jl` and `results/tables.py`, and the corrected cost
+prose of COST.md, MEASUREMENTS.md, README.md, HISTORY.md and the devdoc.
+The compiler files belong to the stage that adds the escape barrier to the
+compiler; the bench and the documents to the stage of the measurement
+documents.
 
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
