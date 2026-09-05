@@ -408,7 +408,8 @@ the entry "2026-09-05, Stage 1 design" below; the parts:
 **Gate 1.** A rebuild with no edit links every text object of the previous
 build with a fresh `sysimg.o` and `metadata.o`, boots, and runs the
 application. **Passed 2026-09-05**, by `tool/m1_gate1.sh`; the numbers are in
-the entry "2026-09-05, Gate 1" below.
+the entry "2026-09-05, Gate 1" below. The delta of a rebuild with no edit is
+309 functions at the first rebuild, 6 at the second and 0 at the third.
 
 ### Stage 2 — key-driven delta emission
 
@@ -695,8 +696,13 @@ written; none changes the design.
 - *A reuse miss is not an error.* `get(code_cache(interp), mi, nothing)`
   returns the first entry of the chain that is valid in the world and has
   `inferred`. When a newer code instance without native code sits before A's,
-  the MI branch infers again and the delta grows by one function. Gate 1
-  counts the reused list against the function count of A to see the misses.
+  the MI branch infers again and the delta grows by one function. So
+  `reactive_cached_ci` walks the whole chain of the method instance for a
+  code instance that is valid in the world and has image ids, and the code
+  instance branch of `compile!` reuses such a sibling of the code instance
+  it was given. The run time takes the same path: `jl_method_compiled_callptr`
+  walks the chain for a code instance with an `invoke`. Gate 1 counts the
+  reused list against the function count of A to see the misses.
 - *`@ccallable` aliases are a Stage 2 hazard.* `jl_generate_ccallable` makes a
   `GlobalAlias` with external linkage and the plain ccallable name; the rename
   loop suffixes global objects only, so an alias keeps its name. Stage 1 skips
@@ -719,25 +725,67 @@ omnet-julia e21ba2cd, in a detached worktree `omnet-julia-m1` beside the
 checkout; the live checkout moved to a state that does not load while the
 gate ran. Eight image threads, `-C native`, the build lane.
 
+Four builds in a chain: A from `sys.so`, B from `A.so`, C from `B.so`, D from
+`C.so`. Each image links the text objects of every build before it, its own
+text objects, and its own `sysimg.o` and `metadata.o`. Every image links with
+no linker output, is 303 MB, boots, and runs the model to the network hash
+`92a8205a91b44af2524c1b843e2df7b0` in 14.7 s and 0.31 GB. The M0 archives
+give the same hash, so the rc4 build and the rc3 build run the same model.
+
 | step | wall | peak RSS | result |
 | --- | --- | --- | --- |
-| build A from `sys.so` | 116.6 s | 7.7 GB | 8 shards, 52945 functions, 14585 slots; front 27.8 s, `jl_emit_native` 11.5 s |
-| run A from `A.so` | 14.8 s | 0.32 GB | `Network hash: 92a8205a91b44af2524c1b843e2df7b0` |
-| build B from `A.so` | 19.0 s | 1.1 GB | 37284 code instances reused; delta 518 functions, 392 slots; front 0.9 s, `jl_emit_native` 0.1 s; header 16 shards, 53463 functions, 14977 slots |
-| link B.so | — | — | A's `text#0..7.o` + B's `text#0..7.o` + B's `sysimg.o`, `metadata.o`; no linker output; 303 MB |
-| run B from `B.so` | 14.7 s | 0.31 GB | the same network hash; `--trace-compile` writes no line, so no function is compiled at run time |
+| build A from `sys.so` | 119.7 s | 8.0 GB | 8 shards, 52962 functions, 14615 slots; front 27.3 s, `jl_emit_native` 10.4 s |
+| build B from `A.so` | 19.6 s | 1.1 GB | 37308 code instances reused; delta 309 functions, 240 slots (179 roots, 3 edges); front 1.3 s; header 16 shards, 53271 functions, 14855 slots |
+| build C from `B.so` | 19.1 s | 1.1 GB | 37482 reused; delta 6 functions, 5 slots (4 roots, 0 edges); header 17 shards, 53277 functions, 14860 slots |
+| build D from `C.so` | 19.0 s | 1.1 GB | 37486 reused; **delta 0 functions, 0 slots**; header 18 shards, 53277 functions, 14860 slots |
 
-The M0 archives and A agree on the network hash, so the rc4 build and the
-rc3 build run the same model.
+The delta of a rebuild with no edit converges to zero in three builds. The
+report `reactive: delta ... const, shadowed, roots, edges`
+(`JULIA_REACTIVE_TIMINGS=1`; level 2 lists each code instance and, with
+`reactive enqueue:`, names the code instance that put a root on the worklist)
+gives the causes. Before the two fixes below, the delta of B was 516 functions
+and the delta of C was 26 functions.
 
-- *The delta of a no-edit build is not empty.* The 518 functions are small
-  Base callees: 98 `_iterator_upper_bound`, 29 `iterate`, 13 `in`, and the
-  `j_throw_boundserror` trampolines their bodies need. A diagnostic run from
-  `A.so` shows 118 `_iterator_upper_bound` method instances whose only code
-  instance has `inferred` and no native code: A inlined them and never
-  emitted them alone. B emits them because a delta function calls them
-  through `:invoke`. The report `reactive: delta ... const, shadowed, roots,
-  edges` (`JULIA_REACTIVE_TIMINGS=1`; level 2 lists each) classifies the
-  delta so that Stage 2 starts from the cause. An appended delta on every
-  rebuild grows the image, so the no-edit delta must reach zero, or a
-  periodic full build must compact it.
+- *The passes run in two worlds.* `jl_create_native` passes the current world
+  and the world of the compiler (`jl_typeinf_world`), and
+  `typeinf_ext_toplevel` runs a pass in each. The pass in the world of the
+  compiler infers the callees of Base again in that world and creates code
+  instances that are already stale for the application. A count of roots
+  counts a code instance once per pass, so 179 root lines are 98 method
+  instances.
+- *Cause 1, a stale code instance.* A's pass in the world of the compiler
+  compiled `∉(Symbol, Set{Symbol})` for the worlds 3210:14334, while the
+  application calls the code instance for 14335 and after, which A inlined
+  and never emitted. In B, `enqueue_specialization!` sees the `invoke` of the
+  stale code instance and enqueues the method instance; the pass in the
+  current world then compiles the other code instance. The fix: a code
+  instance of the loaded image whose `max_world` is below the base world
+  (`ci_reactive_stale`) does not enqueue by itself. The method instance
+  still goes to the worklist, marked in `reactive_stale_roots`, so that the
+  pass in the world of the compiler reuses the stale code with its ids and
+  `compile!` infers nothing for it in the other world. The criterion "a
+  sibling is reusable in some pass world" was rejected: a code instance that
+  an edit invalidates has `max_world` at or above the base world, and the
+  Stage 2 cone must recompile it.
+- *Cause 2, a precompile request served at run time.* `_generate_from_hint`
+  sets `precompile` on a code instance after the worklist closed, for
+  example on `==(Unitful.Dimensions{Mass}, Dimensions{Mass})` and on
+  `reactive_cached_ci`; the next build enqueues it. The fix: the writer of a
+  reactive build clears `precompile` on a code instance that gets no native
+  pointer and is not a builtin. A request for a signature that is not
+  compileable, such as `zip(Vector{Symbol}, Vararg{Any})`, drops off the
+  next worklist too, which loses nothing.
+- *The residue of B is the run time of A.* Of the 98 method instances that B
+  compiles, 89 have a code instance whose `inferred` is `nothing`: the run
+  time of A compiled them in the JIT and dropped the source, and the stock
+  predicate compiles such a method instance. A is not a reactive build, so
+  its writer keeps its `precompile` flags too (3 roots). B pays once; C
+  reuses all of them.
+- *The residue of C is code emitted in one world.* B emits code for
+  `iterate(Generator{Vector{Any}, symbol_to_globalref})` in the current
+  world, which makes the method instance a root of C; the pass of C in the
+  world of the compiler finds the older code instance of A without code and
+  compiles it. `reactive_cached_ci` itself is compiled at run time in B, the
+  first build that runs it. D reuses both. A skip for a code instance
+  without code that is bounded below the base world would save the six
+  functions of C, but the stock build compiles them, so the residue stays.

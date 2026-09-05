@@ -6,8 +6,13 @@
 #         Julia and linked as A.so
 #   B   - the same source again, built from A.so with JULIA_REACTIVE_REUSE=1;
 #         B.so = A's text objects + B's text objects + B's sysimg.o + metadata.o
-# Steps: build-a, link-a, run-a, build-b, link-b, run-b. Pass a step name to
-# run one step, or nothing to run all of them in order.
+#   C   - the same source a third time, built from B.so; C.so = A's + B's + C's
+#         text objects + C's sysimg.o + metadata.o. It shows whether the delta
+#         of a no-edit build converges to zero.
+#   D   - a fourth time, built from C.so, to show the convergence.
+# Steps: build-a, link-a, run-a, build-b, link-b, run-b, build-c, link-c, run-c,
+# build-d, link-d, run-d. Pass step names to run some steps, or nothing to run
+# all of them in order.
 set -u
 OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/ff3540b2-ffb0-4fd3-8928-610aacb586c1/scratchpad/m1}
 JH=${JH:-/home/projectured/workspace/julia-reactive}
@@ -17,6 +22,8 @@ TOOL=$JH/contrib/reactive-compiler/tool
 # so that the gate does not move with the live checkout.
 OMNET=${OMNET:-/home/projectured/workspace/omnet-julia-m1}
 THREADS=${THREADS:-8}
+# TIMINGS=2 lists every code instance of the delta in the build log
+TIMINGS=${TIMINGS:-1}
 mkdir -p "$OUT"
 
 # One Julia run of the routing model, bounded, on the build lane. The depot is
@@ -26,7 +33,7 @@ mkdir -p "$OUT"
 jl() {
     local name=$1; shift
     ( cd "$OMNET" && systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 \
-        nice -n 10 taskset -c 16-23 env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=1 \
+        nice -n 10 taskset -c 16-23 env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=${TIMINGS:-1} \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" ${JL_ENV:-} \
         timeout 2400s /usr/bin/time -v \
         "$JULIA" --project=package/OmnetLegacyRoutingExample --startup-file=no --pkgimages=no \
@@ -60,25 +67,39 @@ build_a() {
 }
 link_a() { extract "$OUT/xa" "$OUT/A.a" && link "$OUT/A.so" "$OUT"/xa/*.o; }
 run_a() { jl run-A --sysimage="$OUT/A.so"; }
-build_b() {
-    echo "=== build B starts $(date +%T)"
-    JL_ENV="JULIA_REACTIVE_REUSE=1" jl B --sysimage="$OUT/A.so" -C native --output-o "$OUT/B.a"
+# A reactive build boots from the previous image: B from A.so, C from B.so.
+# $1 = the build, $2 = the previous build
+build_next() {
+    echo "=== build $1 starts $(date +%T), from $2.so"
+    JL_ENV="JULIA_REACTIVE_REUSE=1" jl "$1" --sysimage="$OUT/$2.so" -C native --output-o "$OUT/$1.a"
 }
-link_b() {
-    extract "$OUT/xb" "$OUT/B.a" || return 1
-    link "$OUT/B.so" "$OUT"/xa/text*.o "$OUT"/xb/text*.o "$OUT/xb/sysimg.o" "$OUT/xb/metadata.o"
+# The image of a reactive build links the text objects of every build before
+# it, its own text objects, and its own sysimg.o and metadata.o.
+# $1 = the build, $2.. = the lowercase names of the builds before it
+link_next() {
+    local b=$1; shift
+    local lb; lb=$(echo "$b" | tr 'A-Z' 'a-z')
+    extract "$OUT/x$lb" "$OUT/$b.a" || return 1
+    local objs=()
+    for p in "$@"; do objs+=("$OUT"/x$p/text*.o); done
+    link "$OUT/$b.so" "${objs[@]}" "$OUT"/x$lb/text*.o "$OUT/x$lb/sysimg.o" "$OUT/x$lb/metadata.o"
 }
-run_b() { jl run-B --sysimage="$OUT/B.so"; }
 
-steps=${*:-build-a link-a run-a build-b link-b run-b}
+steps=${*:-build-a link-a run-a build-b link-b run-b build-c link-c run-c build-d link-d run-d}
 for step in $steps; do
     case $step in
         build-a) build_a ;;
         link-a) link_a ;;
         run-a) run_a ;;
-        build-b) build_b ;;
-        link-b) link_b ;;
-        run-b) run_b ;;
+        build-b) build_next B A ;;
+        link-b) link_next B a ;;
+        run-b) jl run-B --sysimage="$OUT/B.so" ;;
+        build-c) build_next C B ;;
+        link-c) link_next C a b ;;
+        run-c) jl run-C --sysimage="$OUT/C.so" ;;
+        build-d) build_next D C ;;
+        link-d) link_next D a b c ;;
+        run-d) jl run-D --sysimage="$OUT/D.so" ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }
 done

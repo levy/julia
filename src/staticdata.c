@@ -1829,6 +1829,13 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                     }
                 }
                 jl_atomic_store_relaxed(&newci->invoke, NULL); // relocation offset
+                // Reactive reuse: a precompile request that this build did not
+                // serve does not pass to the next build. The run time sets the
+                // flag during the build, after the worklist is closed; the next
+                // build would compile the method instance although nothing
+                // changed.
+                if (fptr_id == JL_API_NULL && builtin_id == 0 && jl_reactive_reuse_enabled())
+                    jl_atomic_store_relaxed(&newci->precompile, 0);
                 if (fptr_id != JL_API_NULL) {
                     assert(fptr_id < BuiltinFunctionTag && "too many functions to serialize");
                     arraylist_push(&s->relocs_list, (void*)(reloc_offset + offsetof(jl_code_instance_t, invoke))); // relocation location
@@ -4600,10 +4607,14 @@ JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
     return env != NULL && env[0] == '1' && env[1] == '\0';
 }
 
+// The level of the timing report: 0 off, 1 the times and the counts, 2 also
+// one line per code instance of the delta
 JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT
 {
     const char *env = getenv("JULIA_REACTIVE_TIMINGS");
-    return env != NULL && env[0] == '1' && env[1] == '\0';
+    if (env == NULL || env[0] < '0' || env[0] > '9' || env[1] != '\0')
+        return 0;
+    return env[0] - '0';
 }
 
 JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT
