@@ -18,6 +18,12 @@ holes in the barrier. This plan changes where an allocation lands, so fewer
 stores break the rule at all. The two are independent and can land in either
 order.
 
+Status (2026-09-05): Steps 0 to 4 are done on the flat tree, branch
+`gc-regions-fixes`, except the decision on a program-level borrow. The
+review of the fixes (`region-gc-issues.md`, F6) found four more replacement
+sites and added them. Steps 5 and 6 wait for the fold into the series,
+together with the issues plan.
+
 ## The rule this plan adds
 
 **A buffer allocated to replace or to extend the buffer of an existing
@@ -168,44 +174,61 @@ program the borrow to fix its own containers.
 
 ### Step 0 — Decide
 
-- [ ] Confirm D1, the borrow pair. It is the one new entry point. Without it
-      the rule cannot be expressed.
+- [x] Confirm D1, the borrow pair. It is the one new entry point. Without it
+      the rule cannot be expressed. Done: `jl_gc_region_borrow` and
+      `jl_gc_region_unborrow` in `src/gc-common.c`.
 - [ ] Decide whether `regions.jl` exposes the borrow to a program, so a
       package can fix its own container. A `@in_region_of(old) …` macro is
-      the shape.
+      the shape. Open: nothing exposes the borrow to a program yet, and the
+      test API in `test/gc/regions_api.jl` does not either.
 
 ### Step 1 — Reproduce
 
-- [ ] Write the test that fails: open a window, `push!` a bits element to a
+- [x] Write the test that fails: open a window, `push!` a bits element to a
       region-0 vector until it resizes, close the window, and assert that
       the region is not quarantined and that the vector reads correctly.
-      Today the region is quarantined.
-- [ ] Write the same test for `Dict`, for `IdDict`, for `IOBuffer` and for a
-      `Channel`.
-- [ ] Write the test that must keep failing: `push!` a region object to a
+      Done: `a_vector_grows_inside_a_window` and
+      `a_vector_grows_at_both_ends` in `test/gc/regions_containers.jl`.
+- [x] Write the same test for `Dict`, for `IdDict`, for `IOBuffer` and for a
+      `Channel`. Done for `Dict`, `IdDict` and `IOBuffer`. No `Channel`
+      case: its buffer is a `Vector`, which the C1 cases cover.
+- [x] Write the test that must keep failing: `push!` a region object to a
       region-0 vector, and assert that the region **is** quarantined. This
-      test guards the split between the buffer and the elements.
+      test guards the split between the buffer and the elements. Done:
+      `an_element_still_quarantines`.
 
 ### Step 2 — The mechanism
 
-- [ ] Add `jl_gc_region_borrow` and `jl_gc_region_unborrow` in
+- [x] Add `jl_gc_region_borrow` and `jl_gc_region_unborrow` in
       `src/gc-regions.c`, and make `jl_gc_region_suspend` call the borrow
-      with 0.
-- [ ] Add the rules for a borrow to the developer documentation, next to the
-      window.
-- [ ] Add the pair to the API table of the developer documentation.
+      with 0. Done, in `src/gc-common.c`, next to the window entries.
+- [x] Add the rules for a borrow to the developer documentation, next to the
+      window. Done: "Three rules for a borrow" in the section "A
+      replacement buffer" of `doc/src/devdocs/gc-regions.md`.
+- [x] Add the pair to the API table of the developer documentation.
 
 ### Step 3 — The cases
 
-- [ ] C1: `array_new_memory` borrows the region of `mem`. Measure `push!` in
-      a tight loop before and after; the borrow is two field writes, and it
-      must not show.
-- [ ] C1: `jl_array_grow_end` borrows the region of `a->ref.mem`.
-- [ ] C2: `jl_idtable_rehash` borrows the region of `a`.
-- [ ] C3: `Base.rehash!` borrows the region of the old buffer.
-- [ ] C4: the `IOBuffer` growth borrows.
-- [ ] C5: the module binding table borrows, for consistency.
-- [ ] Turn `dict_rehash_quarantines_region6` around, and rename it.
+- [x] C1: `array_new_memory` borrows the region of `mem`. Done as
+      `array_new_memory_for` in `base/array.jl`, which borrows the region of
+      the array, not of `mem`: an empty array shares one permanent empty
+      `Memory` of region 0, so the old buffer names the wrong region for an
+      array made inside a window. The measurement of `push!` in a tight loop
+      waits for the idle machine (Step 5, M1 and M2).
+- [x] C1: `jl_array_grow_end` borrows the region of the array. Done in F6
+      of the issues plan.
+- [x] C2: `jl_idtable_rehash` borrows the region of `a`. Done; a comment in
+      `src/iddict.c` says why the old table is a safe key there: an `IdDict`
+      never holds the shared empty memory.
+- [x] C3: `Base.rehash!` borrows the region of the dictionary, for the same
+      reason as C1.
+- [x] C4: the `IOBuffer` growth borrows. Done, and F6 added the
+      `ensureroom_reallocate` and `truncate` sites after `take!`.
+- [x] C5: the module binding table borrows region 0 (`src/module.c`, the
+      path that makes a new binding); F5 of the issues plan put the
+      `Binding` and its partition in region 0 as well.
+- [x] Turn `dict_rehash_quarantines_region6` around, and rename it. Done:
+      `a_dict_rehashes_inside_a_window`.
 
 ### Step 4 — The malloc'd data must follow
 
@@ -216,11 +239,16 @@ that region frees the data. If the header lands in the borrowed region while
 the data is tracked in the window's region, the reset of the window's region
 frees the data of a buffer that lives on.
 
-- [ ] Check that the borrow brackets the whole allocation, so the tracking
-      lands in the borrowed region as well.
-- [ ] Write a test with a buffer above the malloc threshold: grow it inside
-      a window, reset the window's region, and read the buffer.
-- [ ] Run `jl_gc_region_verify` on both regions after the reset.
+- [x] Check that the borrow brackets the whole allocation, so the tracking
+      lands in the borrowed region as well. `jl_gc_region_track_malloced`
+      records in the current region, which the borrow installs, and
+      `array_new_memory_for` wraps the whole `array_new_memory` call.
+- [x] Write a test with a buffer above the malloc threshold: grow it inside
+      a window, reset the window's region, and read the buffer. Done:
+      `a_vector_grows_inside_a_window` grows to 80 KB and sums the vector
+      after the reset.
+- [x] Run `jl_gc_region_verify` on both regions after the reset. Done for
+      the window's region; region 0 is not a valid argument of the verify.
 
 ### Step 5 — Fold into the series and gate
 
@@ -237,9 +265,10 @@ frees the data of a buffer that lives on.
 
 ### Step 6 — Close
 
-- [ ] Add a row to `HISTORY.md` for the rule and for each case.
-- [ ] Update the developer documentation: the rule, the borrow, the residue
-      that stays with the program.
+- [x] Add a row to `HISTORY.md` for the rule and for each case. Done: R7 and
+      S7, and F6 for the four later sites.
+- [x] Update the developer documentation: the rule, the borrow, the residue
+      that stays with the program. Done: the section "A replacement buffer".
 - [ ] Update the pull request text in `region-gc-tidy.md`. The reviewer's
       case is the first thing to say.
 - [ ] Move this plan to `plan/done/`.

@@ -17,10 +17,212 @@ class of stores that hit the barrier by accident.
 
 ## Status of the evidence
 
-Every issue below comes from a read of the source at `d543cb834a`. **No
-issue below is reproduced by a test.** The place and the code path are
-facts; the consequence is a deduction from the code. Step 1 of the work is
-to turn each consequence into a test that fails, before any fix.
+Every issue I1 to I13 comes from a read of the source at `d543cb834a`. Step
+1 turned each consequence into a test, and Step 2 fixed them on the branch
+`gc-regions-fixes` (worktree `workspace/julia-gc-fixes`, eight commits
+`41f8b37749..55ef64ed29`). A second review of those eight commits found the
+findings F1 to F7 below, each with a scratch test that fails on
+`55ef64ed29`; the tests of those findings found F8 and F9. The findings are
+the open work of this plan.
+
+## The findings of the second review (2026-09-05)
+
+Ranked as the issues are: a corruption and a leak first, a false refusal
+next, a hole in a check last. Each finding gets a regression script under
+`test/gc/` before its fix.
+
+### F1 — The checked reset leaves marks on other heaps (corruption)
+
+`region_root_scan` (`gc-regions.c`) marks from the roots of every thread and
+clears the marks of the calling heap only. Two threads that use the same
+region number on their own heaps — the supported per-thread leaf pattern —
+are hit: after thread B's checked reset, thread A's region-n objects stay
+marked. A's next checked reset refuses falsely with `EROOT` ("6002 live
+references"). A's next census does not walk a stale-marked live object
+(`gc_scoped_setmark` returns 0), so it never marks the children that object
+holds: it frees live children and keeps dead ones. Witnessed: `live=6002
+freed=3005`, and parents read `-1` after the freed cells were reused.
+
+Fix: `region_root_scan` calls `region_clear_marks_on_other_heaps(heap, n)`
+before `region_census_end()`, as `region_census_core` does. This fixes
+`jl_gc_region_check` too. Test: `regions_heaps.jl`, two threads, one region
+number, a reset mode and a census mode; skipped with one thread.
+
+### F7 — A census of a region with a live child frees live objects (corruption)
+
+The census filter drops every out-of-region object at the claim
+(`gc_scoped_claim`). A child region holds legal references into its parent.
+A census of the parent while the child is live does not walk the child's
+objects, so a parent object that only the child references is never marked
+and is freed. Witnessed: open 1, allocate `a`; open 2, `b = Ref(a)`; close;
+`collect(1)` returns `freed=1002`; the next stock collection segfaults in
+`gc_mark_outrefs` on the freed cells.
+
+The reset refuses this case with `ECHILD` (`region_haschild_mask`); the three
+census entries (`jl_gc_region_collect`, `jl_gc_region_collect_coop`,
+`jl_gc_region_census_open`) do not check it. Fix: the same `ECHILD` refusal
+in all three. The allocator's census of the open region skips the census and
+goes on, as it does for a quarantine. Test: `regions_census.jl` gains the
+case.
+
+### F2 — The pair checks quarantine correct programs (false quarantine, leak)
+
+`jl_gc_wb_genericmemory_copy_boxed`, `jl_gc_wb_genericmemory_copy_ptr`,
+`jl_genericmemory_copy_slice` (`jl_gc_wb_fresh(new_mem, mem)`),
+`jl_svec_copy` and `jl_gc_multi_wb` test the pair (destination container,
+source container) and use the source container's region as a proxy for the
+regions of its elements. A young container of old elements copied into an
+old container — `append!(old, filter(f, xs))` after the window closed,
+`copy(scratch)` into a region-0 field — trips the proxy: the region is
+quarantined for a legal program, and a quarantine is permanent.
+
+Fix: keep the pair test as the fast path; when the pair test would
+quarantine, test each element (each pointer field for `_copy_ptr` and
+`multi_wb`) and quarantine only on a real escape. This needs a predicate
+split out of `jl_gc_region_wb` that answers "would this store escape"
+without quarantining. Test: the young-container-of-old-elements copy must
+not quarantine; today it does.
+
+Found while writing the test: `jl_genericmemory_copy_slice` ran its pair
+check only under `layout->first_ptr != -1`. The layout of a boxed memory
+lists no pointer (`first_ptr` is -1; the element is the reference), so the
+C copy of a `Vector{Any}` — `jl_array_copy`, `jl_genericmemory_copy` — ran
+no check at all, and region elements left the region unnoticed. The fix
+puts the boxed case before the layout test. The test gains a case that
+burns a region through `jl_array_copy`.
+
+The predicate is `jl_gc_region_would_escape`; the element loops are
+`jl_gc_region_wb_boxed` and `jl_gc_region_wb_inline` (`gc-regions.c`); the
+two macros `jl_gc_region_wb_copy_boxed_check` and
+`jl_gc_region_wb_copy_inline_check` (`gc-wb-stock.h`) join them, and the
+five sites call the macros.
+
+### F3 — The global reset runs no root scan
+
+`jl_gc_region_reset_global` refuses `EFINALIZERS`, `ECHILD`, `EBUSY` per
+heap under its stop-the-world, then frees every heap's region `n` with no
+root scan. The per-heap reset checks by default; the global one is unchecked
+under the checked name. Fix: one mark from every thread's roots and one walk
+of every heap's region-`n` pages inside the existing pause, `EROOT` on a
+hit; or name it `jl_gc_region_unsafe_reset_global` and add the checked one.
+Test: a trunk object rooted on a parked task's frame; the global reset must
+refuse.
+
+### F4 — A finalizer registered during the check runs under the pause
+
+The checked reset runs the region's finalizers (phase 1), then re-reads the
+quarantine, then stops the world and scans. A finalizer that registers a
+new finalizer on a region object leaves a non-empty list, and
+`region_reset_heap` runs `region_reset_finalizers` inside the pause: Julia
+code under stop-the-world. Fix: run the finalizer phase in a bounded loop
+until the list is empty (refuse `EFINALIZERS` past the bound); inside the
+pause assert the list is empty and never run Julia code. Test: a finalizer
+that registers a finalizer; the reset must not deadlock and must run both.
+
+### F5 — A binding defined inside a window is a region object
+
+A name first looked up inside a window allocates its `Binding`, and its
+first `BindingPartition`, in the window's region; the store into the
+module's binding table (`SimpleVector` of region 0) is an escape and
+quarantines the region. The lookup is a run-time event, not only a toplevel
+one: `getglobal`, `isdefined`, `@eval` and the first resolution of a global
+in compiled code all reach `jl_get_module_binding` with `alloc=1`. The
+documentation's claim "a binding is a region-0 object" is false for such a
+name. Fix: `jl_gc_region_borrow(0)`/`unborrow` around the two allocations
+in `src/module.c` (`jl_get_module_binding` and `new_binding_partition`).
+Test: `regions_window.jl` looks up a new name inside a window and asserts
+no quarantine, that the `Binding` is in region 0, and that the region
+resets.
+
+The first report said "`@eval f(x) = ...` inside a window", and a probe
+found the other objects (`Method`, signature, `DataType`, `TypeName`,
+`Module`) in region 0. That probe stopped at the binding's quarantine, so
+it did not show whether a toplevel definition quarantines for another
+reason once the binding is right. The probe ran again on the fixed build,
+one definition per region: `@eval f(x) = x + 1` stores a `DataType` (the
+type of `f`) of the window's region into a `BindingPartition`; `@eval
+struct S ... end` stores its `DataType` the same way; `@eval module M ...
+end` stores a `Module` of the region into a `GlobalRef`; `@eval const c =
+Ref(1)` stores the `RefValue`. Each one quarantines its region. `@eval g =
+7` does not, because an `Int` is not boxed. So a run-time lookup of a new
+name inside a window is fixed, and a toplevel definition inside a window
+quarantines through the defined object itself: it is made in the open
+region, and the binding that holds it is region 0. That is the reference
+rule at work, not a fault. The devdoc bullet "Open a window inside a
+function, not at top level" names the four objects.
+
+### F6 — Replacement buffers the C1 rule does not reach
+
+Sites that replace a container's buffer without a borrow, so the new
+buffer lands in the window's region and the store into an older container
+quarantines it:
+
+- `base/iobuffer.jl`: `ensureroom_reallocate` (the `reinit` path after
+  `take!`) and the `reinit` branch of `truncate`. A cached `IOBuffer` that
+  is emptied with `take!` and written to inside a window hits this.
+- `base/iddict.jl`: `empty!(::IdDict)` allocates a fresh `ht`.
+- `base/idset.jl` `push!` → `jl_idset_put_key` (`src/idset.c`) and
+  `jl_idset_put_idx` → `smallintset_rehash` (`src/smallintset.c`).
+- `src/array.c` `jl_array_grow_end`: the C growth the runtime's own
+  `jl_array_ptr_1d_push` callers use; the store runs `jl_gc_wb`, so the
+  barrier sees it, but the buffer is in the wrong region.
+
+Fix: a borrow keyed on the container at each site, as C1 does. Test: each
+site once — an old container, the operation inside a window, no quarantine.
+
+### F8 — A borrow did not mark the region live on the heap that borrows
+
+Found while writing the F6 tests. `jl_gc_region_borrow(n)` installed
+region `n` on the calling heap through `jl_gc_region_install_task`, the
+task-switch path, which assumes the region is already live on that heap: a
+task switch reinstalls a window this heap opened. A borrow has no such
+guarantee. Thread B grows a vector that thread A made in a child region; B's
+heap takes pages of the child, but the child is not in B's
+`region_live_mask`, so B's `region_haschild_mask` does not name it and B's
+reset of the parent runs while the child's pages live under it. Fix:
+`jl_gc_region_install_borrow` (`gc-regions.c`) does the lazy init, marks the
+region live, then installs it; `jl_gc_region_borrow` calls it. Test:
+`regions_heaps.jl` gains a two-thread round: B's reset of the parent must
+refuse `ECHILD` while B's borrowed buffer lives, then succeed once the child
+is reset on both heaps.
+
+### F9 — The exception stack of a task is made in the open region
+
+Found while the F5 test ran on the fixed build: the case's first throw
+printed "a (null) of region 1 was stored into a Task of region 0" and
+quarantined the region. The `(null)` is a GC buffer, which has no type name.
+`jl_reserve_excstack` (`src/rtutils.c`) makes the exception stack of a task
+at the task's first throw, with `jl_gc_alloc_buf` in whatever region is
+open, and stores it into the `Task`. The task keeps the buffer and every
+later throw reuses it, so it has the lifetime of the task, not of the
+window. A task made outside the window and thrown inside it for the first
+time quarantined the window's region. Fix: `jl_reserve_excstack` borrows
+`jl_gc_region_of(ct)` around the allocation, as the replacement-buffer rule
+does for a container. Test: `regions_window.jl` runs a fresh task that
+opens a window and throws for the first time inside it; no quarantine, and
+the region resets. The case fails on the build before the fix with
+`FAIL: the first throw inside a window does not quarantine the region`.
+
+The same read looked at `save_stack` (`src/task.c`), which copies the stack
+of a copy-stack task into a buffer before the switch, with the window of the
+task still installed. The buffer is always larger than `GC_MAX_SZCLASS`, so
+it is a big object and belongs to region 0 whatever window is open. A probe
+with `JULIA_COPY_STACKS=1` and a real task switch inside a window showed no
+quarantine on the unfixed build. No change there.
+
+### Lesser notes, no action
+
+- `jl_idtable_rehash` keys its borrow on the old buffer, not the `IdDict`;
+  correct because the old buffer is never the shared empty memory, but
+  fragile. Leave a comment.
+- A checked reset that loses the safepoint 1024 times returns `ERACE`;
+  callers must handle it. Document.
+- The cooperative census's one-time `EUNSAFE` snapshot is a documented
+  precondition, not a check.
+- A borrow on a container of another heap's region allocates in this heap's
+  instance of that number. Legal under the documented discipline (a leaf is
+  one thread's; a trunk resets globally) — once F8 makes the region live on
+  the heap that borrows.
 
 ## How the issues are ranked
 
@@ -446,27 +648,27 @@ the first thing a reviewer will test. So:
 
 ### Step 1 — Reproduce
 
-- [ ] Write a failing test for I1 with a task: build a closure inside a
+- [x] Write a failing test for I1 with a task: build a closure inside a
       window, spawn the task outside, reset, and read the closure. Expect a
       `CORPSE` abort or a wrong value today.
-- [ ] Write a failing test for I1 with `copy` and with `copyto!` on a
+- [x] Write a failing test for I1 with `copy` and with `copyto!` on a
       `Vector{Any}`: copy region objects into a region-0 vector, reset, and
       read. Assert that the region is quarantined; today it is not.
-- [ ] Write a failing test for I2: register a finalizer on a region object
+- [x] Write a failing test for I2: register a finalizer on a region object
       whose body stores the object into a global, then reset. Assert that
       the reset returns `EQUARANTINED`; today it frees.
-- [ ] Write a failing test for I4: run a task that opens a window and throws
+- [x] Write a failing test for I4: run a task that opens a window and throws
       past it, then assert that `jl_gc_region_collect` does not return
       `EBUSY`.
-- [ ] Write a failing test for I10: quarantine a region, then allocate in it
+- [x] Write a failing test for I10: quarantine a region, then allocate in it
       in a loop and assert that `jl_gc_region_pages` stops growing. It grows
       without bound today.
-- [ ] Write a failing test for I11: register a finalizer on a region object,
+- [x] Write a failing test for I11: register a finalizer on a region object,
       quarantine the region, drop every reference, run `GC.gc()` twice, and
       assert that the finalizer closure is collected. It is pinned today.
-- [ ] Record which tests fail as expected and which do not. An issue whose
+- [x] Record which tests fail as expected and which do not. An issue whose
       test passes today is downgraded and its entry above is corrected.
-- [ ] I3, I6 and I7 need a race or several heaps. Write a stress script for
+- [x] I3, I6 and I7 need a race or several heaps. Write a stress script for
       I3 if one can be made to fail in a bounded time; otherwise fix by
       inspection and say so.
 
@@ -475,30 +677,75 @@ the first thing a reviewer will test. So:
 Work on the flat worktree `workspace/julia-gc-regions`, as the tidy plan
 did. Build with `nice -n 10 taskset -c 16-23 make -j8`.
 
-- [ ] I1 part 1: the region check in `jl_gc_wb_fresh`,
+- [x] I1 part 1: the region check in `jl_gc_wb_fresh`,
       `jl_gc_wb_current_task` and `jl_gc_wb_knownold`.
-- [ ] I1 part 2: the region check in the two `GenericMemory` copy barriers.
-- [ ] I1 part 3: the sites that write raw, from the table above.
+- [x] I1 part 2: the region check in the two `GenericMemory` copy barriers.
+- [x] I1 part 3: the sites that write raw, from the table above.
 - [ ] Run the cost gate. Record the numbers.
-- [ ] I2: the second quarantine test after the finalizers.
-- [ ] I3: one compare-exchange.
-- [ ] I4: close the window of a task that finishes.
-- [ ] I13: one entry that checks and frees in one pause, and
+- [x] I2: the second quarantine test after the finalizers.
+- [x] I3: one compare-exchange.
+- [x] I4: close the window of a task that finishes.
+- [x] I13: one entry that checks and frees in one pause, and
       `jl_gc_region_unsafe_reset` for the program that opts out. Measure the
       scan on the M3 and M4 loops and publish the row.
-- [ ] I10 parts 1 and 2: refuse a window on a quarantined region; wrap the
+- [x] I10 parts 1 and 2: refuse a window on a quarantined region; wrap the
       state in `regions.jl` and say in the documentation that a loop must
       test it.
 - [ ] I11: decide what a quarantine means for a finalizer list, and make the
       code and the documentation agree.
 - [ ] I12: measure what the parked pages cost a long run, then decide
       whether a reset returns them.
-- [ ] I5: keep a tagged page instead of freeing it; decide the abort.
-- [ ] I6: atomics for the two globals; make the declaration atomic against a
+- [x] I5: keep a tagged page instead of freeing it; decide the abort.
+- [x] I6: atomics for the two globals; make the declaration atomic against a
       window.
-- [ ] I7: clear the marks the census set on other heaps, or refuse a census
+- [x] I7: clear the marks the census set on other heaps, or refuse a census
       of a region that another heap holds. Choose one and say why.
-- [ ] I8 and I9: the documentation.
+- [x] I8 and I9: the documentation.
+
+### Step 2b — The findings of the second review, on `gc-regions-fixes`
+
+One commit per finding, the test in the same commit, each test shown to
+fail on `55ef64ed29` first. Done: eight fix commits `5c2cbf01d3..14dc151267`
+on `gc-regions-fixes` (F1 and F3 share one commit, because the global
+reset needs the cleared root scan), then `9d4de2bc69` for the documents
+and `f413f39068` for a verify check in the containers script.
+The committed tree is the tree that the sweep tested: every one of the
+23 changed files compares identical to the tested copy.
+
+- [x] F1: `region_clear_marks_on_other_heaps` in `region_root_scan`;
+      `test/gc/regions_heaps.jl`.
+- [x] F7: `ECHILD` in the three census entries; a case in
+      `regions_census.jl`.
+- [x] F2: the per-element fallback of the pair checks; a case in
+      `regions_stores.jl`.
+- [x] F3: the root scan in the global reset; a case in `regions_tree.jl`.
+- [x] F4: the bounded finalizer loop of the checked reset; a case in
+      `regions_lifetime.jl`.
+- [x] F5: the borrow of region 0 around a `Binding` allocation; a case in
+      `regions_window.jl`.
+- [x] F6: the borrows at the five sites; cases in `regions_containers.jl`.
+- [x] F8: `jl_gc_region_install_borrow`; the borrow round in
+      `regions_heaps.jl`.
+- [x] F9: the borrow of the task's region in `jl_reserve_excstack`; the
+      first-throw case in `regions_window.jl`.
+- [x] The documents follow: the devdoc's binding claim, the `ERACE`
+      sentence, `HISTORY.md` rows, the devdoc's "A replacement buffer"
+      section (the F6 sites), the bulk-copy explanation (F2), the exception
+      stack (F9), the toplevel bullet (the F5 probe), the Files table.
+- [x] The regions scripts pass at every harness configuration: threads 1, 2,
+      4, each with 0 and 1 interactive thread (`regions_heaps` skips at one
+      thread).
+
+Two tests changed while the fixes landed, both because a test held the
+fault it tested for. `tree_multithread_leaves` reset the trunk globally from
+the frame that held the trunk object, and the F3 root scan refused it with
+`EROOT`, which is the right answer: the build now runs in
+`tree_run_workers`, and the reset follows its return. `tree_park_with_trunk`
+read its object as `t.f` only, so the compiler scalar-replaced the object and
+nothing was on the frame; the case now passes the object through `escape`,
+which forces the allocation. The F5 case reads its new binding with
+`Base.invokelatest(getglobal, ...)`, because the definition is in a newer
+world than the function.
 
 ### Step 3 — Fold into the series
 
