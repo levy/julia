@@ -394,6 +394,56 @@ function seal_argument(@nospecialize(f), position::Base.Integer, @nospecialize(t
     else
         t = types isa Base.Type ? types : Base.Union{types...}
     end
+    # WHICH METHODS THE DOMAIN EXCLUDES. A promise is a claim and nothing
+    # checks it. This is the one part that CAN be checked: a method whose
+    # declared parameter does not intersect the domain can never be reached
+    # through this position. Often that is the point of the promise, so this
+    # reports and does not refuse.
+    #
+    # IT IS ALSO HOW A PROMISE GOES SILENTLY WRONG. `chunk_length` has a
+    # TYPE-taking method beside its four per-kind ones, and a domain that named
+    # the kinds and omitted `Base.Type` narrowed that method to `Union{}`. The
+    # symptom arrived fifteen minutes later as 1428 verifier errors and a
+    # `FieldError` in the recording run. The cause is one line, and this prints
+    # it in one second.
+    local _rf = f isa Base.Type ? (try f.instance catch; nothing end) : f
+    if _rf !== nothing
+        local _total = 0
+        local _cut = Any[]
+        for m in Base.methods(_rf)
+            local _s = Base.unwrap_unionall(m.sig)
+            _s isa Base.DataType || continue
+            local _ps = _s.parameters
+            Base.length(_ps) >= position + 1 || continue
+            # REWRAP THE `where` CLAUSE. `chunk_length(::Type{H}) where {H <:
+            # Fields}` unwraps to a bare `Type{H}` whose `H` is then free, and
+            # `typeintersect` on a free variable answers nothing useful.
+            local _d = Base.rewrap_unionall(_ps[position + 1], m.sig)
+            _d isa Core.TypeVar && (_d = _d.ub)
+            _d isa Base.Type || continue          # a Vararg takes anything
+            _total += 1
+            Base.typeintersect(t, _d) === Base.Union{} && Base.push!(_cut, m)
+        end
+        if !Base.isempty(_cut)
+            Core.println("SEAL argument ", ft, " position ", position,
+                         " EXCLUDES ", Base.length(_cut), " of ", _total, " methods")
+            # NAME THE METHODS ONLY WHERE THE COUNT IS SUSPICIOUS. A promise
+            # that cuts most of a method table is doing its job — the scoped
+            # `==` promises cut 218 of 226 on purpose, and listing those buried
+            # the two lines worth reading in sixty. A promise that cuts one or
+            # two is the shape of a FORGOTTEN ARM, and a promise that cuts them
+            # all can not dispatch at all.
+            if Base.length(_cut) <= 3 || Base.length(_cut) == _total
+                for m in Base.first(_cut, 3)
+                    Core.println("SEAL   unreachable through this position: ", m.sig)
+                end
+            end
+            if Base.length(_cut) == _total
+                Core.println("SEAL   EVERY method with this position is excluded — ",
+                             "no call through it can dispatch")
+            end
+        end
+    end
     if within === nothing
         C.SEALED_ARGUMENT[(ft, Base.Int(position))] = t
     else
