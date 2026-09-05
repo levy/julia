@@ -32,6 +32,10 @@ function a_vector_grows_inside_a_window()
     check("the vector is right", length(LONG) == 10_000 && LONG[end] == 10_000)
     check("the region resets", !refused(reset_via_call(GROW)))
     check("the vector is right after the reset", LONG[end] == 10_000 && sum(LONG) == 50_005_000)
+    # 10_000 Ints are 80 KB: the data is malloc'd and tracked where the borrow
+    # put its header, so the sum above proves the reset did not free it. The
+    # page chains of the window's region must be whole after the reset too.
+    check("region verify finds no inconsistency after the reset", region_verify(GROW) == 0)
 end
 
 @noinline function grow_the_front_inside_window(n, count)
