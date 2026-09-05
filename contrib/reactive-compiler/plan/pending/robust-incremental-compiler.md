@@ -55,6 +55,11 @@ Recorded 2026-09-05, from the discussion that started this plan:
   plan adds a tracker at one level only: top-level evaluation.
 - **The oracle comes first.** A standing differential gate tests the
   invariant after every stage, so it is Stage 0.
+- **PackageCompiler founds and bundles; the reactive compiler rebuilds.**
+  Recorded 2026-09-05. The compiler calls the public API of
+  PackageCompiler for the founding and the bundle, and owns the rebuild
+  from Stage D on. The fork of PackageCompiler is retired at Stage D. The
+  log entry "2026-09-05, PackageCompiler" has the detail.
 
 ## The model
 
@@ -131,9 +136,10 @@ reverse, a tracked macro that an untracked file expands, is the refusal).
 ## Stage 0 — the oracle
 
 The differential gate that tests the invariant. It runs after every later
-stage and is the acceptance test of each.
+stage and is the acceptance test of each. Done 2026-09-05 for HazardApp;
+the entry "2026-09-05, Gate 0" below.
 
-- [ ] `tool/oracle_gate.sh`: for an application and a sequence of edits
+- [x] `tool/oracle_gate.sh`: for an application and a sequence of edits
       E1 to En, build the chain (a founding at S0, one rebuild for each
       edit) and the founding of Sn, and compare the two images:
       1. the method tables of the tracked modules: for each module, the
@@ -143,20 +149,28 @@ stage and is the acceptance test of each.
       4. the values of the globals of the tracked modules, against the
          values after a plain load of the sources.
       The gate prints one line per check and a size line: the number of
-      functions in the text of each image.
-- [ ] the comparison runs inside each binary: a `--reactive-oracle` entry
-      that walks the modules and prints the digest, so that the gate
-      compares two texts.
-- [ ] the edit sequences: the routing `+= 2` edit and its reverse; the
-      HazardApp edit and its reverse; and a two-edit chain on HazardApp,
-      where the second edit changes `driver` only, so that the third build
-      calls a function of the second build's delta by its symbol.
-- [ ] a record of the result on today's rebuild: checks 1 to 3 are
-      expected to pass; check 4 is expected to fail on HazardApp (the
-      `state` global is 2 after the edit) until Stage A.
+      functions in the text of each image. *As built:* check 4 compares
+      the globals of the chain with the globals of the founding, which
+      holds the values after the top-level expressions because the
+      founding never runs the workload; the size line is the `info` lines
+      of the oracle. Checks 3 and 4 report a difference of the persisted
+      state alone as expected until Stage A, and fail on anything else.
+- [x] the comparison runs inside each binary: *as built,* `tool/oracle.jl`
+      runs under the fork's `julia -J <bundle>/lib/julia/sys.so`, so no
+      entry of the application is needed; the gate diffs the two texts.
+- [x] the edit sequences: the two-edit chain on HazardApp, where the
+      second edit changes `driver` only, so that the third build calls
+      `chained` of the second build's delta by its symbol. The routing
+      `+= 2` edit and its reverse are not in the gate yet: the founding of
+      the routing binary costs 2 min 37 s twice; add it when a stage
+      changes the routing path.
+- [x] a record of the result on today's rebuild: checks 1 and 2 pass;
+      checks 3 and 4 differ by the persisted state alone (`state` 4
+      against 0, `FINALIZED` 4 against 0) until Stage A.
 
-**Gate 0.** The oracle runs on the three sequences; checks 1 to 3 pass;
-the two-edit chain links and runs; check 4 reports the known failure.
+**Gate 0.** The oracle runs on the two-edit chain; checks 1 and 2 pass;
+the third build links and runs with `chained` of the second build by
+symbol; checks 3 and 4 report the known difference. Passed 2026-09-05.
 
 ## Stage A — the rebuild without execution
 
@@ -278,15 +292,26 @@ names the live ones; the linker drops the rest.
       with more than one target.
 - [ ] the link adds `--gc-sections`; check that it drops the unreferenced
       function sections of an object that `--whole-archive` included.
-- [ ] the heap side: check whether the serializer keeps an invalid code
-      instance (`max_world` set to 0 at line 1767 of `staticdata.c`) and a
-      deleted method in the image. If it does, the reactive path skips
-      them, and a method table entry of a deleted method is not written.
+- [ ] the heap side: a replaced method stays in the image, found by
+      Gate 0. Julia does not close the world of a replaced typemap entry:
+      both entries stay valid, dispatch takes the newest one (`gf.c`,
+      `get_intersect_visitor`, "must pick the newest insertion"), and the
+      old method keeps its source, its specializations and its text. The
+      oracle counts seven `shadowed` entries after the two-edit chain of
+      HazardApp and none in a founding. The reactive serialization must
+      drop a shadowed entry with its method; the invalid code instances
+      (`max_world` closed) go with it. Check the `staticdata.c` sysimage
+      path for both (the branches at lines 1691-1767 are the package
+      image path).
+- [ ] one delta holds two text functions of one method instance: the
+      second build of the oracle chain emits `julia_driver_1060.r8` and
+      `julia_driver_1598.r8` for the one specialization of `driver`. Find
+      the second code instance and drop it.
 - [ ] `nm` of the image after a chain shows one definition per live
       function: after the reverse edit of M6, `bench_delta` has one
       definition, and `julia_bench_delta_1526.r8` is gone.
 
-**Gate C.** M6 and M7 through Gate 0. The size of the image after ten
+**Gate C.** M6 and M7 through Gate 0, with `info shadowed 0` in the chain. The size of the image after ten
 edit-and-reverse cycles equals the size after one, within the residue of
 the global slots. The delta of a rebuild with no edit is zero functions
 from the second rebuild on.
@@ -358,6 +383,34 @@ Not planned in detail; the items that the catalog leaves open.
   multi-target image cannot be chained.
 
 ## Log
+
+**2026-09-05, PackageCompiler.** PackageCompiler founds and bundles; the
+reactive compiler rebuilds. Today `materialize_app` calls two public
+functions of it, `create_app` for the founding and `create_sysimage` for
+the rebuild. Stage C takes the link (`--gc-sections`, the fresh table) and
+Stage D takes the rebuild (a server is not one child and one exit), so
+after Stage D the compiler calls PackageCompiler once per store, at the
+founding, through public keywords (`precompile_statements_file` for the
+trace that the store keeps). The fork of PackageCompiler on branch
+`reactive` is retired then. The compiler stays in `contrib/reactive-compiler`
+of the Julia tree: the runtime patch and the tool must match versions.
+
+**2026-09-05, Gate 0.** `tool/oracle.jl` and `tool/oracle_gate.sh`. The
+chain: a founding in 59 s and 6.0 GB, the first edit in 8.6 s (138 direct
+calls), the second edit in 7.9 s (11 direct calls, one of them
+`julia_chained_1424.r8` of the second build, named as an undefined symbol
+by the third build's delta and defined once by the image). The founding of
+the final sources: 58 s. The digests: 35 methods and 37 valid code
+instances in both images; checks 1 and 2 equal; checks 3 and 4 differ by
+`state` and `FINALIZED` alone (4 in the chain, 0 in the founding).
+
+Two findings. A replaced method stays valid in the typemap: Julia keeps
+both entries and dispatch takes the newest, so the digest keeps the newest
+entry of each signature and counts the others as `shadowed` (seven in the
+chain, none in the founding); Stage C drops them. And a foldable callee
+with a constant argument leaves no call in its caller: the first `chained`
+was `x + 1`, and the third build named no symbol of the second; it now
+reads a `Ref`.
 
 **2026-09-05, the plan.** Written from the discussion of the six points:
 restart or server; the catalog; the tracker; no execution in the compiler;

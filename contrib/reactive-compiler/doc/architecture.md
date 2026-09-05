@@ -31,8 +31,8 @@ The measured effect: the routing example image rebuilds in 21 s against
 | its new code | `src/reactive.jl` (driver + store), `src/reactive_child.jl` (child), `src/SourceDiff.jl` (vendored copy) |
 | the measurement subject | worktree `omnet-julia-m1`, branch `reactive-builder` from `e21ba2cd` |
 | the builder integration (M7) | `source/build/Reactive.jl`, `source/build/Executable.jl`, `source/tool/build_binary.jl` of that branch |
-| the hazard test package (M6) | `tool/m6_hazard/HazardApp` and its edited file `tool/m6_hazard/shapes-after.jl` |
-| the gates | `tool/m0_*` (measurement), `tool/m1_gate1.sh` (chain + edit), `tool/m4_gate.sh` (materialize), `tool/m5_gate.sh` (the binary), `tool/m6_gate.sh` (the hazards), `tool/m7_gate.sh` (the builder) |
+| the hazard test package (M6) | `tool/m6_hazard/HazardApp` and its edited files `tool/m6_hazard/shapes-after.jl`, `shapes-after-2.jl` |
+| the gates | `tool/m0_*` (measurement), `tool/m1_gate1.sh` (chain + edit), `tool/m4_gate.sh` (materialize), `tool/m5_gate.sh` (the binary), `tool/m6_gate.sh` (the hazards), `tool/m7_gate.sh` (the builder), `tool/oracle_gate.sh` with `tool/oracle.jl` (a two-edit chain against the founding of the final sources: the same method tables, roots, output and globals) |
 
 ## The runtime patch
 
@@ -247,6 +247,12 @@ code.
   that reuse skips. The trimmed flagship binary is its own milestone.
 - **Method removals are not applied**; dead methods stay until a full
   build.
+- **A replaced method stays in the image.** Julia does not close the
+  world of a replaced typemap entry: both entries stay valid, dispatch
+  takes the newest one (`gf.c`, `get_intersect_visitor`), and the old
+  method keeps its source, its specializations and its text. The oracle
+  counts them as `shadowed`: seven after the two-edit chain of HazardApp,
+  none in a founding.
 - **The rebuild workload's side effects persist** (rule 8). Accepted
   2026-09-05: the rule on the workload is the fix for now. The other way,
   with the founding semantics exactly, is a trace child before the build

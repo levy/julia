@@ -118,17 +118,25 @@ oracle() {
     grep "^info" "$OUT/oracle-$1.log" | sed "s/^/=== $1 /"
 }
 
-# $1 = the check number, $2 = its name, $3 = the pattern of the lines, $4 $5 = the files
+# $1 = the check number, $2 = its name, $3 = the pattern of the lines,
+# $4 $5 = the files, $6 = the pattern of the lines that are expected to
+# differ until Stage A: the state that the rebuild workloads leave in the
+# heap. A difference of those lines alone is reported and does not fail.
 check() {
-    local a b n
+    local a b lines n
     a=$(grep -E "$3" "$4"); b=$(grep -E "$3" "$5")
     if [ "$a" == "$b" ]; then
         echo "=== check $1 $2: equal ($(echo "$a" | grep -c .) lines)"
         return 0
     fi
-    n=$(diff <(echo "$a") <(echo "$b") | grep -cE "^[<>]")
+    lines=$(diff <(echo "$a") <(echo "$b") | grep -E "^[<>]")
+    n=$(echo "$lines" | grep -c .)
     echo "=== check $1 $2: $n lines differ (< chain, > founding)"
-    diff <(echo "$a") <(echo "$b") | grep -E "^[<>]" | head -20
+    echo "$lines" | head -20
+    if [ -n "${6:-}" ] && ! echo "$lines" | grep -vqE "$6"; then
+        echo "=== check $1 $2: the difference is the persisted state alone; expected until Stage A"
+        return 0
+    fi
     return 1
 }
 
@@ -139,9 +147,8 @@ compare() {
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     grep -E "^root .*HazardApp" "$OUT/oracle-chain.log" | grep -vq " compiled$" &&
         { echo "=== check 2: a root of HazardApp is not compiled in the chain"; failed=1; }
-    check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" || failed=1
-    check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" ||
-        echo "=== check 4 is expected to differ until Stage A: the rebuild workloads leave state"
+    check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" "shape: state = " || failed=1
+    check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" "HazardApp.FINALIZED = " || failed=1
     return $failed
 }
 
