@@ -658,7 +658,8 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
     }
     JL_GC_POP();
 
-    if (pointers->header->version != 2) {
+    const uint32_t version = pointers->header->version;
+    if (version != 2 && version != 3) {
         jl_error("Image file is not compatible with this version of Julia");
     }
 
@@ -668,8 +669,32 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
 
     llvm::SmallVector<std::pair<uint32_t, void*>, 0> clones;
 
+    if (version == 3) {
+        // The reactive image: one target, and the one function table in
+        // `pointers`, in id order. The shards hold the global slots alone.
+        if (target_idx != 0)
+            jl_error("Reactive image: the image has one CPU target");
+        const char *fname = pointers->fvar_names;
+        for (uint32_t i = 0; i < pointers->header->nfvars; i++) {
+            fvars[i] = pointers->fvar_ptrs[i];
+            fnames[i] = fname;
+            fname += strlen(fname) + 1;
+        }
+    }
+
     for (unsigned i = 0; i < pointers->header->nshards; i++) {
         auto shard = pointers->shards[i];
+
+        if (version == 3) {
+            auto gidxs = shard.gvar_idxs;
+            unsigned ngvars = shard.gvar_offsets[0];
+            assert(ngvars <= pointers->header->ngvars);
+            char *data_base = (char*)shard.gvar_offsets;
+            for (uint32_t i = 0; i < ngvars; i++) {
+                gvars[gidxs[i]] = data_base + shard.gvar_offsets[i+1];
+            }
+            continue;
+        }
 
         void **fvar_shard = shard.fvar_ptrs;
         uintptr_t nfunc = *shard.fvar_count;

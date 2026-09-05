@@ -379,6 +379,30 @@ binding, so `guess_word` stays `exported`; the gate expects that.
 The old text objects become a library of named functions; the fresh table
 names the live ones; the linker drops the rest.
 
+*Design, as decided before the code (2026-09-05).* The format gets version
+3, under `JULIA_REACTIVE_IMAGE=1` (which `materialize_app` sets for the
+founding and for a rebuild; reuse implies it); a stock build keeps version
+2 unchanged, and a rebuild from a version 2 image is refused. Version 3
+holds the function table in `metadata.o`: `jl_image_pointers` gains
+`fvar_ptrs` and `fvar_names`, both in id order, so no `fvar_idxs` is
+needed; the shard table keeps `gvar_offsets` and `gvar_idxs` per shard and
+puts null in the function and clone fields; the loader takes the one
+target. The ids are assigned in `reactive_rebase`, because the serializer
+consumes them before `jl_dump_native`: the reused functions come first, in
+the order of the loaded image (compact, which keeps a wrapper before its
+specialization), then the delta with `fvar_base` = the reused count; the
+names of the reused functions travel in `jl_native_code_desc_t` and are
+copied out before `compile` deletes it. `shard_base` stays as the counter
+of the global-slot shards and as the `.r<N>` tag. `FunctionSections` and
+`DataSections` go on the target options of the reactive output path;
+`create_sysimage` gains `gc_sections`, which adds `-Wl,--gc-sections` to
+the link. The exported symbols of an image are few (`jl_image_pointers`,
+`jl_system_image_*`, the ccallable entries), so the fresh table is the
+root that keeps a function; the per-shard tables of the old objects are
+hidden and unreferenced, and go with the functions that only they named.
+The size check of Gate C measures the loadable sections (`size`), not the
+file: the line tables of `-g1` keep a record of a dead function.
+
 - [ ] the emission puts each function in its own section
       (`FunctionSections`, and `DataSections` for the globals) in the
       reactive output path; today the target options set neither.

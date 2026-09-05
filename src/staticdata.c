@@ -4543,6 +4543,7 @@ JL_DLLEXPORT jl_value_t *jl_restore_incremental(const char *fname, jl_array_t *d
 static jl_image_t reactive_image;
 static int reactive_image_loaded = 0;
 static uint32_t reactive_nshards = 0;
+static uint32_t reactive_image_version = 0;
 static size_t reactive_base_world = 0;
 
 typedef struct {
@@ -4619,6 +4620,22 @@ JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT
     if (env == NULL || env[0] < '0' || env[0] > '9' || env[1] != '\0')
         return 0;
     return env[0] - '0';
+}
+
+// Whether this build emits the reactive image format (version 3): asked
+// for with JULIA_REACTIVE_IMAGE=1, and implied by reuse.
+JL_DLLEXPORT int jl_reactive_image_format(void) JL_NOTSAFEPOINT
+{
+    if (jl_reactive_reuse_enabled())
+        return 1;
+    const char *env = getenv("JULIA_REACTIVE_IMAGE");
+    return env != NULL && env[0] == '1' && env[1] == '\0';
+}
+
+// The format version of the loaded image, 0 without one
+JL_DLLEXPORT uint32_t jl_reactive_base_version(void) JL_NOTSAFEPOINT
+{
+    return reactive_image_loaded ? reactive_image_version : 0;
 }
 
 JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT
@@ -4720,6 +4737,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
         assert(image->fptrs.ptrs); // jl_init_processor_sysimg should already be run
         reactive_image = *image;
         reactive_nshards = ((const jl_image_pointers_t*)buf.pointers)->header->nshards;
+        reactive_image_version = ((const jl_image_pointers_t*)buf.pointers)->header->version;
         reactive_image_loaded = 1;
     }
 

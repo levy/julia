@@ -100,7 +100,11 @@ struct _jl_image_t {
 // Details important counts about the image
 typedef struct {
     // The version of the image format
-    // Most up-to-date version is 2: it adds `fvar_names` to the shard table
+    // Version 2 adds `fvar_names` to the shard table. Version 3 is the
+    // reactive image (JULIA_REACTIVE_IMAGE=1): one CPU target, and the one
+    // function table lives in `jl_image_pointers_t` (`fvar_ptrs`,
+    // `fvar_names`) in id order; the shards keep the global slots only,
+    // with null in their function and clone fields.
     uint32_t version;
     // The number of shards in this image
     uint32_t nshards;
@@ -206,6 +210,12 @@ typedef struct {
     const void *target_data;
     // Original CPU target string used to build this sysimage
     const char *cpu_target_string;
+    // Version 3 only: the one function table, `header->nfvars` pointers in
+    // id order, and the symbol name of each, NUL-terminated, in the same
+    // order. A reused function of a rebuild keeps the name of the object
+    // that defines it; the table of the new `metadata.o` names it again.
+    void **fvar_ptrs;
+    const char *fvar_names;
 } jl_image_pointers_t;
 
 /**
