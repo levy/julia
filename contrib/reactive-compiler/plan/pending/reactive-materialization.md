@@ -387,27 +387,28 @@ The Julia patch, in `src/aotcompile.cpp`, `src/staticdata.c`,
 `Compiler/src/typeinfer.jl` and `Compiler/src/precompile.jl`. The design is
 the entry "2026-09-05, Stage 1 design" below; the parts:
 
-- [ ] the new build B boots from the image A (`julia -J A.so --output-o B.a`)
+- [x] the new build B boots from the image A (`julia -J A.so --output-o B.a`)
       with `JULIA_REACTIVE_REUSE=1`; the runtime keeps a copy of the parsed
       image and the world counter after the restore;
-- [ ] `jl_reactive_image_ids(ci, ...)` maps a code instance whose native
+- [x] `jl_reactive_image_ids(ci, ...)` maps a code instance whose native
       pointers are in A's function table to A's function ids;
-- [ ] `compile!` reuses a code instance that is valid in the world and has
+- [x] `compile!` reuses a code instance that is valid in the world and has
       image ids, and returns the reused list beside `codeinfos`;
-- [ ] `jl_create_native` rewrites the ids of the delta to the append-only id
+- [x] `jl_create_native` rewrites the ids of the delta to the append-only id
       spaces of A: function ids `+ nfvarsA`, global slots `+ ngvarsA`, shards
       `+ nshardsA`, and prepends A's live slot values to the roots;
-- [ ] every defined global object of the delta gets the suffix `.r<nshardsA>`
+- [x] every defined global object of the delta gets the suffix `.r<nshardsA>`
       after `makeSafeName`, so that A's objects and B's objects link together;
-- [ ] the image header and the shard table of B count A's shards and B's
+- [x] the image header and the shard table of B count A's shards and B's
       shards together; the delta calls a reused function through the
       `emit_tojlinvoke` trampoline;
-- [ ] link A's text objects with B's `sysimg.o`, `metadata.o` and delta into
+- [x] link A's text objects with B's `sysimg.o`, `metadata.o` and delta into
       `B.so`; boot; run the routing example.
 
 **Gate 1.** A rebuild with no edit links every text object of the previous
 build with a fresh `sysimg.o` and `metadata.o`, boots, and runs the
-application.
+application. **Passed 2026-09-05**, by `tool/m1_gate1.sh`; the numbers are in
+the entry "2026-09-05, Gate 1" below.
 
 ### Stage 2 — key-driven delta emission
 
@@ -517,8 +518,11 @@ and never the target.
       one edit, and key-changed equals invalidated. Done 2026-09-05: 98.5% of
       the objects identical with the frame slots masked, 96.4% without; one
       edit changes one object; key-changed = invalidated = `{routing_handle!}`.
-- [ ] **M1** — a rebuild with no edit reuses every text object of the previous
-      build and the image runs.
+- [x] **M1** — a rebuild with no edit reuses every text object of the previous
+      build and the image runs. Done 2026-09-05: B links A's eight text
+      objects, reuses 37284 code instances, emits 518 functions, and runs the
+      routing model with A's network hash; 19 s and 1.1 GB against 117 s and
+      7.7 GB for A.
 - [ ] **M2** — a rebuild after a one-function edit emits only the cone, and the
       emission time is reported against 343 s.
 - [ ] **M3** — the serial front is cut by the cheapest of the three ways.
@@ -706,5 +710,34 @@ written; none changes the design.
   `reactive_image_loaded` is set during `make`; the environment variable is
   unset there, and every `jl_reactive_*` query returns zero. The M0 archives
   came from the juliaup 1.13.0-rc3; Gate 1 uses the patched `usr/bin/julia`
-  and a stacked depot, `JULIA_DEPOT_PATH=<out>/depot:`, so the rc4 caches do
-  not clobber the rc3 caches of the user.
+  and a stacked depot, `JULIA_DEPOT_PATH=<out>/depot:~/.julia:`, so the rc4
+  caches do not clobber the rc3 caches of the user. A first non-empty entry
+  removes `~/.julia` from the depot list, so the user depot must be named.
+
+**2026-09-05, Gate 1.** Passed by `tool/m1_gate1.sh` on the routing model at
+omnet-julia e21ba2cd, in a detached worktree `omnet-julia-m1` beside the
+checkout; the live checkout moved to a state that does not load while the
+gate ran. Eight image threads, `-C native`, the build lane.
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| build A from `sys.so` | 116.6 s | 7.7 GB | 8 shards, 52945 functions, 14585 slots; front 27.8 s, `jl_emit_native` 11.5 s |
+| run A from `A.so` | 14.8 s | 0.32 GB | `Network hash: 92a8205a91b44af2524c1b843e2df7b0` |
+| build B from `A.so` | 19.0 s | 1.1 GB | 37284 code instances reused; delta 518 functions, 392 slots; front 0.9 s, `jl_emit_native` 0.1 s; header 16 shards, 53463 functions, 14977 slots |
+| link B.so | — | — | A's `text#0..7.o` + B's `text#0..7.o` + B's `sysimg.o`, `metadata.o`; no linker output; 303 MB |
+| run B from `B.so` | 14.7 s | 0.31 GB | the same network hash; `--trace-compile` writes no line, so no function is compiled at run time |
+
+The M0 archives and A agree on the network hash, so the rc4 build and the
+rc3 build run the same model.
+
+- *The delta of a no-edit build is not empty.* The 518 functions are small
+  Base callees: 98 `_iterator_upper_bound`, 29 `iterate`, 13 `in`, and the
+  `j_throw_boundserror` trampolines their bodies need. A diagnostic run from
+  `A.so` shows 118 `_iterator_upper_bound` method instances whose only code
+  instance has `inferred` and no native code: A inlined them and never
+  emitted them alone. B emits them because a delta function calls them
+  through `:invoke`. The report `reactive: delta ... const, shadowed, roots,
+  edges` (`JULIA_REACTIVE_TIMINGS=1`; level 2 lists each) classifies the
+  delta so that Stage 2 starts from the cause. An appended delta on every
+  rebuild grows the image, so the no-edit delta must reach zero, or a
+  periodic full build must compact it.

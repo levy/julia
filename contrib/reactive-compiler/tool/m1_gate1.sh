@@ -13,17 +13,21 @@ OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/ff3540
 JH=${JH:-/home/projectured/workspace/julia-reactive}
 JULIA=$JH/usr/bin/julia
 TOOL=$JH/contrib/reactive-compiler/tool
-OMNET=${OMNET:-/home/projectured/workspace/omnet-julia}
+# A worktree of omnet-julia pinned to the commit that M0 measured (e21ba2cd),
+# so that the gate does not move with the live checkout.
+OMNET=${OMNET:-/home/projectured/workspace/omnet-julia-m1}
 THREADS=${THREADS:-8}
 mkdir -p "$OUT"
 
-# One Julia run of the routing model, bounded, on the build lane.
+# One Julia run of the routing model, bounded, on the build lane. The depot is
+# stacked: the caches of the patched Julia go to $OUT/depot, the packages come
+# from ~/.julia, and the caches of the user's Julia stay untouched.
 # $1 = log name, $2.. = julia arguments after the project
 jl() {
     local name=$1; shift
     ( cd "$OMNET" && systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 \
         nice -n 10 taskset -c 16-23 env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=1 \
-            JULIA_DEPOT_PATH="$OUT/depot:" ${JL_ENV:-} \
+            JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" ${JL_ENV:-} \
         timeout 2400s /usr/bin/time -v \
         "$JULIA" --project=package/OmnetLegacyRoutingExample --startup-file=no --pkgimages=no \
                  "$@" "$TOOL/m0_build.jl" ) > "$OUT/$name.log" 2>&1
