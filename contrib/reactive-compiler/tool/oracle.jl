@@ -98,8 +98,10 @@ function oracle_entries(f, world::UInt)
 end
 
 # The hash of the lowered code of a method: the statements and the slot
-# names, without the line information.
+# names, without the line information. A generated method has no lowered
+# code of its own; the code of its generator stands for it.
 function oracle_lowered(m::Method)
+    isdefined(m, :generator) && (m = only(methods(m.generator.gen)))
     ci = Base.uncompressed_ast(m)
     return string(hash(repr(ci.code), hash(repr(ci.slotnames))); base = 16)
 end
