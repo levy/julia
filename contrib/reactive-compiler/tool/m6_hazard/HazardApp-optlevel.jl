@@ -7,6 +7,7 @@
 module HazardApp
 
 using Libdl
+Base.Experimental.@optlevel 1
 
 include("shapes.jl")
 include("changes.jl")

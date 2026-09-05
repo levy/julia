@@ -10,8 +10,9 @@ using Libdl
 
 include("shapes.jl")
 include("changes.jl")
-include("renamed.jl")
+include("renamed2.jl")
 include("untracked.jl")
+include("extra.jl")
 
 function julia_main()::Cint
     print(report())
