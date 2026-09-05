@@ -679,3 +679,32 @@ and never the target.
   `jl_dispatch_target_ids` replaces A's. The switch is the environment
   variable `JULIA_REACTIVE_REUSE=1`; `JULIA_REACTIVE_TIMINGS=1` prints the
   time of the front, of `jl_emit_native` and of each dump phase.
+
+**2026-09-05, Stage 1 implementation.** Facts found while the patch was
+written; none changes the design.
+
+- *A code instance can appear twice in `reused`.* `CompilationQueue(queue;
+  interp)` starts each world pass with an empty inspected set, so the two world
+  passes of `typeinf_ext_toplevel` can both visit one code instance. The
+  duplicate is harmless: `reactive_rebase` inserts the same ids into
+  `jl_fvar_map` twice.
+- *A reuse miss is not an error.* `get(code_cache(interp), mi, nothing)`
+  returns the first entry of the chain that is valid in the world and has
+  `inferred`. When a newer code instance without native code sits before A's,
+  the MI branch infers again and the delta grows by one function. Gate 1
+  counts the reused list against the function count of A to see the misses.
+- *`@ccallable` aliases are a Stage 2 hazard.* `jl_generate_ccallable` makes a
+  `GlobalAlias` with external linkage and the plain ccallable name; the rename
+  loop suffixes global objects only, so an alias keeps its name. Stage 1 skips
+  the item when the method is older than the base world, and the wrapper that
+  `lam == NULL` produces dispatches dynamically. Stage 2 must skip or rename
+  the alias of a redefined `@ccallable` method, or the link sees it twice.
+- *Two reuse paths are out of scope.* A package image (`external_linkage`)
+  silently takes the stock path; reactive reuse with `--trim` stops with an
+  error, because the trim verifier walks the edges that reuse skips.
+- *The build of Julia itself.* `sys-o.a` boots from `sysbase.so`, so
+  `reactive_image_loaded` is set during `make`; the environment variable is
+  unset there, and every `jl_reactive_*` query returns zero. The M0 archives
+  came from the juliaup 1.13.0-rc3; Gate 1 uses the patched `usr/bin/julia`
+  and a stacked depot, `JULIA_DEPOT_PATH=<out>/depot:`, so the rc4 caches do
+  not clobber the rc3 caches of the user.
