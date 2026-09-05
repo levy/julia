@@ -2,9 +2,9 @@
 
 This plan collects the robustness, correctness and safety issues of the
 region collector that a review of the sixth cut found, and it says how to
-close them. The series `gc-regions` on levy/julia is at `3577055ee6`; the
-flat tree is the tag `gc-regions-flat` at `d543cb834a`. The pull request is
-not opened.
+close them. The series `gc-regions` on levy/julia is at `c3c26b66d2`, cut
+again from the flat tree of 2026-09-05; the flat tree is the tag
+`gc-regions-flat` at `abaf2f7fe7`. The pull request is not opened.
 
 The tidy plan is `region-gc-tidy.md` in this folder. That plan built the
 series and its gate. This plan changes the runtime.
@@ -792,20 +792,52 @@ devdoc gets the rule "Do not capture a region object in a task closure",
 HISTORY.md the pitfall. The test belongs to the stage that adds the tree
 test; the prose to the stage of the documents.
 
-- [ ] Map each flat commit to its owning stage with `xstage.py`.
-- [ ] Move the annotated markers in `annotated/` of the tooling repository so
-      each change appears at its stage.
-- [ ] `reveal.py check` passes.
-- [ ] `retake.sh <worktree> <commit before the first stage> <first stage>`
-      from the lowest stage that changed. Stage 4 is the lowest one this plan
-      touches, so commits 1 to 3 keep their SHAs.
-- [ ] Check 1: the tree of the branch equals the tree of the flat tag.
+- [x] Move the tag: `gc-regions-flat` names `abaf2f7fe7`, not `d543cb834a`.
+- [x] Refresh `base/` and `final/`: the flat tree changes 45 files under
+      `src/` and `base/`, and the first cut carried markers for 19 of them.
+- [x] The markers of the 26 new files. Every one of them changes for the
+      escape barrier alone, so `annotate_diff.py` writes them at stage 5 from
+      the two ends. The new script keeps them reproducible.
+- [x] The markers of the 12 files that changed and already had them, through
+      `merge_final.sh` and 22 conflicts placed by hand. The decisions:
+      the lazy region state is the stage-1 table of pointers; the borrow API
+      and `jl_gc_region_of` arrive at stage 5 with the barrier that makes
+      them necessary; a task closes its window at stage 7; the reset splits
+      into `region_reset_body`, with the finalizer phase at stage 4 and the
+      root check and its pause at stage 13; the child checks of the census
+      belong to the tree, at stage 9.
+- [x] `reveal.py check` passes: stage 0 renders the base file and stage 13
+      renders the final file, for all 45 files.
+- [x] `xstage.py` passes, with the map updated: `jl_gc_region_of` at 5 and
+      `EFINALIZERS` at 4 (both moved), and eleven new identifiers.
+- [x] `retake.sh` takes the five new region test scripts and `COST.md`.
+- [x] `retake.sh /home/projectured/workspace/julia-gc-series 8f33e09afe 1`.
+      Stage 1 is the lowest one that changed, because the lazy region state
+      rewrites the region table of the thread heap, so **every** commit of
+      the series has a new SHA: `25290fde9c` (1) to `c3c26b66d2` (20).
+- [x] `csrc.sh`, a new script: `make -C src` at every runtime stage. It
+      found two breaks of the merge in half a minute each - `gc_add_page`
+      declared the region state pointer inside a stage-4 block that the
+      stage-1 tagging path reads, and the section block of the reset
+      swallowed `jl_gc_region_init_heap`, which stages 1 to 3 link against.
+      All 13 stages compile and link.
+- [x] Check 1: the tree of the branch equals the tree of the flat tag.
 
 ### Step 4 — The gate
 
-- [ ] Check 2 and Check 3 with `check23.sh <first stage>`: every commit
-      builds, `julia -e 1` runs, and the five region scripts pass at commit
-      13.
+- [x] Check 2 with `check23.sh 1`: all 20 commits build with the default
+      target and `julia -e 1` runs at every one of them.
+- [x] Check 3: the ten region scripts of the flat tip pass on the runtime of
+      commit 13, with 1225 checks (window 100, escape 66, lifetime 57,
+      census 59, tree 424, stores 32, containers 45, heaps 27, many 402,
+      safety 13). The runtime of commit 13 and the runtime of the tip are
+      the same tree, so the tip binary is the binary of commit 13.
+      The per-stage rows of that run measured the wrong scripts:
+      `check23.sh` copied them from `workspace/julia-gc-regions`, a worktree
+      that still sits at the flat tag of the sixth cut. The script names the
+      flat tip now. A rerun of the per-stage rows costs about 90 minutes of
+      builds and shows only how the failures fall stage by stage; it changes
+      no claim of the gate.
 - [ ] The `gc` group on the tip binary: 0 fail, 0 error.
 - [ ] `core threads misc` on the tip binary. I1 changes the code of the
       default build, so the result of the third cut does **not** carry over.
