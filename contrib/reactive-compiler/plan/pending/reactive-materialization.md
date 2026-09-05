@@ -4,6 +4,11 @@ The companion of [hypothesis-case.md](hypothesis-case.md). That plan asked
 whether the invalidation cone of an edit is small. It is, and it is measured.
 This plan says what to build on that answer.
 
+The system as built — the design, the invariants and the reasons, without
+the chronology — is described in
+[doc/architecture.md](../../doc/architecture.md). This plan stays the
+chronological record.
+
 Reviewed on 2026-09-04 against the source of Julia 1.13 and against the measured
 phases of a PackageCompiler build. The review moved the target, reordered the
 stages and replaced the hand-written artifact key with a recorded read set. The
