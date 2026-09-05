@@ -838,11 +838,13 @@ test; the prose to the stage of the documents.
       flat tip now. A rerun of the per-stage rows costs about 90 minutes of
       builds and shows only how the failures fall stage by stage; it changes
       no claim of the gate.
-- [ ] The `gc` group on the tip binary: 0 fail, 0 error.
-- [ ] `core threads misc` on the tip binary. I1 changes the code of the
-      default build, so the result of the third cut does **not** carry over.
-- [ ] `make -C doc html` builds.
-- [ ] M1 and M2 again, with the tables and the Cost section updated.
+- [x] The `gc` group on the tip binary: 189 pass, 0 fail, 0 error.
+- [x] `core threads misc` on the tip binary: 8635852 pass, 8 broken, 0 fail,
+      0 error, in 43 minutes.
+- [x] `make -C doc html` builds.
+- [ ] M1 and M2 again, with the tables and the Cost section updated. The
+      user's direction: measure when the machine is idle. This is where the
+      work stops for now.
 
 ### Step 5 — Close
 
