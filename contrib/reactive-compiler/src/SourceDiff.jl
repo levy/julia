@@ -17,9 +17,10 @@ line numbers, and the parse names the real file, so a redefined method keeps
 a readable `file` and `line`.
 
 A `module` block is not one unit: its header is one entry (the module with an
-empty body) and each expression of its body is an entry of the deeper module
-path, so an edit of one function inside a module changes one expression and
-not the module. A quoted expression is one unit.
+empty body, under its docstring when it has one) and each expression of its
+body is an entry of the deeper module path, so an edit of one function inside
+a module changes one expression and not the module. A quoted expression is
+one unit.
 
 Nothing here evaluates: the kinds and the names are read from the syntax.
 What an expression defines is found by the child, from the method table,
@@ -59,6 +60,17 @@ is_module(e) = e isa Expr && e.head === :module
 module_name(e::Expr) = e.args[2]::Symbol
 module_body(e::Expr) = (e.args[3]::Expr).args
 
+# The header of a module block: the block with an empty body, under the
+# docstring or the macro call that wraps it.
+function module_header(e::Expr)
+    is_module(e) && return Expr(:module, e.args[1], e.args[2], Expr(:block))
+    args = Any[]
+    for a in e.args
+        push!(args, a isa Expr && is_module(definition(a)) ? module_header(a) : a)
+    end
+    return Expr(e.head, args...)
+end
+
 """
     file_entries(text, path) -> Vector{Entry}
 
@@ -92,10 +104,11 @@ function collect_entries!(entries, args::Vector{Any}, module_path, last_line, pa
                 break
             end
         end
-        if is_module(e)
-            header = Expr(:module, e.args[1], e.args[2], Expr(:block))
+        m = definition(e)
+        if is_module(m)
+            header = module_header(e)
             push!(entries, Entry(module_path, header, entry_key(header, module_path), line:line))
-            collect_entries!(entries, module_body(e), vcat(module_path, module_name(e)), stop, path)
+            collect_entries!(entries, module_body(m), vcat(module_path, module_name(m)), stop, path)
         elseif e isa Expr && e.head === :toplevel
             collect_entries!(entries, e.args, module_path, stop, path)
         else
@@ -434,8 +447,6 @@ function string_literals!(literals, e)
 end
 
 # ── the diff of two texts ───────────────────────────────────────────────────
-
-is_module(e) = e isa Expr && e.head === :module
 
 """
     changed_expressions(old_text, new_text, path) -> (changed, removed)
