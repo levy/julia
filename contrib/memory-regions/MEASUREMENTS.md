@@ -31,7 +31,9 @@ isolated. Every row runs under a memory cap and a timeout. The file
 `results/data/context.tsv` records the date, the commit, the host, the CPU,
 the kernel, the cores, and the scheduling class of the run; `run_all.sh`
 writes it at the start of every run, a partial rerun (`ONLY=...`) included,
-so the date is that of the last row that ran.
+so the date is that of the last row that ran. The footer of a plot names the
+run that produced the data of that plot: a partial rerun redraws its own
+plots and leaves the others as they stand.
 
 ## M1 — Zero cost when unused
 
@@ -49,15 +51,15 @@ the rounds: a ratio inside the spread is noise.
 <!-- table M1 -->
 | benchmark | threads | vanilla (s) | regions (s) | ratio | rounds | spread |
 | --- | --- | --- | --- | --- | --- | --- |
-| append | 1 | 1.520 | 1.538 | 1.01 | 5 | 2 % |
-| tree | 1 | 8.709 | 8.937 | 1.03 | 5 | 4 % |
-| strings | 1 | 18.427 | 18.624 | 1.01 | 5 | 4 % |
-| pollard | 1 | 0.651 | 0.659 | 1.01 | 5 | 2 % |
-| single_ref | 1 | 0.401 | 0.385 | 0.96 | 5 | 10 % |
-| many_refs | 1 | 1.970 | 1.804 | 0.92 | 5 | 0 % |
-| mergesort_parallel | 4 | 1.601 | 1.603 | 1.00 | 5 | 3 % |
-| mm_divide_and_conquer | 4 | 0.755 | 0.769 | 1.02 | 5 | 8 % |
-| issue-52937 | 4 | 9.668 | 9.798 | 1.01 | 5 | 2 % |
+| append | 1 | 1.623 | 1.649 | 1.02 | 5 | 8 % |
+| tree | 1 | 8.186 | 8.793 | 1.07 | 5 | 9 % |
+| strings | 1 | 18.257 | 18.463 | 1.01 | 5 | 5 % |
+| pollard | 1 | 0.648 | 0.653 | 1.01 | 5 | 3 % |
+| single_ref | 1 | 0.401 | 0.397 | 0.99 | 5 | 14 % |
+| many_refs | 1 | 1.980 | 1.814 | 0.92 | 5 | 1 % |
+| mergesort_parallel | 4 | 1.580 | 1.603 | 1.01 | 5 | 4 % |
+| mm_divide_and_conquer | 4 | 0.793 | 0.791 | 1.00 | 5 | 5 % |
+| issue-52937 | 4 | 9.742 | 9.789 | 1.00 | 5 | 2 % |
 <!-- /table -->
 
 ![Unused, the region runtime runs the GCBenchmarks within noise of vanilla](results/plots/gcbench.svg)
@@ -81,7 +83,7 @@ every allocation of that phase. This branch re-arms `heap_target`
 flag load and a predicted branch (about 0.09 ns), a pool allocation pays the
 active-pool indirection and the region test of `maybe_collect` (about
 0.3 ns), an object constructed with boxed children pays one flag check for
-all of them, and the stock mark pays about 1 %. An object with two pointer
+all of them, and the stock mark pays between 1 and 3 %. An object with two pointer
 fields and two fresh children pays the three allocations, not a barrier.
 With a window open, an armed store pays one page-map walk in a
 cold call, a window pair and a reset cost tens of nanoseconds, and an
@@ -111,32 +113,33 @@ allocation and one construction per object. The `reset_slice` row times one
 call between two clock reads, and the pair of reads costs about 10 ns on
 this host: the row is an upper bound on the reset.
 
-The table below predates the construction-only barrier and has no
-`construct_shared` row; the next run on an idle machine replaces it. Three
-runs on the day the barrier landed, in the order they ran, with the test
-suites on other cores during the first two (all in ns per object, vanilla
-against regions with no window): `construct_two` 7.50 → 8.52, 7.73 → 8.35,
-7.17 → 7.76; `construct_shared` 3.82 → 4.05, 3.49 → 3.83; `alloc_stock`
-2.32 → 2.57, 2.18 → 2.39, 2.07 → 2.38. The `construct_shared` delta is the
-`alloc_stock` delta and a flag check. The `construct_two` delta of the
-table, +1.05 ns, and the deltas of the day, +1.02, +0.62 and +0.59 ns, do
-not separate the old barrier from the new one: the spread of the row across
-runs is as large as the difference. What the day establishes is the
-attribution, not a gain.
+The `box_twin` row is the fresh-object copy: an immutable value with two
+pointer fields, boxed once per object, which the runtime copies field by
+field under the region check. Read the second column against the first, in
+ns per object: `alloc_stock` 2.12 → 2.40 (+0.28), `construct_shared`
+3.55 → 3.98 (+0.43), `box_twin` 3.88 → 4.07 (+0.20), `construct_two`
+7.22 → 7.87 (+0.66). The `construct_shared` delta is the `alloc_stock`
+delta and a flag check. The `box_twin` delta is smaller than the
+`alloc_stock` delta, so the check of the copied fields is inside the spread
+of the row. The `construct_two` delta is three allocations: three times the
+`alloc_stock` delta is +0.85 ns, and the row's spread across runs is of
+that size, so the row measures the allocations and not a barrier.
 
 <!-- table M2 -->
 | cost | unit | vanilla | regions, no window | regions |
 | --- | --- | --- | --- | --- |
-| store_disarmed | ns/store | 0.3243 | 0.4092 | 0.417 |
-| store_armed | ns/store | — | — | 1.371 |
-| store_region | ns/store | — | — | 2.019 |
-| window_pair | ns/pair | — | — | 10.53 |
-| switch_pair | ns/pair | — | — | 5.138 |
-| construct_two | ns/object | 7.132 | 8.187 | 10.66 |
-| alloc_stock | ns/object | 2.073 | 2.352 | 3.298 |
-| alloc_region | ns/object | — | — | 3.746 |
+| store_disarmed | ns/store | 0.3217 | 0.4086 | 0.4082 |
+| store_armed | ns/store | — | — | 1.443 |
+| store_region | ns/store | — | — | 2.058 |
+| window_pair | ns/pair | — | — | 10.79 |
+| switch_pair | ns/pair | — | — | 5.958 |
+| construct_two | ns/object | 7.219 | 7.874 | 10.63 |
+| construct_shared | ns/object | 3.55 | 3.975 | 6.279 |
+| box_twin | ns/object | 3.876 | 4.074 | 6.461 |
+| alloc_stock | ns/object | 2.117 | 2.4 | 3.385 |
+| alloc_region | ns/object | — | — | 3.983 |
 | reset_slice | ns/reset | — | — | 30 |
-| stock_mark | ms/collection | 64.35 | 65.15 | 65.37 |
+| stock_mark | ms/collection | 65.63 | 67.87 | 66.31 |
 <!-- /table -->
 
 ![What one operation costs](results/plots/unit_costs.svg)

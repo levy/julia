@@ -6,8 +6,8 @@ such a program pays, in memory and in time, in absolute and in relative
 terms, and which switches take which part of the cost out.
 
 The timing numbers below repeat the M1 and M2 tables of `MEASUREMENTS.md`.
-That run was on the flat tree, pinned to a quiet core of a shared machine.
-The rerun on an idle machine replaces them; `results/tables.py` rewrites the
+That run was on the flat tree of 2026-09-05, on an idle machine, with the
+one-thread rows pinned to a tickless core. `results/tables.py` rewrites the
 tables of `MEASUREMENTS.md` from the data files, and the rows here follow
 by hand. The sizes come from a C program compiled against the headers of
 the two builds (`sizeof`) and from `size` and `readelf` on the two
@@ -58,16 +58,17 @@ instruction cache by their share of the text.
 
 | Operation | Vanilla | Regions, no window | Delta | Relative |
 | --- | --- | --- | --- | --- |
-| Pointer store with a write barrier | 0.32 ns | 0.41 ns | +0.09 ns | +26 % of the barrier |
-| Construction of an object with two pointer fields and two fresh children (three allocations) | 7.1 ns | 8.2 ns | +1.0 ns | +15 %; the three allocations, see below |
-| Construction of the same object with two shared children (one allocation), preliminary | 3.5 ns | 3.8 ns | +0.3 ns | +10 %; the allocation and a flag check |
-| Pool allocation | 2.07 ns | 2.35 ns | +0.3 ns | +13 % |
-| Stock mark, one collection | 64.4 ms | 65.2 ms | +0.8 ms | +1.2 % |
+| Pointer store with a write barrier | 0.32 ns | 0.41 ns | +0.09 ns | +27 % of the barrier |
+| Construction of an object with two pointer fields and two fresh children (three allocations) | 7.22 ns | 7.87 ns | +0.65 ns | +9 %; the three allocations, see below |
+| Construction of the same object with two shared children (one allocation) | 3.55 ns | 3.98 ns | +0.43 ns | +12 %; the allocation and a flag check |
+| A boxed copy of an immutable value with two pointer fields | 3.88 ns | 4.07 ns | +0.20 ns | +5 %; the allocation, and the field checks inside its spread |
+| Pool allocation | 2.12 ns | 2.40 ns | +0.28 ns | +13 % |
+| Stock mark, one collection | 65.6 ms | 67.9 ms | +2.2 ms | +3.4 %; see the note below |
 | Stock sweep | — | one byte test per page | not measurable | — |
 | Each stock collection, the three region brackets | — | 64 pointer tests per heap | nanoseconds | — |
 | Task switch | — | one byte compare and one byte store | nanoseconds | — |
 | Finalizer registration | — | one page-metadata lookup | tens of nanoseconds, on a rare path | — |
-| GCBenchmarks, end to end (M1) | 1.00 | 0.96 to 1.03 | inside the spread of the rounds | noise |
+| GCBenchmarks, end to end (M1) | 1.00 | 0.92 to 1.07 | inside the spread of the rounds | noise |
 
 Where each cost comes from:
 
@@ -83,10 +84,12 @@ Where each cost comes from:
   boxed child, lowered to the flag load, the branch, and a cold call per
   child; no generational part. The +1.0 ns of the first construction row is
   not this check: the row allocates two children and the object, and each
-  allocation pays the +0.3 ns of the allocation row. The second row makes
+  allocation pays the +0.28 ns of the allocation row. The second row makes
   the same object from two shared children and pays one allocation and the
-  check. The numbers of the second row are from the day the barrier landed
-  and wait for the idle-machine rerun.
+  check. The third row boxes an immutable value with two pointer fields:
+  the runtime copies the fields into the fresh box and checks each one, and
+  the delta stays under the delta of a plain allocation, so the check is
+  inside the spread of the row.
 - **The allocation.** `jl_gc_small_alloc_inner` decodes its pool offset to
   an index and addresses the pools through `active_pools`, one dependent
   load from the thread-local state, in place of a fixed offset. Then
@@ -94,7 +97,10 @@ Where each cost comes from:
   predicted branch.
 - **The mark.** The mark loops read `jl_gc_region_census_target` once per
   object array and pass it down; the claim tests it per object. The load is
-  relaxed and the branch is predicted.
+  relaxed and the branch is predicted. The row is the least stable of the
+  table: the same binary marked in 67.9 ms in the process without a window
+  and in 66.3 ms in the process that opens one, so the spread between
+  processes is about 2 % and the cost of the mark is between 1 and 3 %.
 - **The sweep.** The page sweep tests `region_n != 0` once per page and
   skips a region page. No region page exists.
 - **The collection.** Three brackets of a stock collection walk the region
@@ -114,16 +120,16 @@ Where each cost comes from:
   for the build switch, which exists: `JL_NO_REGION_STORE_BARRIER` below.
 - **Time:** small but not zero, and on the two paths that the core
   developers guard most: the write barrier and the allocation fast path. A
-  13 to 15 % change on an allocation microbenchmark starts a discussion in
-  a pull request, even when the application benchmarks stay inside noise.
+  13 % change on an allocation microbenchmark starts a discussion in a pull
+  request, even when the application benchmarks stay inside noise.
   The residual is 0.09 ns per store, the same check once per construction
-  of an object with boxed children, and 0.3 ns per allocation. Those are
+  of an object with boxed children, and 0.28 ns per allocation. Those are
   the price of a feature that is off, and the allocation is the largest of
   them: `active_pools` is one dependent load from the thread-local state in
   place of a fixed offset, and no switch short of `JL_NO_REGION_ALLOC`
   removes it.
-- **Mark and sweep:** 1 % on the mark is at the edge of what a collector
-  developer accepts without a switch. `JL_NO_REGION_ALLOC` below folds the
+- **Mark and sweep:** 1 to 3 % on the mark is at the edge of what a
+  collector developer accepts without a switch. `JL_NO_REGION_ALLOC` below folds the
   census branches out of the mark loops.
 
 In one sentence: unused regions cost a few hundred bytes per thread, 3 % of

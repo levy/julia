@@ -684,7 +684,12 @@ changed.
   row was read as the cost of the barrier at construction; the
   `construct_shared` row of the construction-only barrier (S4, S5) later
   showed that the row is three allocations, and that the barrier at
-  construction is a flag check.
+  construction is a flag check. The rerun on an idle machine
+  (2026-09-06) holds the store and the allocation and refines the other
+  two: +0.65 ns on the construction of three allocations, +0.43 ns on the
+  construction from shared children, +0.20 ns on a boxed copy of an inline
+  value with two pointer fields, and 1 to 3 % on the stock mark, whose row
+  moves by about 2 % between processes of one run.
 - *M5, the throughput.* The old claim was that a census-paced region loop
   keeps the throughput of the stock loop. The `batch` rows run no census,
   and the `pooled` row (a window and a reset per event, a scoped collection
