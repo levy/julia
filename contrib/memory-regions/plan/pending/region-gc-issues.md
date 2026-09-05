@@ -775,7 +775,18 @@ with its test in `regions_escape.jl`, the `construct_shared` row of
 prose of COST.md, MEASUREMENTS.md, README.md, HISTORY.md and the devdoc.
 The compiler files belong to the stage that adds the escape barrier to the
 compiler; the bench and the documents to the stage of the measurement
-documents.
+documents. After it comes `e3eb502bb4`, the fresh-object copies of
+`region-gc-fresh-object-copies.md`: the `nocapture` parent of the intrinsic
+in `codegen.cpp`, the inline-field and box paths of `cgutils.cpp` and
+`intrinsics.cpp`, the fourth annotation `jl_gc_multi_wb_fresh` in
+`gc-interface.h`, `gc-wb-stock.h` and `gc-wb-mmtk.h`, and the runtime
+sites in `datatype.c`, `genericmemory.c`, `runtime_intrinsics.c`,
+`builtins.c`, `jltypes.c` and `method.c`, with the tests in
+`regions_escape.jl`, the `box_twin` row of `bench/unit_costs.jl` and
+`results/tables.py`, and the prose of the devdoc and HISTORY.md. The
+compiler files and the runtime sites belong to the stages that add the
+escape barrier to the compiler and to the runtime; the bench and the
+documents to the stage of the measurement documents.
 
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
