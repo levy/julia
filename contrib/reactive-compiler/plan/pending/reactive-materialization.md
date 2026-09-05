@@ -1422,3 +1422,10 @@ The founded binary ran in 62 s of user time, the same as the rebuilt
 binaries: the 180 s of the morning was the lane, as the M7 entry supposed.
 The run time of the routing model does not move with the direct call; its
 hot loop is inside reused code, so the trampoline never was on its path.
+
+**2026-09-05, the continuation.** The next plan is
+`robust-incremental-compiler.md`: the invariant of semantic equality, the
+catalog of changes, the rebuild without execution, the recorder of
+top-level evaluation, the fresh function table, and the server. It takes
+over the open items of this plan: the two-edit chain, the removal of a
+method, root files, and harness rule 8.
