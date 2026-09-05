@@ -757,7 +757,14 @@ two commits of `region-gc-lazy-region-state.md` follow them: `c061421172`
 (the pointer table, `jl_gc_region_state_t`, the sites, the test) and
 `025b0e8557` (the documents). They touch `gc-tls-stock.h`, `gc-regions.c`,
 `gc-regions.h`, `gc-stock.c` and `regions_window.jl`, and belong to the
-stage that owns the per-heap region table.
+stage that owns the per-heap region table. One more commit follows,
+`06a511ed9d`: it adds `contrib/memory-regions/COST.md`, the cost of the
+unused runtime with the switches, and points to it from the README's
+documents table and the devdoc's Cost section. It is a documents-only
+commit and belongs to the stage that adds the measurement documents. Its
+timing rows are the last M1 and M2 run on the shared machine; the rerun on
+an idle machine refreshes them by hand, because `results/tables.py`
+rewrites `MEASUREMENTS.md` alone.
 
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
