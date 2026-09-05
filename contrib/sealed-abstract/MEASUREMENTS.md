@@ -186,6 +186,78 @@ network hashes equal the C++ reference kernel's:
 | 100 s | 3 150 | `71d2b9bf42c2db93b2c6d6f97af0c214` |
 | 1 000 s | 31 640 | `dd2fc4e75208437d8f80a683f20390a7` |
 
+## The method table is already the bound (2026-09-05)
+
+A sealed world fixes a function's method table by the same argument it
+fixes an abstract type's subtypes, so it seemed that a call site could
+narrow an argument to the union of the callee's declared parameter types
+at that position — anything else is a `MethodError`, not a dispatch. Two
+examples were written to fail without that rule. Both pass.
+
+`method_table_domain` has a KNOWN callee. The site prices at 24 against a
+budget of 12 and the splitter declines it, yet the build verifies at 0
+errors and the item dump holds exactly the six reachable instances:
+`find_method_matches` enumerated the six methods of `step` and compiled
+those. The decline was free.
+
+`dynamic_callee_domain` puts the function in a field, typed as a union of
+two function types — the case the matcher should lose. It passes even at
+the `proven` level, with the sealed apparatus off: Julia splits the union
+of function types itself, and each half is an ordinary call the matcher
+bounds.
+
+So the rule is already in force, and it is applied before the splitter is
+consulted. What is left is not a compiler change but a source one:
+
+| the callee's shape | what bounds it |
+| --- | --- |
+| per-concrete-type methods | the matcher, already |
+| one generic method over an abstract type | nothing — the promise is real |
+| an UNTYPED method | nothing — until the parameter is declared |
+
+## Declaring a parameter beats promising it (2026-09-05)
+
+`routing.seal.jl` derives three of its four action promises from
+`Base.methods`; the fourth was hand-written because
+`deliver_message!(ctx, message, gate)` declared no types at all. Four
+builds of the flagship, each 0 verifier errors and each reproducing the
+reference network hash `d322a500fa64a67266a56bc3711b5a8f`:
+
+| position 3 (gate) | position 2 (message) | wall | size |
+| --- | --- | --- | --- |
+| promised `Gate` | `Union{MPacket, _Packet}` | 304 s | 14 269 472 B |
+| **declared** `gate::Gate`, derived | `Union{MPacket, _Packet}` | 286 s | 14 201 008 B |
+| declared, derived | `:trace` | 297 s | 15 062 528 B |
+| declared, derived | `MPacket` | 245 s | 14 238 648 B |
+
+Two readings, and only one of them is signal. The three sizes within
+0.5 % of each other are noise — builds are not byte-reproducible, as the
+sorting result above records. The 861 520 B the `:trace` row adds is not:
+the recorded set at that position is wider than the two types the model
+delivers, so evidence is the wrong tool where the program already knows
+the answer. Naming the one concrete type the entry can deliver is both
+narrower and 52 s faster than the baseline.
+
+The declaration is worth more than the promise it replaced. It also types
+`gate.owner` inside the method body, and a `MethodError` checks it in an
+ordinary run — nothing checks a promise.
+
+## What a promise excludes, reported (2026-09-05)
+
+`seal_argument` now prints the methods its domain cannot reach. On the
+routing seal file it says three things: the two scoped `==` promises cut
+218 and 205 of 226 methods, which is their purpose; `evaluate` cuts 1 of
+4; and `_settle` cuts 1 of 2, the parametric method that has no instance
+anyway. Detail lines are printed only where 3 or fewer methods are cut,
+or where all are — a promise that cuts one arm is the shape of a
+forgotten one, and listing all 218 of the `==` case buried the two lines
+worth reading in sixty.
+
+The mistake it exists to catch: a `chunk_length` domain that named four
+chunk kinds and omitted `Base.Type` narrowed the type-taking method to
+`Union{}`. The symptom was 1428 verifier errors and a `FieldError` in a
+recording run, fifteen minutes later. The report names it in one second.
+
 ## The suite
 
 `./regress.sh` pins feature, time and space against `baseline.tsv` and
