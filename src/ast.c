@@ -187,6 +187,8 @@ static void jl_init_ast_ctx(jl_ast_context_t *ctx) JL_NOTSAFEPOINT
 // There should be no GC allocation while holding this lock
 static uv_mutex_t flisp_lock;
 static jl_ast_context_t *jl_ast_ctx_freed = NULL;
+static int jl_flisp_lock_ready = 0;
+static int jl_ast_main_ctx_taken = 0;
 
 static jl_ast_context_t *jl_ast_ctx_enter(jl_module_t *m) JL_GLOBALLY_ROOTED JL_NOTSAFEPOINT
 {
@@ -196,11 +198,18 @@ static jl_ast_context_t *jl_ast_ctx_enter(jl_module_t *m) JL_GLOBALLY_ROOTED JL_
     if (ctx != NULL) {
         jl_ast_ctx_freed = ctx->next;
         ctx->next = NULL;
+        uv_mutex_unlock(&flisp_lock);
     }
-    uv_mutex_unlock(&flisp_lock);
-    if (ctx == NULL) {
-        // Construct a new one if we can't find any
-        ctx = (jl_ast_context_t*)calloc(1, sizeof(jl_ast_context_t));
+    else {
+        // **The first context is built here, by the first caller that needs
+        // it.** Building one loads the system image of the lisp that lowers an
+        // expression, and a program that runs compiled code alone lowers none.
+        // The static context of the process is the first one; the rest are
+        // allocated.
+        int take_main = !jl_ast_main_ctx_taken;
+        jl_ast_main_ctx_taken = 1;
+        uv_mutex_unlock(&flisp_lock);
+        ctx = take_main ? &jl_ast_main_ctx : (jl_ast_context_t*)calloc(1, sizeof(jl_ast_context_t));
         jl_init_ast_ctx(ctx);
     }
     ctx->module = m;
@@ -217,15 +226,14 @@ static void jl_ast_ctx_leave(jl_ast_context_t *ctx)
     JL_SIGATOMIC_END();
 }
 
+// Only the lock. The context that reads and lowers an expression is built by
+// the first caller that asks for one, in `jl_ast_ctx_enter`.
 void jl_init_flisp(void)
 {
-    if (jl_ast_ctx_freed)
+    if (jl_flisp_lock_ready)
         return;
+    jl_flisp_lock_ready = 1;
     uv_mutex_init(&flisp_lock);
-    jl_init_ast_ctx(&jl_ast_main_ctx);
-    // To match the one in jl_ast_ctx_leave
-    JL_SIGATOMIC_BEGIN();
-    jl_ast_ctx_leave(&jl_ast_main_ctx);
 }
 
 void jl_init_common_symbols(void)
