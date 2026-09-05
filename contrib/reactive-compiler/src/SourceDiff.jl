@@ -60,6 +60,9 @@ function defined_name(e)
         if signature.head === :call || signature.head === :where || signature.head === :(::) ||
            signature.head === :curly
             signature = signature.args[1]
+        elseif signature.head === :. && signature.args[2] isa QuoteNode
+            # A method added to a function of another module: `A.f(x) = ...`.
+            return (signature.args[2]::QuoteNode).value::Symbol
         else
             return nothing
         end

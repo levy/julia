@@ -496,6 +496,48 @@ Two pieces of the ground work for that integration exist on the
 and keyed by the Julia commit, the target and the build flags; and the
 copies of an application run beside the compiler.
 
+### Stage 5 — PackageCompiler compiles the application incrementally
+
+The M4 loop, moved into PackageCompiler, on the application that ships: the
+`routing` sample binary of omnet-julia (`bin/build_omnet_legacy_sample
+routing`, 390 s incremental today, bundle 736 MB). The builder writes the app
+package `build/app/routing` (module `RoutingApp`, workload as a
+`@compile_workload`); `create_app` compiles it; the executable loads
+`lib/julia/sys.so` of the bundle by that fixed path. So a rebuild after an
+edit only needs to replace that one file.
+
+The plan, on the `reactive` branch of PackageCompiler (worktree
+`package-compiler-reactive`):
+
+- `materialize_app(package_dir, app_dir; tracked, workload, ...)`. With no
+  store: run `create_app` as today, and keep the object archive — the text
+  objects and the tracked sources become snapshot 1 of a store inside the
+  bundle. With a store: spawn the `--output-o` child from the bundle's own
+  `sys.so` with `JULIA_REACTIVE_REUSE=1` (an environment wrap, no code
+  change), give it a generated script that applies the tracked diffs and
+  runs the workload inline (the M4 child), and link the ancestor text
+  objects in front of the delta archive into a fresh `sys.so`. The bundle,
+  the libraries and the executable are not touched.
+- Two small seams in `create_sysimage`: `keep_object_archive` (copy the
+  archive before the `finally` deletes it) and `extra_object_files`
+  (prepended to the link). `create_app` passes both through.
+- The child of a rebuild runs no separate trace process: a trace against the
+  old image would trace the old code. The workload runs inside the child,
+  after the apply, as in M4.
+- `SourceDiff.jl` is vendored into the branch; the copy in this directory
+  stays the original.
+
+**Gate 5.** Build the routing sample once through `materialize_app` (the
+full path). Apply the `packet.hop_count += 1` → `+= 2` edit of
+`sample/legacy/routing/Routing.jl` on disk. Materialize again: the rebuild
+must cost about the workload, the delta must be the cone plus nothing of the
+machinery, and the rebuilt binary must run. The 390 s of the incremental
+`create_app` is the number to beat. **Passed 2026-09-05** by
+`tool/m5_gate.sh`; the numbers and the findings are in the entry
+"2026-09-05, M5" below. The steady rebuild is 12 s against 155 s for the
+full build on the same lane, and the rebuilt binary doubles the measured
+hop mean exactly.
+
 ## Development mode and release mode
 
 Julia already has a development mode: package images and Revise. What this
@@ -592,6 +634,13 @@ and never the target.
       of the same edit on the same lane (and `create_app` adds its 113 s +
       41 s front on top of such a build). The delta is the cone of Gate 2
       exactly. The `create_app`-style executable bundle stays open.
+- [x] **M5** — `materialize_app` in PackageCompiler rebuilds the `routing`
+      sample bundle after an on-disk edit for about the cost of the
+      workload, against 390 s for today's incremental `create_app`. Done
+      2026-09-05: the steady rebuild is 12.0 s to 13.2 s and 1.3 GB against
+      155 s and 9.7 GB for the full build through the same entry point; the
+      rebuilt binary runs at once and its `hopCount` mean doubles exactly
+      with the edit, and returns exactly with the reverse edit.
 
 ## Decisions found during the work
 
@@ -968,3 +1017,51 @@ instances, as every run of the chain does.
   place and restores it with git at the end; the store keeps a copy of the
   sources per snapshot, so a run of an old snapshot still compares against
   the sources it was built from.
+
+**2026-09-05, M5.** Passed by `tool/m5_gate.sh` on the build lane, eight
+image threads. The subject is the `routing` sample binary: the builder
+writes `build/app/routing` with `--no-compile`, and every build goes through
+`PackageCompiler.materialize_app` on the `reactive` branch (worktree
+`package-compiler-reactive`, from `cached-base-sysimage`).
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| full build, store founded | 155.0 s | 9.7 GB | `create_app` + text objects + sources; front 36.4 s, `jl_emit_native` 15.8 s |
+| first rebuild (the edit) | 13.2 s | 1.3 GB | edit applied in 3.2 ms; delta 383 roots: the cone + the one-time residue |
+| steady rebuild (edit or reverse) | 12.0 s to 12.5 s | 1.3 GB | delta 16 to 18 roots; 43000 code instances reused; front 2.1 s, `jl_emit_native` 0.1 s |
+| rebuild with no change | 12.2 s | 1.3 GB | delta 14 roots: the workload floor |
+| smoke (`--build-info`) | 0.2 s | | after every swap |
+| one simulation (`-c Backbone`) | 63 s | 0.7 GB | hop mean 2.308011 before, 4.616022 after the edit — exactly double — and 2.308011 again after the reverse edit |
+
+- *The cone of this application is the `new` set alone.* The engine
+  dispatches on the module type at every gate, so no caller holds a
+  backedge to `handle_message!`: the edit closes zero code instances. The
+  replaced-method lookup also finds nothing, because the sample extends
+  `NetworkModule.handle_message!` by a dotted name that the defining module
+  does not bind. The workload then makes the new instances — 47 on the
+  first edit, 7 in the steady state — and the delta covers them.
+- *The first rebuild absorbs the run-time residue of the full build.* Its
+  delta had 186 roots outside the cone: the JIT of the full build's own
+  child, and the first compilation of the rebuild machinery. This is s2 of
+  the M4 chain, seen once per store.
+- *A script workload has a floor.* `Batch.jl` defines anonymous closures at
+  its top level, and every rebuild re-evaluates them: 7 method instances
+  per rebuild, forever (the first rebuild reports `1 shadowed`). The M4
+  workload — one call of a package function — converges to zero. Rule for
+  the builder: a workload file for the rebuild child must only call package
+  functions.
+- *What changes on a rebuild is one file.* The store lives inside the
+  bundle (`reactive-store/`: text objects and tracked sources per snapshot,
+  no images), and a rebuild replaces `lib/julia/sys.so` and nothing else;
+  the executable, the libraries and the artifacts stand.
+- *The PackageCompiler diff is two seams and two files.* `create_sysimage`
+  gets `keep_object_archive` (copy the archive before the `finally` deletes
+  it) and `extra_object_files` (linked in front of the delta, never
+  deleted); `create_app` passes the first through. `reactive.jl` holds the
+  store and the driver, `reactive_child.jl` the child definitions,
+  `SourceDiff.jl` is vendored. `JULIA_REACTIVE_REUSE=1` is a `withenv`
+  around one call.
+- *The child of a rebuild imports nothing into Main.* The previous image
+  carries the Main bindings of its own build; the child resolves the root
+  module of a tracked file through `Base.loaded_modules`, and the warm
+  exercises that branch.
