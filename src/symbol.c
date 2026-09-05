@@ -123,6 +123,15 @@ JL_DLLEXPORT jl_sym_t *jl_get_root_symbol(void)
     return jl_atomic_load_relaxed(&symtab);
 }
 
+// The symbols of a system image are objects of the image, and the tree they
+// make is the symbol table of the process that loads it. A symbol made after
+// that goes into the same tree.
+void jl_set_root_symbol(jl_sym_t *root) JL_NOTSAFEPOINT
+{
+    assert(jl_atomic_load_relaxed(&symtab) == NULL && "the symbol table is not empty");
+    jl_atomic_store_release(&symtab, root);
+}
+
 static _Atomic(uint32_t) gs_ctr = 0;  // TODO: per-module?
 uint32_t jl_get_gs_ctr(void) { return jl_atomic_load_relaxed(&gs_ctr); }
 void jl_set_gs_ctr(uint32_t ctr) { jl_atomic_store_relaxed(&gs_ctr, ctr); }

@@ -458,7 +458,14 @@ static int jl_needs_serialization(jl_serializer_state *s, jl_value_t *v) JL_NOTS
     if (s->incremental && jl_object_in_image(v))
         return 0;
 
-    if (v == NULL || jl_is_symbol(v)) {
+    if (v == NULL) {
+        return 0;
+    }
+    // **The system image holds its symbols as objects.** A package image names
+    // a symbol by its place in a list of names and the loader interns the
+    // list, which gives every symbol a run-time address; the system image owns
+    // the symbol table, so its symbols are the table.
+    else if (s->incremental && jl_is_symbol(v)) {
         return 0;
     }
     // **The system image holds `nothing` and the boxed integers itself.** A
@@ -648,6 +655,15 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
 
     if (!recursive)
         goto done_fields;
+
+    // The two children of a symbol are its place in the symbol table, and the
+    // type of a symbol declares no field, so the walk below does not see them.
+    if (jl_is_symbol(v)) {
+        jl_sym_t *sym = (jl_sym_t*)v;
+        jl_queue_for_serialization_(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->left), 1, immediate);
+        jl_queue_for_serialization_(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->right), 1, immediate);
+        goto done_fields;
+    }
 
     if (s->incremental && jl_is_datatype(v) && immediate) {
         jl_datatype_t *dt = (jl_datatype_t*)v;
@@ -1130,7 +1146,7 @@ static uintptr_t add_external_linkage(jl_serializer_state *s, jl_value_t *v, jl_
 static uintptr_t _backref_id(jl_serializer_state *s, jl_value_t *v, jl_array_t *link_ids) JL_GC_DISABLED
 {
     assert(v != NULL && "cannot get backref to NULL object");
-    if (jl_is_symbol(v)) {
+    if (s->incremental && jl_is_symbol(v)) {
         void **pidx = ptrhash_bp(&symbol_table, v);
         void *idx = *pidx;
         if (idx == HT_NOTFOUND) {
@@ -1385,7 +1401,7 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
         assert((!jl_is_datatype_singleton(t) || t->instance == v) && "detected singleton construction corruption");
         int mutabl = t->name->mutabl;
         ios_t *f = s->s;
-        if (t->smalltag) {
+        if (t->smalltag && t != jl_symbol_type) {
             if (t->layout->npointers == 0 || t == jl_string_type) {
                 if (jl_datatype_nfields(t) == 0 || mutabl == 0 || t == jl_string_type) {
                     f = s->const_data;
@@ -1602,6 +1618,19 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
         else if (jl_is_string(v)) {
             ios_write(f, (char*)v, sizeof(void*) + jl_string_len(v));
             write_uint8(f, '\0'); // null-terminated strings for easier C-compatibility
+        }
+        else if (jl_is_symbol(v)) {
+            // The two children first, as `jl_sym_t` declares them, then the
+            // hash and the name. A symbol is as long as its name, and the
+            // padding keeps the object that follows it aligned.
+            assert(f == s->s);
+            jl_sym_t *sym = (jl_sym_t*)v;
+            write_pointerfield(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->left));
+            write_pointerfield(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->right));
+            write_uint(f, sym->hash);
+            size_t len = strlen(jl_symbol_name(sym)) + 1;
+            ios_write(f, jl_symbol_name(sym), len);
+            write_padding(f, LLT_ALIGN(len, sizeof(void*)) - len);
         }
         else if (jl_is_foreign_type(t) == 1) {
             abort(); // unreachable
@@ -3519,6 +3548,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
 #undef XX
             jl_write_value(&s, global_roots_list);
             jl_write_value(&s, global_roots_keyset);
+            jl_write_value(&s, (jl_value_t*)jl_get_root_symbol());
             jl_write_value(&s, s.ptls->root_task->tls);
             write_uint32(f, jl_get_gs_ctr());
             size_t world = jl_atomic_load_acquire(&jl_world_counter);
@@ -4131,6 +4161,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     s.s = f;
     uintptr_t offset_restored = 0, offset_init_order = 0, offset_extext_methods = 0, offset_new_ext_cis = 0, offset_method_roots_list = 0;
     jl_value_t *init_nothing = jl_nothing;
+    jl_sym_t *image_symtab = NULL;
     if (!s.incremental) {
         size_t i;
         for (i = 0; tags[i] != NULL; i++) {
@@ -4153,6 +4184,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         export_jl_sysimg_globals();
         jl_global_roots_list = (jl_genericmemory_t*)jl_read_value(&s);
         jl_global_roots_keyset = (jl_genericmemory_t*)jl_read_value(&s);
+        // The symbols of the image are the symbol table of the process from
+        // here on. The tree is read before its links are relocated, so the
+        // table is installed after the relocations, below.
+        image_symtab = (jl_sym_t*)jl_read_value(&s);
         // **`nothing` comes from the image, and the root task holds another
         // one.** `julia_init` makes a `nothing` of its own before it makes the
         // root task, because the task has fields to fill, and the line above
@@ -4279,6 +4314,8 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     // s.link_ids_gvars will be processed in `jl_update_all_gvars`
     // s.link_ids_external_fns will be processed in `jl_update_all_gvars`
     jl_update_all_gvars(&s, image, external_fns_begin); // gvars relocs
+    if (image_symtab != NULL)
+        jl_set_root_symbol(image_symtab);
     if (s.incremental) {
         jl_read_arraylist(s.relocs, &s.uniquing_types);
         jl_read_arraylist(s.relocs, &s.uniquing_objs);
