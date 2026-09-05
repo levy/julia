@@ -11,6 +11,8 @@
 #                  the loadable size after every rebuild, and the check of
 #                  every run
 #   noedit       - two rebuilds with no edit; the second emits no function
+#   heap         - the heap of the image holds no closed entry and no
+#                  invalid code instance (the oracle's `info dead` line)
 #   sizes        - the sizes of the chain: the last reverse against the first
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
@@ -104,7 +106,7 @@ loadable() { size "$SO" | awk 'NR == 2 { print $4 }'; }
 record() { echo "$1 $(loadable) $(stat -c %s "$SO")" >> "$OUT/sizes.txt"; echo "=== size $1: loadable $(loadable), file $(stat -c %s "$SO")"; }
 
 format() {
-    local tables shards dups
+    local tables shards dups name n ok=0
     tables=$(nm "$SO" | grep -cE " [a-zA-Z] jl_fvar_(ptrs|names)$")
     shards=$(nm "$SO" | grep -cE " [a-zA-Z] jl_(fvar_(count|ptrs|idxs|names)|clone_(slots|ptrs|idxs))_[0-9]+$")
     # The CRT aliases (`__truncdfhf2`, ...) are local to every object by
@@ -113,7 +115,22 @@ format() {
     echo "=== format: $tables of 2 function tables in the metadata, $shards per-shard function tables"
     echo "=== text definitions with one name twice: $(echo "$dups" | grep -c .)"
     echo "$dups" | grep . | head -10 | sed 's/^/===   /'
-    [ "$tables" = 2 ] && [ "$shards" = 0 ] && [ -z "$dups" ]
+    [ "$tables" = 2 ] && [ "$shards" = 0 ] && [ -z "$dups" ] && ok=1
+    # One text function per live specialization: these three have one.
+    for name in driver chained bench_delta; do
+        n=$(nm "$SO" | grep -cE " t julia_${name}_[0-9]+(\.r[0-9]+)?$")
+        echo "=== text functions of $name: $n of 1"
+        [ "$n" = 1 ] || ok=0
+    done
+    [ "$ok" = 1 ]
+}
+
+# The heap of the image holds no closed method table entry and no invalid
+# code instance: the `info dead` line of the oracle.
+heap() {
+    lane heap "$JULIA" --startup-file=no -J "$SO" "$JH/contrib/reactive-compiler/tool/oracle.jl" --tracked HazardApp || return 1
+    grep "^info" "$OUT/heap.log" | sed 's/^/=== heap /'
+    grep -q "^info dead 0 closed entries, 0 invalid code instances" "$OUT/heap.log"
 }
 
 edit() { cp "$HZ/shapes-after.jl" "$HZ/$FILE" && echo "=== edited $FILE"; }
@@ -147,13 +164,14 @@ sizes() {
     echo "=== loadable after reverse 1: $first, after reverse $CYCLES: $last, growth $((last - first)) bytes"
 }
 
-steps=${*:-full format cycle noedit sizes}
+steps=${*:-full format cycle noedit heap sizes}
 for step in $steps; do
     case $step in
         full) rm -rf "$APP" "$OUT/sizes.txt" && mat mat-full && record full && runbin full before ;;
         format) format ;;
         cycle) cycle ;;
         noedit) noedit ;;
+        heap) heap ;;
         sizes) sizes ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }

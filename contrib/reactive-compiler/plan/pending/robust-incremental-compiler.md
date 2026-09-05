@@ -403,29 +403,51 @@ hidden and unreferenced, and go with the functions that only they named.
 The size check of Gate C measures the loadable sections (`size`), not the
 file: the line tables of `-g1` keep a record of a dead function.
 
-- [ ] the emission puts each function in its own section
+- [x] the emission puts each function in its own section
       (`FunctionSections`, and `DataSections` for the globals) in the
       reactive output path; today the target options set neither.
-- [ ] the fresh `metadata.o` holds the one function table: an array of
+      *As built:* both options go on the `TargetOptions` of the reactive
+      output path in `jl_dump_native_impl` (aotcompile.cpp).
+- [x] the fresh `metadata.o` holds the one function table: an array of
       symbol references, one per live code instance, in a fresh order,
       with a fresh `jl_fvar_idxs`. A reused code instance contributes the
       name that the loaded image has for it; a delta code instance its own
       name. The per-shard `jl_fvar_ptrs_<s>` tables of the old objects are
       no longer read; the header counts one function shard.
-- [ ] the global slots stay per shard and append-only: the old machine
+      *As built:* `jl_fvar_ptrs` (data) and `jl_fvar_names` (NUL-joined,
+      `.lrodata`) in `metadata.o`, reached by `jl_image_pointers_t`
+      `fvar_ptrs`/`fvar_names`; the table is in id order, so no fresh
+      `jl_fvar_idxs` exists. The header's `nshards` counts the global-slot
+      shards (the function and clone fields of a shard are null). The
+      founding of the oracle chain: `version 3 shards 8 functions 36628`;
+      `nm` shows no `jl_fvar_*_<n>` and no `jl_clone_*_<n>`.
+- [x] the global slots stay per shard and append-only: the old machine
       code addresses its `jl_sysimg_gvars_<s>` slots directly, so their
       tables stay and the heap fills them. A dead function's globals cost
       a slot and a root until a founding. Record this as the residue that
       a founding compacts.
-- [ ] the ids of functions are fresh per build: `fvar_base` and
+      *As built:* per shard `jl_gvar_offsets_<s>` and `jl_gvar_idxs_<s>`
+      stay; the residue is recorded in `doc/architecture.md`.
+- [x] the ids of functions are fresh per build: `fvar_base` and
       `shard_base` go; `gvar_base` stays for the slots. The `.r<N>` suffix
       of the delta's names stays, because the name counter restarts in
       every build.
-- [ ] the multi-target case is declared out of the format: an image with
+      *As built:* `reactive_rebase` numbers the reused functions first, in
+      the order of the loaded image, then the delta; `fvar_base` stays as
+      the reused count and `shard_base` as the global-slot shard counter
+      (the `.r<N>` tag). Neither is an offset into an old table now.
+- [x] the multi-target case is declared out of the format: an image with
       clones is not chainable. `materialize_app` refuses a `cpu_target`
       with more than one target.
-- [ ] the link adds `--gc-sections`; check that it drops the unreferenced
+      *As built:* `create_sysimage(reactive_image = true)` refuses a
+      `cpu_target` with a `;` and a non-Linux host (`--gc-sections`).
+- [x] the link adds `--gc-sections`; check that it drops the unreferenced
       function sections of an object that `--whole-archive` included.
+      *As built:* `create_sysimage(gc_sections = true)`, set by
+      `reactive_image`. It drops the unreferenced CRT aliases
+      (`__extendhfsf2`, `__gnu_*`) that a stock image holds in five copies;
+      `__truncdfhf2` stays local to every object by design of
+      `inject_aliases`, so Gate C's duplicate check skips the `__` names.
 - [ ] the heap side: a replaced method stays in the image, found by
       Gate 0. Julia does not close the world of a replaced typemap entry:
       both entries stay valid, dispatch takes the newest one (`gf.c`,

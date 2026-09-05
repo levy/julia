@@ -101,6 +101,56 @@ function oracle_entries(f, world::UInt)
     return nothing
 end
 
+# The dead part of the heap: the method table entries and the code instances
+# that no world of the image runs. A finite `max_world` closes them, and the
+# world of the compiler (`jl_typeinf_world`), which the image still runs, is
+# outside their range. A reactive image drops them (staticdata.c); a stock
+# image keeps them. Returns (closed entries, invalid code instances).
+function oracle_dead()
+    typeinf = unsafe_load(cglobal(:jl_typeinf_world, UInt))
+    dead(min_world, max_world) = max_world != typemax(UInt) && !(min_world <= typeinf <= max_world)
+    nentries = 0
+    methods = IdSet{Method}()
+    visit_all(e) = while e !== nothing
+        dead(e.min_world, e.max_world) && (nentries += 1)
+        e.func isa Method && push!(methods, e.func)
+        e = e.next
+    end
+    function visit_level(mc)
+        function each(mem::Memory{Any})
+            for i in 2:2:length(mem)
+                isassigned(mem, i) || continue
+                ei = mem[i]
+                if ei isa Memory{Any}
+                    for j in 2:2:length(ei)
+                        isassigned(ei, j) && visit_any(ei[j])
+                    end
+                else
+                    visit_any(ei)
+                end
+            end
+        end
+        mc.targ === nothing || each(mc.targ::Memory{Any})
+        mc.arg1 === nothing || each(mc.arg1::Memory{Any})
+        mc.tname === nothing || each(mc.tname::Memory{Any})
+        mc.name1 === nothing || each(mc.name1::Memory{Any})
+        mc.list === nothing || visit_all(mc.list)
+        mc.any === nothing || visit_any(mc.any)
+    end
+    visit_any(x) = x isa Core.TypeMapEntry ? visit_all(x) : visit_level(x)
+    Core.methodtable.defs === nothing || visit_any(Core.methodtable.defs)
+    ninstances = 0
+    for m in methods, mi in Base.specializations(m)
+        mi isa Core.MethodInstance || continue
+        ci = isdefined(mi, :cache) ? mi.cache : nothing
+        while ci isa Core.CodeInstance
+            dead(ci.min_world, ci.max_world) && (ninstances += 1)
+            ci = isdefined(ci, :next) ? ci.next : nothing
+        end
+    end
+    return nentries, ninstances
+end
+
 # The hash of the lowered code of a method: the statements and the slot
 # names, without the line information. A `LineNumberNode` inside a quoted
 # literal (the body of a macro, the answer of a generator) names the line of
@@ -217,6 +267,8 @@ function oracle_main(args)
     println("info methods ", length(newest), " of the tracked modules, ", ninstances,
             " code instances valid in the world")
     println("info shadowed ", nshadowed, " replaced methods still in the table")
+    nentries, ndead = oracle_dead()
+    println("info dead ", nentries, " closed entries, ", ndead, " invalid code instances in the heap")
     return nothing
 end
 
