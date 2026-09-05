@@ -1204,6 +1204,12 @@ static const auto jl_write_barrier_func = new JuliaFunction<>{
 // young and needs no generational barrier, but whose child may belong to a
 // younger region. Same shape as julia.write_barrier: the parent, then the
 // children. Lowered in llvm-late-gc-lowering.cpp next to the write barrier.
+// The parent is `nocapture`, and this matters: the barrier only reads the
+// page tag of the parent, and the parent is a fresh allocation that no
+// other call has seen yet. A captured parent would stop BasicAA from proving
+// that the later stores through julia.gc_loaded leave its fields alone; GVN
+// would then not forward the field stores, and alloc-opt could not elide an
+// object that vanilla elides.
 static const auto jl_region_write_barrier_func = new JuliaFunction<>{
     "julia.region_write_barrier",
     [](LLVMContext &C) { return FunctionType::get(getVoidTy(C),
@@ -1216,7 +1222,7 @@ static const auto jl_region_write_barrier_func = new JuliaFunction<>{
         return AttributeList::get(C,
             AttributeSet::get(C, FnAttrs),
             AttributeSet(),
-            {Attributes(C, {Attribute::ReadOnly})});
+            {Attributes(C, {Attribute::ReadOnly, Attribute::NoCapture})});
     },
 };
 

@@ -388,6 +388,7 @@ JL_DLLEXPORT jl_value_t *jl_memoryrefget(jl_genericmemoryref_t m, int isatomic)
         jl_lock_field((jl_mutex_t*)data);
         memcpy((char*)r, data + LLT_ALIGN(sizeof(jl_mutex_t), JL_SMALL_BYTE_ALIGNMENT), fsz);
         jl_unlock_field((jl_mutex_t*)data);
+        jl_gc_multi_wb_fresh(r, r, (jl_datatype_t*)eltype);
     }
     else {
         // TODO: a finalizer here could make the isunion case not quite right

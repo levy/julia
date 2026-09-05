@@ -108,7 +108,23 @@ there through a second intrinsic, `julia.region_write_barrier`, which lowers
 to the guard alone and to no generational part. One call names every boxed
 child of the object, so a constructor with boxed children compiles to the
 stores, one load and one branch, and a cold call per child when the flag is
-armed.
+armed. The intrinsic declares its parent `nocapture`: the barrier reads the
+page tag of the parent and keeps no pointer to it. The attribute matters
+because the parent is a fresh object that LLVM may still turn into a stack
+value; a call that captured it would make the alias analysis treat every
+later store through `julia.gc_loaded` as a possible write to its fields, and
+the object would stay on the heap where vanilla elides it.
+
+A copy of an inline value with pointers is a store too, and one that stores
+no box: the pointer fields of the value land in the fresh object by memcpy.
+The compiler emits `julia.region_write_barrier` for them at three places: at
+an inline field of `new`, with the tracked values of the copied field as the
+children; where it boxes an unboxed value (`boxed`), with the tracked values
+of the value; and where a `pointerref` loads a struct that lives only in a
+box, with the pointer fields loaded back from the fresh box. The check walks
+the pointer fields and uses no proxy: the source of such a copy can be a
+stack slot or a raw pointer, which has no region, so the pair check of the
+bulk copies below does not apply.
 
 With the flag armed, the store calls `jl_gc_region_wb(parent, child)`. The
 call reads the region of the child from its page tag. A child of region 0 is
@@ -138,6 +154,21 @@ window and appended to an old vector after the window closed — fails the
 pair, and the copy is legal. So a failed pair decides nothing; the check then
 walks the copied references, or the pointer fields of each copied element,
 and quarantines only a real escape.
+
+The runtime makes fresh-object copies too: `jl_new_bits`, and the atomic and
+locked field reads that return a fresh box (`jl_atomic_new_bits`,
+`jl_atomic_swap_bits`, the locked branches of `jl_get_nth_field`,
+`swap_bits`, `modify_bits` and `replace_bits`, `jl_memoryrefget`,
+`jl_atomic_pointerreplace`). Each one calls
+`jl_gc_multi_wb_fresh(parent, data, dt)`, the fourth annotation of
+`src/gc-interface.h`: one check per pointer field of `dt`, and no pair
+check, because the source is often a stack slot. A few constructors of the
+runtime store a child with a raw assignment and no `set_nth_field`:
+`jl_new_typevar` (the bounds), the two `Vararg` constructors, and
+`jl_copy_code_info`; they call `jl_gc_wb_fresh` or `jl_gc_multi_wb_fresh` on
+the stored children. The other raw stores of the runtime — method tables,
+code instances, modules, type names — run in the forced region-0 zones or
+store older objects by construction, and carry no barrier.
 
 ## A replacement buffer
 
@@ -541,7 +572,7 @@ one and no escape ever seen on the other.
 | `src/gc-stock.c` | The region page tag, the allocation into the active pools, the census filter in the mark loops, the sweep that skips region pages, the `WeakRef` refusal. |
 | `src/gc-common.c` | Finalizer lists and malloc'd data of a region; the suspend and resume of a window around the runtime's own allocation. |
 | `src/gc-pages.c` | The heap reserve. |
-| `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. `src/codegen.cpp` declares `julia.region_write_barrier`, the guard alone for the stores into a fresh object; `src/llvm-alloc-opt.cpp`, `src/llvm-alloc-helpers.cpp` and `src/llvm-julia-licm.cpp` treat it as they treat `julia.write_barrier`. |
+| `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. `src/codegen.cpp` declares `julia.region_write_barrier`, the guard alone for the stores into a fresh object and for the pointer fields that a fresh object copies (`src/intrinsics.cpp` uses it at the box of a `pointerref`); `src/datatype.c`, `src/genericmemory.c`, `src/runtime_intrinsics.c`, `src/builtins.c`, `src/jltypes.c` and `src/method.c` annotate the fresh-object copies and the raw stores of the runtime; `src/llvm-alloc-opt.cpp`, `src/llvm-alloc-helpers.cpp` and `src/llvm-julia-licm.cpp` treat it as they treat `julia.write_barrier`. |
 | `src/task.c` | The window follows the task. |
 | `src/gf.c` | Inference, compilation, and the cache-miss path of a dynamic dispatch run in region 0. |
 | `src/jltypes.c` | The cache-miss path of a type instantiation runs in region 0. |

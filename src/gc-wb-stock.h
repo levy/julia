@@ -48,10 +48,18 @@ JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, si
             __unlikely(jl_gc_region_would_escape((parent), (src))))     \
             jl_gc_region_wb_inline((parent), (src_p), (n), (elsz), (et)); \
     } while (0)
+// The pointer fields of one inline value whose bytes are not a heap object
+// -- a field, an element, a stack buffer -- so no pair check stands in for
+// them: each one is checked when the flag is armed.
+#define jl_gc_region_wb_inline_check(parent, src_p, et) do {             \
+        if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) \
+            jl_gc_region_wb_inline((parent), (const char*)(src_p), 1, 0, (et)); \
+    } while (0)
 #else
 #define jl_gc_region_wb_check(parent, ptr) do { } while (0)
 #define jl_gc_region_wb_copy_boxed_check(parent, src, src_p, n) do { } while (0)
 #define jl_gc_region_wb_copy_inline_check(parent, src, src_p, n, elsz, et) do { } while (0)
+#define jl_gc_region_wb_inline_check(parent, src_p, et) do { } while (0)
 #endif
 
 STATIC_INLINE void jl_gc_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT
@@ -64,11 +72,11 @@ STATIC_INLINE void jl_gc_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT
         jl_gc_queue_root((jl_value_t*)parent);
 }
 
-// The three annotations of gc-interface.h. Each one names a store whose
-// generational half is unnecessary, so the body here is the region check
-// alone: a fresh parent takes the region of the open window, the current
-// task is a region-0 object in every supported program, and an old child
-// says nothing about which region holds it.
+// Three of the four annotations of gc-interface.h. Each one names a store
+// whose generational half is unnecessary, so the body here is the region
+// check alone: a fresh parent takes the region of the open window, the
+// current task is a region-0 object in every supported program, and an old
+// child says nothing about which region holds it.
 STATIC_INLINE void jl_gc_wb_fresh(const void *parent, const void *ptr) JL_NOTSAFEPOINT
 {
     jl_gc_region_wb_check(parent, ptr);
@@ -112,6 +120,15 @@ STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_
     const jl_datatype_layout_t *ly = dt->layout;
     if (ly->npointers)
         jl_gc_queue_multiroot((jl_value_t*)parent, ptr, dt);
+}
+
+// A copy of the bytes of an inline value into a fresh object (jl_new_bits and
+// the atomic field reads): the fourth annotation of gc-interface.h, so the
+// body is the region check alone. `data` is a field, an element or a stack
+// buffer, not an object, so its pointer fields are checked one by one.
+STATIC_INLINE void jl_gc_multi_wb_fresh(const void *parent, const void *data, jl_datatype_t *dt) JL_NOTSAFEPOINT
+{
+    jl_gc_region_wb_inline_check(parent, data, dt);
 }
 
 // The region check of a bulk copy is the pair check above, then the

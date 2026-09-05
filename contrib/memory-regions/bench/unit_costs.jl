@@ -3,7 +3,7 @@
 #   julia unit_costs.jl [N]        prints one TSV row per cost: name, value, unit
 #   julia unit_costs.jl stock [N]  runs only the rows that use no region entry
 #                                   point (store_disarmed, construct_two,
-#                                   construct_shared, alloc_stock,
+#                                   construct_shared, box_twin, alloc_stock,
 #                                   stock_mark), so the script
 #                                   runs on a vanilla julia too
 #
@@ -21,6 +21,9 @@
 #   construct_shared  Two(src[k], src[k']): two shared boxed children, one   ns/object
 #                     allocation; the construction barrier without the
 #                     allocation of the children
+#   box_twin          dst[k] = Twin(src[k], src[k']): an immutable with two   ns/object
+#                     pointer fields, boxed at the store; the barrier of a
+#                     fresh box, one check per pointer field of the value
 #   alloc_stock       Ref(i) into a ring in region 0, slices of 100 000       ns/object
 #   alloc_region      the same slices in region 1, one reset per slice        ns/object
 #   reset_slice       the unsafe reset of a region that holds 1000 Refs      ns/reset
@@ -71,6 +74,10 @@ mutable struct Two
     a::Any
     b::Any
 end
+struct Twin
+    a::Any
+    b::Any
+end
 mutable struct Node
     left::Union{Node, Nothing}
     right::Union{Node, Nothing}
@@ -118,6 +125,13 @@ for c in 1:COPIES
             end
             return iters
         end
+        @noinline function $(Symbol(:box_twin_loop_, c))(dst, src, iters)
+            for i in 1:iters
+                k = (i & 1023) + 1
+                @inbounds dst[k] = Twin(src[k], src[((i + 1) & 1023) + 1])
+            end
+            return iters
+        end
         @noinline function $(Symbol(:alloc_loop_, c))(dst, iters)
             for i in 1:iters
                 @inbounds dst[(i & 1023) + 1] = Ref(i)
@@ -129,6 +143,7 @@ end
 const COPY_LOOPS      = [getfield(@__MODULE__, Symbol(:copy_loop_, c)) for c in 1:COPIES]
 const CONSTRUCT_LOOPS = [getfield(@__MODULE__, Symbol(:construct_loop_, c)) for c in 1:COPIES]
 const CONSTRUCT_SHARED_LOOPS = [getfield(@__MODULE__, Symbol(:construct_shared_loop_, c)) for c in 1:COPIES]
+const BOX_TWIN_LOOPS  = [getfield(@__MODULE__, Symbol(:box_twin_loop_, c)) for c in 1:COPIES]
 const ALLOC_LOOPS     = [getfield(@__MODULE__, Symbol(:alloc_loop_, c)) for c in 1:COPIES]
 
 @noinline function make_ring()
@@ -280,6 +295,7 @@ child = read(setenv(`$(Base.julia_cmd()) --startup-file=no $(@__FILE__) $N`, "UN
 foreach(loop -> loop(DST, SRC, 1000), COPY_LOOPS)
 foreach(loop -> loop(DST, 1000), CONSTRUCT_LOOPS)
 foreach(loop -> loop(DST, SRC, 1000), CONSTRUCT_SHARED_LOOPS)
+foreach(loop -> loop(DST, SRC, 1000), BOX_TWIN_LOOPS)
 foreach(loop -> alloc_stock_round(loop, 1000), ALLOC_LOOPS)
 if !STOCK
     make_ring()
@@ -298,6 +314,7 @@ if !STOCK
 end
 row("construct_two", best_copy(loop -> loop(DST, ITERS), CONSTRUCT_LOOPS), "ns/object")
 row("construct_shared", best_copy(loop -> loop(DST, SRC, ITERS), CONSTRUCT_SHARED_LOOPS), "ns/object")
+row("box_twin", best_copy(loop -> loop(DST, SRC, ITERS), BOX_TWIN_LOOPS), "ns/object")
 row("alloc_stock", best_copy(loop -> alloc_stock_round(loop, ITERS), ALLOC_LOOPS), "ns/object")
 if !STOCK
     row("alloc_region", best_copy(loop -> alloc_region_round(loop, ITERS), ALLOC_LOOPS), "ns/object")

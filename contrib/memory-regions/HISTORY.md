@@ -488,6 +488,40 @@ check: the +1 ns of the row was three allocations, not a barrier. The
 documents say so now; the gain of the intrinsic itself is inside the spread
 of the row.
 
+The fresh-object copies closed after it. A probe showed two stores the
+barrier did not see, and vanilla emits no barrier on either because the
+parent is young: a child that a struct stores inline
+(`TwinHolder(Twin(c, c))`, the inline `Twin` holds two pointers), and a
+child that a fresh box copies from an unboxed value (`Any[Twin(c, c)]`).
+Both copy the pointer fields of a value by memcpy and store no box, so the
+one call of `emit_new_struct` that names the boxed children named neither.
+An audit of every `jl_gc_alloc` caller of the runtime and every
+`emit_allocobj` caller of the compiler sorted the sites into three classes:
+a fresh-object copy of an inline value (the target); a construction whose
+children are fresh in the same call or permanent symbols, which are of the
+same region by construction; and the runtime's own objects, made in the
+forced region-0 zones or holding older objects by construction. The first
+class got the barrier. In the compiler, `emit_new_struct` names the tracked
+values of an inline field with pointers next to the boxed children;
+`boxed()` names the tracked values of the value it copies into a fresh box;
+and the box path of `emit_pointerref` and `emit_atomic_pointerref` loads
+the pointer fields back from the fresh box and names them. In the runtime,
+a fourth annotation, `jl_gc_multi_wb_fresh(parent, data, dt)`, walks the
+pointer fields of `dt` at `jl_new_bits`, `jl_atomic_new_bits`,
+`jl_atomic_swap_bits`, the locked branches of `jl_get_nth_field`,
+`swap_bits`, `modify_bits` and `replace_bits`, `jl_memoryrefget` and
+`jl_atomic_pointerreplace`. Four constructors of the third class store a
+user value with a raw assignment: `jl_new_typevar` (the bounds), the two
+`Vararg` constructors and `jl_copy_code_info`; they annotate their stores
+with `jl_gc_wb_fresh` or `jl_gc_multi_wb_fresh`. The pair check of the bulk
+copies does not apply here: the source of a fresh-object copy is often a
+stack slot or a raw pointer, which has no page and so no region, and the
+proxy would read region 0 and skip every element. `regions_escape.jl` holds
+one case per path (an inline field of `new`, a fresh box, a runtime
+`getfield` through `jl_new_bits`, an `unsafe_load` of a struct with
+pointers) and pins the shape from the IR: the inline-field constructor
+holds the region guard, two checks and no generational barrier.
+
 ### Cleanups
 
 | # | Where | Finding | Action |
@@ -528,6 +562,7 @@ commit in the series, with the reason in the message.
 | S5 | `llvm-late-gc-lowering.cpp` | A flag-guarded call to `jl_gc_region_wb` before the generational barrier; `julia.region_write_barrier` lowers to that guard alone. | The escape barrier; off under the same define. |
 | S6 | `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_wb_fresh`, `jl_gc_wb_current_task`, `jl_gc_wb_knownold` | The three empty annotations become declarations, and the stock collector defines them with the region check. | Each one names a store whose *generational* half a property of the parent or of the child removes. None of those properties says anything about a region, and a fresh parent takes the region of the open window while the child can come from an earlier one. The mmtk build keeps them empty. |
 | S7 | `base/array.jl`, `base/dict.jl`, `base/iobuffer.jl`, `src/iddict.c` | A replacement buffer is allocated in the region of its container, through `jl_gc_region_borrow`. | Without it a `push!` to a long-lived vector inside a window quarantines the region for an operation the program has every right to make. With no region in use the borrow reads region 0 and installs region 0: two field writes on the growth path, none on the allocation path. |
+| S8 | `cgutils.cpp` (`emit_new_struct`, `boxed`), `intrinsics.cpp` (the box path of `pointerref`), `codegen.cpp` (the `nocapture` parent of `julia.region_write_barrier`); `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_multi_wb_fresh`; `datatype.c`, `genericmemory.c`, `runtime_intrinsics.c`, `builtins.c`, `jltypes.c`, `method.c` | The region guard at every fresh-object copy of an inline value with pointers: `julia.region_write_barrier` names the tracked values of the copied value in the compiler; the fourth annotation walks the pointer fields in the runtime. | A copy of an inline value stores its pointer fields without a box and without a barrier; the parent is fresh, so vanilla needs none, and the region check needs one per pointer field. Nothing emitted under `JL_NO_REGION_STORE_BARRIER`; the mmtk annotation is empty. |
 
 ### Pitfalls of the tests and the benchmarks
 
@@ -586,6 +621,26 @@ or the benchmarks meets again.
   function that Base compiled, the size of `.text`) reads the old image.
   Remove `usr/lib/julia/{basecompiler,sysbase,sys}{-o.a,.so}` before the
   rebuild.
+- The pair check of the bulk copies (destination, source) needs a source
+  with a page tag. The source of a fresh-object copy is a stack slot, an
+  SSA aggregate, or a raw pointer as often as an object; a proxy check on it
+  reads region 0 and passes every element. A fresh-object copy walks the
+  pointer fields.
+- A load that reads a pointer field back from a fresh box must carry the
+  TBAA tag of the copy that wrote it (`best_tbaa` of the type, the tag the
+  memcpy of `emit_pointerref` uses). With a different tag LLVM may move the
+  load above the copy and the barrier checks garbage.
+- A barrier intrinsic on a fresh parent must declare the parent
+  `nocapture`. `[Float64(i), 2.0, 3.0]` stopped folding to a stack value:
+  the barrier of the `MemoryRef` field passed the fresh Array to a call
+  before the element stores through `julia.gc_loaded`, and BasicAA proves
+  that those stores leave the Array's fields alone only while the Array is
+  not captured. GVN then kept the `length` load, `n < 16` did not fold,
+  the `mapreduce_impl` call survived, and alloc-opt saw an escape. The
+  matrix of declarations under `opt-20 -passes=gvn` named the trigger:
+  `nocapture` on the parent restores the forwarding, and the memory
+  attribute, `readonly` and the vararg shape change nothing. The barrier
+  only reads the page tag of the parent, so the attribute is true.
 
 ### The measurements, redone
 
@@ -687,16 +742,6 @@ correct under its documented rules.
   `gc_setmark_buf_` on each task's exception stack and copy-stack buffer. The
   direction is safe: a set `has_marked` only makes the sweep walk the page,
   and a stale mark on a young buffer promotes it to old at worst. No fix.
-- **The barrier at a fresh-object copy.** Two paths store a region pointer
-  into a fresh object without a check, and vanilla emits no barrier on
-  either, because the parent is young: a child that a struct stores inline
-  (`TwinHolder(Twin(c, c))`, the inline `Twin` holds two pointers), and a
-  child that a fresh box copies from an unboxed value (`Any[Twin(c, c)]`).
-  The C side has the same shape in `jl_new_bits`. The construction-only
-  barrier is the tool to close the compiler-side holes, at one guard per
-  tracked pointer of the copied aggregate, but the closing widens the
-  coverage of rule 4 and needs an audit of every fresh-object copy. A
-  probe and a plan hold the two cases.
 - **A postorder subtree reset and a subtree census.** The two-level shape
   (a trunk and leaves) needs neither.
 - **An in-process test of the image refusal.** `jl_create_system_image`

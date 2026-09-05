@@ -272,6 +272,13 @@ STATIC_INLINE void jl_gc_wb_knownold(const void *parent, const void *ptr) JL_NOT
 // per field of the object being copied, but may be special-cased for performance reasons.
 STATIC_INLINE void jl_gc_multi_wb(const void *parent,
                                   const struct _jl_value_t *ptr) JL_NOTSAFEPOINT;
+// Write-barrier function that must be used after copying the bytes of an inline value of
+// type `dt` -- a field, an element, a stack buffer; not necessarily a heap object -- into
+// the freshly allocated object `parent`. The parent is young until the next safepoint, so
+// the generational barrier can be omitted; the function annotates the copy the way
+// jl_gc_wb_fresh annotates a store, one per pointer field of `dt`.
+STATIC_INLINE void jl_gc_multi_wb_fresh(const void *parent, const void *data,
+                                        struct _jl_datatype_t *dt) JL_NOTSAFEPOINT;
 
 // Write-barrier function that must be used after copying fields of elements of genericmemory objects
 // into another. It should be semantically equivalent to triggering multiple write barriers – one
