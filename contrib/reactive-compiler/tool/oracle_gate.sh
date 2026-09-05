@@ -48,7 +48,7 @@ lane() {
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed)|reactive: (delta|front|ccallable|[0-9]+ direct)|materialize_app|shape: (chained|state)|=== " "$OUT/$name.log"
+    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|trace)|reactive: (delta|front|ccallable|[0-9]+ direct)|materialize_app|refresh_trace|shape: (chained|state)|=== " "$OUT/$name.log"
     return $rc
 }
 
@@ -75,8 +75,7 @@ materialize_app("$HZ/HazardApp", ARGS[1];
     force = true,
     incremental = true,
     cpu_target = "native",
-    sysimage_build_args = \`-O2 -g1\`,
-    precompile_execution_file = "$HZ/workload.jl")
+    sysimage_build_args = \`-O2 -g1\`)
 EOF
     mkdir -p "$OUT/compile-env"
     cat > "$OUT/compile-env/Project.toml" <<EOF
@@ -119,9 +118,7 @@ oracle() {
 }
 
 # $1 = the check number, $2 = its name, $3 = the pattern of the lines,
-# $4 $5 = the files, $6 = the pattern of the lines that are expected to
-# differ until Stage A: the state that the rebuild workloads leave in the
-# heap. A difference of those lines alone is reported and does not fail.
+# $4 $5 = the files.
 check() {
     local a b lines n
     a=$(grep -E "$3" "$4"); b=$(grep -E "$3" "$5")
@@ -133,10 +130,6 @@ check() {
     n=$(echo "$lines" | grep -c .)
     echo "=== check $1 $2: $n lines differ (< chain, > founding)"
     echo "$lines" | head -20
-    if [ -n "${6:-}" ] && ! echo "$lines" | grep -vqE "$6"; then
-        echo "=== check $1 $2: the difference is the persisted state alone; expected until Stage A"
-        return 0
-    fi
     return 1
 }
 
@@ -147,8 +140,8 @@ compare() {
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     grep -E "^root .*HazardApp" "$OUT/oracle-chain.log" | grep -vq " compiled$" &&
         { echo "=== check 2: a root of HazardApp is not compiled in the chain"; failed=1; }
-    check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" "shape: state = " || failed=1
-    check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" "HazardApp.FINALIZED = " || failed=1
+    check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" || failed=1
+    check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 

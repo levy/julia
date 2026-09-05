@@ -100,14 +100,32 @@ cause).
 
 A store is a directory that persists across processes. One snapshot per
 build holds the **text objects** that the build emitted and a **copy of the
-tracked sources**. An image is never kept per snapshot: the latest image is
-the live one, and a rebuild links
+tracked sources**; the store holds one **trace**, `trace.jl`, the roots of
+the image. An image is never kept per snapshot: the latest image is the
+live one, and a rebuild links
 
     ancestors' text objects + the delta + fresh sysimg.o + metadata.o
 
 The heap and the tables of an old build are never linked again. Dead code
 accumulates in the old text objects until a full build; that is the
 development mode of the design, and compaction is the release mode (open).
+
+**The trace is the set of roots, and no build executes the program.** The
+founding runs the workload once in a throwaway process under
+`--trace-compile`, from the base image and the source-only cache, so that
+every specialization the workload executes is compiled there and recorded;
+the statements, with the entry of every executable, are the precompile
+statements of the founding and the store's `trace.jl`. A rebuild child
+applies the diff and precompiles every statement of the trace: a statement
+that the image compiles is a lookup, a statement that the edit invalidated
+infers its cone again, and the write of the image compiles what inference
+made. So the heap of a rebuilt image holds no execution state, exactly as
+the heap of a founding. A specialization that no statement names — one
+that an edit introduced, reached by a dynamic call — is compiled by the
+binary at run time until `refresh_trace(app_dir)` runs the workload once
+more from the current image: what the image already compiles is not
+recorded, so the new statements join the old ones, and an old statement
+that no longer precompiles from the image is dropped.
 
 ## The source diff
 
@@ -147,36 +165,32 @@ These rules came out of the gates, each after a measured failure.
    then carries the machinery in its delta. This lesson appeared three
    times (the key harness of M0, the diff of M4, the resolver of M5).
 3. **A workload must only call package functions.** A workload script that
-   defines closures at its top level re-evaluates them on every rebuild —
-   a small permanent floor in the delta (7 instances with `Batch.jl`). A
-   workload of plain calls converges to an empty delta.
+   defines closures at its top level traces their thunks as roots that no
+   later process can precompile. A workload of plain calls converges to an
+   empty delta.
 4. **The rebuild child imports nothing into `Main`.** The previous image
    already carries the Main bindings of its own build. The child resolves
    the root module of a tracked file through `Base.loaded_modules`.
 5. **The first rebuild of a store absorbs the run-time residue of the full
    build** (the code its child JIT-compiled and dropped). Expect one large
    delta (about 180 roots), then convergence.
-6. **The founding workload and the rebuild workload are two arguments.**
-   `materialize_app`'s `workload` drives the rebuild child only; the
-   founding build compiles what `precompile_execution_file` runs. Pass the
-   same file as both, or the founding build compiles nothing of the
-   program and the first rebuild carries it all.
+6. **The workload is one argument, and the trace is its product.**
+   `materialize_app`'s `workload` is traced at the founding and by
+   `refresh_trace`; `precompile_execution_file` is refused, and the
+   statements of `precompile_statements_file` join the trace. A store
+   whose trace misses a root compiles that root at run time, in every run,
+   until a refresh.
 7. **Do not hold an opaque closure in a top-level `const` of a package.**
    Stock Julia (1.13.0-rc3 too) faults at the call in a fresh process.
    Make the closure in a function. This is a fault of Julia, not of the
    patch.
-8. **The side effects of the rebuild workload persist in the image, and
-   accumulate along the chain.** The rebuild child runs the workload in
-   the process whose heap becomes the image. The founding build does not:
-   `create_app` traces the workload in another process and the image
-   build executes precompile statements only. So a global that the
-   workload mutates starts the rebuilt binary at the mutated value, and
-   the next rebuild adds to it (M6: a counter at 0, 2, 3 along founding,
-   edit, reverse edit). The rule, decided 2026-09-05: a rebuild workload
-   must leave no state, as a `@compile_workload` must. It calls package
-   functions, and every global it touches is back at its value when it
-   returns. The routing workload complies: it runs a simulation to its
-   end and keeps nothing.
+8. **No build executes the program.** Until Stage A of
+   `robust-incremental-compiler.md` the rebuild child ran the workload in
+   the process whose heap becomes the image, so a global that the workload
+   mutated started the rebuilt binary at the mutated value and every
+   rebuild added to it (M6: a counter at 0, 2, 3 along founding, edit,
+   reverse edit). The child now precompiles the trace instead; the M6 gate
+   fails on a `state` other than 0.
 
 ## The two entry points
 
@@ -193,8 +207,10 @@ stand. The diff to stock PackageCompiler is two keywords —
 `keep_object_archive` (copy the object archive before the build deletes
 it) and `extra_object_files` (linked in front of the delta, never deleted)
 — plus the three new files; `JULIA_REACTIVE_REUSE=1` is a `withenv` around
-one call, and the rebuild runs no separate trace process, because a trace
-against the old image would trace the old code.
+one call. The founding traces the workload before `create_app` and keeps
+the trace in the store; the rebuild runs no trace process, because a trace
+against the old image would trace the old code; `refresh_trace(app_dir)`
+traces from the current image on request.
 
 **`OmnetBuilder.build_executable(; reactive = true)`**, or
 `bin/build_omnet_legacy_sample routing --reactive` (M7) — the builder
@@ -204,8 +220,10 @@ file of each package for every literal `include` at the top level of a
 module, follows the included files, and names the dotted module of each.
 The root file is not tracked — its top level runs in `Main`, and the app
 image binds no package there — so a new `include` or `using` needs a
-founding build. The rebuild workload is the founding workload written to
-`rebuild_workload.jl` after a `using` of every package. `reactive` refuses
+founding build. The workload of the trace is the founding workload written
+to `trace_workload.jl` after a `using` of every package: the file that the
+founding traces and that `--refresh-trace` traces again from the current
+binary; no build executes it. `reactive` refuses
 `trim`, `incremental = false`, `--distribution`, and a store that was
 founded for another app package (the builder compares the modification
 times of the app files before and after it writes them). The tool
@@ -217,13 +235,15 @@ environment takes PackageCompiler from `package-compiler-reactive`.
 | --- | --- | --- | --- |
 | routing example image (M4) | 118 s, 8.0 GB | 20-21 s, 1.1 GB | delta = the cone exactly; hops 3.05 → 6.09; same network hash |
 | routing sample binary (M5) | 155 s, 9.7 GB | 12-13 s, 1.3 GB | `hopCount` mean 2.308011 → 4.616022, exactly double, and back |
-| HazardApp binary (M6) | 62 s, 6.0 GB (127-134 s on a loaded lane) | 8-9 s, 0.77 GB (24-26 s loaded) | 14 of 14 call shapes give the new value, and the old one after the reverse edit; 138 direct calls, 0 trampolines |
-| routing binary through the builder (M7) | 2 min 37 s, 9.5 GB (fresh depot: the base image cache first; 6 min 22 s loaded) | 16-17 s, 1.3 GB | the same `hopCount` check as M5, by `bin/build_omnet_legacy_sample routing --reactive` twice; 363 direct calls, 0 trampolines; every run 62 s |
+| HazardApp binary (M6) | 61-67 s, 6.0 GB (127-134 s on a loaded lane) | 8-9 s, 0.77 GB (24-26 s loaded) | 14 of 14 call shapes give the new value, and the old one after the reverse edit; `state` 0 in every run; 178 direct calls, 0 trampolines |
+| routing binary through the builder (M7) | 3 min 3-12 s, 9.4 GB (fresh depot: the base image cache first; 6 min 22 s loaded) | 18-19 s, 1.3 GB (the child 8-10 s) | the same `hopCount` check as M5, by `bin/build_omnet_legacy_sample routing --reactive` twice; 347 direct calls, 0 trampolines; every run 61-63 s, with or without `--refresh-trace` |
 
-The apply itself costs 1-3 ms; the rebuild time is the workload plus about
-5 s of front, heap and link. The builder adds about 5 s more: the Julia
-start, `Pkg.instantiate`, the load of `OmnetBuilder`, and the walk of the
-tracked sources.
+The apply itself costs 1-3 ms; the rebuild child is the trace plus about
+5 s of front, heap and link: the precompile of the 3203 statements of the
+routing trace costs 1.4 s, and 0.7 s after a refresh dropped the 914
+Unitful statements that `--trace-compile` prints unparsable. The builder
+adds about 9 s: the Julia start, `Pkg.instantiate`, the load of
+`OmnetBuilder`, and the walk of the tracked sources.
 
 A non-inlined call from the delta into reused code costs the same as the
 same call inside reused code: **1.0 ns against 1.0 ns** (M6 bench, direct
@@ -253,14 +273,10 @@ code.
   method keeps its source, its specializations and its text. The oracle
   counts them as `shadowed`: seven after the two-edit chain of HazardApp,
   none in a founding.
-- **The rebuild workload's side effects persist** (rule 8). Accepted
-  2026-09-05: the rule on the workload is the fix for now. The other way,
-  with the founding semantics exactly, is a trace child before the build
-  child: the same apply of the tracked diffs, the workload under
-  `--trace-compile`, and a build child that executes the statements and
-  runs nothing. It costs one more process start and the workload once
-  more; estimated for the routing rebuild: 12 s → 16-20 s. Take it when
-  a workload needs state that it cannot undo.
+- **A root that the trace misses is compiled at run time** until
+  `refresh_trace` runs. The rebuild infers what the trace names and what
+  inference reaches from it; a specialization that an edit introduced
+  behind a dynamic call is not in the old trace.
 - **Three call shapes keep the trampoline**: a `jl_fptr_sparam` callee, an
   opaque-closure callee, and a caller that is an opaque closure. Each costs
   about 40 ns per non-inlined call from the delta.

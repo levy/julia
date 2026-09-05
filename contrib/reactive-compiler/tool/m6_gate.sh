@@ -9,8 +9,8 @@
 #   mat-edit     - materialize_app again: the delta of the edit; the log must
 #                  say that the previous image exports `hazard_entry`
 #   run-after    - the rebuilt binary prints the after-values; the bench line
-#                  gives the trampoline cost per call; the `state` line says
-#                  what the rebuild workloads left in a global of the image
+#                  gives the trampoline cost per call; the `state` line must
+#                  be 0: no build executes the program
 #   restore      - git restores shapes.jl
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
@@ -39,7 +39,7 @@ lane() {
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed)|reactive: (delta|front|ccallable)|materialize_app|shape:|bench:|=== " "$OUT/$name.log"
+    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|trace)|reactive: (delta|front|ccallable)|materialize_app|shape:|bench:|=== " "$OUT/$name.log"
     return $rc
 }
 
@@ -54,8 +54,7 @@ materialize_app("$HZ/HazardApp", "$APP";
     force = true,
     incremental = true,
     cpu_target = "native",
-    sysimage_build_args = \`-O2 -g1\`,
-    precompile_execution_file = "$HZ/workload.jl")
+    sysimage_build_args = \`-O2 -g1\`)
 EOF
     mkdir -p "$OUT/compile-env"
     cat > "$OUT/compile-env/Project.toml" <<EOF
@@ -87,13 +86,14 @@ for line in open(sys.argv[1], errors="replace"):
     if m: got[m.group(1)] = float(m.group(2))
 bad = [k for k in want if got.get(k) != want[k]]
 missing = [k for k in want if k not in got]
-# `state` is what the rebuild workloads so far left in `FINALIZED`: reported,
-# not checked, because it says what the image holds and not what the code does
+# `state` is what the builds left in `FINALIZED`: no build executes the
+# program, so the image holds the value of the top-level expression, 0
+state = got.get('state')
 print(f"=== shapes({sys.argv[2]}): {len(want) - len(bad)} of {len(want)} as expected"
       + (f"; wrong {', '.join(f'{k}={got.get(k)}' for k in bad)}" if bad else "")
       + (f"; missing {', '.join(missing)}" if missing else "")
-      + f"; persisted state {got.get('state')}")
-sys.exit(1 if bad else 0)
+      + f"; persisted state {state}" + ("" if state == 0 else " (must be 0)"))
+sys.exit(1 if bad or state != 0 else 0)
 PY
 }
 

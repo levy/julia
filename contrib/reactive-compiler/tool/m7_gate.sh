@@ -12,6 +12,9 @@
 #                  sample/legacy/routing/Routing.jl
 #   rebuild      - the same command again: the delta of the edit
 #   run-after    - hop mean 4.616022
+#   refresh      - `--refresh-trace`: the workload from the rebuilt binary
+#                  adds its roots to the trace, then one more rebuild
+#   run-refreshed - hop mean 4.616022 again; the run time against run-after
 #   restore      - git restores the file
 #   rebuild-restore, run-restored - the reverse edit, and 2.308011 again
 # Pass step names to run some steps, or nothing to run all of them in order.
@@ -39,7 +42,7 @@ lane() {
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed)|reactive: (delta|ccallable)|materialize_app|Founding|Rebuilding|Compiling|Built|Started|tracked|ERROR|Error|=== " "$OUT/$name.log" | head -60
+    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|trace)|reactive: (delta|ccallable)|materialize_app|refresh_trace|Founding|Rebuilding|Refreshing|Compiling|Built|Started|tracked|ERROR|Error|=== " "$OUT/$name.log" | head -60
     return $rc
 }
 
@@ -64,7 +67,7 @@ restore() { git -C "$OMNET" checkout -- "$FILE" && echo "=== restored $FILE"; }
 
 build() { ( cd "$OMNET" && lane "$1" $BUILD ); }
 
-steps=${*:-instantiate write-app full run-before edit rebuild run-after restore rebuild-restore run-restored}
+steps=${*:-instantiate write-app full run-before edit rebuild run-after refresh run-refreshed restore rebuild-restore run-restored}
 for step in $steps; do
     case $step in
         instantiate) ( cd "$OMNET" && lane instantiate-tool julia --startup-file=no \
@@ -75,6 +78,8 @@ for step in $steps; do
         edit) edit ;;
         rebuild) build build-edit ;;
         run-after) runsim after ;;
+        refresh) ( cd "$OMNET" && lane build-refresh $BUILD --refresh-trace ) ;;
+        run-refreshed) runsim refreshed ;;
         restore) restore ;;
         rebuild-restore) build build-restore ;;
         run-restored) runsim restored ;;

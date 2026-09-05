@@ -176,33 +176,68 @@ symbol; checks 3 and 4 report the known difference. Passed 2026-09-05.
 
 The trace as store state, and inference as the only work of the rebuild.
 
-- [ ] the founding keeps its trace: `create_app` already runs the
-      precompile script in a throwaway process under `--trace-compile`;
-      `materialize_app` writes the statements to `reactive-store/trace.jl`.
-- [ ] `refresh_trace`: a throwaway process starts from the current image,
-      runs the workload under `--trace-compile`, and the union of the
-      statements replaces `trace.jl`; a statement whose signature no longer
-      resolves is dropped. The builder exposes it as
-      `bin/build_omnet_legacy_sample routing --reactive --refresh-trace`.
-- [ ] the rebuild child boots from the image, applies the diff, and
-      executes `trace.jl`: `precompile` of a valid statement is a lookup,
-      `precompile` of an invalid one infers the cone. It never runs the
-      workload; `rebuild_workload.jl` goes away.
-- [ ] the invalid code instances that no statement of the trace names (a
-      callee that a root reached by inference) are inferred through their
-      callers: after the trace, a scan of the invalid code instances with
-      a valid caller re-infers what the roots missed. Measure whether the
-      scan finds anything; drop it if not.
-- [ ] harness rule 8 and the `state` line of M6 go: the `state` global
-      must read 0 after the edit and after the reverse edit.
-- [ ] measure the run after the edit with and without a refresh of the
-      trace, to see the cost of a specialization that the JIT compiles at
-      run time.
+- [x] the founding keeps its trace. As built: `create_app` runs its
+      trace process inside and keeps nothing, so `_materialize_full` runs
+      the same steps itself before `create_app` — `ensurecompiled`, then
+      `run_precompilation_script` from `Base.JLOptions().image_file` — and
+      adds `precompile(Tuple{typeof(Pkg.julia_main)})` for each executable
+      and the statements of `precompile_statements_file`. The founding is
+      `create_app(...; incremental = true, precompile_statements_file =
+      trace)`, and the trace lands in `reactive-store/trace.jl`.
+      `incremental = false` and `precompile_execution_file` are refused.
+- [x] `refresh_trace(app_dir)`. As built: the throwaway process starts
+      from the current image, `rc_keep_statements` keeps the statements of
+      the old trace that still precompile, then the workload runs under
+      `--trace-compile`; the trace is the roots of the union. The builder
+      exposes it as `--refresh-trace` (`refresh_trace::Bool` of
+      `build_executable`, refused without `reactive` or without a store).
+- [x] the rebuild child precompiles `trace.jl` (`rc_precompile_trace`:
+      inference only, codegen at the write of the image, the reuse skips
+      what the image has). It never runs the workload. `rebuild_workload.jl`
+      did not go away: it is the file that the founding and the refresh
+      trace, renamed `trace_workload.jl` in the builder.
+- [ ] the scan of the invalid code instances that no statement names: not
+      built. Observed on routing: the child reports "cone 0 replaced, 0
+      closed" for the edit of `handle_message!` while the delta has 380
+      roots and the trace makes 36 new instances — `replaced` needs the
+      name bound in the module of the file (it is a method of
+      `NetworkModule.handle_message!`), and `closed` finds no capped code
+      instance at all. The diagnostics of the child do not see the
+      invalidations that the image sees; Stage B builds the ledger on the
+      same seam and measures the scan there.
+- [x] harness rule 8 and the `state` line of M6 are gone; `state` reads 0
+      in all three runs of M6 and in the chain of the oracle.
+- [x] measured. The run after the edit: 61.3-61.9 s without a refresh,
+      61.3-61.8 s after one, against 61.4 s before the edit and 61.8-63.2 s
+      after the restore — equal within 1 %. The SETUP phases are identical,
+      so the JIT compiles nothing at run time: the roots of the trace cover
+      the cone of the edit. Two outliers were the load of the lane: a
+      66.0 s run after the edit with 1768 involuntary context switches, and
+      a 68.3 s run before the edit right after the founding.
 
-**Gate A.** M6: 14 of 14 shapes, `state` 0 in all three runs. M7: the
-routing rebuild in at most 8 s (front 2.3 s, the inference of the cone,
-the heap and the link), against 17 s; the same hop means; run time after
-the edit within 5 % of the run before it. Gate 0 passes check 4.
+Two limits of `--trace-compile`, met on routing. A Unitful signature
+prints as `Base.Rational{Int64}(num=1, den=1)`, which does not parse as a
+constructor: 914 of the 3203 statements of the founding trace do not
+precompile, and the child lists them in `trace.jl.unresolved` and prints
+ten; a refresh drops them. A workload script runs in the `Main` of the
+trace process, so its own functions and closures are traced as `Main.*`:
+the trace keeps no `Main` statement (`_reactive_roots`). Before that
+filter, the 2 statements a refresh added after the routing edit were two
+such closures; with it, the refresh adds nothing: the roots of the founding
+cover the edit.
+
+**Gate A.** M6: 14 of 14 shapes, `state` 0 in all three runs; 28 statements
+precompiled, 0 unresolved; rebuilds 7.9-8.7 s. M7: the same hop means
+(2.308011 → 4.616022 → 4.616022 after the refresh → 2.308011); run time
+after the edit within 1 % of the run before it on a quiet lane. Gate 0
+passes check 4: the chain and the founding agree on 35 methods, 27 roots,
+16 output lines and 2 globals. Passed 2026-09-05.
+
+The rebuild time did not drop: 18-19 s through the builder, the child
+8-10 s, against 17 s and 8-9 s before. The 8 s target assumed that the
+workload was most of the rebuild; it cost about 1 s, and the precompile of
+the trace costs 1.4 s (0.7 s after a refresh), while the front, the heap
+write and the link stay. The rebuild time is the subject of Stage C.
 
 ## Stage B — the recorder and the classifier
 
@@ -411,6 +446,23 @@ chain, none in the founding); Stage C drops them. And a foldable callee
 with a constant argument leaves no call in its caller: the first `chained`
 was `x + 1`, and the third build named no symbol of the second; it now
 reads a `Ref`.
+
+**2026-09-05, Gate A.** The rebuild without execution. M6 (`tool/m6_gate.sh`,
+no `state` line): founding 61 s and 6.0 GB, the edit 8.7 s, the restore
+7.9 s, 14 of 14 shapes and `state` 0 in all three runs, the trace 28
+statements and 0 unresolved. Oracle: founding 1:07, s2 9.2 s (178 direct
+calls), s3 8.3 s (11 direct calls, `julia_chained_1556.r8` of s2 named by
+the delta of s3), the founding of the final sources 1:26, checks 1-4 all
+equal. M7 (`tool/m7_gate.sh`, with the `refresh` and `run-refreshed`
+steps): founding 3:12 and 9.4 GB on a fresh depot, 3203 statements; the
+edit 18.6 s (385 roots, 347 direct calls; 2289 statements precompiled and
+914 unresolved in 1.36 s; 26 new method instances); the refresh 18.0 s
+(2289 kept, 914 dropped, 0 added; 4 roots); the restore 17.8 s (1 root);
+runs 68.3 (before, right after the founding), 61.3, 61.8, 63.2 s; an
+earlier series with the same code but the `Main` closures still traced:
+61.4, 61.8, 61.9, 61.3, 61.8 s. The founding once took 5:44 with three
+image writes: `materialize_app` consumed `incremental` and `create_app`
+defaulted to a fresh sysimage; it forwards `incremental = true` now.
 
 **2026-09-05, the plan.** Written from the discussion of the six points:
 restart or server; the catalog; the tracker; no execution in the compiler;
