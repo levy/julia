@@ -450,19 +450,51 @@ Stage 2:
   cache is the store. This does not shorten the emission, because
   `--output-o` re-emits everything, and a heap with disabled methods needs care.
 
-### Stage 4 — PackageCompiler as materializer
+**Mostly dissolved by the chain, 2026-09-05.** A build that boots from the
+previous image loads nothing from source: the front of the Gate 1 and Gate 2
+rebuilds is 1.3 s against 27 s in the full build, and against the 113 s + 41 s
+of the PackageCompiler lane. What remains of the serial front in the chain is
+the workload itself. The three options above stay only for the recorded-read
+store, where a build without a previous image wants to skip inference.
 
-Give PackageCompiler a new entry point beside `create_app`:
+### Stage 4 — the materialize entry point
 
-```julia
-materialize(store, snapshot; output = "myapp")
-```
+The workflow of a real edit, in one call. The order that Gate 2 dictated:
+boot from the previous image, apply the source changes, run the workload,
+emit the delta, and link.
 
-It receives the text objects of a snapshot and a delta, and links them. It does
-not decide what to compile. Two pieces of the ground work already exist on the
-`parallel-build` branch: the fresh base system image is cached in the depot and
-keyed by the Julia commit, the target and the build flags; and the copies of an
-application run beside the compiler.
+**Built 2026-09-05**, in this directory, as the standalone driver
+`src/Materialize.jl` with `src/SourceDiff.jl` and `tool/m4_child.jl`:
+
+- A **store** is a directory that persists across processes. `store.toml`
+  names the patched Julia, the project, the packages, the tracked source
+  files with the module that includes each, and the workload; one snapshot
+  per build holds its text objects, its linked image, and a copy of the
+  tracked sources.
+- `materialize(store)` spawns a fresh child that boots from the image of the
+  latest snapshot, applies the changes of the tracked files, runs the
+  workload, and emits the delta at exit; the driver links the text objects
+  of the whole chain with the fresh `sysimg.o` and `metadata.o`. An empty
+  store gives the full build through the same path.
+- `SourceDiff.changed_expressions` compares two versions of a file without
+  line numbers, descends into `module` blocks, and answers only the changed
+  top-level expressions with the module path of each. The child evaluates
+  exactly those, in their modules. A removal is reported and not applied.
+
+**Gate 4.** After the M0 edit applied to the file on disk, `materialize`
+emits the cone of Gate 2 and nothing else, the image runs the edit, and a
+further no-edit materialize converges to an empty delta. **Passed
+2026-09-05** by `tool/m4_gate.sh`; the numbers are in the entry "2026-09-05,
+M4" below. The edit build takes a 20.8 s wall against 117.2 s for the full
+build on the same lane.
+
+**Open.** The entry point lives beside the M0 tools, not inside
+PackageCompiler; the executable bundle of `create_app` (the launcher, the
+copied artifacts) is not produced — the product is the image plus a runner.
+Two pieces of the ground work for that integration exist on the
+`parallel-build` branch: the fresh base system image is cached in the depot
+and keyed by the Julia commit, the target and the build flags; and the
+copies of an application run beside the compiler.
 
 ## Development mode and release mode
 
@@ -521,11 +553,15 @@ and never the target.
 - `ReactiveCompiler` — the store, the recorded reads, the keys, the replay and
   the cache policy. `src/GraphHarvest.jl`, `src/MethodEdit.jl` and
   `src/ReadKey.jl` in this directory are its first pieces: the graph, the edit
-  and the inference key of a component.
-- `ReactivePackageCompiler` — the materialize entry point and the delta
-  handling. Sits beside the `parallel-build` branch.
+  and the inference key of a component. `src/SourceDiff.jl` and
+  `src/Materialize.jl` are the M4 pieces: the changed expressions of a file,
+  and the store with the materialize driver.
+- `ReactivePackageCompiler` — the executable bundle around the materialize
+  entry point. Sits beside the `parallel-build` branch; still open.
 - `tool/m0_*` — the Stage 0 measurement: the builds, the three comparisons and
   the key run. They stay, because Stage 1 and Stage 2 are measured with them.
+- `tool/m4_child.jl` and `tool/m4_gate.sh` — the materialize child and the M4
+  gate.
 
 ## Milestones
 
@@ -543,10 +579,19 @@ and never the target.
       functions for the 7 method instances of the cone, `jl_emit_native` takes
       0.0 s against 10.2 s for the full build F on eight threads (343 s on one
       thread in M0), and E.so runs the edit at the speed of D.so.
-- [ ] **M3** — the serial front is cut by the cheapest of the three ways.
-- [ ] **M4** — `materialize(store, snapshot)` links reused and new objects into a
+- [x] **M3** — the serial front is cut by the cheapest of the three ways.
+      Done 2026-09-05, by a fourth way that dissolves it: the materialize
+      child boots from the previous image and loads nothing from source. The
+      front of the edit build is 1.3 s against 27.4 s in the full build and
+      against the 113 s + 41 s of the PackageCompiler lane.
+- [x] **M4** — `materialize(store, snapshot)` links reused and new objects into a
       working application, and beats `create_app` with a warm base cache,
-      measured from a fresh process on the same lane.
+      measured from a fresh process on the same lane. Done 2026-09-05:
+      `materialize(store)` turns an on-disk edit into a bootable image in a
+      20.8 s wall and 1.1 GB against 117.2 s and 8.0 GB for the full build
+      of the same edit on the same lane (and `create_app` adds its 113 s +
+      41 s front on top of such a build). The delta is the cone of Gate 2
+      exactly. The `create_app`-style executable bundle stays open.
 
 ## Decisions found during the work
 
@@ -872,3 +917,54 @@ method; 2.7 ms, the world counter moves from 69212 to 69217.
   are still open and are not exercised by this edit: a direct call from the
   delta to a reused symbol instead of the trampoline, and the alias of a
   redefined `@ccallable` method.
+
+**2026-09-05, M4.** Passed by `tool/m4_gate.sh` on the same worktree, lane
+and thread count as the earlier gates. The chain is now driven by
+`materialize(store)`: s1 the full build, s2 to s4 with no change, then the
+M0 edit applied to `sample/legacy/routing/scenario/routing.jl` on disk, s5
+with the edit, s6 with no change, and the same edit as a full build into a
+second store as the baseline.
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| s1, full build | 118.2 s | 8.0 GB | child 116.7 s, extract 0.1 s, link 0.6 s; image 305 MB |
+| s2 / s3 / s4, no change | 20.6 / 20.4 / 20.0 s | 1.1 GB | delta 176, 4, 0 roots — the Gate 1 convergence |
+| s5, the edit | 20.8 s | 1.1 GB | 1 expression found and applied in 2.8 ms; delta 8 root lines = 7 method instances, 0 outside the cone; front 1.3 s, `jl_emit_native` 0.0 s, 37604 code instances reused |
+| s6, no change | 20.4 s | 1.1 GB | delta 0 roots |
+| full build of the edit | 117.2 s | 8.0 GB | front 27.4 s, `jl_emit_native` 10.0 s |
+
+The images of s5 and of the full build both run the model at 6.09 average
+hops with the network hash of the chain; s1 runs it at 3.05. The workload of
+s5 makes the 27 new method instances of Gate 2, and the runs make 2 print
+instances, as every run of the chain does.
+
+- *The diff is blind to line numbers, and the evaluation is not.* The
+  comparison strips every `LineNumberNode`, so an edit near the top of a
+  file does not drag every later definition into the delta. The evaluation
+  uses the parse of the new text with the file name set, so a redefined
+  method keeps a real `file` and `line`. The "file `none`" fault of the
+  Gate 2 harness is gone with the harness: an edit on top of an edit reads
+  back, because the child compares stored text with disk text and never
+  reads a definition out of a method.
+- *A tracked file names its module.* `routing.jl` is included into `module
+  Routing` of the package file; no parse of the file itself can know that.
+  The store config carries one dotted module path per tracked file, and the
+  diff's own module descent stacks on top of it.
+- *The machinery must warm itself with content.* The first gate run put 20
+  extra roots into the delta of the edit build: the diff machinery itself,
+  compiled on its first real edit. Running the diff on unchanged files in
+  every build cut that to 11 — the specializations on non-empty diffs (the
+  `Set` and `Dict` helpers on the pair tuples, `defined_name`, two print
+  shapes) still compiled late. A synthetic non-empty diff in every build
+  (`m4_warm`), with the same argument types as the real calls and the same
+  report lines, cut it to 0. This is the Gate 0 lesson for the third time:
+  the harness is part of the graph it measures, and an empty-input warm-up
+  does not compile the non-empty arms.
+- *A removal is reported, not applied.* Julia has no cheap way to undefine a
+  method in the build child. A definition that the new text drops (and that
+  no changed definition of the same name replaces) is printed as
+  `m4: removed`, and the old method stays in the image until a full build.
+- *The gate leaves nothing behind.* The gate edits the pinned worktree in
+  place and restores it with git at the end; the store keeps a copy of the
+  sources per snapshot, so a run of an old snapshot still compares against
+  the sources it was built from.
