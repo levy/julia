@@ -47,27 +47,43 @@ cause).
   B.a`). The reused code instances are then live objects with native
   pointers, and the runtime maps them to the function ids of the image. A
   fresh process would have to match code instances across heaps by content.
-- **Append-only id spaces.** The image format does not change. B's function
-  ids start at A's count, its global slots and shards likewise, and every
-  defined global object of the delta gets the suffix `.r<nshards>`. So A's
-  objects and B's objects link together, and the shard count is the tag of
-  a build. This exists because two stock builds cannot share one object:
-  every emitted name carries a process-wide counter, the partitions are
-  balanced by weight, and the index tables bake the emission order.
+- **Append-only id spaces.** B's function ids start at A's count, its
+  global slots and shards likewise, and every defined global object of the
+  delta gets the suffix `.r<nshards>`. So A's objects and B's objects link
+  together, and the shard count is the tag of a build. This exists because
+  two stock builds cannot share one object: every emitted name carries a
+  process-wide counter, the partitions are balanced by weight, and the
+  index tables bake the emission order. The image format changes in one
+  place: version 2 adds the names table of the next bullet.
 - **The reuse test is the world.** A code instance is reused when its owner
   is `nothing`, it is valid in the build's world, and the runtime returns
   image ids for it. Julia's own invalidation bounds `max_world` through the
   backedges, so the cone is never computed — it falls out of the reuse
   test. No recorded-read key is needed while a previous image exists.
-- **Calls from the delta into reused code** go through the
-  `emit_tojlinvoke` trampoline, or through the `invoke` pointer of the
-  callee's code instance. The system-image path never emits a call by
-  symbol name to a function outside the build's own `compiled_functions`,
-  so no link against a reused symbol exists. Every call shape — inlined,
-  `@noinline`, `@nospecialize`, keyword, varargs, `invoke`, opaque closure,
-  static parameter, `@cfunction`, finalizer, and the reverse direction —
-  reaches its callee (M6). Measured: not visible in the run time of the
-  routing model; the cost per call is in the numbers below.
+- **The delta calls reused code by symbol.** The image names every
+  function of its table: each shard carries `jl_fvar_names_<shard>`, the
+  symbol of each entry of `fvar_ptrs`, and `parse_sysimg` keeps the names
+  beside the pointers (image format version 2, about 1 MB for 90k names).
+  When `resolve_workqueue` meets a callee with image ids, it declares the
+  image's symbol instead of an `emit_tojlinvoke` trampoline: a specsig
+  caller gets the specialization, a boxed caller gets the wrapper, and a
+  `jl_fptr_args` callee gets the specialization through the adapter that
+  the stock path already has. The declaration is hidden and `dso_local`,
+  so the link binds it to the text object of the earlier build and the
+  call is a plain `call`. The declared name carries the marker
+  `reactive.image.` until the delta's own definitions get their
+  `.r<nshards>` suffix, so a delta name never collides with an image name.
+  Every definition of a delta is a hidden external symbol on both output
+  paths (`partitionModule` did that with more than one image thread; the
+  single-thread path now does the same), so a later build can call it.
+  Three shapes keep the trampoline: a `jl_fptr_sparam` callee, an
+  opaque-closure callee, and a caller that is itself an opaque closure.
+  `TIMINGS=1` prints `reactive: N direct calls into the loaded image, M
+  reused callees through the trampoline`; `=2` names each direct call.
+  Every call shape — inlined, `@noinline`, `@nospecialize`, keyword,
+  varargs, `invoke`, opaque closure, static parameter, `@cfunction`,
+  finalizer, and the reverse direction — reaches its callee (M6), and the
+  bench loop of the delta costs the same as the loop inside reused code.
 - **A `@ccallable` name is defined once.** The previous image's text
   already exports the alias of every `@ccallable` method it knew, and
   `jl_generate_ccallable` asks `jl_reactive_image_exports(name)` before it
@@ -201,24 +217,32 @@ environment takes PackageCompiler from `package-compiler-reactive`.
 | --- | --- | --- | --- |
 | routing example image (M4) | 118 s, 8.0 GB | 20-21 s, 1.1 GB | delta = the cone exactly; hops 3.05 → 6.09; same network hash |
 | routing sample binary (M5) | 155 s, 9.7 GB | 12-13 s, 1.3 GB | `hopCount` mean 2.308011 → 4.616022, exactly double, and back |
-| HazardApp binary (M6) | 127-134 s, 5.9 GB | 24-26 s, 0.75 GB | 14 of 14 call shapes give the new value, and the old one after the reverse edit |
-| routing binary through the builder (M7) | 6 min 22 s, 9.6 GB (fresh depot: the base image cache first) | 17-18 s, 1.4 GB | the same `hopCount` check as M5, by `bin/build_omnet_legacy_sample routing --reactive` twice |
+| HazardApp binary (M6) | 62 s, 6.0 GB (127-134 s on a loaded lane) | 8-9 s, 0.77 GB (24-26 s loaded) | 14 of 14 call shapes give the new value, and the old one after the reverse edit; 138 direct calls, 0 trampolines |
+| routing binary through the builder (M7) | 2 min 37 s, 9.5 GB (fresh depot: the base image cache first; 6 min 22 s loaded) | 16-17 s, 1.3 GB | the same `hopCount` check as M5, by `bin/build_omnet_legacy_sample routing --reactive` twice; 363 direct calls, 0 trampolines; every run 62 s |
 
 The apply itself costs 1-3 ms; the rebuild time is the workload plus about
 5 s of front, heap and link. The builder adds about 5 s more: the Julia
 start, `Pkg.instantiate`, the load of `OmnetBuilder`, and the walk of the
 tracked sources.
 
-A non-inlined call from the delta into reused code costs **43 ns** through
-the trampoline, against **2.6 ns** for the same call inside reused code
-(M6 bench). The routing model does not see it, because its hot loop is in
-reused code; a program whose hot loop is in the edited code does. A direct
-call to the reused specialization by its suffixed symbol is the fix, open.
+A non-inlined call from the delta into reused code costs the same as the
+same call inside reused code: **1.0 ns against 1.0 ns** (M6 bench, direct
+call; the trampoline that the direct call replaced cost 43 ns against
+2.6 ns on a loaded lane). The edit rebuild of M6 makes 138 direct calls and
+0 trampolines; the reverse edit 15 and 0. The routing rebuild of M7 makes
+363 and 0. The run time of the routing model does not change with the
+direct call (62 s before, after and restored): its hot loop is in reused
+code.
 
 ## Known limits
 
 - **One Julia, one target.** A chain is bound to the Julia build and the
-  processor target that started it (`-C native` on this machine).
+  processor target that started it (`-C native` on this machine). The
+  names table holds the names of the base target, so with a multi-target
+  `cpu_target` the delta would call the base clone of a reused function.
+- **The image format is version 2.** An image without the names table
+  does not load (`Image file is not compatible with this version of
+  Julia`); a store founded before it needs a founding build.
 - **`--trim` refuses reactive reuse** — the trim verifier walks the edges
   that reuse skips. The trimmed flagship binary is its own milestone.
 - **Method removals are not applied**; dead methods stay until a full
@@ -231,8 +255,9 @@ call to the reused specialization by its suffixed symbol is the fix, open.
   runs nothing. It costs one more process start and the workload once
   more; estimated for the routing rebuild: 12 s → 16-20 s. Take it when
   a workload needs state that it cannot undo.
-- **The trampoline costs 40 ns per non-inlined call from the delta into
-  reused code.** Stage 2 of the plan names the direct call by symbol.
+- **Three call shapes keep the trampoline**: a `jl_fptr_sparam` callee, an
+  opaque-closure callee, and a caller that is an opaque closure. Each costs
+  about 40 ns per non-inlined call from the delta.
 - **No cross-process store without an image.** The recorded-read (cell
   model) store of the design is not built; it is what removes the need for
   a previous image and for the build-id cascade of package images.

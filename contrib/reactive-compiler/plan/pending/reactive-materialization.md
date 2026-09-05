@@ -405,8 +405,9 @@ the entry "2026-09-05, Stage 1 design" below; the parts:
 - [x] every defined global object of the delta gets the suffix `.r<nshardsA>`
       after `makeSafeName`, so that A's objects and B's objects link together;
 - [x] the image header and the shard table of B count A's shards and B's
-      shards together; the delta calls a reused function through the
-      `emit_tojlinvoke` trampoline;
+      shards together; the delta calls a reused function by the symbol
+      that the image names for it (the direct call of Stage 2; the
+      `emit_tojlinvoke` trampoline stays for three shapes);
 - [x] link A's text objects with B's `sysimg.o`, `metadata.o` and delta into
       `B.so`; boot; run the routing example.
 
@@ -432,6 +433,12 @@ image to inherit the invalidation from.
       scenario makes after the edit;
 - [x] `tool/m1_gate1.sh` builds E from `D.so` with the edit, F from `sys.so`
       with the edit, and compares the delta of E with the cone.
+- [x] the delta calls a reused specialization by its symbol: the image
+      names every function of its table (`jl_fvar_names_<shard>`, image
+      format version 2), `resolve_workqueue` declares the image's symbol
+      for a callee with image ids, and the link binds the hidden
+      declaration to the text object of the earlier build. Done
+      2026-09-05; the entry "2026-09-05, the direct call" below.
 
 **Gate 2.** After a one-function edit of the routing model, the number of
 emitted functions equals the size of the cone, and `create_sysimg_object_file`
@@ -589,7 +596,9 @@ the before-values again. The bench line gives the trampoline cost.
 **Passed 2026-09-05**: 14 of 14 shapes in each of the three runs, the alias
 skipped on both rebuilds, the trampoline at 43 ns per call against 2.6 ns.
 The numbers and one new finding — the side effects of the rebuild workload
-persist in the image — are in the entry "2026-09-05, M6" below.
+persist in the image — are in the entry "2026-09-05, M6" below. The direct
+call of Stage 2 then replaced the trampoline: the same gate gives 1.0 ns
+against 1.0 ns, in the entry "2026-09-05, the direct call".
 
 ### Stage 7 — the builder
 
@@ -1079,7 +1088,8 @@ method; 2.7 ms, the world counter moves from 69212 to 69217.
   key stays in the design for the cross-process store. Two Stage 1 hazards
   are still open and are not exercised by this edit: a direct call from the
   delta to a reused symbol instead of the trampoline, and the alias of a
-  redefined `@ccallable` method.
+  redefined `@ccallable` method. Both closed the same day: the entries
+  "2026-09-05, M6" and "2026-09-05, the direct call".
 
 **2026-09-05, M4.** Passed by `tool/m4_gate.sh` on the same worktree, lane
 and thread count as the earlier gates. The chain is now driven by
@@ -1258,7 +1268,8 @@ image threads, after the Julia rebuild with the ccallable rule.
   the arguments and goes through the generic wrapper. The routing model
   does not see it (Gate 2: 14.55 s against 14.57 s), because its hot loop
   is inside reused code. A direct call to the reused specialization by its
-  suffixed symbol is the Stage 2 fix, still open.
+  symbol is the Stage 2 fix, done the same day: the entry "2026-09-05, the
+  direct call" below.
 - *The ccallable rule holds.* `jl_generate_ccallable` reports `reactive:
   ccallable hazard_entry is exported by the previous image; no new alias`
   on both rebuilds, the link has no
@@ -1324,7 +1335,8 @@ numbers below are from `$OUT/m7/build-*.log`.
   image: CPU 16 of the lane carried a Java process at 52% for two hours,
   its SMT sibling is CPU 0, and the machine reported 63% frequency scaling.
   Observed, not reproduced: the store holds the restored image now, not
-  the founded one. A re-founding on a quiet lane would settle it.
+  the founded one. Settled by the re-founding of the entry "2026-09-05,
+  the direct call": on a quiet lane the founded binary ran in 62 s.
 
 **2026-09-05, the rebuild workload leaves no state.** The user chose the
 first way for now: accept and document. The rule is the one that
@@ -1336,3 +1348,77 @@ need a snapshot of the heap before and after the workload, and the cost
 of that is the cost of the trace child. The trace child stays the
 documented other way, for a workload that needs state it cannot undo.
 Recorded as harness rule 8 in `doc/architecture.md`.
+
+**2026-09-05, the direct call.** The Stage 2 item that M6 left open: the
+delta calls a reused function by its symbol, not through the
+`emit_tojlinvoke` trampoline. Commit `bca1430d75` of `reactive-compiler`;
+the gates ran from fresh foundings, because the image format changed.
+
+- *The image names its functions.* `CloneCtx::emit_metadata` writes
+  `jl_fvar_names_<shard>` beside `jl_fvar_idxs_<shard>`: the symbol of
+  each entry of `fvar_ptrs`, NUL-terminated, in the order of the table.
+  `jl_image_shard_t` gets the field `fvar_names`, `jl_image_fptrs_t` the
+  array `names`, `parse_sysimg` fills it from the shards, and the image
+  header is version 2 (an older image is refused). The names are those of
+  the base target: a multi-target `cpu_target` would give the delta the
+  base clone of a reused function. The cost is about 1 MB for the 90k
+  names of the routing image.
+- *`resolve_workqueue` declares the symbol.* For a callee that
+  `jl_reactive_image_ids` maps into the image, `jl_reactive_image_fname`
+  gives the name: a specsig caller gets the specialization, a boxed caller
+  the wrapper, and a `jl_fptr_args` callee the specialization with
+  `preal_specsig = false`, which the stock adapter path then wraps. The
+  declaration is hidden and `dso_local`, and the link binds it to the text
+  object of the earlier build. `proto.specsig` is deterministic per code
+  instance (`uses_specsig` of the ABI), so it matches the compiled callee.
+  The name carries the marker `reactive.image.` until the final name pass
+  of `jl_create_native_impl` has suffixed the delta's own definitions, and
+  the pass then strips the marker; an assertion checks that the delta does
+  not define the name. Three shapes keep the trampoline: a
+  `jl_fptr_sparam` callee, an opaque-closure callee, and a caller that is
+  an opaque closure. `TIMINGS=1` prints `reactive: N direct calls into the
+  loaded image, M reused callees through the trampoline`.
+- *A single-thread delta is linkable too.* `partitionModule` promotes every
+  definition to a hidden external symbol, and the single-thread path of
+  `add_output` (a module of weight below 1000) kept local linkage, so a
+  small delta's functions were not callable by the next build. The
+  single-thread path now promotes the same way, and the `jl_ext_` naming
+  of unnamed globals moved before the fork of the two paths.
+- *Every gate needs a fresh founding.* The stdlib package images and every
+  store built before this commit carry the version 1 header; the `.ji`
+  check on the git commit string recompiles the depot, and `parse_sysimg`
+  refuses an old store image with `Image file is not compatible`.
+
+M6 again, `tool/m6_gate.sh` into a fresh `m6b` on the build lane, eight
+image threads, load average 2 (the morning runs were on a loaded lane):
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| founding | 1 min 2 s | 6.0 GB | the store founded; front 18.3 s, `jl_emit_native` 6.7 s |
+| run, before | 0.17 s | 0.22 GB | 14 of 14 shapes; bench 0.8 ns/call reused, 0.8 ns/call the other loop |
+| rebuild, the edit | 8.8 s | 0.77 GB | 5 expressions in 30.7 ms, cone 5 replaced, 6 closed; 36 new method instances; delta 185 roots, 4 edges; 27087 reused; **138 direct calls, 0 trampolines**, `julia_bench_callee_37610` among them |
+| run, after | 0.19 s | 0.22 GB | 14 of 14 shapes; bench **1.0 ns/call reused, 1.0 ns/call from the delta** (43 ns before) |
+| rebuild, the reverse edit | 8.2 s | 0.74 GB | delta 15 roots, 0 edges; 15 direct calls, 0 trampolines |
+| run, restored | 0.19 s | 0.22 GB | 14 of 14 shapes; bench 0.99 against 0.99 ns/call |
+
+The delta's text objects define `T` symbols with the `.r8` and `.r16`
+suffixes, the names table of the delta holds the suffixed names, and the
+reverse-edit delta references `julia_bench_callee_37610` of the founding
+as an undefined symbol that the link resolves. The ccallable alias is
+skipped on both rebuilds as before.
+
+M7 again, `tool/m7_gate.sh` into a fresh `m7b`, same lane and load:
+
+| step | wall | peak RSS | result |
+| --- | --- | --- | --- |
+| founding build | 2 min 37 s | 9.5 GB | fresh depot, base image cache first |
+| run, before | 62 s, user 62 s | 0.69 GB | `hopCount` mean 2.308011 |
+| rebuild, the `+= 2` edit | 17.3 s | 1.32 GB | 1 expression in 2.2 ms, world 39301 → 39302; 47 new method instances; delta 392 roots, 7 edges, 1 shadowed; 42644 reused; **363 direct calls, 0 trampolines** |
+| run, after | 62 s | 0.69 GB | `hopCount` mean 4.616022 |
+| rebuild, the reverse edit | 16.4 s | 1.28 GB | delta 16 roots, 0 edges; 53 direct calls, 0 trampolines |
+| run, restored | 62 s | 0.70 GB | `hopCount` mean 2.308011 |
+
+The founded binary ran in 62 s of user time, the same as the rebuilt
+binaries: the 180 s of the morning was the lane, as the M7 entry supposed.
+The run time of the routing model does not move with the direct call; its
+hot loop is inside reused code, so the trampoline never was on its path.
