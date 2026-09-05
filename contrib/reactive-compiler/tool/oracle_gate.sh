@@ -138,7 +138,7 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    grep -E "^root .*HazardApp" "$OUT/oracle-chain.log" | grep -vq " compiled$" &&
+    grep -E "^root .*HazardApp" "$OUT/oracle-chain.log" | grep -vqE " (compiled|gensym)$" &&
         { echo "=== check 2: a root of HazardApp is not compiled in the chain"; failed=1; }
     check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1

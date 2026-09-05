@@ -407,12 +407,15 @@ names the live ones; the linker drops the rest.
       both entries stay valid, dispatch takes the newest one (`gf.c`,
       `get_intersect_visitor`, "must pick the newest insertion"), and the
       old method keeps its source, its specializations and its text. The
-      oracle counts seven `shadowed` entries after the two-edit chain of
-      HazardApp and none in a founding. The reactive serialization must
-      drop a shadowed entry with its method; the invalid code instances
-      (`max_world` closed) go with it. Check the `staticdata.c` sysimage
-      path for both (the branches at lines 1691-1767 are the package
-      image path).
+      oracle counted seven `shadowed` entries after the two-edit chain of
+      HazardApp and none in a founding. Since Stage B the child deletes
+      the old methods of a changed expression, which closes their entries
+      (`shadowed 0` in the chain of Gate B and of the oracle gate), but
+      the closed entry, its method and its code instances are serialized
+      still. The reactive serialization must drop a closed entry with its
+      method; the invalid code instances (`max_world` closed) go with it.
+      Check the `staticdata.c` sysimage path for both (the branches at
+      lines 1691-1767 are the package image path).
 - [ ] one delta holds two text functions of one method instance: the
       second build of the oracle chain emits `julia_driver_1060.r8` and
       `julia_driver_1598.r8` for the one specialization of `driver`. Find
@@ -421,9 +424,10 @@ names the live ones; the linker drops the rest.
       function: after the reverse edit of M6, `bench_delta` has one
       definition, and `julia_bench_delta_1526.r8` is gone.
 
-**Gate C.** M6 and M7 through Gate 0, with `info shadowed 0` in the chain. The size of the image after ten
-edit-and-reverse cycles equals the size after one, within the residue of
-the global slots. The delta of a rebuild with no edit is zero functions
+**Gate C.** M6 and M7 through Gate 0, with no closed typemap entry, no
+deleted method and no invalid code instance in the heap of the chain's
+image. The size of the image after ten edit-and-reverse cycles equals the
+size after one, within the residue of the global slots. The delta of a rebuild with no edit is zero functions
 from the second rebuild on.
 
 ## Stage D — the server
@@ -556,6 +560,10 @@ first image: checks 1-4 equal (69 methods, 47 roots, 32 lines, 6 globals),
 `word` excepted. The refusals: `F1 HazardApp.jl:10 other: @optlevel is a
 module option` and `B2 changes.jl:79 Corner: the untracked untracked.jl:3
 corner_of names the type`, the store and the binary unchanged in both.
+The two older gates pass on the same tools: M6 14 of 14 and `state` 0
+three times; the oracle gate checks 1-4 equal (69 methods, 47 roots,
+16 lines, 6 globals) with `shadowed 0` in the chain, where Gate 0 had
+seven: the child deletes the old methods of a changed expression now.
 
 Six findings. `jl_method_def` never skips an identical redefinition, so
 D2 is the runtime filter `jl_reactive_set_method_filter`: the child keeps

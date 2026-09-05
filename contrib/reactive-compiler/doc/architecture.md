@@ -331,11 +331,13 @@ code.
   gensym counters (`var"##3#4"`), which a chain and a founding count
   differently.
 - **A replaced method stays in the image.** Julia does not close the
-  world of a replaced typemap entry: both entries stay valid, dispatch
-  takes the newest one (`gf.c`, `get_intersect_visitor`), and the old
-  method keeps its source, its specializations and its text. The oracle
-  counts them as `shadowed`: seven after the two-edit chain of HazardApp,
-  none in a founding.
+  world of a replaced typemap entry: both entries stay valid, and dispatch
+  takes the newest one (`gf.c`, `get_intersect_visitor`). The child now
+  deletes the old methods of a changed expression after its evaluation,
+  which closes their entries (the oracle counted seven `shadowed` entries
+  after the two-edit chain before Stage B, and counts none now), but the
+  closed entry, its method, its source, its specializations and its text
+  are serialized still, as dead heap and dead code until Stage C.
 - **A root that the trace misses is compiled at run time** until
   `refresh_trace` runs. The rebuild infers what the trace names and what
   inference reaches from it; a specialization that an edit introduced
