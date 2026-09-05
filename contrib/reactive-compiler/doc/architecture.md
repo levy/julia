@@ -31,13 +31,13 @@ The measured effect: the routing example image rebuilds in 21 s against
 | its new code | `src/reactive.jl` (driver + store), `src/reactive_child.jl` (child), `src/SourceDiff.jl` (vendored copy) |
 | the measurement subject | worktree `omnet-julia-m1`, branch `reactive-builder` from `e21ba2cd` |
 | the builder integration (M7) | `source/build/Reactive.jl`, `source/build/Executable.jl`, `source/tool/build_binary.jl` of that branch |
-| the hazard test package (M6) | `tool/m6_hazard/HazardApp` and its edited files `tool/m6_hazard/shapes-after.jl`, `shapes-after-2.jl` |
-| the gates | `tool/m0_*` (measurement), `tool/m1_gate1.sh` (chain + edit), `tool/m4_gate.sh` (materialize), `tool/m5_gate.sh` (the binary), `tool/m6_gate.sh` (the hazards), `tool/m7_gate.sh` (the builder), `tool/oracle_gate.sh` with `tool/oracle.jl` (a two-edit chain against the founding of the final sources: the same method tables, roots, output and globals) |
+| the hazard test package (M6, Gate B) | `tool/m6_hazard/HazardApp` and its edited files `tool/m6_hazard/shapes-after.jl`, `shapes-after-2.jl`, `changes-after.jl`, `changes-reformat.jl` |
+| the gates | `tool/m0_*` (measurement), `tool/m1_gate1.sh` (chain + edit), `tool/m4_gate.sh` (materialize), `tool/m5_gate.sh` (the binary), `tool/m6_gate.sh` (the hazards), `tool/m7_gate.sh` (the builder), `tool/oracle_gate.sh` with `tool/oracle.jl` (a two-edit chain against the founding of the final sources: the same method tables, roots, output and globals), `tool/gate_b.sh` (the fourteen change categories and two refusals, through the oracle) |
 
 ## The runtime patch
 
 The patch lives in `src/aotcompile.cpp`, `src/staticdata.c`,
-`src/codegen.cpp`, `Compiler/src/typeinfer.jl` and
+`src/codegen.cpp`, `src/method.c`, `Compiler/src/typeinfer.jl` and
 `Compiler/src/precompile.jl` of this branch. `JULIA_REACTIVE_REUSE=1`
 turns it on; `JULIA_REACTIVE_TIMINGS=1` prints the front, the emission and
 the delta (`=2` lists every code instance of the delta and every enqueue
@@ -92,6 +92,16 @@ cause).
   `jl_get_abi_converter` in the current world. `TIMINGS=2` reports
   `reactive: ccallable <name> is exported by the previous image; no new
   alias` — for `julia_main` on every rebuild.
+- **A method filter answers an identical redefinition.** `jl_method_def`
+  never skips a redefinition: an identical one moves the world and
+  invalidates every caller for nothing (an `@eval` loop with one changed
+  method, a dependent whose expansion did not change). `src/method.c`
+  asks the Julia function of `jl_reactive_set_method_filter` before the
+  insertion; the rebuild child installs `rc_method_filter`, which keeps
+  the live method when the module, the signature, the method flags and
+  the uncompressed IR are equal. A kept method keeps its own line table,
+  and the child moves its `line` with the item. A generated method is
+  never kept.
 - **The heap (`sysimg.o`) and the tables (`metadata.o`) are always
   rebuilt.** They are cheap, and the reused objects must not depend on
   their layout.
@@ -142,12 +152,55 @@ top-level expressions, each with the module path that leads to it.
   redefined method has a readable `file` and `line`, and an edit on top of
   an edit works — the child compares stored text against disk text and
   never reads a definition back out of a method.
-- **A removal is reported and not applied.** Julia has no cheap way to
-  undefine a method in a build child; the old method stays until a full
-  build. A changed definition does not count as a removal of its old form.
+- **The files match by path, then by content.** A renamed file is a move
+  of its expressions, and a lone leftover pair is a file that was renamed
+  and edited.
 - **A tracked file names its including module in the config.** A file that
   a package includes (`routing.jl`, `Routing.jl`) cannot name its own
   module; no parse can recover it.
+
+## The ledger and the classifier
+
+The rebuild child keeps a **ledger** of the tracked sources: for each
+top-level expression, its kind and defined name, its methods, the heads of
+the macros that it expands, the names of its type level (signatures, field
+types, initializers) and the files that its string literals name. The old
+ledger comes from the store's copy of the sources and the live method
+table: a method belongs to the item whose file and lines hold it. A
+generator is an anonymous method at `none:0` and belongs to no item.
+
+The **classifier** (`rc_classify`) gives every change an id of the catalog
+of `plan/pending/robust-incremental-compiler.md`, and the report is one
+`rc: change <id> <file>:<line> <name> (<note>)` line per change. The apply
+runs the removals first, in file order, then a queue of changes and their
+dependents:
+
+- a removed or changed expression deletes its old methods
+  (`rc_delete_method`, which deletes the generator of a generated method
+  too), a changed one after its evaluation, so a replacement of the same
+  signature is a dead entry;
+- a type whose shape changed re-evaluates every tracked expression that
+  names it; a changed abstract type does the same for its subtypes,
+  transitively; a type with the same shape is a change of its constructors
+  alone;
+- a changed `using` or `import` re-evaluates every expression of the module
+  whose free names resolve differently after it;
+- a changed macro re-evaluates every expression that expands it,
+  transitively; the heads are syntactic;
+- a file that an expression reads is hashed into `reads.txt` at every
+  rebuild, and a changed file re-evaluates its readers;
+- an unchanged expression that moved updates the `line` of its methods in
+  place, so a reformat applies nothing.
+
+A **refusal** stops the child before any evaluation (`rc: refuse <id>
+<where>: <reason>`, exit 3), the parent removes the snapshot and errors
+with the founding as the advice. Refused: a module option (`F1`), a
+`using` of a package that is not in the image (`F3`), an import that
+conflicts with a binding of the module (`C3`), an `include` of an
+untracked file (`C4`), a changed module header or any other top-level
+expression of a root file outside its module (`C5`), and a type whose
+redefinition reaches a method of an untracked file (`B2`). A removed
+`using` is not applied: Julia has no un-import, so the binding stays.
 
 ## The child harness — the rules to remember
 
@@ -265,8 +318,18 @@ code.
   Julia`); a store founded before it needs a founding build.
 - **`--trim` refuses reactive reuse** — the trim verifier walks the edges
   that reuse skips. The trimmed flagship binary is its own milestone.
-- **Method removals are not applied**; dead methods stay until a full
-  build.
+- **The ledger sees the tracked sources alone.** A value of an old type
+  inside an untyped container of a `const` is not found (the oracle's
+  output check sees it); an untracked expander of a tracked macro is
+  invisible, because an expansion leaves no trace in the expander's
+  method; a macro that builds a `macrocall` at expansion time is not a
+  head of the ledger.
+- **A reformat leaves the quoted line numbers.** A `LineNumberNode`
+  inside a quoted literal (the body of a macro, the answer of a
+  generator) keeps the line of the last evaluation, and a kept method
+  keeps its old line table; the oracle strips quoted lines and drops the
+  gensym counters (`var"##3#4"`), which a chain and a founding count
+  differently.
 - **A replaced method stays in the image.** Julia does not close the
   world of a replaced typemap entry: both entries stay valid, dispatch
   takes the newest one (`gf.c`, `get_intersect_visitor`), and the old
@@ -283,10 +346,11 @@ code.
 - **No cross-process store without an image.** The recorded-read (cell
   model) store of the design is not built; it is what removes the need for
   a previous image and for the build-id cascade of package images.
-- **An edit to a root file, a new `include`, or a new `using` needs a
-  founding build.** The builder tracks the included files of a package and
-  not its root file. Remove `reactive-store/` under the output, or build
-  into another output.
+- **A refused change needs a founding build**: a module option, a `using`
+  of a package outside the image, a conflicting import, an `include` of an
+  untracked file, a changed module header or root-file expression, a type
+  that an untracked method names. Remove `reactive-store/` under the
+  output, or build into another output.
 - **The builder integration lives on a branch of the pinned worktree**
   (`reactive-builder` of `omnet-julia-m1`, from `e21ba2cd`), not on the
   main line of omnet-julia.

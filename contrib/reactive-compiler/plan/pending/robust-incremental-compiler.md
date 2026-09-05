@@ -100,27 +100,27 @@ invalidation reaches, the stage that covers it, and the state today.
 | --- | --- | --- | --- | --- | --- |
 | A1 | add a method | the expression | callers whose dispatch changes | done | done |
 | A2 | change a method body | the expression | callers of the method | done | done |
-| A3 | remove a method | `delete_method` on the signature of the removed expression | callers | B | reported, not applied |
-| A4 | change a signature | A3 then A1 | callers | B | not applied |
+| A3 | remove a method | `delete_method` on the signature of the removed expression | callers | B | done |
+| A4 | change a signature | A3 then A1 | callers | B | done |
 | A5 | keyword or default arguments | one expression, several methods | callers | done | done |
-| A6 | generated function, callable struct | the expression | callers | B (test) | untested |
+| A6 | generated function, callable struct | the expression | callers | B (test) | done |
 | B1 | add a type | the expression | none | done | done |
-| B2 | change the fields or parameters of a struct | the expression, then every tracked expression whose signature, field type or initializer names the type | all code on the type, by binding partitions | B | not applied |
-| B3 | change a supertype | B2 for the type and for every subtype, transitively | large | B | not applied |
-| C1 | change a `const` | the expression | code that read the binding | B (test) | untested |
-| C2 | change the initial value of a global | the expression | none | B (test) | untested |
-| C3 | `using`, `import`, `export`, `public` | the expression, then every tracked expression whose name resolution changes | binding partitions | B | not applied |
-| C4 | add or remove an `include` | the root file, tracked; the new file's expressions, or the removal of the old file's methods | as the contents | B | needs a founding |
-| C5 | add, remove or rename a module | remove and add its contents | large | B | needs a founding |
-| D1 | change a macro | every tracked expression that expands it, transitively | as their contents | B | not applied |
-| D2 | `@eval` loops, one expression with many methods | the expression; skip a method whose lowered code did not change | as the contents | B | applied with needless invalidation |
-| E1 | a file that top-level evaluation reads | the expressions that read it (recorded) | as the expressions | B | not tracked |
+| B2 | change the fields or parameters of a struct | the expression, then every tracked expression whose signature, field type or initializer names the type | all code on the type, by binding partitions | B | done; a value of the old type in an untyped container is not found |
+| B3 | change a supertype | B2 for the type and for every subtype, transitively | large | B | done |
+| C1 | change a `const` | the expression | code that read the binding | B (test) | done |
+| C2 | change the initial value of a global | the expression | none | B (test) | done |
+| C3 | `using`, `import`, `export`, `public` | the expression, then every tracked expression whose name resolution changes | binding partitions | B | done; a removed `using` keeps its binding; a conflict is refused |
+| C4 | add or remove an `include` | the root file, tracked; the new file's expressions, or the removal of the old file's methods | as the contents | B | done for a tracked file; an untracked file is refused |
+| C5 | add, remove or rename a module | remove and add its contents | large | B | an added module block is applied; a changed header or root file is refused |
+| D1 | change a macro | every tracked expression that expands it, transitively | as their contents | B | done; the heads are syntactic |
+| D2 | `@eval` loops, one expression with many methods | the expression; skip a method whose lowered code did not change | as the contents | B | done by the runtime method filter |
+| E1 | a file that top-level evaluation reads | the expressions that read it (recorded) | as the expressions | B | done for the string literals of the expression |
 | F1 | module-level compiler options | every expression of the module | the module | refuse | needs a founding |
 | F2 | the workload or the trace | none | coverage only | A | done |
 | F3 | preferences, dependency versions, Julia flags, Base | the package image or the sysimage | everything | refuse (E later) | needs a founding |
-| H1 | comments, whitespace, line numbers | none; update the line numbers of the methods in place | none | B | the diff ignores them; lines are not updated |
+| H1 | comments, whitespace, line numbers | none; update the line numbers of the methods in place | none | B | done; a quoted line number stays until the next evaluation |
 | H2 | docstrings | the expression | none | done | done |
-| H3 | move or rename a file | content-keyed diff, not path-keyed | none | B | not applied |
+| H3 | move or rename a file | content-keyed diff, not path-keyed | none | B | done |
 
 Every category is supportable, and the cost degrades toward a founding: a
 `convert` method or a supertype change invalidates most of the program, and
@@ -244,7 +244,7 @@ write and the link stay. The rebuild time is the subject of Stage C.
 The tracker of top-level evaluation, the apply set closed under it, and the
 refusal of what it cannot apply.
 
-- [ ] the ledger: for each tracked file, for each top-level expression
+- [x] the ledger: for each tracked file, for each top-level expression
       (keyed by the hash of the expression with line numbers stripped),
       the methods that it defines (their signatures, evaluated in the
       module), the bindings that it assigns, the macros that it expands
@@ -253,41 +253,104 @@ refusal of what it cannot apply.
       that its evaluation reads. The ledger of the old sources is computed
       in the rebuild child from the store's copy, because the image holds
       the modules and types that the signatures need; the ledger of the
-      new sources is computed after the apply.
-- [ ] A3, A4: a removed or re-signed expression deletes its methods by
-      `delete_method` before the additions of the same file.
-- [ ] B2, B3: a changed type re-evaluates every tracked expression that
+      new sources is computed after the apply. *As built:* `rc_ledger` in
+      `reactive_child.jl`, on `ReactiveSourceDiff.file_entries`; an item
+      is the entry, its syntactic kind and defined name, and its methods.
+      The methods of an old item are the live methods of the table whose
+      file is the item's file and whose line is inside the item
+      (`rc_methods_by_file`, `rc_assign_methods!`); a generator, at
+      `none:0`, belongs to no item. The macro heads, the type-level names
+      and the read paths are syntactic (`macro_heads`,
+      `type_level_names`, `read_paths`: every string literal of the
+      expression that names a file relative to the source directory).
+      The store keeps `reads.txt`, the hash of every file that an
+      expression could read.
+- [x] A3, A4: a removed or re-signed expression deletes its methods by
+      `delete_method` before the additions of the same file. *As built:*
+      the removals go first, in file order; a changed expression deletes
+      its old methods after its evaluation, so a replacement of the same
+      signature is a dead entry and one without a replacement makes the
+      change an A4. `rc_delete_method` deletes the generator's method with
+      a generated method.
+- [x] B2, B3: a changed type re-evaluates every tracked expression that
       names the type in a signature, a field type or an initializer, in
       file order; a changed supertype does the same for every subtype,
       transitively. Julia 1.12 allows the redefinition of a struct; the
       compiler process has no instances of the old type, because it never
-      executes the program.
-- [ ] C3: a changed `using`, `import`, `export` or `public` re-evaluates
+      executes the program. *As built:* the dependents are the tracked
+      expressions whose `type_level_names` name the type; a type whose
+      shape (`type_shape`: fields, parameters, supertype) did not change
+      is an A2 of its constructors. Limit: a value of the old type inside
+      an untyped container of a `const` is not found; the invariant's
+      check 4 sees it.
+- [x] C3: a changed `using`, `import`, `export` or `public` re-evaluates
       every tracked expression of the module whose free names resolve
-      differently before and after.
-- [ ] C4, C5: the builder tracks the root file of each package; an added
+      differently before and after. *As built:* the free names of every
+      expression of the module are resolved before and after the apply of
+      the `using`; an expression whose resolution differs joins the
+      queue. A removed `using` is not applied: Julia has no un-import, so
+      the binding stays (`rc: removed ... not applied, the binding
+      stays`). An import that conflicts with a binding of the module is
+      refused (Julia ignores it), and a `using` of a package that is not
+      in the image is an F3 refusal.
+- [x] C4, C5: the builder tracks the root file of each package; an added
       `include` evaluates the new file, a removed one deletes the methods
       of the old file, a module block is removed and added as a whole.
-      Any other change of a root file is refused.
-- [ ] D1: a changed macro re-evaluates every tracked expression whose
+      Any other change of a root file is refused. *As built:* an include
+      item is never evaluated; it names a tracked file (else a C4
+      refusal), and the file's own entries carry the change. A removed
+      tracked file deletes its methods. A new module block is a C5
+      addition; a changed module header, and any other expression of a
+      root file outside its module, is a C5 refusal.
+- [x] D1: a changed macro re-evaluates every tracked expression whose
       ledger names the macro, transitively through macros that expand to
-      macros.
-- [ ] D2: before the re-evaluation of a method expression, compare the
+      macros. *As built:* the macro heads are syntactic, so a macro that
+      builds a `macrocall` at expansion time is invisible; the transitive
+      closure runs over the tracked macros.
+- [x] D2: before the re-evaluation of a method expression, compare the
       lowered code of each method it defines with the existing one, and
       skip the definition when they are equal. First measure whether
       Julia's `jl_method_def` already skips an identical redefinition.
-- [ ] E1: `include_dependency` and the file reads of top-level evaluation
-      are recorded; a changed file re-evaluates its readers.
-- [ ] H1, H3: the line numbers of the methods of an unchanged expression
+      *As built:* `jl_method_def` never skips: an identical redefinition
+      moves the world and invalidates every caller. The runtime hook
+      `jl_reactive_set_method_filter` (`src/method.c`) asks a Julia filter
+      before the insertion; `rc_method_filter` keeps the live method when
+      the module, the signature, the method flags and the uncompressed IR
+      (`code`, `slotflags`, `ssaflags`, `ssavaluetypes`,
+      `propagate_inbounds`, `has_fcall`, `inlining`) are equal. A kept
+      method keeps its own line table. A generated method is never kept.
+- [x] E1: `include_dependency` and the file reads of top-level evaluation
+      are recorded; a changed file re-evaluates its readers. *As built:*
+      the reads are the syntactic `read_paths`, hashed into `reads.txt`
+      at every rebuild; an expression whose read file changed is an E1
+      change.
+- [x] H1, H3: the line numbers of the methods of an unchanged expression
       are updated in place; the diff keys expressions by content, so a
-      moved file is a move, not a removal and an addition.
-- [ ] the classifier: every change gets an id from the catalog; the apply
+      moved file is a move, not a removal and an addition. *As built:* the
+      `line` of the methods of an unchanged item moves to the new item
+      (`lines updated` in the report); a kept method of D2 moves too. The
+      files match by path, then by content (a renamed file), then a lone
+      leftover pair (renamed and edited). A reformat re-evaluates nothing,
+      so a `LineNumberNode` inside a quoted literal (a macro body) keeps
+      the line of the last evaluation.
+- [x] the classifier: every change gets an id from the catalog; the apply
       report lists the changes by id, the apply set by size, and every
       refusal with its id and reason. A refusal stops the rebuild before
-      the apply, with the founding as the advice.
-- [ ] a refusal for an apply set that leaves the tracked sources: a
+      the apply, with the founding as the advice. *As built:*
+      `rc_classify`; the report is one `rc: change <id> <file>:<line>
+      <name> (<note>), N methods[, K kept][, D deleted]` line per change
+      and a summary line; a refusal is `rc: refuse <id> <where>: <reason>`,
+      the child exits 3 before any evaluation, the parent removes the
+      snapshot and errors "the rebuild is refused; a founding build
+      applies the change".
+- [x] a refusal for an apply set that leaves the tracked sources: a
       method of an untracked file whose signature names a redefined type,
-      or an untracked file that expands a changed tracked macro.
+      or an untracked file that expands a changed tracked macro. *As
+      built:* the first (`rc_methods_on_type`: a live method outside the
+      tracked files whose signature names the type is a B2 refusal). The
+      second is not detected: an expansion leaves no trace in the
+      expander's method, so an untracked expander of a tracked macro is
+      invisible. Documented as a limit.
 
 **Gate B.** A second tracked file of HazardApp, `src/changes.jl`, with one
 case per category: A3 (the dispatch falls to a general method after the
@@ -298,6 +361,18 @@ E1, H1 (a reformat gives an empty apply set), H3 (a renamed file gives an
 empty apply set). Each case gives the new value after the edit and the old
 value after the reverse edit, and Gate 0 passes on the sequence. Two
 refusal cases: an option change of a module, and an untracked dependent.
+*As built:* `tool/gate_b.sh`, passed; the entry "2026-09-05, Gate B" in the
+log. Three deviations. The chain refreshes its trace before the comparison
+with the founding of the final sources: the edit made an 18-element report
+whose `vect` is a dynamic dispatch, and its runtime specializations are
+roots that only a trace at the edited sources holds; the rebuild after the
+refresh applies nothing and precompiles them. The oracle's digest is
+canonical: the gensym counters of anonymous functions, closures and
+generators are dropped from the signatures and the code, the
+`LineNumberNode` literals inside quoted code are stripped, and a root of
+the trace that names a gensym of a tracked module has the state `gensym`.
+And the reverse edit does not restore `word`: a removed `using` keeps its
+binding, so `guess_word` stays `exported`; the gate expects that.
 
 ## Stage C — the fresh table and the dead code
 
@@ -463,6 +538,42 @@ earlier series with the same code but the `Main` closures still traced:
 61.4, 61.8, 61.9, 61.3, 61.8 s. The founding once took 5:44 with three
 image writes: `materialize_app` consumed `incremental` and `create_app`
 defaulted to a fresh sysimage; it forwards `incremental = true` now.
+
+**2026-09-05, Gate B.** The recorder and the classifier (`tool/gate_b.sh`,
+`src/changes.jl` of HazardApp with the fourteen cases and two refusals).
+The chain: founding 2:13 and 6.1 GB; the trace 47 statements, 23 of
+HazardApp; the edit 20.7 s (every category in the report, `use_times2` out
+of the cone, 2 methods kept by the filter, 9 deleted, 21 lines updated, 44
+new method instances); the reformat 15.4 s (0 expressions, 0 removals, 30
+lines updated); the refresh 4.2 s (48 kept, 1 dropped, 2 added: the
+runtime specializations of the report's `vect`); the rebuild after it 12.4
+s (0 expressions, 6 new method instances); the founding of the final
+sources 1:17 and 6.0 GB; checks 1-4 equal (70 methods, 47 roots, 34
+output lines, 6 globals; 66 and 65 code instances, 0 shadowed). The
+restore 12.4 s (20 expressions, 2 removals, 1 kept, 10 deleted, 21 lines
+updated, 15 new method instances); its digest against the digest of the
+first image: checks 1-4 equal (69 methods, 47 roots, 32 lines, 6 globals),
+`word` excepted. The refusals: `F1 HazardApp.jl:10 other: @optlevel is a
+module option` and `B2 changes.jl:79 Corner: the untracked untracked.jl:3
+corner_of names the type`, the store and the binary unchanged in both.
+
+Six findings. `jl_method_def` never skips an identical redefinition, so
+D2 is the runtime filter `jl_reactive_set_method_filter`: the child keeps
+a method whose module, signature, flags and uncompressed IR are equal, and
+the kept method keeps its own line table. The generator of a generated
+method is an anonymous method at `none:0`: the ledger owns no such method,
+so `rc_delete_method` deletes it with its generated method, or it stays as
+dead code that no founding has. The gensym counters of anonymous
+functions, closures and generators differ between a chain and a founding,
+and a quoted `LineNumberNode` (the body of a macro, the answer of a
+generator) keeps the line of its last evaluation through a reformat: the
+oracle drops the counters and strips the quoted lines, and a root that
+names a gensym of a tracked module has the state `gensym`. A dynamic
+dispatch that the founding's trace never saw is compiled by the JIT of the
+binary until a refresh of the trace and a rebuild, so the gate refreshes
+before it compares. A removed `using` is not applied: Julia has no
+un-import. And an untracked expander of a tracked macro is invisible,
+because an expansion leaves no trace in the expander's method.
 
 **2026-09-05, the plan.** Written from the discussion of the six points:
 restart or server; the catalog; the tracker; no execution in the compiler;
