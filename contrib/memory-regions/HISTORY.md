@@ -445,7 +445,24 @@ the count. The three brackets of a stock collection skip 64 entries per heap
 instead of 8, and a thread heap carries 64 region entries, about 100 KB, in
 place of 8. `regions_many.jl` opens every region, stores toward the root at
 the top of the chain, quarantines region 32 and region 63, and declares a
-tree of 62 leaves under one trunk. The lazy per-heap state stays deferred.
+tree of 62 leaves under one trunk.
+
+The lazy per-heap state followed. The anonymous struct of the region table
+became `jl_gc_region_state_t` and lost its `initialized` byte; the table
+became 64 pointers, `NULL` until the heap first uses a region. The three
+ways a heap comes to use a region all pass `region_lazy_init`: a window, a
+task switch that installs one, and a borrow. It allocates the state with
+`calloc_s`, which aborts when memory runs out, as the runtime does for its
+own metadata. The state is never freed: a reset parks the pages for the
+next window, and the chains live in it. The sites that read the state
+without a test are the ones a window or a borrow guards; every other site
+tests the pointer as it tested the byte. The allocation fast path did not
+change: `active_pools` now points into the heap-allocated state. A thread
+heap carries 64 pointers in place of about 100 KB, plus about 1.5 KB per
+region it has used. `regions_window.jl` asks every entry about a region no
+window opened, and the multi-thread runs of the sweep meet the `NULL`
+states of the other heaps in the brackets of a stock collection, the global
+reset and the global root scan.
 
 ### Cleanups
 

@@ -484,8 +484,10 @@ the program's own to keep.
   censuses refuse from then on, a window on the region is refused, and the
   region's finalizer list stays a root of the stock mark. The memory of a
   quarantined region is retained for the life of the process.
-- A window costs the thread heap 64 region entries, about 100 KB, and the
-  page metadata two fields, whether or not a program ever opens one.
+- A thread heap carries a table of 64 pointers, one per region. The state
+  of a region on a heap, about 1.5 KB, is made at the first window onto the
+  region on that heap and lives until the process ends. The page metadata
+  carries two region fields whether or not a program ever opens a window.
 - The heap reserve prefaults at most `GC_MAX_BLOCKS` blocks (about 64 GB);
   blocks past that are mapped lazily.
 - `jl_gc_region_collect` returns `EINVAL` for a valid region that no window
@@ -524,7 +526,7 @@ one and no escape ever seen on the other.
 |:--|:--|
 | `src/gc-regions.h` | The exported API, the refusal codes, the hooks the runtime calls, the stubs for a third-party heap. |
 | `src/gc-regions.c` | The window, the reset, the tree, the census, the barrier, the debug checks. |
-| `src/gc-tls-stock.h` | The per-heap region table: pools, page chains, finalizer list, malloc'd list, live and child masks. |
+| `src/gc-tls-stock.h` | The per-heap region table, a pointer per region, and `jl_gc_region_state_t`, the state of one region on one heap: pools, page chains, finalizer list, malloc'd list. The live and child masks. |
 | `src/gc-stock.c` | The region page tag, the allocation into the active pools, the census filter in the mark loops, the sweep that skips region pages, the `WeakRef` refusal. |
 | `src/gc-common.c` | Finalizer lists and malloc'd data of a region; the suspend and resume of a window around the runtime's own allocation. |
 | `src/gc-pages.c` | The heap reserve. |
