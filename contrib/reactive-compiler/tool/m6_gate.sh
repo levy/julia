@@ -2,13 +2,15 @@
 # M6 driver. The two Stage 1 hazards, on the HazardApp package
 # (tool/m6_hazard): every call shape across the reuse boundary, and a
 # redefined `@ccallable` method.
-#   full         - materialize_app founds the store of HazardApp
+#   full         - materialize_app founds the store of HazardApp (a fresh
+#                  $OUT/hazard: a store that exists would make it a rebuild)
 #   run-before   - the built binary prints the before-values
 #   edit         - shapes-after.jl replaces HazardApp/src/shapes.jl
 #   mat-edit     - materialize_app again: the delta of the edit; the log must
 #                  say that the previous image exports `hazard_entry`
 #   run-after    - the rebuilt binary prints the after-values; the bench line
-#                  gives the trampoline cost per call
+#                  gives the trampoline cost per call; the `state` line says
+#                  what the rebuild workloads left in a global of the image
 #   restore      - git restores shapes.jl
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
@@ -85,9 +87,12 @@ for line in open(sys.argv[1], errors="replace"):
     if m: got[m.group(1)] = float(m.group(2))
 bad = [k for k in want if got.get(k) != want[k]]
 missing = [k for k in want if k not in got]
+# `state` is what the rebuild workloads so far left in `FINALIZED`: reported,
+# not checked, because it says what the image holds and not what the code does
 print(f"=== shapes({sys.argv[2]}): {len(want) - len(bad)} of {len(want)} as expected"
       + (f"; wrong {', '.join(f'{k}={got.get(k)}' for k in bad)}" if bad else "")
-      + (f"; missing {', '.join(missing)}" if missing else ""))
+      + (f"; missing {', '.join(missing)}" if missing else "")
+      + f"; persisted state {got.get('state')}")
 sys.exit(1 if bad else 0)
 PY
 }
@@ -104,7 +109,7 @@ restore() { git -C "$JH" checkout -- "contrib/reactive-compiler/tool/m6_hazard/$
 steps=${*:-full run-before edit mat-edit run-after restore mat-restore run-restored}
 for step in $steps; do
     case $step in
-        full) write_mat && lane mat-full "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
+        full) rm -rf "$APP" && write_mat && lane mat-full "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
         run-before) runbin before before ;;
         edit) edit ;;
         mat-edit) lane mat-edit "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-edit ;;

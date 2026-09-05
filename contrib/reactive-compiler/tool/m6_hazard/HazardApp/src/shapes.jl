@@ -103,6 +103,10 @@ function ccall_entry()
 end
 
 function driver()
+    # the increment, not the total: the rebuild workload runs in the process
+    # whose heap becomes the image, so `FINALIZED` carries what every rebuild
+    # so far added. `state` prints that.
+    state = FINALIZED[]
     tracked = make_tracked(1)
     finalize(tracked)
     fptr = @cfunction(reused_cfunc_target, Cint, (Cint,))
@@ -117,7 +121,8 @@ function driver()
         ("invoke", reused_invoke(Circle(1.0))),
         ("oc", make_oc()(1)),
         ("sparam", reused_sparam(1)),
-        ("finalizer", FINALIZED[]),
+        ("finalizer", FINALIZED[] - state),
+        ("state", state),
         ("reverse", apply_dynamic(delta_callee, 1)),
         ("cone", cone_caller()),
     ]
