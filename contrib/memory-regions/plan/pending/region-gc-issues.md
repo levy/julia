@@ -752,7 +752,12 @@ world than the function.
 The fold also carries the two commits of `region-gc-64-regions.md`,
 `1e71388e75` (the constant, the mask, the tests) and `75fd633ce8` (the
 documents), which sit on `gc-regions-fixes` after the fix commits. They
-belong to the stage that owns `gc-tls-stock.h` and `regions_api.jl`.
+belong to the stage that owns `gc-tls-stock.h` and `regions_api.jl`. The
+two commits of `region-gc-lazy-region-state.md` follow them: `c061421172`
+(the pointer table, `jl_gc_region_state_t`, the sites, the test) and
+`025b0e8557` (the documents). They touch `gc-tls-stock.h`, `gc-regions.c`,
+`gc-regions.h`, `gc-stock.c` and `regions_window.jl`, and belong to the
+stage that owns the per-heap region table.
 
 - [ ] Map each flat commit to its owning stage with `xstage.py`.
 - [ ] Move the annotated markers in `annotated/` of the tooling repository so
