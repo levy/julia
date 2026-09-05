@@ -193,14 +193,16 @@ STATIC_INLINE void jl_gc_region_finalizers_end(jl_ptls_t ptls, int parked) JL_NO
 }
 
 // The allocator's check, inline because it runs on the allocation path
-// while a window is open: the threshold is off, or the region is small.
+// while a window is open: the threshold is off, or the region is small. The
+// caller tests that a window is open, so the open region has state here.
 STATIC_INLINE int jl_gc_region_maybe_census(jl_ptls_t ptls)
 {
     int threshold = jl_atomic_load_relaxed(&jl_gc_region_census_page_threshold);
     if (__likely(threshold <= 0))
         return 0;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if ((int)heap->regions[heap->current_region].n_pages < threshold)
+    assert(heap->current_region != 0 && heap->regions[heap->current_region] != NULL);
+    if ((int)heap->regions[heap->current_region]->n_pages < threshold)
         return 0;
     return jl_gc_region_census_open(ptls);
 }

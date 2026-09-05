@@ -200,7 +200,8 @@ JL_DLLEXPORT int jl_gc_region_pages(int n)
     if (!region_valid(n))
         return 0;
     jl_thread_heap_t *heap = &jl_current_task->ptls->gc_tls.heap;
-    return (int)heap->regions[n].n_pages;
+    jl_gc_region_state_t *rs = heap->regions[n];
+    return rs == NULL ? 0 : (int)rs->n_pages;
 }
 
 // 1 when an escape quarantined region n, 0 otherwise (a bad region number
@@ -296,7 +297,7 @@ int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isali
     int cr = ptls->gc_tls.heap.current_region;
     if (__likely(cr == 0))
         return 0;
-    small_arraylist_push(&ptls->gc_tls.heap.regions[cr].mallocarrays,
+    small_arraylist_push(&ptls->gc_tls.heap.regions[cr]->mallocarrays,
                          (void*)(((uintptr_t)m) | !!isaligned));
     return 1;
 }
@@ -322,7 +323,7 @@ int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
         jl_errorf("finalizer: the object lives in region %d of another "
                   "thread; cross-thread registration on a region object "
                   "is not supported", r);
-    arraylist_t *lst = &ptls->gc_tls.heap.regions[r].finalizers;
+    arraylist_t *lst = &ptls->gc_tls.heap.regions[r]->finalizers;
     arraylist_push(lst, v);
     arraylist_push(lst, f);
     return 1;
@@ -405,9 +406,9 @@ void jl_gc_region_clear_stock_marks(void) JL_NOTSAFEPOINT
             continue;
         jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
         for (int n = 1; n < JL_GC_MAX_REGIONS; n++) {
-            if (!heap->regions[n].initialized)
+            if (heap->regions[n] == NULL)
                 continue;
-            for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+            for (jl_gc_pagemeta_t *pg = heap->regions[n]->pages; pg != NULL; pg = pg->region_next) {
                 if (!pg->has_marked)
                     continue;
                 int osize = pg->osize;
@@ -448,30 +449,29 @@ void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
             continue;
         jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
         for (int n = 1; n < JL_GC_MAX_REGIONS; n++)
-            if (heap->regions[n].initialized)
-                gc_mark_finlist(mq, &heap->regions[n].finalizers, 0);
+            if (heap->regions[n] != NULL)
+                gc_mark_finlist(mq, &heap->regions[n]->finalizers, 0);
     }
 }
 
 // --- windows -----------------------------------------------------------------------
 
+// The state of a region on a heap is made on the heap's first use of the
+// region: a window, a task switch that installs one, or a borrow. Zeroed
+// memory is the empty state of everything but the pool sizes and the two
+// lists. calloc_s aborts when memory runs out, as the runtime does for its
+// own metadata. The state is never freed: a reset parks the pages for the
+// next window on the region, and the chains live here.
 static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 {
-    if (n == 0 || heap->regions[n].initialized)
+    if (n == 0 || heap->regions[n] != NULL)
         return;
-    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
-        heap->regions[n].pools[i].freelist = NULL;
-        heap->regions[n].pools[i].newpages = NULL;
-        heap->regions[n].pools[i].osize = heap->norm_pools[i].osize;
-    }
-    heap->regions[n].pages = NULL;
-    heap->regions[n].fresh_pages = NULL;
-    heap->regions[n].pages_tail = NULL;
-    heap->regions[n].n_pages = 0;
-    heap->regions[n].n_fresh = 0;
-    small_arraylist_new(&heap->regions[n].mallocarrays, 0);
-    arraylist_new(&heap->regions[n].finalizers, 0);
-    heap->regions[n].initialized = 1;
+    jl_gc_region_state_t *rs = (jl_gc_region_state_t*)calloc_s(sizeof(jl_gc_region_state_t));
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
+        rs->pools[i].osize = heap->norm_pools[i].osize;
+    small_arraylist_new(&rs->mallocarrays, 0);
+    arraylist_new(&rs->finalizers, 0);
+    heap->regions[n] = rs;
 }
 
 // A region becomes live at the first window onto it after a reset (or
@@ -544,7 +544,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
         jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
         ct->sticky = ct->sticky_before_region;
     }
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
     heap->current_region = (uint8_t)n;
     return old;
 #endif
@@ -563,7 +563,7 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     region_lazy_init(heap, n);
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
     heap->current_region = (uint8_t)n;
 }
 
@@ -579,7 +579,7 @@ void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     region_lazy_init(heap, n);
     region_mark_live(heap, n);
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n].pools;
+    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
     heap->current_region = (uint8_t)n;
 }
 
@@ -627,39 +627,40 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 #define REGION_FINALIZER_ROUNDS 64
 static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 {
-    if (!heap->regions[n].initialized)
+    if (heap->regions[n] == NULL)
         return 0;
     for (int round = 0; round < REGION_FINALIZER_ROUNDS; round++) {
-        if (heap->regions[n].finalizers.len == 0)
+        if (heap->regions[n]->finalizers.len == 0)
             return 0;
         arraylist_t run;
-        region_take_list(&run, &heap->regions[n].finalizers);
+        region_take_list(&run, &heap->regions[n]->finalizers);
         region_run_finalizer_list(ct, &run);
     }
-    return heap->regions[n].finalizers.len == 0 ? 0 : JL_GC_REGION_EFINALIZERS;
+    return heap->regions[n]->finalizers.len == 0 ? 0 : JL_GC_REGION_EFINALIZERS;
 }
 
 // The free. The caller drained the finalizer list, or refused: no Julia code
 // runs here, so the caller may hold the world stopped through it.
 static uint64_t region_reset_heap(jl_thread_heap_t *heap, int n)
 {
-    if (!heap->regions[n].initialized)
+    jl_gc_region_state_t *rs = heap->regions[n];
+    if (rs == NULL)
         return 0;
-    assert(heap->regions[n].finalizers.len == 0);
-    region_free_malloced(&heap->regions[n].mallocarrays, 0);
+    assert(rs->finalizers.len == 0);
+    region_free_malloced(&rs->mallocarrays, 0);
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
-        heap->regions[n].pools[i].freelist = NULL;
-        heap->regions[n].pools[i].newpages = NULL;
+        rs->pools[i].freelist = NULL;
+        rs->pools[i].newpages = NULL;
     }
-    uint64_t pages = (uint64_t)heap->regions[n].n_pages + heap->regions[n].n_fresh;
-    jl_gc_pagemeta_t *head = heap->regions[n].pages;
+    uint64_t pages = (uint64_t)rs->n_pages + rs->n_fresh;
+    jl_gc_pagemeta_t *head = rs->pages;
     if (head != NULL) {
-        heap->regions[n].pages_tail->region_next = heap->regions[n].fresh_pages;
-        heap->regions[n].fresh_pages = head;
-        heap->regions[n].pages = NULL;
-        heap->regions[n].pages_tail = NULL;
-        heap->regions[n].n_fresh += heap->regions[n].n_pages;
-        heap->regions[n].n_pages = 0;
+        rs->pages_tail->region_next = rs->fresh_pages;
+        rs->fresh_pages = head;
+        rs->pages = NULL;
+        rs->pages_tail = NULL;
+        rs->n_fresh += rs->n_pages;
+        rs->n_pages = 0;
     }
     region_mark_empty(heap, n);         // the parent may now be resettable
     return pages;
@@ -687,7 +688,7 @@ static uint64_t region_reset_body(int n, int checked)
         return (uint64_t)JL_GC_REGION_EINVAL;
     if (n == heap->current_region || heap->finalizer_depth != 0)
         return (uint64_t)JL_GC_REGION_EBUSY;
-    if (!heap->regions[n].initialized)
+    if (heap->regions[n] == NULL)
         return 0;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)JL_GC_REGION_EQUARANTINED;
@@ -829,7 +830,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
             result = (uint64_t)JL_GC_REGION_ECHILD;
             break;
         }
-        if (heap->regions[n].initialized && heap->regions[n].finalizers.len != 0) {
+        if (heap->regions[n] != NULL && heap->regions[n]->finalizers.len != 0) {
             result = (uint64_t)JL_GC_REGION_EFINALIZERS;
             break;
         }
@@ -906,7 +907,7 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
 {
     int64_t freed = 0;
     uint64_t live = 0, pages_walked = 0, pages_wholesale = 0;
-    jl_gc_pool_t *pools = heap->regions[n].pools;
+    jl_gc_pool_t *pools = heap->regions[n]->pools;
     char *bump[JL_GC_N_MAX_POOLS];
     jl_taggedvalue_t **fl_tail[JL_GC_N_MAX_POOLS];
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
@@ -916,10 +917,10 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
     }
     // The marks are still set here: free the malloc'd data of the dead
     // memories before the page walk clears the bits.
-    region_free_malloced(&heap->regions[n].mallocarrays, 1);
+    region_free_malloced(&heap->regions[n]->mallocarrays, 1);
     jl_gc_pagemeta_t *kept = NULL;
     jl_gc_pagemeta_t *kept_tail = NULL;
-    jl_gc_pagemeta_t *pg = heap->regions[n].pages;
+    jl_gc_pagemeta_t *pg = heap->regions[n]->pages;
     while (pg != NULL) {
         jl_gc_pagemeta_t *next = pg->region_next;
         int i = pg->pool_n;
@@ -932,8 +933,8 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
             end = (char*)bump[i];
         if (!pg->has_marked && !is_cursor) {
             // Stale metadata is fine on the fresh list; the claim resets it.
-            pg->region_next = heap->regions[n].fresh_pages;
-            heap->regions[n].fresh_pages = pg;
+            pg->region_next = heap->regions[n]->fresh_pages;
+            heap->regions[n]->fresh_pages = pg;
             freed += (int64_t)ncells;
             pages_wholesale++;
             pg = next;
@@ -961,10 +962,10 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
         pages_walked++;
         pg = next;
     }
-    heap->regions[n].pages = kept;
-    heap->regions[n].pages_tail = kept_tail;
-    heap->regions[n].n_pages = (uint32_t)pages_walked;
-    heap->regions[n].n_fresh += (uint32_t)pages_wholesale;
+    heap->regions[n]->pages = kept;
+    heap->regions[n]->pages_tail = kept_tail;
+    heap->regions[n]->n_pages = (uint32_t)pages_walked;
+    heap->regions[n]->n_fresh += (uint32_t)pages_wholesale;
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
         *fl_tail[i] = NULL;
     jl_atomic_store_relaxed(&region_collect_stats[4], live);
@@ -987,9 +988,9 @@ static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_
         if (ptls2 == NULL)
             continue;
         jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
-        if (heap == mine || !heap->regions[n].initialized)
+        if (heap == mine || heap->regions[n] == NULL)
             continue;
-        for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+        for (jl_gc_pagemeta_t *pg = heap->regions[n]->pages; pg != NULL; pg = pg->region_next) {
             if (!pg->has_marked)
                 continue;
             int osize = pg->osize;
@@ -1071,8 +1072,8 @@ static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthrea
     }
     gc_mark_loop_serial(ptls);
     if (dead != NULL) {
-        region_split_dead_finalizers(&heap->regions[n].finalizers, dead);
-        gc_mark_finlist(mq, &heap->regions[n].finalizers, 0);
+        region_split_dead_finalizers(&heap->regions[n]->finalizers, dead);
+        gc_mark_finlist(mq, &heap->regions[n]->finalizers, 0);
         gc_mark_finlist(mq, dead, 0);
         gc_mark_loop_serial(ptls);
     }
@@ -1155,11 +1156,11 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if (!region_valid(n) || !heap->regions[n].initialized)
+    if (!region_valid(n) || heap->regions[n] == NULL)
         return JL_GC_REGION_EINVAL;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return JL_GC_REGION_EQUARANTINED;
-    if (__unlikely(heap->regions[n].finalizers.len != 0))
+    if (__unlikely(heap->regions[n]->finalizers.len != 0))
         return JL_GC_REGION_EFINALIZERS;
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return JL_GC_REGION_ECHILD;
@@ -1187,7 +1188,7 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if (!region_valid(n) || !heap->regions[n].initialized)
+    if (!region_valid(n) || heap->regions[n] == NULL)
         return JL_GC_REGION_EINVAL;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return JL_GC_REGION_EQUARANTINED;
@@ -1250,7 +1251,7 @@ int jl_gc_region_census_open(jl_ptls_t ptls)
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     int n = heap->current_region;
-    if (heap->regions[n].finalizers.len != 0 || jl_gc_region_quarantined(n) ||
+    if (heap->regions[n]->finalizers.len != 0 || jl_gc_region_quarantined(n) ||
         ((heap->region_haschild_mask >> n) & 1))
         return 0;
     return region_census_core(jl_current_task, ptls, heap, n) >= 0;
@@ -1273,11 +1274,11 @@ JL_DLLEXPORT void jl_gc_region_set_debug(int on)
 static int64_t region_count_marked(jl_thread_heap_t *heap, int n)
 {
     int64_t violations = 0;
-    jl_gc_pool_t *pools = heap->regions[n].pools;
+    jl_gc_pool_t *pools = heap->regions[n]->pools;
     char *bump[JL_GC_N_MAX_POOLS];
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++)
         bump[i] = (char*)pools[i].newpages;
-    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+    for (jl_gc_pagemeta_t *pg = heap->regions[n]->pages; pg != NULL; pg = pg->region_next) {
         int i = pg->pool_n;
         int osize = pg->osize;
         char *cell = pg->data + GC_PAGE_OFFSET;
@@ -1334,7 +1335,7 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n)
     int64_t violations = 0;
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
         jl_ptls_t ptls2 = gc_all_tls_states[t_i];
-        if (ptls2 != NULL && ptls2->gc_tls.heap.regions[n].initialized)
+        if (ptls2 != NULL && ptls2->gc_tls.heap.regions[n] != NULL)
             violations += region_count_marked(&ptls2->gc_tls.heap, n);
     }
     region_census_end();
@@ -1352,7 +1353,7 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n)
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if (!region_valid(n) || !heap->regions[n].initialized)
+    if (!region_valid(n) || heap->regions[n] == NULL)
         return 0;
     if (heap->current_region != 0 || heap->finalizer_depth != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)
@@ -1393,11 +1394,11 @@ JL_DLLEXPORT int jl_gc_region_verify(int n)
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     if (!region_valid(n))
         return JL_GC_REGION_EINVAL;
-    if (!heap->regions[n].initialized)
+    if (heap->regions[n] == NULL)
         return 0;
     int errors = 0;
     uint64_t chain_len = 0;
-    for (jl_gc_pagemeta_t *pg = heap->regions[n].pages; pg != NULL; pg = pg->region_next) {
+    for (jl_gc_pagemeta_t *pg = heap->regions[n]->pages; pg != NULL; pg = pg->region_next) {
         chain_len++;
         if (pg->region_n != n) {
             jl_safe_printf("REGION-VERIFY: chained page %p tag %d, expected %d\n",
@@ -1417,7 +1418,7 @@ JL_DLLEXPORT int jl_gc_region_verify(int n)
         }
     }
     uint64_t fresh_len = 0;
-    for (jl_gc_pagemeta_t *fp = heap->regions[n].fresh_pages; fp != NULL; fp = fp->region_next) {
+    for (jl_gc_pagemeta_t *fp = heap->regions[n]->fresh_pages; fp != NULL; fp = fp->region_next) {
         fresh_len++;
         if (fp->region_n != n) {
             jl_safe_printf("REGION-VERIFY: fresh page %p tag %d, expected %d\n",
@@ -1430,7 +1431,7 @@ JL_DLLEXPORT int jl_gc_region_verify(int n)
             break;
         }
     }
-    const jl_gc_pool_t *pools = heap->regions[n].pools;
+    const jl_gc_pool_t *pools = heap->regions[n]->pools;
     for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
         jl_taggedvalue_t *fl = pools[i].newpages;
         if (fl != NULL) {
@@ -1497,8 +1498,7 @@ void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT
     heap->saved_region = 0;
     heap->finalizer_depth = 0;
     heap->active_pools = heap->norm_pools;
-    memset(heap->regions, 0, sizeof(heap->regions));
-    heap->regions[0].initialized = 1;
+    memset(heap->regions, 0, sizeof(heap->regions)); // no region has state yet
     heap->region_live_mask = 0;
     heap->region_haschild_mask = 0;
     memset(heap->region_child_count, 0, sizeof(heap->region_child_count));

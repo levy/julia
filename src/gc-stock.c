@@ -749,25 +749,25 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     jl_ptls_t ptls = jl_current_task->ptls;
     // A region reuses its own wholly-dead pages (parked by a reset or a
     // census sweep) before claiming new ones; the page is already mapped,
-    // tagged, and in the allocd stack.
-    {
-        int cr = ptls->gc_tls.heap.current_region;
-        if (cr != 0) {
-            jl_gc_pagemeta_t *fp = ptls->gc_tls.heap.regions[cr].fresh_pages;
-            if (fp != NULL) {
-                ptls->gc_tls.heap.regions[cr].fresh_pages = fp->region_next;
-                fp->osize = p->osize;
-                fp->thread_n = ptls->tid;
-                fp->region_next = ptls->gc_tls.heap.regions[cr].pages;
-                ptls->gc_tls.heap.regions[cr].pages = fp;
-                if (fp->region_next == NULL)
-                    ptls->gc_tls.heap.regions[cr].pages_tail = fp;
-                ptls->gc_tls.heap.regions[cr].n_fresh--;
-                ptls->gc_tls.heap.regions[cr].n_pages++;
-                jl_taggedvalue_t *fl = gc_reset_page(ptls, p, fp);
-                p->newpages = fl;
-                return fl;
-            }
+    // tagged, and in the allocd stack. The open window made the region's
+    // state on this heap, so `rs` is never NULL here.
+    int cr = ptls->gc_tls.heap.current_region;
+    jl_gc_region_state_t *rs = cr != 0 ? ptls->gc_tls.heap.regions[cr] : NULL;
+    if (rs != NULL) {
+        jl_gc_pagemeta_t *fp = rs->fresh_pages;
+        if (fp != NULL) {
+            rs->fresh_pages = fp->region_next;
+            fp->osize = p->osize;
+            fp->thread_n = ptls->tid;
+            fp->region_next = rs->pages;
+            rs->pages = fp;
+            if (fp->region_next == NULL)
+                rs->pages_tail = fp;
+            rs->n_fresh--;
+            rs->n_pages++;
+            jl_taggedvalue_t *fl = gc_reset_page(ptls, p, fp);
+            p->newpages = fl;
+            return fl;
         }
     }
     jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
@@ -775,14 +775,14 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     pg->thread_n = ptls->tid;
     // The page carries the region that claimed it; a region chains its
     // pages so a reset frees them without a walk of the heap.
-    pg->region_n = ptls->gc_tls.heap.current_region;
+    pg->region_n = cr;
     pg->region_next = NULL;
-    if (pg->region_n) {
-        pg->region_next = ptls->gc_tls.heap.regions[pg->region_n].pages;
-        ptls->gc_tls.heap.regions[pg->region_n].pages = pg;
+    if (rs != NULL) {
+        pg->region_next = rs->pages;
+        rs->pages = pg;
         if (pg->region_next == NULL)
-            ptls->gc_tls.heap.regions[pg->region_n].pages_tail = pg;
-        ptls->gc_tls.heap.regions[pg->region_n].n_pages++;
+            rs->pages_tail = pg;
+        rs->n_pages++;
     }
     set_page_metadata(pg);
     push_lf_back(&ptls->gc_tls.page_metadata_allocd, pg);

@@ -34,9 +34,25 @@ function current_region_refusals()
     check("region 1 is not quarantined by the refusal checks", quarantined(SIM) == 0)
 end
 
+# A heap makes the state of a region on the first window onto it. A valid
+# region that no window ever opened on this heap has no state here, and
+# every entry answers for it as for an empty region: nothing to reset,
+# nothing to collect, nothing to check, and its place in the default chain.
+const UNOPENED = 5
+
 function no_window_defaults()
     check("set(0) with no window returns 0", region_set(0) == 0)
     check("reset of an untouched region returns 0", code(region_reset(RESERVE)) == 0)
+    n = UNOPENED
+    check("pages of a never-opened region is 0", region_pages(n) == 0)
+    check("reset of a never-opened region returns 0", code(region_reset(n)) == 0)
+    check("reset_global of a never-opened region returns 0", code(region_reset_global(n)) == 0)
+    check("collect of a never-opened region refuses", region_collect(n) == EINVAL)
+    check("coop of a never-opened region refuses", region_collect_coop(n) == EINVAL)
+    check("check of a never-opened region finds nothing", region_check(n) == 0)
+    check("verify of a never-opened region finds nothing", region_verify(n) == 0)
+    check("a never-opened region is not quarantined", quarantined(n) == 0)
+    check("a never-opened region keeps its chain parent", parent_of(n) == n - 1)
 end
 
 # jl_gc_region_set returns the region that was current, so a chain of
