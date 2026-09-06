@@ -690,10 +690,40 @@ plan; this probe removed it before a line was written.
 1.02 [0.999, 1.03] at 30 threads. The interval touches 1.00, so the
 evidence is weak; the region table of 64 pointers is what those bytes are.
 
-The three pieces do not add to the whole: about 3 points for the filter,
-about 2 for the heap struct, and about 2 that no probe attributes. What is
-left is the three brackets of a collection, the region test of the page
-sweep, and the shape of the compiled mark loops.
+A control was missing from those four rows, and it changes how they read.
+The flat tip was built a second time, in another directory, from the same
+source: the text of `libjulia-internal` is identical to the byte, so the
+control measures the run-to-run variation of the measurement alone. It gives
+1.06 [1.05, 1.07] at 30 threads where the first run of the same source gave
+1.07 [1.06, 1.09]. **The noise floor of this row is about one point.**
+
+Against that floor, `JL_NO_REGION_ALLOC` at 1.04 [1.02, 1.06] is at most two
+points, and the intervals touch. The census filter is not established as a
+cause.
+
+A fifth build settles it. The mark loops were specialized by hand: the body
+written once and compiled twice, the stock entries passing the literal 0, so
+that the filter folds out of the whole call tree. The disassembly confirms
+the fold - `gc_mark_objarray`, `gc_mark_excstack` and the rest no longer
+load `jl_gc_region_census_target`, and the library keeps 29 of the 52 loads
+it had - and the measurement gives 1.07 [1.05, 1.09] at 30 threads. The
+change bought nothing and cost 11 KB of text, so it was reverted the same
+day.
+
+The reason is a compiler transformation: a branch on a value that is written
+before a loop and read inside it is loop-invariant, and the compiler
+unswitches it - it hoists the test and duplicates the loop, which is exactly
+what the hand specialization does. The filter is read once per object into a
+register, so that transformation had already happened.
+
+What the four probes and the control establish: the page metadata costs
+nothing; the thread heap is worth about two points and its interval touches
+1.00; the census filter is not the cause; and most of the six to seven
+points at 30 threads is **not attributed**. What remains to test is the
+three brackets of a collection, the region test of the page sweep, and the
+shape of the collector's compiled code. The next instrument is a profile of
+the collection on both binaries, not another pair of builds: a ratio cannot
+say which instructions cost the time.
 
 ### The measurements, redone again, with intervals (2026-09-06)
 
