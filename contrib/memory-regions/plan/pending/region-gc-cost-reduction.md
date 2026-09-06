@@ -197,15 +197,31 @@ region. `jl_thread_heap_t` then grows by eight bytes, every stock field
 keeps its offset, and the region paths pay one indirection - on the paths
 that run only when a program uses a region.
 
-- [ ] Move the state. `current_region`, `saved_region`, `finalizer_depth`
-      and `active_pools` are read by the allocation fast path and stay where
-      they are; the table, the masks and the counts move behind the pointer.
-- [ ] The allocation fast path must not gain an indirection. Check the
-      disassembly of `jl_gc_small_alloc_inner` against the current build.
-- [ ] `sizeof(jl_thread_heap_t)` is vanilla's plus eight. Check with the
-      probe, and say so in `COST.md`.
-- [ ] The gate, with the control's floor: the M13 row at 30 threads must
-      fall by more than one point to count.
+**Done, and rejected: it made the row worse.** The table moved behind one
+pointer, with an accessor for every read and a lazy allocation at the first
+region; the masks and the counts stayed, so the tree bookkeeping did not
+move. Every region script passed. The row went to 1.09 [1.06, 1.10] at 30
+threads against a control of 1.06 [1.05, 1.07], and the allocation fast path
+gained two instructions. Reverted.
+
+Two facts came out of it and they close this line of work:
+
+- The region fields are **appended** to `jl_thread_heap_t`, so every field of
+  the stock collector already keeps its vanilla offset. The padding probe
+  reproduces that layout exactly and costs 1.02, where the region build costs
+  1.06.
+- The build with both defines off costs 1.05, so the difference is not the
+  store barrier, not the region allocation path and not the census filter.
+
+What is left is the collector's own region code, which no define removes and
+the profile counted as about 15 instructions per marked object: the corpse
+check of `gc_setmark_pool` (one test per marked object), the census
+parameter of the mark tree (one test per slot), the region test of the page
+sweep (one per page), and the three brackets of a collection. Each is worth
+about a point, which is the resolution of this measurement, and the one that
+was removed by hand moved nothing outside the noise.
+
+- [x] Built, tested, measured, reverted, recorded.
 
 ## Step 1c — Profile the collection: done
 
@@ -275,6 +291,33 @@ alone is two or three builds and three M13 runs.
 The machine states are the ones the measurement uses: the whole machine with
 the isolated partition off for M13 and the test groups, and the partition on
 for M2 and the latency rows (`tools/hil_isolation.sh`).
+
+## Where this leaves the cost
+
+Four candidates were measured and none was accepted:
+
+| Candidate | Result |
+| --- | --- |
+| The page metadata, 8 bytes back | Free by measurement; dropped before it was written |
+| The census filter, specialized out of the stock loop | No change, +11 KB of text; reverted |
+| The region state behind one pointer | Three points worse; reverted |
+| The thread heap's size | Explains 1.02 of 1.06, and the fields already keep their offsets |
+
+The cost of a parallel collection with the region runtime unused is
+therefore the sum of several small checks inside the collector, none of them
+removable without giving up a diagnostic or a mechanism, and each of them at
+or below the resolution of this measurement.
+
+Two honest options remain, and they are for the user to choose:
+
+1. **Accept and document.** `COST.md` states the number, its attribution and
+   the four rejected candidates. An upstream reviewer gets the measurement
+   and the reasoning, which is more than most performance claims carry.
+2. **Build a finer instrument first.** A microbenchmark that marks one fixed
+   object graph in one process, with the same binary marking with and
+   without each check, would resolve one percent instead of two. Only then
+   is it worth removing the corpse check or the census parameter, because
+   only then can the win be seen.
 
 ## Acceptance
 
