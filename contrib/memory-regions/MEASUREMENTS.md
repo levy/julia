@@ -8,6 +8,19 @@ other input; each plot stands under the table that holds its data.
 writes the data files; the logs go to `results/log/`, which git ignores. A
 number in the prose repeats a number of a table.
 
+**How a cost row is measured.** A cost row is paired. One round runs each
+binary once, and the order of the binaries turns over between the rounds, so
+a drift of the machine - the clock, the temperature, the page cache - moves
+both sides of a round together. The cell of a binary is the median of its
+rounds. The cell of a comparison is the median of the per-round differences
+or ratios, with a percentile bootstrap interval at 95 % beside it and, for a
+difference, the p value of the sign test: the question a handful of rounds
+can answer is whether the difference keeps its direction. `results/stats.py`
+computes all of it, seeded, so a table does not move between two runs of the
+script. A row states how many rounds it has, and a row of one round has no
+interval. The latency rows are not paired and not averaged: a tail is a
+maximum and a set of quantiles, and the document reports them as such.
+
 The two binaries: **regions** is a julia built from `48603f334c`, a commit of
 the flat tree from which the commits of this branch were built, reachable
 from the tag `gc-regions-flat`; **vanilla** is a julia built from the base
@@ -525,3 +538,57 @@ This row runs on CPUs 24 to 31. The ratio column is stock / regions.
 <!-- /table -->
 
 ![The sibling leaves scale with the threads](results/plots/scaling.svg)
+
+## M13 — The collector on the whole machine
+
+**Claim.** With the region runtime unused, a parallel collection costs what
+a vanilla collection costs, at every thread count a program uses.
+
+Script `bench/parallel_gc.jl`; data `results/data/parallel_gc.tsv`; plot
+`results/plots/parallel_gc.svg`. The script opens no window and calls no
+region entry point, so the same file runs on both binaries. Every thread
+builds a part of the live set, a tree and a vector of boxes, so every heap
+holds a part of it and the marking threads have work to steal. Twelve full
+collections run after a warm one; every collection is a sample, and the cell
+of a round is their median. A row runs at `-t T --gcthreads=T/2`, the
+default ratio of julia, for the thread counts of `GCTHREADS`.
+
+The row exists because a serial mark cannot show what the region runtime
+adds to a parallel one. The runtime adds one relaxed load per object in the
+mark loops, the census filter, which every marking thread reads from one
+global; one byte test per page in the sweep; and three brackets that walk 64
+region entries per heap, so that part grows with the number of heaps. The
+`time to safepoint` column is the longest a thread took to reach the
+safepoint of a collection: it is a property of the program and the thread
+count, not of the regions, and it is reported so that a large collection
+time can be attributed.
+
+<!-- table M13 -->
+<!-- /table -->
+
+![The collector on the whole machine](results/plots/parallel_gc.svg)
+
+## M14 — What a reset costs the other threads
+
+**Claim.** The checked reset stops the world, so its cost grows with the
+number of threads that run Julia code; the unchecked entry does not.
+
+Script `bench/reset_pause.jl`; data `results/data/reset_pause.tsv`; plot
+`results/plots/reset_pause.svg`. `T - 1` worker tasks do arithmetic, reach a
+safepoint every round, and allocate a little; the main task fills region 1,
+closes the window, and times one reset. Two columns follow from that: what
+the caller pays, and the longest stall a worker suffered inside a reset
+interval. The unchecked entry is the control, because it frees with no pause
+and no scan.
+
+The row matters for the loop this collector is built for. A hardware loop
+runs on the whole machine, and a reset that stops thirty-one other threads
+is a different act from a reset that stops none. The `collections` column
+counts the stock collections of the run: the workers allocate, so a stock
+collection can also stall a worker, and a row whose stalls sit far above its
+resets with many collections measures the collector, not the reset.
+
+<!-- table M14 -->
+<!-- /table -->
+
+![What a reset costs the machine](results/plots/reset_pause.svg)

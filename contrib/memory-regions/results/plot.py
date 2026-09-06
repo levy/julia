@@ -10,6 +10,7 @@ data/context.tsv, which run_all.sh writes.
   python3 plot.py        reads data/*.tsv, writes plots/*.svg
 """
 import math, os
+import stats
 
 D = os.path.dirname(os.path.abspath(__file__))
 DATA, PLOTS = os.path.join(D, "data"), os.path.join(D, "plots")
@@ -264,14 +265,14 @@ def plot_gcbench():
     rows = read_tsv("gcbench.tsv")
     if not rows:
         return
-    best = {}                                            # (set, bench, binary) -> min ns
+    per_round = {}                                       # (set, bench, binary) -> round -> ns
     order = []
     for r in rows:
         k = (r["set"], r["bench"])
         if k not in order:
             order.append(k)
-        kb = (r["set"], r["bench"], r["binary"])
-        best[kb] = min(best.get(kb, float("inf")), float(r["wall_ns"]))
+        per_round.setdefault((r["set"], r["bench"], r["binary"]), {})[int(r["round"])] = float(r["wall_ns"])
+    best = {k: stats.centre(list(v.values())) for k, v in per_round.items()}
     rounds = max(int(r["round"]) for r in rows)
     groups, ratios, colors = [], [], []
     for s, b in order:
@@ -283,7 +284,7 @@ def plot_gcbench():
         colors.append(YELLOW if s == "multithreaded" else BLUE)
     body = []
     heading(body, "Unused, the region runtime runs the GCBenchmarks within noise of vanilla",
-            f"GCBenchmarks wall time, this branch / vanilla at the same base commit; the best of {rounds} rounds each; the dashed line is equal time")
+            f"GCBenchmarks wall time, this branch / vanilla at the same base commit; the median of {rounds} paired rounds; the dashed line is equal time")
     legend(body, 40, 74, [("one thread", BLUE), ("four threads", YELLOW)])
     ax = Axes(80, 100, max(160 * len(groups), 800), 260, 0, 1, 0, max(1.25, ymax_of([r[0] for r in ratios])))
     ax.grid(body, [], nice_ticks(0, ax.yhi, 5), fmt_num, lambda v: f"{v:.2f}")
@@ -300,15 +301,18 @@ def plot_unit_costs():
     rows = read_tsv("unit_costs.tsv")
     if not rows:
         return
-    costs, by = [], {}
+    costs, per_round, units = [], {}, {}
     for r in rows:
         if r["cost"] not in costs:
             costs.append(r["cost"])
-        by[(r["binary"], r["cost"])] = (float(r["value"]), r["unit"])
+        per_round.setdefault((r["binary"], r["cost"]), []).append(float(r["value"]))
+        units[r["cost"]] = r["unit"]
+    by = {k: (stats.centre(v), units[k[1]]) for k, v in per_round.items()}
+    band = {k: (min(v), max(v)) for k, v in per_round.items()}
     vals = [v for v, _ in by.values() if v > 0]
     xlo, xhi = decade_bounds(vals, 1e-1, 1e2)
     body = []
-    heading(body, "What one operation costs", "one row per micro-cost; a dot is the min of the runs; the axis is log")
+    heading(body, "What one operation costs", "one row per micro-cost; a dot is the median of the rounds and the bar their range; the axis is log")
     # vanilla: the stock rows on the vanilla binary. regions, no window: the
     # same rows on the regions binary in a process that never opens a
     # window. regions: every row on the regions binary; after the first
@@ -332,6 +336,9 @@ def plot_unit_costs():
             if (name, c) not in by:
                 continue
             v, unit = by[(name, c)]
+            lo, hi = band[(name, c)]
+            if hi > lo:
+                body.append(f'<line x1="{X(lo):.1f}" y1="{y}" x2="{X(hi):.1f}" y2="{y}" stroke="{color}" stroke-width="3" stroke-linecap="round" opacity="0.45"/>')
             body.append(f'<circle cx="{X(v):.1f}" cy="{y}" r="6" fill="{color}" stroke="{SURFACE}" stroke-width="2"/>')
             text(body, cols[name], y + 4, f"{v:g} {unit}", 10, INK, "middle")
     h = y1 + 60
@@ -763,9 +770,79 @@ def plot_scaling():
     caption(body, 470, "multi")
     write("scaling.svg", x - 60, 470, body)
 
+# ---- M13: the collector on the whole machine ----------------------------------------
+
+def plot_parallel_gc():
+    rows = read_tsv("parallel_gc.tsv")
+    if not rows:
+        return
+    walls = {}
+    for r in rows:
+        walls.setdefault((r["binary"], int(r["threads"])), []).append(num(r["wall_ms"]))
+    widths = sorted({int(r["threads"]) for r in rows})
+    series = [("vanilla", BLUE), ("regions", ORANGE)]
+    pts = {name: [(t, stats.centre(walls.get((name, t), []))) for t in widths] for name, _ in series}
+    values = [y for name, _ in series for _, y in pts[name] if y is not None]
+    if not values:
+        return
+    body = []
+    heading(body, "The collector on the whole machine",
+            "one full collection over a live set built by every thread; the median of the rounds")
+    legend(body, 40, 74, [("vanilla", BLUE), ("regions, no window", ORANGE)])
+    xhi = widths[-1] if len(widths) > 1 else widths[0] * 2
+    ax = Axes(90, 110, 760, 300, widths[0], xhi, 0, ymax_of(values), xlog=len(widths) > 1)
+    ax.grid(body, widths, nice_ticks(0, ax.yhi, 5), lambda v: f"{v:g}", lambda v: f"{v:g}")
+    for name, color in series:
+        ax.line(body, pts[name], color)
+    ax.xlabel(body, "threads (the GC threads are half of them)")
+    ax.ylabel(body, "one collection (ms)")
+    h = ax.y0 + ax.h + 80
+    caption(body, h, "mixed")
+    write("parallel_gc.svg", ax.x0 + ax.w + 40, h, body)
+
+# ---- M14: what a reset costs the other threads ---------------------------------------
+
+def plot_reset_pause():
+    rows = read_tsv("reset_pause.tsv")
+    if not rows:
+        return
+    caller, stall = {}, {}
+    for r in rows:
+        k = (r["mode"], int(r["threads"]))
+        if r["kind"] == "reset":
+            caller.setdefault(k, []).append(num(r["value_us"]))
+        else:
+            stall.setdefault(k, []).append(num(r["value_us"]))
+    widths = sorted({int(r["threads"]) for r in rows})
+    series = [("checked, the caller", ORANGE, caller, "checked"),
+              ("checked, the worst worker", YELLOW, stall, "checked"),
+              ("unchecked, the caller", GREEN, caller, "unsafe")]
+    pts = {}
+    for label, color, src, mode in series:
+        pts[label] = [(t, stats.centre(src.get((mode, t), []))) for t in widths]
+    values = [y for label, _, _, _ in series for _, y in pts[label] if y is not None]
+    if not values:
+        return
+    body = []
+    heading(body, "What a reset costs the machine",
+            "the checked reset stops the world; the median of the rounds, in microseconds")
+    legend(body, 40, 74, [(label, color) for label, color, _, _ in series])
+    xhi = widths[-1] if len(widths) > 1 else widths[0] * 2
+    ax = Axes(90, 110, 760, 300, widths[0], xhi, 0, ymax_of(values), xlog=len(widths) > 1)
+    ax.grid(body, widths, nice_ticks(0, ax.yhi, 5), lambda v: f"{v:g}", lambda v: f"{v:g}")
+    for label, color, _, _ in series:
+        ax.line(body, pts[label], color)
+    ax.xlabel(body, "threads")
+    ax.ylabel(body, "microseconds")
+    h = ax.y0 + ax.h + 80
+    caption(body, h, "mixed")
+    write("reset_pause.svg", ax.x0 + ax.w + 40, h, body)
+
 def main():
     plot_gcbench()
     plot_unit_costs()
+    plot_parallel_gc()
+    plot_reset_pause()
     plot_tail()
     plot_realworld()
     plot_census_pause()

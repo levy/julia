@@ -11,6 +11,7 @@ file is missing is left as it stands, with a note.
 """
 import os, re, statistics
 from plot import read_tsv, num
+import stats
 
 D = os.path.dirname(os.path.abspath(__file__))
 DOC = os.path.join(D, "..", "MEASUREMENTS.md")
@@ -45,6 +46,10 @@ def best(rows, key, col):
 # ---- tables -------------------------------------------------------------------------
 
 def t_gcbench():
+    """One row per benchmark: the median wall time of each binary, and the
+    median of the per-round ratios with its bootstrap interval. The ratio is
+    paired inside a round, because a round runs the two binaries one after
+    the other."""
     rows = read_tsv("gcbench.tsv")
     if not rows:
         return None
@@ -53,32 +58,115 @@ def t_gcbench():
         k = (r["set"], r["bench"], r["threads"])
         if k not in runs:
             order.append(k)
-            runs[k] = {"vanilla": [], "regions": []}
-        runs[k][r["binary"]].append(num(r["wall_ns"]) / 1e9)
+            runs[k] = {"vanilla": {}, "regions": {}}
+        runs[k][r["binary"]][int(r["round"])] = num(r["wall_ns"]) / 1e9
     out = []
     for k in order:
         v, g = runs[k]["vanilla"], runs[k]["regions"]
         if not v or not g:
             continue
-        spread = max((max(v) - min(v)) / min(v), (max(g) - min(g)) / min(g))
-        out.append([os.path.basename(k[1]).replace(".jl", ""), k[2], f3(min(v)), f3(min(g)),
-                    ratio(min(g), min(v)), min(len(v), len(g)), f"{100*spread:.0f} %"])
-    return table(["benchmark", "threads", "vanilla (s)", "regions (s)", "ratio", "rounds", "spread"], out)
+        out.append([os.path.basename(k[1]).replace(".jl", ""), k[2],
+                    f3(stats.centre(list(v.values()))), f3(stats.centre(list(g.values()))),
+                    stats.ratio_summary(v, g, 3), len(stats.paired(v, g))])
+    return table(["benchmark", "threads", "vanilla (s)", "regions (s)",
+                  "regions / vanilla [95 %]", "rounds"], out)
 
 UNIT_COSTS = ["store_disarmed", "store_armed", "store_region", "window_pair", "switch_pair",
               "construct_two", "construct_shared", "box_twin", "alloc_stock", "alloc_region", "reset_slice", "stock_mark"]
 
 def t_unit_costs():
+    """One row per cost: the median of the rounds for each of the three
+    processes, and the paired difference "regions with no window minus
+    vanilla", which is what a program that never opens a window pays."""
     rows = read_tsv("unit_costs.tsv")
     if not rows:
         return None
-    by = {(r["binary"], r["cost"]): r for r in rows}
+    by, unit_of = {}, {}
+    for r in rows:
+        by.setdefault((r["binary"], r["cost"]), {})[int(r["round"])] = num(r["value"])
+        unit_of[r["cost"]] = r["unit"]
     out = []
     for cost in UNIT_COSTS:
-        cells = [by.get((b, cost)) for b in ("vanilla", "regions_stock", "regions")]
-        unit = next((c["unit"] for c in cells if c), "")
-        out.append([cost, unit] + [g4(num(c["value"])) if c else DASH for c in cells])
-    return table(["cost", "unit", "vanilla", "regions, no window", "regions"], out)
+        cells = [by.get((b, cost), {}) for b in ("vanilla", "regions_stock", "regions")]
+        rounds = max(len(c) for c in cells) if cells else 0
+        out.append([cost, unit_of.get(cost, "")] +
+                   [stats.summary(list(c.values()), 4) if c else DASH for c in cells] +
+                   [stats.delta_summary(cells[0], cells[1], 3) if cells[0] and cells[1] else DASH,
+                    rounds])
+    return table(["cost", "unit", "vanilla", "regions, no window", "regions",
+                  "no window − vanilla [95 %]", "rounds"], out)
+
+
+def t_parallel_gc():
+    """M13: the collection against the thread count, on both binaries. The
+    delta column is the paired difference of the median collection of a
+    round, so it is the cost of the unused region runtime at that width."""
+    rows = read_tsv("parallel_gc.tsv")
+    if not rows:
+        return None
+    walls, marks, safep = {}, {}, {}
+    for r in rows:
+        k = (r["binary"], int(r["threads"]))
+        rd = int(r["round"])
+        walls.setdefault(k, {}).setdefault(rd, []).append(num(r["wall_ms"]))
+        if num(r["mark_ms"]) is not None and num(r["mark_ms"]) >= 0:
+            marks.setdefault(k, {}).setdefault(rd, []).append(num(r["mark_ms"]))
+        if num(r["safepoint_us"]) is not None and num(r["safepoint_us"]) >= 0:
+            safep.setdefault(k, {}).setdefault(rd, []).append(num(r["safepoint_us"]))
+    per_round = lambda d: {rd: stats.centre(v) for rd, v in d.items()}
+    widths = sorted({int(r["threads"]) for r in rows})
+    out = []
+    for t in widths:
+        v = per_round(walls.get(("vanilla", t), {}))
+        g = per_round(walls.get(("regions", t), {}))
+        mv = per_round(marks.get(("vanilla", t), {}))
+        mg = per_round(marks.get(("regions", t), {}))
+        sg = per_round(safep.get(("regions", t), {}))
+        out.append([t,
+                    stats.summary(list(v.values()), 3) if v else DASH,
+                    stats.summary(list(g.values()), 3) if g else DASH,
+                    stats.ratio_summary(v, g, 3) if v and g else DASH,
+                    stats.summary(list(mv.values()), 3) if mv else DASH,
+                    stats.summary(list(mg.values()), 3) if mg else DASH,
+                    stats.summary(list(sg.values()), 3) if sg else DASH,
+                    len(stats.paired(v, g))])
+    return table(["threads", "vanilla (ms)", "regions (ms)", "regions / vanilla [95 %]",
+                  "mark vanilla (ms)", "mark regions (ms)", "time to safepoint (µs)", "rounds"], out)
+
+
+def t_reset_pause():
+    """M14: what one reset costs the caller and what it costs a worker
+    thread, against the thread count, for the checked and the unchecked
+    entry. The caller's cell is the median of the resets of a round; the
+    stall cell is the worst worker of a round."""
+    rows = read_tsv("reset_pause.tsv")
+    if not rows:
+        return None
+    caller, stall, coll = {}, {}, {}
+    for r in rows:
+        k = (r["mode"], int(r["threads"]))
+        rd = int(r["round"])
+        if r["kind"] == "reset":
+            caller.setdefault(k, {}).setdefault(rd, []).append(num(r["value_us"]))
+        else:
+            stall.setdefault(k, {}).setdefault(rd, []).append(num(r["value_us"]))
+        coll.setdefault(k, []).append(num(r["collections"]))
+    out = []
+    for mode in ("checked", "unsafe"):
+        for t in sorted({int(r["threads"]) for r in rows}):
+            k = (mode, t)
+            c = {rd: stats.centre(v) for rd, v in caller.get(k, {}).items()}
+            cmax = {rd: max(v) for rd, v in caller.get(k, {}).items()}
+            sw = {rd: max(v) for rd, v in stall.get(k, {}).items() if v}
+            if not c:
+                continue
+            out.append([mode, t, max(t - 1, 0),
+                        stats.summary(list(c.values()), 3),
+                        stats.summary(list(cmax.values()), 3),
+                        stats.summary(list(sw.values()), 3) if sw else DASH,
+                        f0(stats.centre(coll.get(k, []))), len(c)])
+    return table(["entry", "threads", "workers", "caller median (µs)", "caller max (µs)",
+                  "worst worker stall (µs)", "collections", "rounds"], out)
 
 def t_tail():
     rows = read_tsv("tail.tsv")
@@ -249,7 +337,8 @@ def t_scaling():
 TABLES = {"M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,
           "M5-pause": t_census_pause, "M5-throughput": t_census_throughput,
           "M6-paced": t_paced, "M6-endurance": t_endurance, "M7": t_native, "M8": t_showcase,
-          "M9": t_census_bound, "M10": t_demos, "M11": t_checker, "M12": t_scaling}
+          "M9": t_census_bound, "M10": t_demos, "M11": t_checker, "M12": t_scaling,
+          "M13": t_parallel_gc, "M14": t_reset_pause}
 
 # ---- the document -------------------------------------------------------------------
 

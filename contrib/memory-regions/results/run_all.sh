@@ -3,8 +3,9 @@
 # memory cap, its timeout, and its data file under data/. The logs go to
 # log/ (not committed). plot.py then draws every plot from data/.
 #
-#   ./run_all.sh                   every row, M1 to M12
+#   ./run_all.sh                   every row, M1 to M14
 #   ONLY="M2 M5" ./run_all.sh      the rows named
+#   ROUNDS=20 ./run_all.sh         more rounds of the paired cost rows
 #
 # Environment:
 #   JULIA        the julia of this checkout (default ../../../usr/bin/julia)
@@ -14,6 +15,12 @@
 #   MTCORES      the cores of the multi-thread rows (default 24-31)
 #   RTPRIO       the SCHED_FIFO priority for the latency rows when the machine
 #                grants one (default 50); 0 turns it off
+#   ROUNDS       the rounds of the paired cost rows M1, M2, M13 and M14
+#                (default 10). A round runs both binaries, in an order that
+#                alternates, so a drift of the machine moves both sides of a
+#                round together; the interval of a row comes from the rounds.
+#   GCTHREADS    the thread counts of M13 and M14 (default "1 4 8 16 32");
+#                a count above the cores of the machine is skipped
 #
 # A row runs under `systemd-run --user --scope -p MemoryMax=…` when systemd
 # is present, under `timeout` always, and pinned with `taskset`. The
@@ -27,7 +34,10 @@ JULIA=${JULIA:-$ROOT/usr/bin/julia}
 VANILLA=${VANILLA:-}
 GCBENCHMARKS=${GCBENCHMARKS:-}
 CORE=${CORE:-29}; MTCORES=${MTCORES:-24-31}; RTPRIO=${RTPRIO:-50}
-ONLY=${ONLY:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12}
+ROUNDS=${ROUNDS:-10}
+GCTHREADS=${GCTHREADS:-1 4 8 16 32}
+ALLCORES=${ALLCORES:-0-31}
+ONLY=${ONLY:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14}
 DATA=data; LOG=log
 mkdir -p "$DATA" "$LOG"
 SHA=$(git -C "$ROOT" rev-parse --short=10 HEAD)
@@ -44,6 +54,12 @@ SHA=$(git -C "$ROOT" rev-parse --short=10 HEAD)
     printf 'kernel\t%s\n' "$(uname -r)"
     printf 'core\t%s\n' "$CORE"
     printf 'mtcores\t%s\n' "$MTCORES"
+    printf 'rounds\t%s\n' "$ROUNDS"
+    printf 'cores\t%s\n' "$(nproc)"
+    printf 'isolated\t%s\n' "$(cat /sys/devices/system/cpu/isolated 2>/dev/null | tr -d '\n')"
+    printf 'nohz_full\t%s\n' "$(cat /sys/devices/system/cpu/nohz_full 2>/dev/null | tr -d '\n')"
+    printf 'governor\t%s\n' "$(cat /sys/devices/system/cpu/cpu"$CORE"/cpufreq/scaling_governor 2>/dev/null | tr -d '\n')"
+    printf 'boost\t%s\n' "$(cat /sys/devices/system/cpu/cpufreq/boost 2>/dev/null | tr -d '\n')"
     if [ "$RTPRIO" -gt 0 ] && chrt -f "$RTPRIO" true 2>/dev/null; then printf 'realtime\tSCHED_FIFO %s\n' "$RTPRIO"
     else printf 'realtime\tnone\n'; fi
 } > "$DATA/context.tsv"
@@ -86,7 +102,7 @@ if want M1; then
     else
         fresh gcbench.tsv
         REGIONS_TSV=$DATA/gcbench.tsv CORE=$CORE MTCORES=$MTCORES \
-            run M1 gcbench 16G 3600 0-31 0 bash ../bench/gcbench.sh "$VANILLA" "$JULIA" "$GCBENCHMARKS" 5
+            run M1 gcbench 16G 10800 0-31 0 bash ../bench/gcbench.sh "$VANILLA" "$JULIA" "$GCBENCHMARKS" "$ROUNDS"
     fi
 fi
 
@@ -100,15 +116,26 @@ fi
 # real-time class: the script waits for a child process.
 if want M2; then
     fresh unit_costs.tsv
-    printf '# binary\tcost\tvalue\tunit\n' > "$DATA/unit_costs.tsv"
-    if [ -n "$VANILLA" ]; then
-        run M2 unit_costs_vanilla 8G 900 "$CORE" 0 "$VANILLA" --startup-file=no ../bench/unit_costs.jl stock 5 \
-            && grep -P '^\w+\t' "$LOG/unit_costs_vanilla.log" | sed 's/^/vanilla\t/' >> "$DATA/unit_costs.tsv"
-    else echo "[M2] no VANILLA: the vanilla rows are missing"; fi
-    run M2 unit_costs_regions_stock 8G 900 "$CORE" 0 $J ../bench/unit_costs.jl stock 5 \
-        && grep -P '^\w+\t' "$LOG/unit_costs_regions_stock.log" | sed 's/^/regions_stock\t/' >> "$DATA/unit_costs.tsv"
-    run M2 unit_costs_regions 8G 900 "$CORE" 0 $J ../bench/unit_costs.jl 5 \
-        && grep -P '^\w+\t' "$LOG/unit_costs_regions.log" | sed 's/^/regions\t/' >> "$DATA/unit_costs.tsv"
+    printf '# binary\tround\tcost\tvalue\tunit\tsamples\n' > "$DATA/unit_costs.tsv"
+    # One round is one process per binary. The order of the binaries turns
+    # over between the rounds, so a drift of the machine does not sit in the
+    # difference; the interval of a row comes from the rounds.
+    unit_round() {   # unit_round <round> <name> <binary> <extra args...>
+        local r=$1 name=$2 bin=$3; shift 3
+        run M2 "unit_costs_${name}_r$r" 8G 900 "$CORE" 0 "$bin" --startup-file=no ../bench/unit_costs.jl "$@" \
+            && grep -P '^\w+\t' "$LOG/unit_costs_${name}_r$r.log" | sed "s/^/$name\t$r\t/" >> "$DATA/unit_costs.tsv"
+    }
+    for r in $(seq 1 "$ROUNDS"); do
+        if [ $((r % 2)) -eq 1 ]; then order="vanilla regions_stock regions"; else order="regions regions_stock vanilla"; fi
+        for name in $order; do
+            case $name in
+                vanilla)       [ -n "$VANILLA" ] && unit_round "$r" vanilla "$VANILLA" stock 5 ;;
+                regions_stock) unit_round "$r" regions_stock "$JULIA" stock 5 ;;
+                regions)       unit_round "$r" regions "$JULIA" 5 ;;
+            esac
+        done
+    done
+    [ -n "$VANILLA" ] || echo "[M2] no VANILLA: the vanilla rows are missing"
 fi
 
 # --- M3: the tail, one Bool apart -------------------------------------------
@@ -222,6 +249,57 @@ if want M12; then
             REGIONS_TSV=$DATA/scaling.tsv run M12 scaling_dmr_t$t 8G 1800 "$MTCORES" 0 $J -t $t ../demo/dmr.jl
         done
     fi
+fi
+
+# --- M13: the collector on the whole machine ---------------------------------
+# The cost of the unused region runtime on a parallel collection, against the
+# thread count. Both binaries run the same script, in an order that turns
+# over between the rounds. A row takes its own thread count and the matching
+# GC thread count, which is half the threads, the default of julia. A count
+# above the cores of the machine is skipped. Every run writes to a scratch
+# file, which the driver appends with the binary and the round.
+if want M13; then
+    fresh parallel_gc.tsv
+    printf '# binary\tround\tthreads\tgcthreads\tcollection\twall_ms\tmark_ms\tsweep_ms\tsafepoint_us\tlive_mb\n' > "$DATA/parallel_gc.tsv"
+    cores=$(nproc)
+    for r in $(seq 1 "$ROUNDS"); do
+        for t in $GCTHREADS; do
+            [ "$t" -le "$cores" ] || continue
+            g=$(( t > 1 ? t / 2 : 1 ))
+            if [ $((r % 2)) -eq 1 ]; then order="vanilla regions"; else order="regions vanilla"; fi
+            for name in $order; do
+                if [ "$name" = vanilla ]; then bin=$VANILLA; else bin=$JULIA; fi
+                [ -n "$bin" ] || continue
+                rm -f "$LOG/pgc.tsv"
+                REGIONS_TSV=$LOG/pgc.tsv \
+                    run M13 "parallel_gc_${name}_t${t}_r$r" 24G 1800 "$ALLCORES" 0 \
+                    "$bin" --startup-file=no -t "$t" --gcthreads="$g" ../bench/parallel_gc.jl 12 \
+                    && grep -v '^#' "$LOG/pgc.tsv" | sed "s/^/$name\t$r\t/" >> "$DATA/parallel_gc.tsv"
+            done
+        done
+    done
+fi
+
+# --- M14: what a reset costs the other threads --------------------------------
+# The checked reset stops the world, so its cost grows with the threads that
+# run Julia code; the unchecked entry is the control. The region binary alone
+# can run this row.
+if want M14; then
+    fresh reset_pause.tsv
+    printf '# round\tmode\tthreads\tworkers\tkind\tindex\tvalue_us\tcollections\n' > "$DATA/reset_pause.tsv"
+    cores=$(nproc)
+    for r in $(seq 1 "$ROUNDS"); do
+        for t in $GCTHREADS; do
+            [ "$t" -le "$cores" ] || continue
+            for mode in checked unsafe; do
+                rm -f "$LOG/rp.tsv"
+                REGIONS_TSV=$LOG/rp.tsv \
+                    run M14 "reset_pause_${mode}_t${t}_r$r" 16G 900 "$ALLCORES" 0 \
+                    $J -t "$t" ../bench/reset_pause.jl "$mode" 200 \
+                    && grep -v '^#' "$LOG/rp.tsv" | sed "s/^/$r\t/" >> "$DATA/reset_pause.tsv"
+            done
+        done
+    done
 fi
 
 echo "run_all: done; status in $STATUS"

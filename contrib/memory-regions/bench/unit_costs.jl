@@ -1,6 +1,7 @@
 # The unit costs of the region runtime, one function per cost, min of N.
 #
-#   julia unit_costs.jl [N]        prints one TSV row per cost: name, value, unit
+#   julia unit_costs.jl [N]        prints one TSV row per cost: name, value,
+#                                   unit, and the per-copy samples of the row
 #   julia unit_costs.jl stock [N]  runs only the rows that use no region entry
 #                                   point (store_disarmed, construct_two,
 #                                   construct_shared, box_twin, alloc_stock,
@@ -96,10 +97,18 @@ function best(f, n = N)
     return t
 end
 
-# min over the copies of a tight loop: run(loop) times one copy.
-best_copy(run, loops) = minimum(loop -> best(() -> run(loop)), loops)
+# Every copy's own minimum. The row is their minimum - the cost of the
+# instructions and not of one placement - and the samples go into the fourth
+# column, so a reader can see how far the placements spread.
+copy_samples(run, loops) = [best(() -> run(loop)) for loop in loops]
 
-row(name, value, unit) = println(name, '\t', round(value; sigdigits = 4), '\t', unit)
+sig4(v) = round(v; sigdigits = 4)
+
+row(name, value, unit, samples = Float64[]) =
+    println(name, '\t', sig4(value), '\t', unit, '\t', join(map(sig4, samples), ','))
+
+# A row measured over the copies of a tight loop.
+rowc(name, unit, run, loops) = (s = copy_samples(run, loops); row(name, minimum(s), unit, s))
 
 # The three tight loops, COPIES times each. A copy differs from the others
 # only in its name, so it has the same instructions in a different place.
@@ -283,7 +292,8 @@ end
 # barrier disarmed.
 if get(ENV, "UNIT_COSTS_CHILD", "") == "disarmed"
     foreach(loop -> loop(DST, SRC, 1000), COPY_LOOPS)
-    println(best_copy(loop -> loop(DST, SRC, ITERS), COPY_LOOPS))
+    s = copy_samples(loop -> loop(DST, SRC, ITERS), COPY_LOOPS)
+    println(sig4(minimum(s)), '\t', join(map(sig4, s), ','))
     exit(0)
 end
 child = read(setenv(`$(Base.julia_cmd()) --startup-file=no $(@__FILE__) $N`, "UNIT_COSTS_CHILD" => "disarmed"), String)
@@ -305,19 +315,22 @@ if !STOCK
     fill_slice(); unsafe_region_reset(1)
 end
 
-row("store_disarmed", parse(Float64, strip(child)), "ns/store")
+let parts = split(strip(child), '\t')
+    samples = length(parts) >= 2 ? map(x -> parse(Float64, x), split(parts[2], ',')) : Float64[]
+    row("store_disarmed", parse(Float64, parts[1]), "ns/store", samples)
+end
 if !STOCK
-    row("store_armed", best_copy(loop -> loop(DST, SRC, ITERS), COPY_LOOPS), "ns/store")
-    row("store_region", best_copy(loop -> copy_region_round(loop, ITERS), COPY_LOOPS), "ns/store")
+    rowc("store_armed", "ns/store", loop -> loop(DST, SRC, ITERS), COPY_LOOPS)
+    rowc("store_region", "ns/store", loop -> copy_region_round(loop, ITERS), COPY_LOOPS)
     row("window_pair", best(() -> window_loop(ITERS)), "ns/pair")
     row("switch_pair", best(() -> switch_loop(ITERS)), "ns/pair")
 end
-row("construct_two", best_copy(loop -> loop(DST, ITERS), CONSTRUCT_LOOPS), "ns/object")
-row("construct_shared", best_copy(loop -> loop(DST, SRC, ITERS), CONSTRUCT_SHARED_LOOPS), "ns/object")
-row("box_twin", best_copy(loop -> loop(DST, SRC, ITERS), BOX_TWIN_LOOPS), "ns/object")
-row("alloc_stock", best_copy(loop -> alloc_stock_round(loop, ITERS), ALLOC_LOOPS), "ns/object")
+rowc("construct_two", "ns/object", loop -> loop(DST, ITERS), CONSTRUCT_LOOPS)
+rowc("construct_shared", "ns/object", loop -> loop(DST, SRC, ITERS), CONSTRUCT_SHARED_LOOPS)
+rowc("box_twin", "ns/object", loop -> loop(DST, SRC, ITERS), BOX_TWIN_LOOPS)
+rowc("alloc_stock", "ns/object", loop -> alloc_stock_round(loop, ITERS), ALLOC_LOOPS)
 if !STOCK
-    row("alloc_region", best_copy(loop -> alloc_region_round(loop, ITERS), ALLOC_LOOPS), "ns/object")
+    rowc("alloc_region", "ns/object", loop -> alloc_region_round(loop, ITERS), ALLOC_LOOPS)
     row("reset_slice", reset_slice(), "ns/reset")
     row("reset_slice_checked", reset_slice_checked(), "ns/reset")
 end
