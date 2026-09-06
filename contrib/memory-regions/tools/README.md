@@ -21,4 +21,3 @@ a side table, not in the runtime, so the checker runs on any julia whose
 | File | Command | Prints |
 | --- | --- | --- |
 | [`hil_isolation.sh`](hil_isolation.sh) | `sudo ./hil_isolation.sh on\|off`, `./hil_isolation.sh status`, `./hil_isolation.sh run CMD` | moves the CPUs of the measurement core (`CPUS`, default `13,29`) into an isolated cgroup partition, or back; `status` prints what holds now; `run` runs `CMD` inside the partition, pinned to `CORE` (default 29), with `SCHED_FIFO` when granted. |
-| [`linkify.py`](linkify.py) | `linkify.py <root> <file.md>...` | Turns the name of a file into a link to that file, in every document of this folder. A mention becomes a link only when the file exists, so a link cannot point at nothing; a table keeps its rows and a long paragraph is wrapped again. |
