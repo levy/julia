@@ -308,16 +308,17 @@ therefore the sum of several small checks inside the collector, none of them
 removable without giving up a diagnostic or a mechanism, and each of them at
 or below the resolution of this measurement.
 
-Two honest options remain, and they are for the user to choose:
+The user chose the first of the two options: **accept and document**.
+`COST.md` states the number, its attribution over six probe builds, and the
+four candidates that were built and rejected. An upstream reviewer gets the
+measurement and the reasoning behind it.
 
-1. **Accept and document.** `COST.md` states the number, its attribution and
-   the four rejected candidates. An upstream reviewer gets the measurement
-   and the reasoning, which is more than most performance claims carry.
-2. **Build a finer instrument first.** A microbenchmark that marks one fixed
-   object graph in one process, with the same binary marking with and
-   without each check, would resolve one percent instead of two. Only then
-   is it worth removing the corpse check or the census parameter, because
-   only then can the win be seen.
+The second option stays open for the day a reviewer pushes on the number: a
+microbenchmark that marks one fixed object graph in one process, with the
+same binary marking with and without a single check, resolves one percent
+instead of two. Only with that instrument is it worth removing the corpse
+check or the census parameter, because only then can the win be seen. Each
+removal costs a diagnostic or a mechanism, so each needs its own decision.
 
 ## Acceptance
 
