@@ -5,7 +5,8 @@
 
 module Regions
 
-export region_set, region_reset, unsafe_region_reset, region_reserve, @with_region, region_current, region_of,
+export region_set, region_reset, unsafe_region_reset, region_reserve, @with_region, @in_region_of,
+       region_current, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
        region_parent!, region_tree!, region_parent_of, region_reset_global,
        region_census_threshold!, region_pages
@@ -61,6 +62,49 @@ macro with_region(n, body)
             $(esc(body))
         finally
             region_set(prev)
+        end
+    end
+end
+
+# A buffer that replaces the buffer of an object that exists takes the
+# lifetime of that object, so it must take its region as well. Allocated in
+# the region of the open window instead, it is a younger object held by an
+# older container: an escape, and the region is quarantined for an operation
+# the program has every right to make.
+#
+# Base does this for its own containers - a vector that grows, a dictionary
+# that rehashes, an `IOBuffer` that reallocates - through the same pair of
+# entry points. `@in_region_of` gives it to a program with a container of its
+# own:
+#
+#     mutable struct RingBuffer
+#         data::Memory{Float64}
+#     end
+#
+#     function grow!(rb::RingBuffer)
+#         new = @in_region_of rb Memory{Float64}(undef, 2 * length(rb.data))
+#         copyto!(new, rb.data)
+#         rb.data = new              # legal: `new` lives where `rb` lives
+#     end
+#
+# The region comes from the container and not from the buffer it replaces: an
+# empty container can share the one permanent empty `Memory`, which belongs
+# to region 0.
+#
+# Two warnings. A borrow is not a window: it changes no window state, and it
+# is meant for one allocation, not for a phase of the program. **Do not
+# yield inside one** - a task switch would save the borrowed region as the
+# task's window, and the task would keep allocating there after the borrow
+# ended. Keep the body short and free of `wait`, `sleep`, `lock`, `@spawn`
+# and IO. The macro gives the region back however the body leaves.
+macro in_region_of(like, body)
+    quote
+        local lent = ccall(:jl_gc_region_borrow, Cint, (Cint,),
+                           ccall(:jl_gc_region_of, Cint, (Any,), $(esc(like))))
+        try
+            $(esc(body))
+        finally
+            ccall(:jl_gc_region_unborrow, Cvoid, (Cint,), lent)
         end
     end
 end

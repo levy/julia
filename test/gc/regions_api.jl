@@ -15,6 +15,23 @@ region_collect(n)          = Int(ccall(:jl_gc_region_collect, Int64, (Cint,), n)
 region_collect_coop(n)     = Int(ccall(:jl_gc_region_collect_coop, Int64, (Cint,), n))
 census_threshold!(pages)   = ccall(:jl_gc_region_census_threshold, Cvoid, (Cint,), pages)
 region_of(x)               = Int(ccall(:jl_gc_region_of, Cint, (Any,), x))
+region_borrow(n)           = Int(ccall(:jl_gc_region_borrow, Cint, (Cint,), n))
+region_unborrow(lent)      = ccall(:jl_gc_region_unborrow, Cvoid, (Cint,), lent)
+
+# The program's form of the borrow, as contrib/memory-regions/regions.jl
+# exports it: allocate where `like` lives, and give the region back however
+# the body leaves. A borrow is not a window and it is meant for one
+# allocation; a task must not yield inside one.
+macro in_region_of(like, body)
+    quote
+        local lent = region_borrow(region_of($(esc(like))))
+        try
+            $(esc(body))
+        finally
+            region_unborrow(lent)
+        end
+    end
+end
 region_pages(n)            = Int(ccall(:jl_gc_region_pages, Cint, (Cint,), n))
 quarantined(n)             = Int(ccall(:jl_gc_region_quarantined, Cint, (Cint,), n))
 region_stat(i)             = ccall(:jl_gc_region_stat, UInt64, (Cint,), i)

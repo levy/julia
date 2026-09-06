@@ -14,6 +14,8 @@ include(joinpath(@__DIR__, "regions_api.jl"))
 
 const GROW = 1
 const ELEM = 2
+const RING = 3
+const RINGBAD = 4
 
 const LONG = Int[]
 const LONGANY = Any[]
@@ -237,6 +239,63 @@ function an_element_still_quarantines()
     check("the element still reads", LONGANY[1][] == 1)
 end
 
+
+# A container of the program's own. Base carries the rule for its
+# containers; a package carries it for its own, with the borrow that
+# contrib/memory-regions/regions.jl exports as `@in_region_of`. The two
+# cases below are the same growth with the borrow and without it.
+mutable struct Ring
+    data::Memory{Float64}
+end
+const RING_GOOD = Ring(Memory{Float64}(undef, 4))
+const RING_BAD  = Ring(Memory{Float64}(undef, 4))
+
+@noinline function grow_ring!(r::Ring)
+    new = Memory{Float64}(undef, 2 * length(r.data))
+    copyto!(new, 1, r.data, 1, length(r.data))
+    new[length(r.data) + 1] = 1.0
+    r.data = new
+    return nothing
+end
+
+@noinline function grow_ring_borrowed!(r::Ring)
+    @in_region_of r begin
+        new = Memory{Float64}(undef, 2 * length(r.data))
+        copyto!(new, 1, r.data, 1, length(r.data))
+        new[length(r.data) + 1] = 1.0
+        r.data = new
+    end
+    return nothing
+end
+
+@noinline function grow_ring_inside_window(n, r, borrowed)
+    region_set(n)
+    borrowed ? grow_ring_borrowed!(r) : grow_ring!(r)
+    region_set(0)
+    return nothing
+end
+
+function a_program_container_grows_inside_a_window()
+    grow_ring_inside_window(RING, RING_GOOD, true)
+    check("a borrowed replacement does not quarantine", quarantined(RING) == 0)
+    check("the borrowed buffer is in the region of its container",
+          region_of(RING_GOOD.data) == region_of(RING_GOOD))
+    check("the borrowed buffer reads", length(RING_GOOD.data) == 8 && RING_GOOD.data[5] == 1.0)
+    check("the window's region resets", !refused(reset_via_call(RING)))
+    check("the buffer still reads after the reset", RING_GOOD.data[5] == 1.0)
+end
+
+# The same growth without the borrow: the new buffer lands in the window's
+# region, an older container takes it, and the barrier is right to
+# quarantine. This is the case the macro exists for.
+function a_program_container_without_the_borrow_quarantines()
+    grow_ring_inside_window(RINGBAD, RING_BAD, false)
+    check("an unborrowed replacement quarantines the window's region",
+          quarantined(RINGBAD) == 1)
+    check("the unborrowed buffer is in the window's region",
+          region_of(RING_BAD.data) == RINGBAD)
+end
+
 a_vector_grows_inside_a_window()
 a_vector_grows_at_both_ends()
 a_dict_rehashes_inside_a_window()
@@ -248,5 +307,7 @@ an_iddict_empties_inside_a_window()
 an_idset_grows_inside_a_window()
 a_c_growth_inside_a_window()
 an_element_still_quarantines()
+a_program_container_grows_inside_a_window()
+a_program_container_without_the_borrow_quarantines()
 
 finish("regions_containers")

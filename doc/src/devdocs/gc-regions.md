@@ -207,8 +207,28 @@ which every array growth passes through and with it `push!`, `pushfirst!`,
 own `jl_array_ptr_1d_push` callers use; `rehash!` in `base/dict.jl`;
 `jl_idtable_rehash` and `empty!` for an `IdDict`; the key list and the index
 table of an `IdSet` in `push!`; and the growth of an `IOBuffer`, with the new
-data that a write or a `truncate` makes after a `take!`. A container written
-elsewhere follows the rule with the same pair, or its growth stays an escape.
+data that a write or a `truncate` makes after a `take!`.
+
+A container written elsewhere follows the rule with the same pair, and
+`contrib/memory-regions/regions.jl` exports it for that:
+
+```julia
+mutable struct RingBuffer
+    data::Memory{Float64}
+end
+
+function grow!(rb::RingBuffer)
+    new = @in_region_of rb Memory{Float64}(undef, 2 * length(rb.data))
+    copyto!(new, rb.data)
+    rb.data = new              # legal: `new` lives where `rb` lives
+end
+```
+
+`@in_region_of container expr` borrows the region of the container for the
+body and gives it back however the body leaves. The three rules of a borrow
+apply to it: keep the body to about one allocation, do not yield inside it,
+and let the `finally` of the macro give the region back. A growth written
+without it stays an escape.
 
 The rule covers the buffer. It does not cover the **elements**: a region
 object stored into a long-lived container outlives its region, and the
