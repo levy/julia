@@ -110,22 +110,28 @@ its resets with many collections measures the collector, not the reset.
 Two configurations, and they are not the same machine:
 
 - **Whole machine.** Every core available, for M1, M2, M13, M14 and the
-  throughput rows. `isolcpus` must **not** be set: the parallel rows need
-  every core.
+  throughput rows. The isolated partition must be **off**: the parallel
+  rows need every core in the scheduler.
 - **Isolated core.** For the latency rows M3, M4 and M6, which take
   `SCHED_FIFO` on a core the scheduler does not use.
 
-The machine boots today with `nohz_full=13,29`, `rcu_nocbs=13,29` and an
-`irqaffinity` that excludes those two, but **without** `isolcpus`; the
-kernel moved from 7.0.0-30 to 7.0.0-31 and the parameter is gone. The
-latency rows therefore run on a tickless core that the scheduler may still
-use. Two ways out, and the choice is the user's:
+The machine boots with `nohz_full=13,29`, `rcu_nocbs=13,29` and an
+`irqaffinity` that excludes those two, and **without** `isolcpus`, by
+design: `tools/hil_isolation.sh` makes the isolated partition at run time
+through cgroup v2, so the two configurations are one command apart and no
+reboot stands between them.
 
-- Add `isolcpus=13,29` to the kernel command line and reboot before the
-  latency rows, and take the parallel rows before the reboot or after
-  another one without it.
-- Or accept a tickless, time-shared core for the latency rows, and say so
-  in the document.
+    sudo tools/hil_isolation.sh on      # CPUs 13 and 29 leave the scheduler
+    tools/hil_isolation.sh status       # what holds right now
+    tools/hil_isolation.sh run CMD      # CMD inside the partition, pinned
+                                        # to CORE, SCHED_FIFO when granted
+    sudo tools/hil_isolation.sh off     # they take load again
+
+So the order of the run is: the whole-machine rows with the partition
+**off**, so that every core takes load; then the partition **on** for the
+latency rows M3, M4 and M6; then off again. The three boot parameters cost
+nothing while the CPUs do normal work and complete the isolation while the
+partition is on.
 
 Never give the real-time class to anything that forks. The unit-cost bench
 runs a child process for its disarmed row, and two `SCHED_FIFO` processes of
@@ -172,8 +178,12 @@ hour more and doubles the resolution of their intervals.
       with small counts, to see that the three scripts run on both binaries
       and that the data files carry what the tables expect. This is the
       first thing to do when the machine is free.
-- [ ] Decide the machine configuration for the latency rows, and record the
-      answer in `MEASUREMENTS.md`.
+- [ ] Run the whole-machine rows with the partition off, then
+      `sudo tools/hil_isolation.sh on` for the latency rows and off after
+      them. Record in `MEASUREMENTS.md` which rows ran in which state; the
+      `isolated` field of `context.tsv` reads the boot set, so the document
+      must say that the partition, not the command line, carried the
+      isolation.
 - [ ] Drop the old data: `rm results/data/*.tsv results/plots/*.svg` before
       the full run, so that no table can quote a number no file holds.
 - [ ] The full run, whole machine first, latency rows after.
@@ -215,6 +225,7 @@ hour more and doubles the resolution of their intervals.
   variant without the safepoint would measure the worst case of a
   non-cooperative thread; that is a different row, and it is not in this
   plan.
-- **The machine changed under us once already.** The kernel update dropped
-  `isolcpus`. Read `context.tsv` of the run before comparing it with
-  anything older.
+- **`context.tsv` does not see the partition.** Its `isolated` field reads
+  `/sys/devices/system/cpu/isolated`, which stays empty while a cgroup
+  partition holds the CPUs. Read `tools/hil_isolation.sh status` beside it,
+  and say in the document which rows ran isolated.
