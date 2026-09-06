@@ -567,6 +567,28 @@ commit in the series, with the reason in the message.
 | S8 | `cgutils.cpp` (`emit_new_struct`, `boxed`), `intrinsics.cpp` (the box path of `pointerref`), `codegen.cpp` (the `nocapture` parent of `julia.region_write_barrier`); `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_multi_wb_fresh`; `datatype.c`, `genericmemory.c`, `runtime_intrinsics.c`, `builtins.c`, `jltypes.c`, `method.c` | The region guard at every fresh-object copy of an inline value with pointers: `julia.region_write_barrier` names the tracked values of the copied value in the compiler; the fourth annotation walks the pointer fields in the runtime. | A copy of an inline value stores its pointer fields without a box and without a barrier; the parent is fresh, so vanilla needs none, and the region check needs one per pointer field. Nothing emitted under `JL_NO_REGION_STORE_BARRIER`; the mmtk annotation is empty. |
 | S9 | `jl_gc_free_page` (`gc-pages.c`) | A page that carries a region tag is kept, not freed; the line says so. | The guard named the violation and then freed the page anyway. A region owns its pages, and only a reset or a census gives a cell back, so a tagged page at this entry means a live page would go to the next claim. The page leaks instead, which is the lesser harm. No page of a program without regions carries a tag, so the stock path is unchanged. |
 
+### The deferred fourth form of a window
+
+A window and a borrow are two policies over one primitive: install region
+`n` as the allocation target of this thread. The window belongs to the task
+- it is saved and restored at a task switch, it counts itself in
+`region_windows_open`, it pins the task, and it can refuse. The borrow
+belongs to the thread: it installs and nothing else, so it cannot refuse and
+it costs two field writes where a window pair costs 10.9 ns.
+
+That leaves one cell of the table empty: a borrow the **task** carries,
+uncounted and without stickiness. It is what would close the rule "do not
+yield inside a borrow", because the task switch would save and restore the
+borrow beside the window instead of confusing the two. The cost is a field
+in the task and two instructions in `jl_gc_region_task_switch`, which every
+task switch of every Julia program runs.
+
+It is deferred, not rejected. The hazard it closes is bounded - the
+allocations between a yield and the end of the borrow land in the borrowed
+region, the other task is unaffected, and the `unborrow` still restores what
+was current - and the fix touches a hot path that this work has not
+measured. The devdoc states the limit under "Limits".
+
 ### Pitfalls of the tests and the benchmarks
 
 Facts that cost time during the tidy and that a reader who extends the tests

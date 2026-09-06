@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Turn a name of a file into a link to that file.
+"""Turn a name of a file into a link to that file, in a Markdown document.
+
+Give it Markdown and nothing else. It wraps a paragraph that a link made too
+long, which would break the lines of a source file.
 
 A document that says `bench/gcbench.sh` names a file the reader cannot open.
 This rewrites every such mention into a Markdown link with a path relative to

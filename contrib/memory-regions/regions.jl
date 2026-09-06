@@ -8,7 +8,7 @@ module Regions
 export region_set, region_reset, unsafe_region_reset, region_reserve, @with_region, @in_region_of,
        region_current, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
-       region_parent!, region_tree!, region_parent_of, region_reset_global,
+       region_quarantined, region_parent!, region_tree!, region_parent_of, region_reset_global,
        region_census_threshold!, region_pages
 
 # Declare the region tree. A region's number is a topological order of the
@@ -40,6 +40,14 @@ region_set(n::Int)     = Int(ccall(:jl_gc_region_set, Cint, (Cint,), n))
 region_current()       = Int(ccall(:jl_gc_region_current, Cint, ()))
 region_of(x)           = Int(ccall(:jl_gc_region_of, Cint, (Any,), x))
 region_debug(on::Int)  = ccall(:jl_gc_region_set_debug, Cvoid, (Cint,), on)
+# Has an escape quarantined this region? A store that breaks the reference
+# rule quarantines the region of the child, process-wide and for the life of
+# the process: from then on its reset and its censuses refuse with -5, a
+# window on it is refused, and its memory is retained. Every entry that
+# refuses returns that code, so a program can read the state from a return
+# value; this asks the question directly, which is what a program wants
+# before it opens a window or after it caught a refusal.
+region_quarantined(n::Int) = ccall(:jl_gc_region_quarantined, Cint, (Cint,), n) != 0
 # Claim and prefault `bytes` of heap before the loop starts: the runtime
 # maps whole blocks, populated by the kernel at the claim, into its clean
 # pool, and prefaults every later block too. A loop whose heap fits the

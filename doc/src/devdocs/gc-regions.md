@@ -562,6 +562,16 @@ the program's own to keep.
   used on the heap; `jl_gc_region_reset` returns 0 for it.
 - A build with a third-party heap (`WITH_THIRD_PARTY_HEAP`) has no regions:
   every window is refused, every hook declines.
+- A borrow belongs to the thread, not to the task. A task switch saves the
+  region that is current into the leaving task, so a yield inside a borrow
+  makes the task keep the borrowed region until the borrow ends: the
+  allocations between the yield and the `unborrow` land in the borrowed
+  region. The other task on the thread is not affected, and the `unborrow`
+  still restores the region that was current before. The rule "do not yield
+  inside a borrow" is what closes this, and the deferred fix is a borrow the
+  task carries - saved and restored at a switch, with no window count and no
+  stickiness. It costs a field in the task and two instructions in the task
+  switch, which is a hot path, so it needs its own measurement.
 - The cost is measured on Linux x86-64 only.
 
 ## Cost
