@@ -119,19 +119,28 @@ to 0 and one with it, chosen once per collection by a flag that says whether
 any region was ever used. A program that never opens a window then runs the
 loop vanilla runs.
 
-- [ ] Find the smallest set of functions that must be duplicated. The claim
-      already takes `scoped`; the question is where the parameter stops the
-      compiler.
-- [ ] Instantiate them twice, from one source, so the two copies cannot
-      drift. A macro or an included body, not a copy by hand.
-- [ ] The flag: set at the first window of the process, never cleared, read
-      once per collection. It is not the barrier flag, which arms at the
-      same moment but is read per store.
-- [ ] Check the cost in text: `size` on `libjulia-internal`. A Julia program
-      pays that in the binary, not at run time.
-- [ ] The gate. The target is the M13 row at 30 threads: 1.07 must fall
-      toward 1.04. `regions_census.jl` and `regions_many.jl` exercise the
-      other copy, and they must pass at every harness configuration.
+**Done, and rejected by its own measurement.** The loops were specialized:
+one body, two instantiations, the stock entries passing the literal 0, the
+census keeping its own. Every region script passed on the build, and the
+disassembly showed the fold worked - the hot mark functions no longer load
+`jl_gc_region_census_target`. The result at 30 threads was 1.07 [1.05, 1.09]
+against 1.06 [1.05, 1.07] for a plain rebuild of the same source: no change,
+and 11 KB more text. Reverted.
+
+The reason is a compiler transformation the plan did not account for. A
+branch on a value written before a loop and read inside it is
+loop-invariant, and the compiler unswitches it: it hoists the test and
+duplicates the loop, which is what the hand specialization does. The filter
+is read once per object into a register, so the transformation had already
+happened.
+
+- [x] The specialization, built, tested, measured, reverted.
+- [x] The control the earlier probes lacked: the flat tip built again from
+      the same source. Its text is identical to the byte, so it measures the
+      run-to-run variation alone: 1.06 [1.05, 1.07] at 30 threads. **The
+      noise floor of this row is about one point**, which puts
+      `JL_NO_REGION_ALLOC` two points from it at most, with touching
+      intervals. The census filter is not established as a cause.
 
 ## Step 2 — Skip the guard where the child cannot be a region object
 
@@ -170,6 +179,26 @@ the heaviest proof.
 - [ ] Measure M2's `alloc_stock`. If the interval of the improvement
       includes zero, revert the step: a semantic risk with no measured win
       is not a trade-off, it is a loss.
+
+## Step 1c — Profile the collection, do not build another pair
+
+Four A/B builds and a control leave most of the six to seven points
+unattributed. A ratio between two binaries cannot say which instructions
+cost the time, and every further pair costs an hour of builds for one
+number. The next instrument is a profile.
+
+- [ ] `perf stat` on one collection of each binary at 30 threads: cycles,
+      instructions, cache misses, branch misses. It says whether the region
+      build executes more instructions or stalls more often, which are
+      different faults with different fixes.
+- [ ] `perf record` on the collection, both binaries, and compare the mark
+      functions symbol by symbol. Where the extra cycles sit is the answer
+      the ratios cannot give.
+- [ ] If `perf` is not permitted on this machine, the fallback is a build
+      with the collector's region hooks stubbed one at a time: the three
+      brackets, the region test of the page sweep, the extra parameter of
+      the mark tree. One build each, and the control above says a change
+      must move the row by more than a point to count.
 
 ## Step 4 — The reserve, chosen by Step 0
 
