@@ -741,11 +741,34 @@ collector move with it, which the padding probe alone reproduces at
 1.02 [0.999, 1.03]. The rest is of the same kind - the layout of the
 structures a collection walks - and no probe separates it further.
 
-The candidate that follows is not a check to remove; it is a move: put the
-region state of a heap behind one pointer, so that `jl_thread_heap_t` grows
-by eight bytes and every field the stock collector reads keeps its offset
-and its cache line. The region paths then pay one indirection, and they are
-the paths that only run when a program uses a region.
+The candidate that followed was a move: put the region table of a heap
+behind one pointer, so that `jl_thread_heap_t` grows by eight bytes instead
+of 608. It was built, it passed every region script at four threads, and it
+**made the row worse**: 1.09 [1.06, 1.10] at 30 threads against a control of
+1.06 [1.05, 1.07]. Reverted.
+
+Two facts close the search for today. The region fields are appended to
+`jl_thread_heap_t`, so every field of the stock collector already keeps its
+vanilla offset; the padding probe reproduces that layout exactly and costs
+1.02, where the region build costs 1.06. And the build with both defines off
+costs 1.05, so the difference is not the store barrier, not the region
+allocation path and not the census filter.
+
+What is left is the collector's own region code, which no define removes and
+which the profile counted as about 15 instructions per marked object: the
+corpse check of `gc_setmark_pool`, one test per marked object; the census
+parameter through the mark tree, one test per slot; the region test of the
+page sweep, one per page; and the three brackets of a collection. Each is
+worth a point or two, which is the resolution of this measurement, and the
+one of them that was removed by hand - the census parameter - moved nothing
+outside the noise.
+
+The honest conclusion: the cost of a parallel collection is the sum of
+several small checks inside the collector, none of them removable without
+giving up a diagnostic or a mechanism, and the instrument cannot separate
+them. A finer instrument would be a microbenchmark that marks one fixed
+object graph in one process, where a one percent difference is resolvable;
+this document does not have one.
 
 ### The measurements, redone again, with intervals (2026-09-06)
 
