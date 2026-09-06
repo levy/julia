@@ -548,7 +548,9 @@ the program's own to keep.
 
 A program that opens no window pays the barrier's flag load at every managed
 pointer store, one relaxed load per object in the mark loops, and one page tag
-per page. The measurements in `contrib/memory-regions/MEASUREMENTS.md`, at the
+per page. Those are fractions of a nanosecond on a store and on an
+allocation, and a few percent of a collection: 1.7 % of a serial mark and
+7 % of a full collection on 32 threads with 16 GC threads. The measurements in `contrib/memory-regions/MEASUREMENTS.md`, at the
 root of the repository, put a julia that carries the region runtime, with no region in use, against a
 vanilla julia built from the same base, on the GCBenchmarks suite and on unit
 costs of the allocator, the mark, and the sweep. The same document measures the

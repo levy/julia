@@ -21,26 +21,29 @@ script. A row states how many rounds it has, and a row of one round has no
 interval. The latency rows are not paired and not averaged: a tail is a
 maximum and a set of quantiles, and the document reports them as such.
 
-The two binaries: **regions** is a julia built from `48603f334c`, a commit of
-the flat tree from which the commits of this branch were built, reachable
-from the tag `gc-regions-flat`; **vanilla** is a julia built from the base
+The two binaries: **regions** is a julia built from the tip of the flat
+tree, the tag `gc-regions-flat`; **vanilla** is a julia built from the base
 commit, `8f33e09afe` (`v1.13.0-rc4`), with nothing else changed. A row that
 names only one binary ran on regions. The `sha` in `context.tsv` names the
-regions commit. The tip of this branch differs from that commit, in `src/`
-and `base/`, by one fix that came out of the final test gate: the slow path
-of `OncePerProcess` and `OncePerThread` in `base/lock.jl` runs with the window
-suspended, through two entry points in `src/gc-common.c`, and
-`jl_init_root_task` initializes the two region fields of the root task. That
-slow path runs at most once per process and once per thread, before the fix
-and after it; the fix adds one suspend and one resume around it. No measured
-loop runs it more than once, so the tables stand for the tip.
+regions commit.
 
-The machine: one Linux x86-64 host, shared. Single-thread rows run pinned to
-CPU 29, a core the kernel keeps quiet: `nohz_full=13,29`, `rcu_nocbs=13,29`,
-and `irqaffinity` that excludes it, with no `isolcpus`. The latency rows take
-`SCHED_FIFO` at priority 50, so no time-shared task preempts them; the other
-rows run time-shared. Multi-thread rows run on CPUs 24 to 31, which are not
-isolated. Every row runs under a memory cap and a timeout. The file
+The machine: one Linux x86-64 host of 32 CPUs, idle for the whole run. The
+kernel command line keeps CPUs 13 and 29, the two threads of one core,
+tickless and free of RCU callbacks and of managed interrupts
+(`nohz_full=13,29`, `rcu_nocbs=13,29`, `irqaffinity` that excludes them);
+`isolcpus` is not set, because `tools/hil_isolation.sh` makes the isolated
+partition at run time through cgroup v2.
+
+The rows ran in two states. **M1, M5, M7 to M14** ran with the partition
+off, so that every core of the machine takes load: the one-thread rows
+pinned to CPU 29, the multi-thread rows on CPUs 24 to 31, and M13 and M14
+on all 32. **M2, M3, M4 and M6** ran inside the partition, where CPUs 13 and
+29 are out of the scheduler and only a task pinned there runs there; the
+latency rows also take `SCHED_FIFO` at priority 50. The `isolated` field of
+`context.tsv` reads the boot set, which stays empty while a cgroup
+partition holds the CPUs, so it does not show that state. Every row runs
+under a timeout; a row outside the partition also runs under a memory cap.
+The file
 `results/data/context.tsv` records the date, the commit, the host, the CPU,
 the kernel, the cores, and the scheduling class of the run; `run_all.sh`
 writes it at the start of every run, a partial rerun (`ONLY=...`) included,
@@ -51,7 +54,9 @@ plots and leaves the others as they stand.
 ## M1 — Zero cost when unused
 
 **Claim.** A julia that carries the region runtime, on a program that never
-opens a window, runs the GCBenchmarks within noise of vanilla.
+opens a window, runs the GCBenchmarks within a few percent of vanilla: six
+of the nine benchmarks have an interval that crosses 1.00, one is 2 %
+slower, and two run faster for a reason the prose below names.
 
 Script `bench/gcbench.sh`; data `results/data/gcbench.tsv`; plot
 `results/plots/gcbench.svg` (bars: the ratio regions / vanilla per benchmark,
@@ -62,17 +67,17 @@ the spread column is the larger of the two binaries' (max − min) / min over
 the rounds: a ratio inside the spread is noise.
 
 <!-- table M1 -->
-| benchmark | threads | vanilla (s) | regions (s) | ratio | rounds | spread |
-| --- | --- | --- | --- | --- | --- | --- |
-| append | 1 | 1.623 | 1.649 | 1.02 | 5 | 8 % |
-| tree | 1 | 8.186 | 8.793 | 1.07 | 5 | 9 % |
-| strings | 1 | 18.257 | 18.463 | 1.01 | 5 | 5 % |
-| pollard | 1 | 0.648 | 0.653 | 1.01 | 5 | 3 % |
-| single_ref | 1 | 0.401 | 0.397 | 0.99 | 5 | 14 % |
-| many_refs | 1 | 1.980 | 1.814 | 0.92 | 5 | 1 % |
-| mergesort_parallel | 4 | 1.580 | 1.603 | 1.01 | 5 | 4 % |
-| mm_divide_and_conquer | 4 | 0.793 | 0.791 | 1.00 | 5 | 5 % |
-| issue-52937 | 4 | 9.742 | 9.789 | 1.00 | 5 | 2 % |
+| benchmark | threads | vanilla (s) | regions (s) | regions / vanilla [95 %] | rounds |
+| --- | --- | --- | --- | --- | --- |
+| append | 1 | 1.610 | 1.624 | 1.01 [1, 1.01] | 10 |
+| tree | 1 | 8.725 | 8.957 | 1.02 [1.01, 1.04] | 10 |
+| strings | 1 | 18.604 | 18.538 | 1 [0.997, 1.01] | 10 |
+| pollard | 1 | 0.657 | 0.659 | 1.01 [1, 1.02] | 10 |
+| single_ref | 1 | 0.421 | 0.397 | 0.96 [0.914, 0.991] | 10 |
+| many_refs | 1 | 1.979 | 1.816 | 0.917 [0.915, 0.921] | 10 |
+| mergesort_parallel | 4 | 1.610 | 1.604 | 0.995 [0.99, 1] | 10 |
+| mm_divide_and_conquer | 4 | 0.799 | 0.793 | 0.996 [0.982, 1.02] | 10 |
+| issue-52937 | 4 | 9.832 | 9.847 | 1 [0.996, 1.01] | 10 |
 <!-- /table -->
 
 ![Unused, the region runtime runs the GCBenchmarks within noise of vanilla](results/plots/gcbench.svg)
@@ -83,11 +88,18 @@ memory-pressure guard (`gc_cb_on_pressure` in `util/utils.jl` stops a run
 after three pressure callbacks in ten seconds). The abort is a property of
 the benchmark on this machine, not of either binary.
 
-`many_refs` runs faster on regions in every round, outside its spread. The
-cause is a stock-path change of this branch, not a region: the benchmark
-fills its array under `GC.enable(false)`, and a deferred collection on
-vanilla re-arms its trigger at zero, so vanilla re-enters `jl_gc_collect` on
-every allocation of that phase. This branch re-arms `heap_target`
+Read the intervals, not the word "noise". Six of the nine benchmarks sit
+between 0.995 and 1.01 with intervals that cross 1.00, which is what "no
+cost" looks like. One benchmark is above it: `tree`, at 1.02 with an
+interval of [1.01, 1.04] over ten rounds, so the region runtime costs that
+benchmark about 2 %. Two run faster on regions, and their intervals exclude
+1.00: `single_ref` at 0.96 and `many_refs` at 0.917.
+
+`many_refs` runs faster on regions in every round. The cause is a
+stock-path change of this branch, not a region: the benchmark fills its
+array under `GC.enable(false)`, and a deferred collection on vanilla re-arms
+its trigger at zero, so vanilla re-enters `jl_gc_collect` on every
+allocation of that phase. This branch re-arms `heap_target`
 (`gc_defer_collection`; see `HISTORY.md`, stock-path change S1).
 
 ## M2 — Unit costs
@@ -96,7 +108,7 @@ every allocation of that phase. This branch re-arms `heap_target`
 flag load and a predicted branch (about 0.09 ns), a pool allocation pays the
 active-pool indirection and the region test of `maybe_collect` (about
 0.3 ns), an object constructed with boxed children pays one flag check for
-all of them, and the stock mark pays between 1 and 3 %. An object with two pointer
+all of them, and a serial stock mark pays 1.7 %. An object with two pointer
 fields and two fresh children pays the three allocations, not a barrier.
 With a window open, an armed store pays one page-map walk in a
 cold call, a window pair and a reset cost tens of nanoseconds, and an
@@ -128,31 +140,44 @@ this host: the row is an upper bound on the reset.
 
 The `box_twin` row is the fresh-object copy: an immutable value with two
 pointer fields, boxed once per object, which the runtime copies field by
-field under the region check. Read the second column against the first, in
-ns per object: `alloc_stock` 2.12 → 2.40 (+0.28), `construct_shared`
-3.55 → 3.98 (+0.43), `box_twin` 3.88 → 4.07 (+0.20), `construct_two`
-7.22 → 7.87 (+0.66). The `construct_shared` delta is the `alloc_stock`
-delta and a flag check. The `box_twin` delta is smaller than the
-`alloc_stock` delta, so the check of the copied fields is inside the spread
-of the row. The `construct_two` delta is three allocations: three times the
-`alloc_stock` delta is +0.85 ns, and the row's spread across runs is of
-that size, so the row measures the allocations and not a barrier.
+field under the region check. The delta column, "no window minus vanilla",
+is what a program that never opens a window pays, and its interval is what
+ten paired rounds support:
+
+- a pointer store +0.085 ns [0.084, 0.086];
+- a pool allocation +0.283 ns [0.277, 0.291];
+- a construction from two shared children +0.335 ns [0.320, 0.351], which
+  is one allocation and one flag check;
+- a boxed copy of an inline value with two pointer fields +0.243 ns
+  [0.220, 0.266], which is smaller than the allocation delta: the check of
+  the copied fields does not show above it;
+- a construction of three allocations +0.823 ns [0.767, 0.860]. Three times
+  the allocation delta is +0.849 ns, so this row is its three allocations
+  and nothing else, which is what the row was built to show;
+- a serial stock mark +1.14 ms [0.89, 1.43], which is 1.7 %.
+
+Every one of those keeps its direction in 24 or 25 of the 25 rounds. The
+mark row needed them: at ten rounds its sign test read 0.021 and the
+interval reached from 0.42 to 1.23 ms, so ten rounds did not settle a row
+that twenty-five settles. A serial mark is also the wrong place to read
+this cost; M13 measures the collection at the thread counts a program uses,
+and there the cost is larger.
 
 <!-- table M2 -->
-| cost | unit | vanilla | regions, no window | regions |
-| --- | --- | --- | --- | --- |
-| store_disarmed | ns/store | 0.3217 | 0.4086 | 0.4082 |
-| store_armed | ns/store | — | — | 1.443 |
-| store_region | ns/store | — | — | 2.058 |
-| window_pair | ns/pair | — | — | 10.79 |
-| switch_pair | ns/pair | — | — | 5.958 |
-| construct_two | ns/object | 7.219 | 7.874 | 10.63 |
-| construct_shared | ns/object | 3.55 | 3.975 | 6.279 |
-| box_twin | ns/object | 3.876 | 4.074 | 6.461 |
-| alloc_stock | ns/object | 2.117 | 2.4 | 3.385 |
-| alloc_region | ns/object | — | — | 3.983 |
-| reset_slice | ns/reset | — | — | 30 |
-| stock_mark | ms/collection | 65.63 | 67.87 | 66.31 |
+| cost | unit | vanilla | regions, no window | regions | no window − vanilla [95 %] | rounds |
+| --- | --- | --- | --- | --- | --- | --- |
+| store_disarmed | ns/store | 0.3212 [0.3208, 0.3225] | 0.4063 [0.4062, 0.4067] | 0.4065 [0.4062, 0.407] | 0.0851 [0.0842, 0.0856], sign 6e-08 | 25 |
+| store_armed | ns/store | — | — | 1.44 [1.439, 1.44] | — | 25 |
+| store_region | ns/store | — | — | 1.994 [1.993, 1.995] | — | 25 |
+| window_pair | ns/pair | — | — | 10.9 [10.9, 10.9] | — | 25 |
+| switch_pair | ns/pair | — | — | 5.948 [5.947, 5.95] | — | 25 |
+| construct_two | ns/object | 7.013 [6.995, 7.033] | 7.823 [7.753, 7.896] | 10.4 [10.29, 10.43] | 0.823 [0.767, 0.86], sign 6e-08 | 25 |
+| construct_shared | ns/object | 3.597 [3.585, 3.613] | 3.934 [3.921, 3.952] | 6.219 [6.192, 6.239] | 0.335 [0.32, 0.351], sign 6e-08 | 25 |
+| box_twin | ns/object | 3.9 [3.885, 3.918] | 4.14 [4.117, 4.163] | 6.357 [6.345, 6.388] | 0.243 [0.22, 0.266], sign 6e-08 | 25 |
+| alloc_stock | ns/object | 2.148 [2.145, 2.155] | 2.432 [2.427, 2.439] | 3.428 [3.41, 3.492] | 0.283 [0.277, 0.291], sign 6e-08 | 25 |
+| alloc_region | ns/object | — | — | 3.98 [3.977, 3.982] | — | 25 |
+| reset_slice | ns/reset | — | — | 30 [30, 30] | — | 25 |
+| stock_mark | ms/collection | 65.56 [65.38, 65.73] | 66.75 [66.44, 67.24] | 66.8 [66.58, 67.22] | 1.14 [0.89, 1.43], sign 1.9e-05 | 25 |
 <!-- /table -->
 
 ![What one operation costs](results/plots/unit_costs.svg)
@@ -172,17 +197,17 @@ with the scratch left to the collector (`baseline`) and reset per event
 <!-- table M3 -->
 | script | variant | p50 (ns) | p99 (ns) | p99.9 (ns) | p99.99 (ns) | max (ns) | over 100 µs | collections | GC (ms) | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| yardstick | alloc | 70 | 90 | 631 | 1,002 | 14,338,374 | 18 | 12 | 17.2 | 1,025 |
-| yardstick | pooled | 70 | 81 | 100 | 1,954 | 203,704 | 8 | 0 | 0.0 | 832 |
-| tail | baseline | 60 | 81 | 531 | 1,533 | 2,767,153 | 27 | 16 | 11.0 | 888 |
-| tail | regions | 70 | 101 | 120 | 1,413 | 164,982 | 3 | 0 | 0.0 | 971 |
+| yardstick | alloc | 60 | 81 | 581 | 892 | 14,022,596 | 24 | 12 | 17.2 | 1,029 |
+| yardstick | pooled | 60 | 71 | 91 | 1,834 | 328,259 | 9 | 0 | 0.0 | 836 |
+| tail | baseline | 60 | 71 | 490 | 1,483 | 2,779,265 | 29 | 16 | 10.3 | 891 |
+| tail | regions | 61 | 101 | 110 | 1,363 | 328,340 | 6 | 0 | 0.0 | 976 |
 <!-- /table -->
 
 ![Event latency: the percentiles and the longest event](results/plots/tail.svg)
 
 The `over 100 µs` column of a run with zero collections is not the
 collector. The pooled yardstick collects nothing and still has events over
-100 µs; `tail regions` collects nothing and has three. The maximum of a run
+100 µs; `tail regions` collects nothing and has six. The maximum of a run
 with zero collections moves between runs: an earlier run of `tail regions`
 had a maximum of 34 µs and no event over 100 µs. These scripts take no heap
 reserve, so the first touch of a fresh page is a page fault of the machine,
@@ -218,14 +243,14 @@ kept run must read 0.
 <!-- table M4 -->
 | class | mode | events/s | p50 (ns) | p99 (ns) | p99.99 (ns) | max (ns) | max, no preemption (ns) | stock collections | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| recording, W=200 | stock, own heuristics | 7.2 M | 60 | 361 | 621 | 3,831,331 | 3,831,331 | 311 | 1,246 |
-| recording, W=200 | stock, program schedule | 7.3 M | 60 | 351 | 611 | 3,762,782 | 3,762,782 | 333 | 1,254 |
-| recording, W=200 | regions, census | 14.8 M | 50 | 70 | 180 | 55,324 | 55,324 | — | 1,206 |
-| recording, W=200 | regions, no census | 14.8 M | 50 | 71 | 221 | 16,350 | 16,350 | — | 1,206 |
-| light, W=3 | stock, own heuristics | 16.8 M | 30 | 50 | 261 | 3,574,426 | 3,574,426 | 35 | 1,245 |
-| light, W=3 | stock, program schedule | 16.1 M | 40 | 50 | 211 | 3,533,318 | 3,533,318 | 51 | 1,245 |
-| light, W=3 | regions, census | 16.9 M | 40 | 41 | 131 | 55,254 | 55,254 | — | 1,206 |
-| light, W=3 | regions, no census | 16.9 M | 40 | 50 | 301 | 15,560 | 15,560 | — | 1,206 |
+| recording, W=200 | stock, own heuristics | 6.8 M | 60 | 381 | 641 | 3,961,056 | 3,961,056 | 316 | 1,247 |
+| recording, W=200 | stock, program schedule | 6.9 M | 60 | 380 | 641 | 3,547,095 | 3,547,095 | 338 | 1,247 |
+| recording, W=200 | regions, census | 14.1 M | 50 | 80 | 181 | 52,870 | 52,870 | — | 1,207 |
+| recording, W=200 | regions, no census | 14.3 M | 50 | 80 | 321 | 14,337 | 14,337 | — | 1,207 |
+| light, W=3 | stock, own heuristics | 16.8 M | 31 | 50 | 271 | 3,970,674 | 3,970,674 | 35 | 1,247 |
+| light, W=3 | stock, program schedule | 16.2 M | 40 | 50 | 191 | 3,729,098 | 3,729,098 | 51 | 1,247 |
+| light, W=3 | regions, census | 15.3 M | 41 | 51 | 110 | 44,624 | 44,624 | — | 1,207 |
+| light, W=3 | regions, no census | 15.9 M | 40 | 51 | 271 | 10,450 | 10,450 | — | 1,207 |
 <!-- /table -->
 
 ![How many events are at least this slow](results/plots/latency_ccdf.svg)
@@ -259,24 +284,24 @@ and sweep columns are means over the collections of one run.
 <!-- table M5-pause -->
 | variant | K | pause p50 (µs) | pause max (µs) | stop the world (µs) | mark (µs) | sweep (µs) | live cells | freed cells |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| scoped | 300 | 5.1 | 47.4 | 2.8 | 2.4 | 1.0 | 302 | 100,515 |
-| coop | 300 | 2.2 | 15.7 | 0.0 | 2.0 | 0.9 | 302 | 100,515 |
-| full | 300 | 1997.0 | 6793.1 | — | — | — | — | — |
-| scoped | 1,000 | 7.2 | 45.9 | 3.2 | 3.9 | 1.2 | 1,002 | 100,550 |
-| coop | 1,000 | 4.4 | 18.9 | 0.0 | 3.9 | 1.2 | 1,002 | 100,550 |
-| full | 1,000 | 2317.3 | 6144.9 | — | — | — | — | — |
-| scoped | 3,000 | 12.9 | 51.9 | 3.1 | 8.5 | 2.1 | 3,002 | 100,650 |
-| coop | 3,000 | 10.5 | 24.6 | 0.0 | 9.1 | 2.1 | 3,002 | 100,650 |
-| full | 3,000 | 2371.1 | 6324.9 | — | — | — | — | — |
-| scoped | 10,000 | 32.2 | 71.3 | 3.0 | 25.1 | 4.7 | 10,002 | 101,000 |
-| coop | 10,000 | 34.2 | 85.3 | 0.0 | 34.3 | 4.9 | 10,002 | 101,000 |
-| full | 10,000 | 2645.9 | 7565.8 | — | — | — | — | — |
-| scoped | 30,000 | 90.4 | 137.6 | 2.8 | 75.6 | 14.8 | 30,002 | 102,000 |
-| coop | 30,000 | 97.8 | 127.2 | 0.1 | 83.3 | 16.0 | 30,002 | 102,000 |
-| full | 30,000 | 3427.9 | 8624.9 | — | — | — | — | — |
-| scoped | 100,000 | 316.8 | 385.0 | 3.1 | 272.1 | 44.0 | 100,002 | 105,500 |
-| coop | 100,000 | 276.4 | 396.9 | 0.1 | 236.4 | 46.2 | 100,002 | 105,500 |
-| full | 100,000 | 5822.2 | 11198.8 | — | — | — | — | — |
+| scoped | 300 | 6.1 | 46.5 | 3.3 | 2.8 | 1.0 | 302 | 100,515 |
+| coop | 300 | 2.6 | 17.3 | 0.1 | 2.3 | 1.0 | 302 | 100,515 |
+| full | 300 | 2242.0 | 5933.8 | — | — | — | — | — |
+| scoped | 1,000 | 7.1 | 41.4 | 2.9 | 3.8 | 1.2 | 1,002 | 100,550 |
+| coop | 1,000 | 4.1 | 17.9 | 0.0 | 3.5 | 1.2 | 1,002 | 100,550 |
+| full | 1,000 | 2301.4 | 6287.6 | — | — | — | — | — |
+| scoped | 3,000 | 15.8 | 54.2 | 4.2 | 11.6 | 2.4 | 3,002 | 100,650 |
+| coop | 3,000 | 9.6 | 22.6 | 0.1 | 8.2 | 2.0 | 3,002 | 100,650 |
+| full | 3,000 | 2699.8 | 6096.8 | — | — | — | — | — |
+| scoped | 10,000 | 35.9 | 67.8 | 3.2 | 29.3 | 4.5 | 10,002 | 101,000 |
+| coop | 10,000 | 28.4 | 41.8 | 0.1 | 24.6 | 4.5 | 10,002 | 101,000 |
+| full | 10,000 | 2607.0 | 6032.0 | — | — | — | — | — |
+| scoped | 30,000 | 95.2 | 143.5 | 3.2 | 80.7 | 12.7 | 30,002 | 102,000 |
+| coop | 30,000 | 94.1 | 123.3 | 0.0 | 82.7 | 13.3 | 30,002 | 102,000 |
+| full | 30,000 | 3577.1 | 6925.8 | — | — | — | — | — |
+| scoped | 100,000 | 327.6 | 373.4 | 3.0 | 278.9 | 45.4 | 100,002 | 105,500 |
+| coop | 100,000 | 280.3 | 447.9 | 0.1 | 240.1 | 50.3 | 100,002 | 105,500 |
+| full | 100,000 | 6076.1 | 11308.8 | — | — | — | — | — |
 <!-- /table -->
 
 ![A census pause grows with the live cells, and only with them](results/plots/census_pause.svg)
@@ -292,16 +317,16 @@ the window pair and the reset are paid once per B events.
 <!-- table M5-throughput -->
 | variant | W | B | events/s | collections | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- |
-| autopool | 3 | 1 | 52.6 M | 0 | 629 |
-| batch | 3 | 1 | 25.4 M | 0 | 629 |
-| batch | 3 | 100 | 62.4 M | 0 | 629 |
-| batch | 3 | 1000 | 63.1 M | 0 | 629 |
-| pooled | 3 | 1 | 24.6 M | 50 | 629 |
-| autopool | 200 | 1 | 13.7 M | 0 | 629 |
-| batch | 200 | 1 | 20.8 M | 0 | 629 |
-| batch | 200 | 100 | 44.8 M | 0 | 629 |
-| batch | 200 | 1000 | 38.9 M | 0 | 629 |
-| pooled | 200 | 1 | 21.1 M | 50 | 629 |
+| autopool | 3 | 1 | 51.2 M | 0 | 629 |
+| batch | 3 | 1 | 24.2 M | 0 | 629 |
+| batch | 3 | 100 | 53.5 M | 0 | 629 |
+| batch | 3 | 1000 | 54.6 M | 0 | 629 |
+| pooled | 3 | 1 | 22.5 M | 50 | 630 |
+| autopool | 200 | 1 | 12.8 M | 0 | 630 |
+| batch | 200 | 1 | 20.2 M | 0 | 630 |
+| batch | 200 | 100 | 41.1 M | 0 | 629 |
+| batch | 200 | 1000 | 36.3 M | 0 | 629 |
+| pooled | 200 | 1 | 23.2 M | 50 | 629 |
 <!-- /table -->
 
 ![Throughput of the event loop: what one window per B events costs](results/plots/census_throughput.svg)
@@ -321,19 +346,19 @@ lateness max of each run, on one log axis) and `results/plots/endurance.svg`
 A slot is 100 µs; a miss is an event whose lateness passes the slot. The
 `baseline` runs with `--heap-size-hint=128M`, so the stock collector runs
 at all in a one-million-event run; `regions` resets the Event region after
-each event. The two collections of the baseline are its 122 misses: a
+each event. The two collections of the baseline are its 105 misses: a
 collection of about 5 ms holds the loop through about fifty slots, and each
 event that waited past its slot is a miss. The regions run collects nothing
-and misses nothing. Its
-`lateness max` is 92 µs where its `latency max` is 11 µs: the loop woke
-late once, by 80 µs, on an event that then ran in 11 µs. That is the
-machine, not the collector, and it stayed inside the slot.
+and misses nothing. Its `lateness max` is 5.6 µs where its `latency max` is
+5.5 µs: the loop woke late once, by a tenth of a microsecond, on an event
+that then ran in 5.5 µs. That is the machine, not the collector, and it
+stayed far inside the slot.
 
 <!-- table M6-paced -->
 | variant | events | latency p50 (ns) | latency max (ns) | lateness p99.9 (ns) | lateness max (ns) | slot misses | GC events | GC (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| baseline | 1,000,000 | 70 | 5,588,408 | 1,385 | 5,588,463 | 122 | 2 | 10.3 |
-| regions | 1,000,000 | 81 | 11,401 | 691 | 92,453 | 0 | 0 | 0.0 |
+| baseline | 1,000,000 | 70 | 5,149,068 | 975 | 5,149,109 | 105 | 2 | 9.6 |
+| regions | 1,000,000 | 70 | 5,530 | 241 | 5,588 | 0 | 0 | 0.0 |
 <!-- /table -->
 
 ![Paced events: how late the loop was at its worst](results/plots/paced.svg)
@@ -352,9 +377,9 @@ throughput the reset recycles, not a leak (see the devdoc, section
 | samples (one per 100 000 events) | 180 |
 | events | 18,000,000 |
 | wall (s) | 1,800 |
-| RSS at the first sample (MB) | 303.64 |
-| RSS at the last sample (MB) | 303.64 |
-| RSS max (MB) | 303.64 |
+| RSS at the first sample (MB) | 306.07 |
+| RSS at the last sample (MB) | 306.07 |
+| RSS max (MB) | 306.07 |
 | allocated through the region, first to last sample (MB) | 525 |
 | slot misses | 0 |
 <!-- /table -->
@@ -375,12 +400,12 @@ only when a compiler builds `native.cpp`.
 <!-- table M7 -->
 | variant | W | events/s | censuses | census p50 (µs) | census max (µs) | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- |
-| region | 3 | 61.5 M | 50 | 3.0 | 8.0 | 252.6 |
-| stock | 3 | 60.7 M | — | — | — | 278.9 |
-| cpp | 3 | 69.7 M | — | — | — | 3.8 |
-| region | 200 | 31.8 M | 50 | 10.7 | 13.8 | 277.2 |
-| stock | 200 | 32.6 M | — | — | — | 279.7 |
-| cpp | 200 | 42.2 M | — | — | — | 3.8 |
+| region | 3 | 58.2 M | 50 | 3.2 | 7.5 | 253.7 |
+| stock | 3 | 62.7 M | — | — | — | 280.0 |
+| cpp | 3 | 68.7 M | — | — | — | 3.9 |
+| region | 200 | 32.2 M | 50 | 13.2 | 16.1 | 278.6 |
+| stock | 200 | 31.8 M | — | — | — | 280.5 |
+| cpp | 200 | 38.9 M | — | — | — | 3.8 |
 <!-- /table -->
 
 ![The same event loop, region-native Julia against C++](results/plots/native.svg)
@@ -401,12 +426,12 @@ holds the round with the best wall time.
 <!-- table M8 -->
 | showcase | mode | wall (s) | collections | GC (ms) | peak RSS (MB) | rounds |
 | --- | --- | --- | --- | --- | --- | --- |
-| binarytree | stock | 0.385 | 31 | 83.3 | 271 | 3 |
-| binarytree | regions | 0.366 | 0 | 0.0 | 263 | 3 |
-| linkedlist | stock | 2.145 | 10 | 1694.7 | 2,385 | 3 |
-| linkedlist | regions | 0.566 | 0 | 0.0 | 2,385 | 3 |
+| binarytree | stock | 0.385 | 31 | 84.9 | 273 | 3 |
+| binarytree | regions | 0.363 | 0 | 0.0 | 265 | 3 |
+| linkedlist | stock | 2.204 | 10 | 1742.5 | 2,387 | 3 |
+| linkedlist | regions | 0.578 | 0 | 0.0 | 2,387 | 3 |
 | tree | stock | 0.008 | 6 | 0.9 | — | 3 |
-| tree | regions | 0.006 | 0 | 0.0 | — | 3 |
+| tree | regions | 0.007 | 0 | 0.0 | — | 3 |
 <!-- /table -->
 
 ![Wholesale death: a structure that dies at once is freed at once](results/plots/showcase.svg)
@@ -454,19 +479,19 @@ The ratio column is stock / regions: above 1.0 regions are faster.
 <!-- table M10 -->
 | demo | point | threads | wall stock (ms) | wall regions (ms) | stock / regions | collections stock | collections regions | GC stock (ms) | GC regions (ms) | peak RSS stock (MB) | peak RSS regions (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| A | small (1500 instances, n=30, K=3) | 1 | 102.3 | 95.8 | 1.07 | 11 | 0 | 5.8 | 0.0 | 276 | 275 |
-| A | medium (3000 instances, n=32, K=3) | 1 | 217.4 | 202.1 | 1.08 | 23 | 0 | 12.4 | 0.0 | 278 | 277 |
-| A | large (5000 instances, n=34, K=3) | 1 | 388.3 | 364.0 | 1.07 | 41 | 0 | 20.9 | 0.0 | 279 | 279 |
-| B | small (160x100, 8 spp, depth 8, 4 threads) | 4 | 6.0 | 6.1 | 0.99 | 0 | 0 | 0.0 | 0.0 | 282 | 282 |
-| B | medium (160x100, 24 spp, depth 8, 4 threads) | 4 | 16.6 | 17.0 | 0.98 | 2 | 0 | 0.3 | 0.0 | 284 | 283 |
-| B | large (160x100, 64 spp, depth 8, 4 threads) | 4 | 44.4 | 43.3 | 1.02 | 7 | 0 | 0.8 | 0.0 | 284 | 284 |
-| C | work=0 (80000 keys, work=0, 4 threads) | 4 | 29.5 | 66.8 | 0.44 | 2 | 5 | 3.9 | 5.6 | 356 | 369 |
-| C | work=64 (80000 keys, work=64, 4 threads) | 4 | 79.8 | 94.6 | 0.84 | 22 | 4 | 24.8 | 4.3 | 378 | 378 |
-| C | work=256 (80000 keys, work=256, 4 threads) | 4 | 289.9 | 171.2 | 1.69 | 35 | 2 | 115.8 | 3.4 | 547 | 594 |
-| C | work=1024 (80000 keys, work=1024, 4 threads) | 4 | 878.9 | 443.6 | 1.98 | 83 | 2 | 327.7 | 4.4 | 634 | 632 |
-| D | work=0 (grid 16, work=0, 4 threads) | 4 | 36.9 | 36.4 | 1.01 | 0 | 0 | 0.0 | 0.0 | 286 | 286 |
-| D | work=512 (grid 16, work=512, 4 threads) | 4 | 37.3 | 36.3 | 1.03 | 4 | 0 | 2.2 | 0.0 | 296 | 297 |
-| D | work=2048 (grid 16, work=2048, 4 threads) | 4 | 45.7 | 38.4 | 1.19 | 26 | 0 | 8.0 | 0.0 | 302 | 297 |
+| A | small (1500 instances, n=30, K=3) | 1 | 118.2 | 110.4 | 1.07 | 11 | 0 | 5.6 | 0.0 | 278 | 277 |
+| A | medium (3000 instances, n=32, K=3) | 1 | 248.9 | 231.6 | 1.07 | 23 | 0 | 12.1 | 0.0 | 281 | 281 |
+| A | large (5000 instances, n=34, K=3) | 1 | 437.1 | 409.5 | 1.07 | 41 | 0 | 20.4 | 0.0 | 281 | 281 |
+| B | small (160x100, 8 spp, depth 8, 4 threads) | 4 | 5.5 | 6.0 | 0.92 | 0 | 0 | 0.0 | 0.0 | 284 | 284 |
+| B | medium (160x100, 24 spp, depth 8, 4 threads) | 4 | 17.0 | 16.5 | 1.03 | 2 | 0 | 0.3 | 0.0 | 286 | 285 |
+| B | large (160x100, 64 spp, depth 8, 4 threads) | 4 | 44.2 | 42.9 | 1.03 | 7 | 0 | 0.8 | 0.0 | 286 | 286 |
+| C | work=0 (80000 keys, work=0, 4 threads) | 4 | 28.0 | 63.4 | 0.44 | 2 | 5 | 4.0 | 4.9 | 356 | 363 |
+| C | work=64 (80000 keys, work=64, 4 threads) | 4 | 81.3 | 94.7 | 0.86 | 22 | 4 | 25.6 | 5.2 | 379 | 379 |
+| C | work=256 (80000 keys, work=256, 4 threads) | 4 | 285.5 | 181.2 | 1.58 | 39 | 2 | 114.0 | 3.4 | 531 | 545 |
+| C | work=1024 (80000 keys, work=1024, 4 threads) | 4 | 871.7 | 479.8 | 1.82 | 121 | 2 | 323.8 | 2.7 | 620 | 517 |
+| D | work=0 (grid 16, work=0, 4 threads) | 4 | 36.5 | 36.2 | 1.01 | 0 | 0 | 0.0 | 0.0 | 288 | 288 |
+| D | work=512 (grid 16, work=512, 4 threads) | 4 | 37.8 | 36.7 | 1.03 | 4 | 0 | 2.4 | 0.0 | 299 | 289 |
+| D | work=2048 (grid 16, work=2048, 4 threads) | 4 | 46.1 | 38.2 | 1.21 | 24 | 0 | 8.2 | 0.0 | 303 | 299 |
 <!-- /table -->
 
 ![Demonstrator A: backtracking search, one thread](results/plots/demo_a.svg)
@@ -511,30 +536,30 @@ This row runs on CPUs 24 to 31. The ratio column is stock / regions.
 <!-- table M12 -->
 | demo | point | threads | wall stock (ms) | wall regions (ms) | stock / regions | collections stock | collections regions | GC stock (ms) | GC regions (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| B | small | 1 | 12.9 | 13.5 | 0.96 | 0 | 0 | 0.0 | 0.0 |
-| B | medium | 1 | 38.7 | 38.8 | 1.00 | 2 | 0 | 0.2 | 0.0 |
-| B | large | 1 | 102.3 | 101.6 | 1.01 | 6 | 0 | 0.7 | 0.0 |
-| D | work=0 | 1 | 88.9 | 89.2 | 1.00 | 0 | 0 | 0.0 | 0.0 |
-| D | work=512 | 1 | 91.1 | 86.1 | 1.06 | 2 | 0 | 1.7 | 0.0 |
-| D | work=2048 | 1 | 88.1 | 89.5 | 0.98 | 10 | 0 | 6.0 | 0.0 |
-| B | small | 2 | 10.5 | 10.8 | 0.97 | 0 | 0 | 0.0 | 0.0 |
-| B | medium | 2 | 30.6 | 30.4 | 1.00 | 2 | 0 | 0.2 | 0.0 |
-| B | large | 2 | 80.2 | 79.1 | 1.01 | 7 | 0 | 0.7 | 0.0 |
-| D | work=0 | 2 | 56.1 | 55.2 | 1.02 | 0 | 0 | 0.0 | 0.0 |
-| D | work=512 | 2 | 58.7 | 56.4 | 1.04 | 4 | 0 | 3.4 | 0.0 |
-| D | work=2048 | 2 | 69.2 | 57.8 | 1.20 | 16 | 0 | 8.6 | 0.0 |
-| B | small | 4 | 5.5 | 6.0 | 0.92 | 0 | 0 | 0.0 | 0.0 |
-| B | medium | 4 | 16.6 | 16.7 | 0.99 | 2 | 0 | 0.3 | 0.0 |
-| B | large | 4 | 44.6 | 43.2 | 1.03 | 7 | 0 | 0.8 | 0.0 |
-| D | work=0 | 4 | 35.4 | 35.4 | 1.00 | 0 | 0 | 0.0 | 0.0 |
-| D | work=512 | 4 | 37.2 | 35.2 | 1.06 | 5 | 0 | 4.0 | 0.0 |
-| D | work=2048 | 4 | 45.4 | 36.5 | 1.25 | 27 | 0 | 9.1 | 0.0 |
-| B | small | 8 | 3.3 | 3.7 | 0.89 | 0 | 0 | 0.0 | 0.0 |
-| B | medium | 8 | 10.2 | 10.2 | 1.00 | 2 | 0 | 0.4 | 0.0 |
-| B | large | 8 | 26.8 | 26.3 | 1.02 | 7 | 2 | 0.9 | 0.3 |
-| D | work=0 | 8 | 24.9 | 23.5 | 1.06 | 1 | 0 | 1.5 | 0.0 |
-| D | work=512 | 8 | 26.4 | 27.1 | 0.97 | 5 | 1 | 3.0 | 1.6 |
-| D | work=2048 | 8 | 36.0 | 29.5 | 1.22 | 20 | 4 | 8.0 | 3.4 |
+| B | small | 1 | 12.9 | 13.2 | 0.98 | 0 | 0 | 0.0 | 0.0 |
+| B | medium | 1 | 38.6 | 38.4 | 1.01 | 2 | 0 | 0.3 | 0.0 |
+| B | large | 1 | 101.8 | 100.9 | 1.01 | 6 | 0 | 0.7 | 0.0 |
+| D | work=0 | 1 | 88.1 | 86.3 | 1.02 | 0 | 0 | 0.0 | 0.0 |
+| D | work=512 | 1 | 91.9 | 87.6 | 1.05 | 2 | 0 | 1.6 | 0.0 |
+| D | work=2048 | 1 | 90.0 | 90.7 | 0.99 | 11 | 0 | 6.4 | 0.0 |
+| B | small | 2 | 10.4 | 10.7 | 0.98 | 0 | 0 | 0.0 | 0.0 |
+| B | medium | 2 | 30.6 | 30.4 | 1.01 | 2 | 0 | 0.2 | 0.0 |
+| B | large | 2 | 80.1 | 79.2 | 1.01 | 7 | 0 | 0.7 | 0.0 |
+| D | work=0 | 2 | 58.7 | 58.1 | 1.01 | 0 | 0 | 0.0 | 0.0 |
+| D | work=512 | 2 | 59.9 | 58.4 | 1.03 | 4 | 0 | 3.1 | 0.0 |
+| D | work=2048 | 2 | 69.4 | 62.0 | 1.12 | 18 | 0 | 7.5 | 0.0 |
+| B | small | 4 | 5.5 | 6.0 | 0.91 | 0 | 0 | 0.0 | 0.0 |
+| B | medium | 4 | 16.6 | 16.9 | 0.98 | 2 | 0 | 0.3 | 0.0 |
+| B | large | 4 | 43.7 | 42.8 | 1.02 | 7 | 0 | 0.8 | 0.0 |
+| D | work=0 | 4 | 37.5 | 36.6 | 1.03 | 0 | 0 | 0.0 | 0.0 |
+| D | work=512 | 4 | 38.9 | 37.9 | 1.03 | 5 | 0 | 3.5 | 0.0 |
+| D | work=2048 | 4 | 47.5 | 39.3 | 1.21 | 24 | 0 | 9.1 | 0.0 |
+| B | small | 8 | 3.4 | 3.9 | 0.86 | 0 | 0 | 0.0 | 0.0 |
+| B | medium | 8 | 10.1 | 10.2 | 1.00 | 2 | 0 | 0.3 | 0.0 |
+| B | large | 8 | 26.9 | 25.9 | 1.04 | 7 | 0 | 1.0 | 0.0 |
+| D | work=0 | 8 | 24.9 | 24.1 | 1.03 | 1 | 0 | 1.5 | 0.0 |
+| D | work=512 | 8 | 26.4 | 23.8 | 1.11 | 5 | 0 | 3.0 | 0.0 |
+| D | work=2048 | 8 | 37.2 | 25.4 | 1.46 | 30 | 0 | 9.3 | 0.0 |
 <!-- /table -->
 
 ![The sibling leaves scale with the threads](results/plots/scaling.svg)
@@ -564,6 +589,13 @@ count, not of the regions, and it is reported so that a large collection
 time can be attributed.
 
 <!-- table M13 -->
+| threads | vanilla (ms) | regions (ms) | regions / vanilla [95 %] | mark vanilla (ms) | mark regions (ms) | time to safepoint (µs) | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 1 | 39.9 [39.6, 40.1] | 40.9 [40.4, 41.5] | 1.02 [1.02, 1.03] | 35.7 [35.6, 36] | 36.8 [36.4, 37.2] | 5.65 [4.64, 6.24] | 10 |
+| 4 | 56.8 [56.6, 57.2] | 58.1 [58, 58.4] | 1.02 [1.01, 1.03] | 49.2 [48.9, 49.5] | 50.6 [50.3, 50.7] | 7.89 [6.28, 8.41] | 10 |
+| 8 | 59.1 [58, 60.5] | 60 [59.8, 60.9] | 1.01 [0.988, 1.04] | 49.5 [48.1, 50.7] | 49.7 [49.5, 50.4] | 6.99 [6.65, 7.33] | 10 |
+| 16 | 65.7 [65.3, 68.6] | 67.6 [67.3, 69.2] | 1.03 [1.01, 1.04] | 49.6 [49.2, 52.8] | 50.8 [50.3, 52.4] | 7.29 [7.02, 7.78] | 10 |
+| 32 | 83.5 [82.6, 84.4] | 88.9 [87.6, 90.1] | 1.07 [1.03, 1.08] | 58.7 [58.1, 59.4] | 62.5 [61.1, 63.7] | 8.12 [7.29, 8.49] | 10 |
 <!-- /table -->
 
 ![The collector on the whole machine](results/plots/parallel_gc.svg)
@@ -588,7 +620,31 @@ counts the stock collections of the run: the workers allocate, so a stock
 collection can also stall a worker, and a row whose stalls sit far above its
 resets with many collections measures the collector, not the reset.
 
+The caller pays four times more at 32 threads than alone: 26.8 µs with no
+worker, 107 µs with 31. The stall a worker suffers grows faster, from 118 µs
+at four threads to 533 µs at sixteen. The unchecked entry stays at a tenth
+of a microsecond at every width and stalls no worker up to sixteen threads,
+which is the control the checked column needs.
+
+At 32 threads the stall column measures the machine, not the reset. The
+workers, the main task and the GC threads together ask for more than the 32
+cores, so a worker waits for a core whatever the reset does: the unchecked
+entry shows the same 5 ms there. Read the stall column up to sixteen
+threads, and read the caller column at every width.
+
 <!-- table M14 -->
+| entry | threads | workers | caller median (µs) | caller max (µs) | worst worker stall (µs) | collections | rounds |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| checked | 1 | 0 | 26.8 [26.7, 27] | 38 [32.5, 41.2] | — | 0 | 10 |
+| checked | 4 | 3 | 35 [34.8, 35.8] | 129 [90.9, 788] | 118 [72, 345] | 0 | 10 |
+| checked | 8 | 7 | 45.2 [40.4, 46.8] | 175 [114, 1.19e+03] | 187 [83.9, 583] | 0 | 10 |
+| checked | 16 | 15 | 66.5 [62, 68.9] | 252 [209, 2.2e+03] | 533 [333, 1.74e+03] | 1 | 10 |
+| checked | 32 | 31 | 107 [105, 109] | 3.67e+03 [3.38e+03, 5.13e+03] | 4.44e+03 [3.86e+03, 4.97e+03] | 0 | 10 |
+| unsafe | 1 | 0 | 0.07 [0.06, 0.075] | 0.151 [0.145, 0.2] | — | 0 | 10 |
+| unsafe | 4 | 3 | 0.071 [0.061, 0.08] | 0.365 [0.301, 0.521] | 0 [0, 497] | 0 | 10 |
+| unsafe | 8 | 7 | 0.08 [0.061, 0.08] | 0.271 [0.165, 0.431] | 0 [0, 0] | 0 | 10 |
+| unsafe | 16 | 15 | 0.08 [0.0755, 0.106] | 1.48 [0.961, 2.44] | 0 [0, 507] | 1 | 10 |
+| unsafe | 32 | 31 | 0.13 [0.12, 0.13] | 0.441 [0.281, 1.79] | 4e+03 [3.54e+03, 5e+03] | 0 | 10 |
 <!-- /table -->
 
 ![What a reset costs the machine](results/plots/reset_pause.svg)

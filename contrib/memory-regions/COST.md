@@ -5,11 +5,13 @@ runs the stock collector unchanged. It is not free. This document says what
 such a program pays, in memory and in time, in absolute and in relative
 terms, and which switches take which part of the cost out.
 
-The timing numbers below repeat the M1 and M2 tables of `MEASUREMENTS.md`.
-That run was on the flat tree of 2026-09-05, on an idle machine, with the
-one-thread rows pinned to a tickless core. `results/tables.py` rewrites the
-tables of `MEASUREMENTS.md` from the data files, and the rows here follow
-by hand. The sizes come from a C program compiled against the headers of
+The timing numbers below repeat the M1, M2 and M13 tables of
+`MEASUREMENTS.md`. That run was on an idle machine of 32 CPUs: the unit
+costs inside an isolated cpuset partition on a tickless core, over 25 paired
+rounds; the collection rows on the whole machine, over 10 paired rounds. A
+bracket is a percentile bootstrap interval at 95 % over the rounds.
+`results/tables.py` rewrites the tables of `MEASUREMENTS.md` from the data
+files, and the rows here follow by hand. The sizes come from a C program compiled against the headers of
 the two builds (`sizeof`) and from `size` and `readelf` on the two
 binaries; they do not depend on the machine's load.
 
@@ -58,17 +60,18 @@ instruction cache by their share of the text.
 
 | Operation | Vanilla | Regions, no window | Delta | Relative |
 | --- | --- | --- | --- | --- |
-| Pointer store with a write barrier | 0.32 ns | 0.41 ns | +0.09 ns | +27 % of the barrier |
-| Construction of an object with two pointer fields and two fresh children (three allocations) | 7.22 ns | 7.87 ns | +0.65 ns | +9 %; the three allocations, see below |
-| Construction of the same object with two shared children (one allocation) | 3.55 ns | 3.98 ns | +0.43 ns | +12 %; the allocation and a flag check |
-| A boxed copy of an immutable value with two pointer fields | 3.88 ns | 4.07 ns | +0.20 ns | +5 %; the allocation, and the field checks inside its spread |
-| Pool allocation | 2.12 ns | 2.40 ns | +0.28 ns | +13 % |
-| Stock mark, one collection | 65.6 ms | 67.9 ms | +2.2 ms | +3.4 %; see the note below |
+| Pointer store with a write barrier | 0.321 ns | 0.406 ns | +0.085 ns [0.084, 0.086] | +27 % of the barrier |
+| Construction of an object with two pointer fields and two fresh children (three allocations) | 7.01 ns | 7.82 ns | +0.823 ns [0.767, 0.860] | +12 %; the three allocations, see below |
+| Construction of the same object with two shared children (one allocation) | 3.60 ns | 3.93 ns | +0.335 ns [0.320, 0.351] | +9 %; the allocation and a flag check |
+| A boxed copy of an immutable value with two pointer fields | 3.90 ns | 4.14 ns | +0.243 ns [0.220, 0.266] | +6 %; the allocation, and the field checks inside it |
+| Pool allocation | 2.15 ns | 2.43 ns | +0.283 ns [0.277, 0.291] | +13 % |
+| Stock mark, one collection, one thread | 65.6 ms | 66.8 ms | +1.14 ms [0.89, 1.43] | +1.7 % |
+| A full collection, 32 threads, 16 GC threads, 1 GB live | 83.5 ms | 88.9 ms | +5.4 ms | +7 % [3 %, 8 %]; see the note below |
 | Stock sweep | — | one byte test per page | not measurable | — |
 | Each stock collection, the three region brackets | — | 64 pointer tests per heap | nanoseconds | — |
 | Task switch | — | one byte compare and one byte store | nanoseconds | — |
 | Finalizer registration | — | one page-metadata lookup | tens of nanoseconds, on a rare path | — |
-| GCBenchmarks, end to end (M1) | 1.00 | 0.92 to 1.07 | inside the spread of the rounds | noise |
+| GCBenchmarks, end to end (M1) | 1.00 | 0.92 to 1.02 | six of nine cross 1.00 | one benchmark 2 % slower |
 
 Where each cost comes from:
 
@@ -97,10 +100,19 @@ Where each cost comes from:
   predicted branch.
 - **The mark.** The mark loops read `jl_gc_region_census_target` once per
   object array and pass it down; the claim tests it per object. The load is
-  relaxed and the branch is predicted. The row is the least stable of the
-  table: the same binary marked in 67.9 ms in the process without a window
-  and in 66.3 ms in the process that opens one, so the spread between
-  processes is about 2 % and the cost of the mark is between 1 and 3 %.
+  relaxed and the branch is predicted. On one thread that costs 1.7 % of the
+  mark, established over 25 paired rounds.
+- **The collection on the whole machine.** The cost is not flat in the
+  thread count. A full collection over a live set that every thread builds
+  costs 2 % more with the region runtime at one thread and **7 % more at 32
+  threads with 16 GC threads** (M13), and the mark alone goes from 58.7 to
+  62.5 ms there. Three things could carry it: the census filter, a global
+  that every marking thread reads; the page metadata, 8 bytes larger per
+  16 KB page, which every marking thread touches; and the three brackets of
+  a stock collection, which walk 64 region entries per heap - the last is
+  6144 pointer tests at that width and cannot be it. Separating the first
+  two needs a build with `JL_NO_REGION_ALLOC`, which folds the census
+  branches out of the mark loops. That experiment is not done.
 - **The sweep.** The page sweep tests `region_n != 0` once per page and
   skips a region page. No region page exists.
 - **The collection.** Three brackets of a stock collection walk the region
@@ -122,20 +134,25 @@ Where each cost comes from:
   developers guard most: the write barrier and the allocation fast path. A
   13 % change on an allocation microbenchmark starts a discussion in a pull
   request, even when the application benchmarks stay inside noise.
-  The residual is 0.09 ns per store, the same check once per construction
-  of an object with boxed children, and 0.28 ns per allocation. Those are
+  The residual is 0.085 ns per store, the same check once per construction
+  of an object with boxed children, and 0.283 ns per allocation. Every one
+  of those intervals is tight over 25 paired rounds; none of them is noise. Those are
   the price of a feature that is off, and the allocation is the largest of
   them: `active_pools` is one dependent load from the thread-local state in
   place of a fixed offset, and no switch short of `JL_NO_REGION_ALLOC`
   removes it.
-- **Mark and sweep:** 1 to 3 % on the mark is at the edge of what a
-  collector developer accepts without a switch. `JL_NO_REGION_ALLOC` below folds the
-  census branches out of the mark loops.
+- **Mark and sweep:** 1.7 % on a serial mark is at the edge of what a
+  collector developer accepts without a switch, and **7 % on a 32-thread
+  collection is past it**. That number is the one an upstream review will
+  ask about first, and this document cannot yet say which of the two
+  candidates carries it. `JL_NO_REGION_ALLOC` below folds the census
+  branches out of the mark loops and is the tool that would answer it.
 
 In one sentence: unused regions cost a few hundred bytes per thread, 3 % of
-the image code, a tenth of a nanosecond per pointer store and 0.3 ns per
-allocation; the memory is free, the code size is acceptable, and the
-allocation indirection is the one number an upstream review will ask about.
+the image code, a tenth of a nanosecond per pointer store, 0.3 ns per
+allocation, and up to 7 % of a collection on the whole machine; the memory
+is free, the code size is acceptable, and the collection on many threads is
+the one number an upstream review will ask about.
 
 ## The switches and their effect on the cost
 

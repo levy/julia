@@ -652,6 +652,54 @@ or the benchmarks meets again.
   hands the trunk as a raw pointer under `GC.@preserve` and turns it back
   into a reference in the worker's frame. The devdoc states the rule.
 
+### The measurements, redone again, with intervals (2026-09-06)
+
+The first two redone measurements gave one number per row: the minimum of
+one process, with no dispersion in the data file. Three of the five unit
+deltas were smaller than the movement of their own row between runs, and
+nothing in the record said so. The whole measurement ran again on an idle
+machine, with a harness that measures rounds.
+
+What the harness does now: a round runs each binary once, the order turns
+over between rounds, and the statistic is the median of the per-round
+differences or ratios with a percentile bootstrap interval and a sign test
+beside it (`results/stats.py`). The unit costs took 25 rounds inside an
+isolated cpuset partition on a tickless core; the other rows took 10 rounds
+on the whole machine. Two rows are new: M13, the collection against the
+thread count on both binaries, and M14, what a reset costs the caller and
+the other threads.
+
+What the old numbers said, and what the rounds say now, for the unused
+runtime against vanilla:
+
+| Row | The old reading | The new reading |
+| --- | --- | --- |
+| Pointer store | +0.09 ns | +0.085 ns [0.084, 0.086] |
+| Pool allocation | +0.3 ns | +0.283 ns [0.277, 0.291] |
+| Construction, shared children | +0.43 ns | +0.335 ns [0.320, 0.351] |
+| Boxed copy of an inline value | +0.20 ns | +0.243 ns [0.220, 0.266] |
+| Construction, three allocations | +0.65 ns | +0.823 ns [0.767, 0.860] |
+| Serial stock mark | "1 to 3 %" | +1.7 %, +1.14 ms [0.89, 1.43] |
+| A collection on 32 threads | not measured | **+7 %** [3 %, 8 %] |
+
+Three findings came out of it. The construction of three allocations is
+exactly three allocation deltas, +0.849 ns predicted against +0.823 ns
+measured, so that row is its allocations and not a barrier. The mark row
+needed the rounds: at ten rounds its sign test read 0.021, at twenty-five it
+reads 2e-05. And the cost of the unused runtime on a collection is not flat
+in the thread count - 2 % at one thread, 7 % at 32 - so every earlier
+statement about "the mark" was a statement about a serial mark alone.
+
+Three faults of the harness came out of the same run, all fixed before the
+numbers were kept: `Threads.ngcthreads()` and not `JLOptions().ngcthreads`
+gives the GC thread count; a mixed `[Int, Float64]` array promotes, so an
+integer column arrived as `1.0`; and `max_time_to_safepoint` is a running
+maximum, so the per-collection wait is the difference of
+`total_time_to_safepoint`. One fault of the driver came from the isolated
+partition: `systemd-run --user --scope` moves a row into a cgroup of the
+user's slice, outside the partition, and `taskset` then refuses the isolated
+core (`USE_SCOPE=0`).
+
 ### The measurements, redone
 
 The tidy ran every measurement again on the flat tree, with

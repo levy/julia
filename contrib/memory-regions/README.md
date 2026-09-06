@@ -98,11 +98,15 @@ the run skips is named there with the reason.
 
 Three claims, each with its measurement in `MEASUREMENTS.md`:
 
-1. Unused, the runtime runs the GCBenchmarks within noise of vanilla (M1).
-   Its unit costs on a program that never opens a window are one flag check
-   per pointer store (about 0.09 ns), the same check once per object
-   constructed with boxed children, about 0.3 ns per pool allocation, and
-   about 1 % on the stock mark (M2). Small, not zero.
+1. Unused, the runtime runs the GCBenchmarks within a few percent of
+   vanilla: six of nine benchmarks have an interval that crosses 1.00, one
+   is 2 % slower, two run faster through a stock-path fix of this branch
+   (M1). Its unit costs on a program that never opens a window are one flag
+   check per pointer store (+0.085 ns), the same check once per object
+   constructed with boxed children, +0.283 ns per pool allocation, +1.7 %
+   on a serial stock mark (M2), and up to 7 % on a full collection at 32
+   threads (M13). Small, not zero, and the collection on many threads is
+   the largest of them.
 2. Used alone, a reset frees a region in constant time, a window pair costs
    about 10 ns, and the collector's tail leaves the per-event latency of an
    event loop: at one event per 100 µs slot the regions run misses no slot
