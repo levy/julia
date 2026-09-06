@@ -1,25 +1,28 @@
 # Measurements
 
-Every number in this document comes from a data file under `results/data/`.
-`results/tables.py` writes every table below from those files, and
-`results/plot.py` draws every plot under `results/plots/` from them, with no
-other input; each plot stands under the table that holds its data.
-`results/run_all.sh` runs every measurement below in order and
-writes the data files; the logs go to `results/log/`, which git ignores. A
-number in the prose repeats a number of a table.
+Every number in this document comes from a data file under
+[`results/data/`](results/data). [`results/tables.py`](results/tables.py)
+writes every table below from those files, and
+[`results/plot.py`](results/plot.py) draws every plot under
+[`results/plots/`](results/plots) from them, with no other input; each plot
+stands under the table that holds its data.
+[`results/run_all.sh`](results/run_all.sh) runs every measurement below in
+order and writes the data files; the logs go to [`results/log/`](results/log),
+which git ignores. A number in the prose repeats a number of a table.
 
 **How a cost row is measured.** A cost row is paired. One round runs each
-binary once, and the order of the binaries turns over between the rounds, so
-a drift of the machine - the clock, the temperature, the page cache - moves
-both sides of a round together. The cell of a binary is the median of its
-rounds. The cell of a comparison is the median of the per-round differences
-or ratios, with a percentile bootstrap interval at 95 % beside it and, for a
-difference, the p value of the sign test: the question a handful of rounds
-can answer is whether the difference keeps its direction. `results/stats.py`
-computes all of it, seeded, so a table does not move between two runs of the
-script. A row states how many rounds it has, and a row of one round has no
-interval. The latency rows are not paired and not averaged: a tail is a
-maximum and a set of quantiles, and the document reports them as such.
+binary once, and the order of the binaries turns over between the rounds, so a
+drift of the machine - the clock, the temperature, the page cache - moves both
+sides of a round together. The cell of a binary is the median of its rounds.
+The cell of a comparison is the median of the per-round differences or ratios,
+with a percentile bootstrap interval at 95 % beside it and, for a difference,
+the p value of the sign test: the question a handful of rounds can answer is
+whether the difference keeps its direction.
+[`results/stats.py`](results/stats.py) computes all of it, seeded, so a table
+does not move between two runs of the script. A row states how many rounds it
+has, and a row of one round has no interval. The latency rows are not paired
+and not averaged: a tail is a maximum and a set of quantiles, and the document
+reports them as such.
 
 The two binaries: **regions** is a julia built from the tip of the flat
 tree, the tag `gc-regions-flat`; **vanilla** is a julia built from the base
@@ -31,25 +34,25 @@ The machine: one Linux x86-64 host of 32 CPUs, idle for the whole run. The
 kernel command line keeps CPUs 13 and 29, the two threads of one core,
 tickless and free of RCU callbacks and of managed interrupts
 (`nohz_full=13,29`, `rcu_nocbs=13,29`, `irqaffinity` that excludes them);
-`isolcpus` is not set, because `tools/hil_isolation.sh` makes the isolated
+`isolcpus` is not set, because
+[`tools/hil_isolation.sh`](tools/hil_isolation.sh) makes the isolated
 partition at run time through cgroup v2.
 
-The rows ran in two states. **M1, M5, M7 to M14** ran with the partition
-off, so that every core of the machine takes load: the one-thread rows
-pinned to CPU 29, the multi-thread rows on CPUs 24 to 31, and M13 and M14
-on all 32. **M2, M3, M4 and M6** ran inside the partition, where CPUs 13 and
-29 are out of the scheduler and only a task pinned there runs there; the
-latency rows also take `SCHED_FIFO` at priority 50. The `isolated` field of
-`context.tsv` reads the boot set, which stays empty while a cgroup
-partition holds the CPUs, so it does not show that state. Every row runs
-under a timeout; a row outside the partition also runs under a memory cap.
-The file
-`results/data/context.tsv` records the date, the commit, the host, the CPU,
-the kernel, the cores, and the scheduling class of the run; `run_all.sh`
-writes it at the start of every run, a partial rerun (`ONLY=...`) included,
-so the date is that of the last row that ran. The footer of a plot names the
-run that produced the data of that plot: a partial rerun redraws its own
-plots and leaves the others as they stand.
+The rows ran in two states. **M1, M5, M7 to M14** ran with the partition off,
+so that every core of the machine takes load: the one-thread rows pinned to
+CPU 29, the multi-thread rows on CPUs 24 to 31, and M13 and M14 on all 32.
+**M2, M3, M4 and M6** ran inside the partition, where CPUs 13 and 29 are out
+of the scheduler and only a task pinned there runs there; the latency rows
+also take `SCHED_FIFO` at priority 50. The `isolated` field of `context.tsv`
+reads the boot set, which stays empty while a cgroup partition holds the CPUs,
+so it does not show that state. Every row runs under a timeout; a row outside
+the partition also runs under a memory cap. The file
+[`results/data/context.tsv`](results/data/context.tsv) records the date, the
+commit, the host, the CPU, the kernel, the cores, and the scheduling class of
+the run; `run_all.sh` writes it at the start of every run, a partial rerun
+(`ONLY=...`) included, so the date is that of the last row that ran. The
+footer of a plot names the run that produced the data of that plot: a partial
+rerun redraws its own plots and leaves the others as they stand.
 
 ## M1 — Zero cost when unused
 
@@ -58,13 +61,15 @@ opens a window, runs the GCBenchmarks within a few percent of vanilla: six
 of the nine benchmarks have an interval that crosses 1.00, one is 2 %
 slower, and two run faster for a reason the prose below names.
 
-Script `bench/gcbench.sh`; data `results/data/gcbench.tsv`; plot
-`results/plots/gcbench.svg` (bars: the ratio regions / vanilla per benchmark,
-one bar per thread count, a line at 1.0). Eleven benchmarks: six serial on
-one thread, five parallel on four threads. Both binaries run in every round,
-in alternating order. The table holds the best of the rounds per binary, and
-the spread column is the larger of the two binaries' (max − min) / min over
-the rounds: a ratio inside the spread is noise.
+Script [`bench/gcbench.sh`](bench/gcbench.sh); data
+[`results/data/gcbench.tsv`](results/data/gcbench.tsv); plot
+[`results/plots/gcbench.svg`](results/plots/gcbench.svg) (bars: the ratio
+regions / vanilla per benchmark, one bar per thread count, a line at 1.0).
+Eleven benchmarks: six serial on one thread, five parallel on four threads.
+Both binaries run in every round, in alternating order. The table holds the
+best of the rounds per binary, and the spread column is the larger of the two
+binaries' (max − min) / min over the rounds: a ratio inside the spread is
+noise.
 
 <!-- table M1 -->
 | benchmark | threads | vanilla (s) | regions (s) | regions / vanilla [95 %] | rounds |
@@ -95,12 +100,12 @@ interval of [1.01, 1.04] over ten rounds, so the region runtime costs that
 benchmark about 2 %. Two run faster on regions, and their intervals exclude
 1.00: `single_ref` at 0.96 and `many_refs` at 0.917.
 
-`many_refs` runs faster on regions in every round. The cause is a
-stock-path change of this branch, not a region: the benchmark fills its
-array under `GC.enable(false)`, and a deferred collection on vanilla re-arms
-its trigger at zero, so vanilla re-enters `jl_gc_collect` on every
-allocation of that phase. This branch re-arms `heap_target`
-(`gc_defer_collection`; see `HISTORY.md`, stock-path change S1).
+`many_refs` runs faster on regions in every round. The cause is a stock-path
+change of this branch, not a region: the benchmark fills its array under
+`GC.enable(false)`, and a deferred collection on vanilla re-arms its trigger
+at zero, so vanilla re-enters `jl_gc_collect` on every allocation of that
+phase. This branch re-arms `heap_target` (`gc_defer_collection`; see
+[`HISTORY.md`](HISTORY.md), stock-path change S1).
 
 ## M2 — Unit costs
 
@@ -115,12 +120,14 @@ cold call, a window pair and a reset cost tens of nanoseconds, and an
 allocation in a region costs what an allocation in the stock pool costs in
 the same process. The costs are small; they are not zero.
 
-Script `bench/unit_costs.jl`; data `results/data/unit_costs.tsv`; plot
-`results/plots/unit_costs.svg`. Each row is the minimum over eight compiled
-copies of the loop, so that code placement does not decide the row, and the
-minimum of five runs. Three columns: **vanilla** holds the rows that need no
-region entry point, on the vanilla binary; **regions, no window** holds the
-same rows on the regions binary, in a process that never opens a window;
+Script [`bench/unit_costs.jl`](bench/unit_costs.jl); data
+[`results/data/unit_costs.tsv`](results/data/unit_costs.tsv); plot
+[`results/plots/unit_costs.svg`](results/plots/unit_costs.svg). Each row is
+the minimum over eight compiled copies of the loop, so that code placement
+does not decide the row, and the minimum of five runs. Three columns:
+**vanilla** holds the rows that need no region entry point, on the vanilla
+binary; **regions, no window** holds the same rows on the regions binary, in a
+process that never opens a window;
 **regions** holds every row in one process. The store barrier arms at the
 first window and stays armed, so in the third column the rows that run
 after `window_pair` pay the armed store: `construct_two` writes three
@@ -188,11 +195,13 @@ and there the cost is larger.
 sink, the reset of the Event region after each event removes the collector's
 tail from the per-event latency; the two runs differ in one Bool.
 
-Scripts `bench/yardstick.jl`, `bench/tail.jl`; data `results/data/tail.tsv`;
-plot `results/plots/tail.svg`. The yardstick rows give the allocating and the
-pooled model under the stock collector; the tail rows give the pooled model
-with the scratch left to the collector (`baseline`) and reset per event
-(`regions`).
+Scripts [`bench/yardstick.jl`](bench/yardstick.jl),
+[`bench/tail.jl`](bench/tail.jl); data
+[`results/data/tail.tsv`](results/data/tail.tsv); plot
+[`results/plots/tail.svg`](results/plots/tail.svg). The yardstick rows give
+the allocating and the pooled model under the stock collector; the tail rows
+give the pooled model with the scratch left to the collector (`baseline`) and
+reset per event (`regions`).
 
 <!-- table M3 -->
 | script | variant | p50 (ns) | p99 (ns) | p99.9 (ns) | p99.99 (ns) | max (ns) | over 100 µs | collections | GC (ms) | peak RSS (MB) |
@@ -228,17 +237,19 @@ and one reset per slice, with a census at the slice boundary, give a lower
 and flatter latency distribution than the stock collector under its own
 heuristics or under the program's schedule, at both garbage classes.
 
-Script `results/realworld.sh`; data `results/data/realworld.tsv` and
-`results/data/ccdf_*.tsv`; plots `results/plots/latency_ccdf.svg` (the
-complementary cumulative distribution of the per-event latency, one panel
-per garbage class, one curve per collector mode) and
-`results/plots/max_pause.svg` (the maximum pause per mode, raw and with the
-preempted blocks removed). Four modes: stock with its own heuristics, stock
-on the program's schedule, regions with the census, regions without it. Two
-garbage classes: recording class (about 1.7 KB per event) and light (about
-100 bytes). Each configuration runs up to five times, and the run with the
-fewest involuntary context switches is kept. The page-fault line of every
-kept run must read 0.
+Script [`results/realworld.sh`](results/realworld.sh); data
+[`results/data/realworld.tsv`](results/data/realworld.tsv) and
+`results/data/ccdf_*.tsv`; plots
+[`results/plots/latency_ccdf.svg`](results/plots/latency_ccdf.svg) (the
+complementary cumulative distribution of the per-event latency, one panel per
+garbage class, one curve per collector mode) and
+[`results/plots/max_pause.svg`](results/plots/max_pause.svg) (the maximum
+pause per mode, raw and with the preempted blocks removed). Four modes: stock
+with its own heuristics, stock on the program's schedule, regions with the
+census, regions without it. Two garbage classes: recording class (about 1.7 KB
+per event) and light (about 100 bytes). Each configuration runs up to five
+times, and the run with the fewest involuntary context switches is kept. The
+page-fault line of every kept run must read 0.
 
 <!-- table M4 -->
 | class | mode | events/s | p50 (ns) | p99 (ns) | p99.99 (ns) | max (ns) | max, no preemption (ns) | stock collections | peak RSS (MB) |
@@ -265,12 +276,15 @@ heap. One window and one reset per B events cost more than the stock
 collector's amortized work when B is 1 and the scratch is light, and less
 than it when B is 100 or more, at both scratch sizes.
 
-Script `bench/census.jl`; data `results/data/census_pause.tsv` and
-`results/data/census_throughput.tsv`; plots `results/plots/census_pause.svg`
-(line: the pause against the live set K, scoped census and cooperative
-census against a full collection) and `results/plots/census_throughput.svg`
-(bars: events per second of the stock collector, of one window per B events
-at each B, and of one window per event with a census, per garbage size W).
+Script [`bench/census.jl`](bench/census.jl); data
+[`results/data/census_pause.tsv`](results/data/census_pause.tsv) and
+[`results/data/census_throughput.tsv`](results/data/census_throughput.tsv);
+plots [`results/plots/census_pause.svg`](results/plots/census_pause.svg)
+(line: the pause against the live set K, scoped census and cooperative census
+against a full collection) and
+[`results/plots/census_throughput.svg`](results/plots/census_throughput.svg)
+(bars: events per second of the stock collector, of one window per B events at
+each B, and of one window per event with a census, per garbage size W).
 
 The model is a table of K live records in the Simulation region with
 turnover: every event replaces one record, so the old record is garbage in
@@ -337,11 +351,14 @@ the window pair and the reset are paid once per B events.
 no slot, where the baseline under the stock collector misses slots at every
 collection; over 30 minutes the RSS of the regions run stays flat.
 
-Scripts `bench/paced.jl`, `bench/endurance.jl`; data
-`results/data/paced.tsv` and `results/data/endurance.tsv`; plots
-`results/plots/paced.svg` (dots: the latency p50, p99.9 and max and the
-lateness max of each run, on one log axis) and `results/plots/endurance.svg`
-(line: RSS and the live-heap counter over 30 minutes).
+Scripts [`bench/paced.jl`](bench/paced.jl),
+[`bench/endurance.jl`](bench/endurance.jl); data
+[`results/data/paced.tsv`](results/data/paced.tsv) and
+[`results/data/endurance.tsv`](results/data/endurance.tsv); plots
+[`results/plots/paced.svg`](results/plots/paced.svg) (dots: the latency p50,
+p99.9 and max and the lateness max of each run, on one log axis) and
+[`results/plots/endurance.svg`](results/plots/endurance.svg) (line: RSS and
+the live-heap counter over 30 minutes).
 
 A slot is 100 µs; a miss is an event whose lateness passes the slot. The
 `baseline` runs with `--heap-size-hint=128M`, so the stock collector runs
@@ -393,9 +410,11 @@ dropped at delivery, no pool) runs within a small factor of the same model
 in C++ with `new` and `delete` per event, and the census keeps its memory
 bounded.
 
-Scripts `bench/native.jl`, `bench/native.cpp`; data
-`results/data/native.tsv`; plot `results/plots/native.svg`. The C++ row runs
-only when a compiler builds `native.cpp`.
+Scripts [`bench/native.jl`](bench/native.jl),
+[`bench/native.cpp`](bench/native.cpp); data
+[`results/data/native.tsv`](results/data/native.tsv); plot
+[`results/plots/native.svg`](results/plots/native.svg). The C++ row runs only
+when a compiler builds `native.cpp`.
 
 <!-- table M7 -->
 | variant | W | events/s | censuses | census p50 (µs) | census max (µs) | peak RSS (MB) |
@@ -417,11 +436,13 @@ without a collection: the binary tree, the linked list, and the tree
 showcase run with zero stock collections under regions, at a peak RSS the
 table shows.
 
-Scripts `demo/showcase_binarytree.jl`, `demo/showcase_linkedlist.jl`,
-`demo/showcase_tree.jl`; data `results/data/showcase.tsv`; plot
-`results/plots/showcase.svg` (bars: collections and GC time, stock against
-regions, per showcase; bars: peak RSS of both). Three rounds each; the table
-holds the round with the best wall time.
+Scripts [`demo/showcase_binarytree.jl`](demo/showcase_binarytree.jl),
+[`demo/showcase_linkedlist.jl`](demo/showcase_linkedlist.jl),
+[`demo/showcase_tree.jl`](demo/showcase_tree.jl); data
+[`results/data/showcase.tsv`](results/data/showcase.tsv); plot
+[`results/plots/showcase.svg`](results/plots/showcase.svg) (bars: collections
+and GC time, stock against regions, per showcase; bars: peak RSS of both).
+Three rounds each; the table holds the round with the best wall time.
 
 <!-- table M8 -->
 | showcase | mode | wall (s) | collections | GC (ms) | peak RSS (MB) | rounds |
@@ -442,11 +463,13 @@ holds the round with the best wall time.
 the pages of a region that churns inside one window to a bound; disarmed,
 the region grows with the churn.
 
-Script `bench/census_bound.jl`; data `results/data/census_bound.tsv`; plot
-`results/plots/census_bound.svg` (line: pages per round, disarmed and armed,
-the threshold as a horizontal line). The test `census_growth_bound` in
-`test/gc/regions_census.jl` asserts the bound; the benchmark prints the
-pages per round.
+Script [`bench/census_bound.jl`](bench/census_bound.jl); data
+[`results/data/census_bound.tsv`](results/data/census_bound.tsv); plot
+[`results/plots/census_bound.svg`](results/plots/census_bound.svg) (line:
+pages per round, disarmed and armed, the threshold as a horizontal line). The
+test `census_growth_bound` in
+[`test/gc/regions_census.jl`](../../test/gc/regions_census.jl) asserts the
+bound; the benchmark prints the pages per round.
 
 <!-- table M9 -->
 | census | rounds | pages at the last round | pages max | ratio disarmed / armed |
@@ -464,15 +487,19 @@ the stock collector; regions win on collections and pauses in every case,
 and win on wall time where the discarded allocation per unit of work is
 large. Where the region model loses on wall time, the table says so.
 
-Scripts `demo/bt_solver.jl` (A), `demo/pathtrace.jl` (B),
-`demo/optimistic_bst.jl` (C), `demo/dmr.jl` (D); data
-`results/data/demo_a.tsv` to `results/data/demo_d.tsv`; plots
-`results/plots/demo_a.svg` to `results/plots/demo_d.svg` (wall time regions
-against stock over the sweep, the stock collection count on a second axis)
-and `results/plots/demo_rss.svg` (peak RSS regions against stock, all four).
-A, B, C, and D run interleaved A/B/A/B. The stock baseline is the same
-algorithm under the stock collector; a different algorithm is never claimed
-as beaten.
+Scripts [`demo/bt_solver.jl`](demo/bt_solver.jl) (A),
+[`demo/pathtrace.jl`](demo/pathtrace.jl) (B),
+[`demo/optimistic_bst.jl`](demo/optimistic_bst.jl) (C),
+[`demo/dmr.jl`](demo/dmr.jl) (D); data
+[`results/data/demo_a.tsv`](results/data/demo_a.tsv) to
+[`results/data/demo_d.tsv`](results/data/demo_d.tsv); plots
+[`results/plots/demo_a.svg`](results/plots/demo_a.svg) to
+[`results/plots/demo_d.svg`](results/plots/demo_d.svg) (wall time regions
+against stock over the sweep, the stock collection count on a second axis) and
+[`results/plots/demo_rss.svg`](results/plots/demo_rss.svg) (peak RSS regions
+against stock, all four). A, B, C, and D run interleaved A/B/A/B. The stock
+baseline is the same algorithm under the stock collector; a different
+algorithm is never claimed as beaten.
 
 The ratio column is stock / regions: above 1.0 regions are faster.
 
@@ -509,8 +536,9 @@ The ratio column is stock / regions: above 1.0 regions are faster.
 **Claim.** The checker finds the stores of the allocating model that break
 the region rule, and finds none in the clean model, without a region in use.
 
-Script `tools/checker_run.jl` (after `tools/hook_patch.py`); data
-`results/data/checker.tsv`; no plot.
+Script [`tools/checker_run.jl`](tools/checker_run.jl) (after
+[`tools/hook_patch.py`](tools/hook_patch.py)); data
+[`results/data/checker.tsv`](results/data/checker.tsv); no plot.
 
 <!-- table M11 -->
 | model | events | violations (stores) | sites |
@@ -528,10 +556,12 @@ does. Where the stock collector runs during the work (D at a large work
 factor), the regions run is faster at two threads and more; at one thread
 the two are equal within noise.
 
-Scripts `demo/pathtrace.jl` (B), `demo/dmr.jl` (D) at 1, 2, 4, and 8
-threads; data `results/data/scaling.tsv`; plot `results/plots/scaling.svg`
-(line: wall time against thread count, regions and stock, per demonstrator).
-This row runs on CPUs 24 to 31. The ratio column is stock / regions.
+Scripts [`demo/pathtrace.jl`](demo/pathtrace.jl) (B),
+[`demo/dmr.jl`](demo/dmr.jl) (D) at 1, 2, 4, and 8 threads; data
+[`results/data/scaling.tsv`](results/data/scaling.tsv); plot
+[`results/plots/scaling.svg`](results/plots/scaling.svg) (line: wall time
+against thread count, regions and stock, per demonstrator). This row runs on
+CPUs 24 to 31. The ratio column is stock / regions.
 
 <!-- table M12 -->
 | demo | point | threads | wall stock (ms) | wall regions (ms) | stock / regions | collections stock | collections regions | GC stock (ms) | GC regions (ms) |
@@ -569,14 +599,16 @@ This row runs on CPUs 24 to 31. The ratio column is stock / regions.
 **Claim.** With the region runtime unused, a parallel collection costs what
 a vanilla collection costs, at every thread count a program uses.
 
-Script `bench/parallel_gc.jl`; data `results/data/parallel_gc.tsv`; plot
-`results/plots/parallel_gc.svg`. The script opens no window and calls no
-region entry point, so the same file runs on both binaries. Every thread
-builds a part of the live set, a tree and a vector of boxes, so every heap
-holds a part of it and the marking threads have work to steal. Twelve full
-collections run after a warm one; every collection is a sample, and the cell
-of a round is their median. A row runs at `-t T --gcthreads=T/2`, the
-default ratio of julia, for the thread counts of `GCTHREADS`.
+Script [`bench/parallel_gc.jl`](bench/parallel_gc.jl); data
+[`results/data/parallel_gc.tsv`](results/data/parallel_gc.tsv); plot
+[`results/plots/parallel_gc.svg`](results/plots/parallel_gc.svg). The script
+opens no window and calls no region entry point, so the same file runs on both
+binaries. Every thread builds a part of the live set, a tree and a vector of
+boxes, so every heap holds a part of it and the marking threads have work to
+steal. Twelve full collections run after a warm one; every collection is a
+sample, and the cell of a round is their median. A row runs at `-t T
+--gcthreads=T/2`, the default ratio of julia, for the thread counts of
+`GCTHREADS`.
 
 The row exists because a serial mark cannot show what the region runtime
 adds to a parallel one. The runtime adds one relaxed load per object in the
@@ -605,13 +637,14 @@ time can be attributed.
 **Claim.** The checked reset stops the world, so its cost grows with the
 number of threads that run Julia code; the unchecked entry does not.
 
-Script `bench/reset_pause.jl`; data `results/data/reset_pause.tsv`; plot
-`results/plots/reset_pause.svg`. `T - 1` worker tasks do arithmetic, reach a
-safepoint every round, and allocate a little; the main task fills region 1,
-closes the window, and times one reset. Two columns follow from that: what
-the caller pays, and the longest stall a worker suffered inside a reset
-interval. The unchecked entry is the control, because it frees with no pause
-and no scan.
+Script [`bench/reset_pause.jl`](bench/reset_pause.jl); data
+[`results/data/reset_pause.tsv`](results/data/reset_pause.tsv); plot
+[`results/plots/reset_pause.svg`](results/plots/reset_pause.svg). `T - 1`
+worker tasks do arithmetic, reach a safepoint every round, and allocate a
+little; the main task fills region 1, closes the window, and times one reset.
+Two columns follow from that: what the caller pays, and the longest stall a
+worker suffered inside a reset interval. The unchecked entry is the control,
+because it frees with no pause and no scan.
 
 The row matters for the loop this collector is built for. A hardware loop
 runs on the whole machine, and a reset that stops thirty-one other threads

@@ -10,32 +10,35 @@ collector runs as before, and a program that never opens a window pays one
 predicted branch per store.
 
 The design, the rules, and the API are in the devdoc,
-`doc/src/devdocs/gc-regions.md`. This folder holds what a reader needs to
-try the runtime, to measure it, and to know how it came to be.
+[`doc/src/devdocs/gc-regions.md`](../../doc/src/devdocs/gc-regions.md). This
+folder holds what a reader needs to try the runtime, to measure it, and to
+know how it came to be.
 
 ## The documents
 
 | Document | Holds |
 | --- | --- |
-| `doc/src/devdocs/gc-regions.md` | the model, the six rules, the barrier, the API with its return codes, the tree, the census, the limits, and one paragraph on cost. Present tense; describes what is. |
-| `MEASUREMENTS.md` | every measurement: the claim, the script, the data file, the plot, and the numbers. Twelve rows, M1 to M12. |
-| `COST.md` | what a program that opens no window pays: the memory and the time in absolute and relative numbers, a judgment of each, and the switches that take a part of the cost out. The timing rows repeat M1 and M2 and follow their rerun. |
-| `HISTORY.md` | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, what the redone measurements changed, the deferred ideas, the audit of the entry points, and the obsolete branches with their tags. |
+| [`doc/src/devdocs/gc-regions.md`](../../doc/src/devdocs/gc-regions.md) | the model, the six rules, the barrier, the API with its return codes, the tree, the census, the limits, and one paragraph on cost. Present tense; describes what is. |
+| [`MEASUREMENTS.md`](MEASUREMENTS.md) | every measurement: the claim, the script, the data file, the plot, and the numbers. Twelve rows, M1 to M12. |
+| [`COST.md`](COST.md) | what a program that opens no window pays: the memory and the time in absolute and relative numbers, a judgment of each, and the switches that take a part of the cost out. The timing rows repeat M1 and M2 and follow their rerun. |
+| [`HISTORY.md`](HISTORY.md) | the ten plans in date order, the ideas that were tried and dropped, the bugs the tidy found and their tests, what the redone measurements changed, the deferred ideas, the audit of the entry points, and the obsolete branches with their tags. |
 | this file | the folder map and the build. |
 
 ## The folder
 
 | Path | Content |
 | --- | --- |
-| `regions.jl` | the Julia face of the runtime: `@with_region`, `@in_region_of` for a container of your own, `region_reset` and `unsafe_region_reset`, the tree declarations, the census. Every benchmark and demonstrator includes it. |
-| `bench/` | the benchmarks: the unit costs, the GCBenchmarks sweep, the event-loop models and their tails, the census, the growth bound, the region-native model against C++. `bench/README.md` lists each program and its command. |
-| `demo/` | the demonstrators: four algorithms run twice, under regions and under the stock collector, with the two results side by side; and three showcases of wholesale death. `demo/README.md` lists each. |
-| `tools/` | the discipline checker, which finds the stores that break the region rule before a program runs under regions; and the core isolation for the paced measurements. `tools/README.md` lists each. |
-| `results/` | `run_all.sh` runs every measurement and writes `data/*.tsv`; `tables.py` writes the tables of `MEASUREMENTS.md` and `plot.py` draws `plots/*.svg`, both from the data files alone; `realworld.sh` is the matrix of the real-world loop. The logs go to `results/log/`, which git ignores. |
+| [`regions.jl`](regions.jl) | the Julia face of the runtime: `@with_region`, `@in_region_of` for a container of your own, `region_reset` and `unsafe_region_reset`, the tree declarations, the census. Every benchmark and demonstrator includes it. |
+| [`bench/`](bench) | the benchmarks: the unit costs, the GCBenchmarks sweep, the event-loop models and their tails, the census, the growth bound, the region-native model against C++. [`bench/README.md`](bench/README.md) lists each program and its command. |
+| [`demo/`](demo) | the demonstrators: four algorithms run twice, under regions and under the stock collector, with the two results side by side; and three showcases of wholesale death. [`demo/README.md`](demo/README.md) lists each. |
+| [`tools/`](tools) | the discipline checker, which finds the stores that break the region rule before a program runs under regions; and the core isolation for the paced measurements. [`tools/README.md`](tools/README.md) lists each. |
+| [`results/`](results) | `run_all.sh` runs every measurement and writes `data/*.tsv`; `tables.py` writes the tables of [`MEASUREMENTS.md`](MEASUREMENTS.md) and `plot.py` draws `plots/*.svg`, both from the data files alone; `realworld.sh` is the matrix of the real-world loop. The logs go to [`results/log/`](results/log), which git ignores. |
 
 The tests of the runtime are not here. They are the five scripts
-`test/gc/regions_*.jl`, run by `test/gc.jl` as part of the `gc` test set,
-one process each; `test/gc/regions_api.jl` is the thin wrapper they share.
+`test/gc/regions_*.jl`, run by [`test/gc.jl`](../../test/gc.jl) as part of the
+`gc` test set, one process each;
+[`test/gc/regions_api.jl`](../../test/gc/regions_api.jl) is the thin wrapper
+they share.
 
 ## The build
 
@@ -53,12 +56,12 @@ each part costs:
 | `JL_NO_REGION_ALLOC` | the small allocator takes the stock pool directly, `jl_gc_region_set` refuses, and the census filter of the mark loops is the constant 0, so the census branches fold out. |
 | `JL_NO_REGION_STORE_BARRIER` | the escape barrier is compiled out of the lowered write barrier and of the two C-side hooks. |
 
-Pass a define through `CPPFLAGS` in `Make.user`, which `src/Makefile`
-adds to every C and C++ compile of the runtime, for example
-`CPPFLAGS += -DJL_NO_REGION_STORE_BARRIER`. A change of `CPPFLAGS` alone
-does not recompile the objects that exist: run `make -C src clean` first.
-The region tests fail on both builds by design; what each build keeps is in
-the Cost section of the developer documentation.
+Pass a define through `CPPFLAGS` in `Make.user`, which
+[`src/Makefile`](../../src/Makefile) adds to every C and C++ compile of the
+runtime, for example `CPPFLAGS += -DJL_NO_REGION_STORE_BARRIER`. A change of
+`CPPFLAGS` alone does not recompile the objects that exist: run `make -C src
+clean` first. The region tests fail on both builds by design; what each build
+keeps is in the Cost section of the developer documentation.
 
 To run the tests of the runtime alone:
 
@@ -88,15 +91,16 @@ python3 contrib/memory-regions/results/tables.py
 python3 contrib/memory-regions/results/plot.py
 ```
 
-`run_all.sh` takes about one hour; the endurance row of M6 is thirty
-minutes of it. It pins the single-thread rows to one core (`CORE`, default
-29) and the multi-thread rows to a range (`MTCORES`, default 24-31). Every
-row and its exit code go to `results/log/status.tsv`; a row that a step of
-the run skips is named there with the reason.
+`run_all.sh` takes about one hour; the endurance row of M6 is thirty minutes
+of it. It pins the single-thread rows to one core (`CORE`, default 29) and the
+multi-thread rows to a range (`MTCORES`, default 24-31). Every row and its
+exit code go to [`results/log/status.tsv`](results/log/status.tsv); a row that
+a step of the run skips is named there with the reason.
 
 ## The headline
 
-Three claims, each with its measurement in `MEASUREMENTS.md`:
+Three claims, each with its measurement in
+[`MEASUREMENTS.md`](MEASUREMENTS.md):
 
 1. Unused, the runtime runs the GCBenchmarks within a few percent of
    vanilla: six of nine benchmarks have an interval that crosses 1.00, one

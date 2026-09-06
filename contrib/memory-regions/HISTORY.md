@@ -1,6 +1,7 @@
 # The history of the region collector
 
-The source, the tests, and the devdoc (`doc/src/devdocs/gc-regions.md`)
+The source, the tests, and the devdoc
+([`doc/src/devdocs/gc-regions.md`](../../doc/src/devdocs/gc-regions.md))
 describe what the region collector is. This document holds what they leave
 out: the order in which the work happened, the ideas that were tried and
 dropped, the bugs that the tidy found, the ideas that the tidy did not build,
@@ -13,8 +14,8 @@ The development happened in ten plans on four branches of `levy/julia`, all on
 four tips onto `v1.13.0-rc4` as one flat tree, reviewed every line of the
 runtime delta, fixed what the review found, moved the scripts into tests and
 benchmarks, and cut the result into the commit series of the branch. The
-development branches are renamed `obsolete/<name>`; their tips stay under
-the tags of the section "The obsolete branches and their tags".
+development branches are renamed `obsolete/<name>`; their tips stay under the
+tags of the section "The obsolete branches and their tags".
 
 ## The ten plans
 
@@ -24,15 +25,15 @@ question, what was tried, what was dropped and why, and what landed.
 ### 1. The branch rebuild (2026-09-01)
 
 The first runtime was one 779-line commit. The question was how to make it a
-series that a reader can follow. A script cut the final files against the
-base files into stages, one runtime idea per stage, and asserted that the last
+series that a reader can follow. A script cut the final files against the base
+files into stages, one runtime idea per stage, and asserted that the last
 stage equals the old runtime byte for byte. The runtime landed as ten commits
 and the Julia side as eight. Every stage got a smoke test that used only what
 the stage newly allowed, so a failure pointed at its stage.
 
 Several smoke tests failed on their first attempt, and each failure taught a
-rule of the design. A test that allocated an array with malloc'd data inside
-a window crashed with glibc heap corruption: the reset knew nothing about the
+rule of the design. A test that allocated an array with malloc'd data inside a
+window crashed with glibc heap corruption: the reset knew nothing about the
 runtime's malloc list. That became a documented limit at the time, and the
 maturation later fixed it (malloc'd data of a region goes to the region's own
 list). A test that held its census table in a global binding segfaulted: a
@@ -67,8 +68,8 @@ The measurement found two sources of interference. A stall of about 330 µs of
 kernel time, once per about 4 MB of new pages, was first blamed on page-block
 claims, then on a checklist of context switches, syscalls, cgroup pressure,
 transparent huge pages, NUMA, KSM, page migration, and the mmap lock. `perf`
-and the function-graph tracer named the real cause: `rmqueue_bulk` refills
-the per-CPU free list under the zone lock with interrupts off, 1008 pages at a
+and the function-graph tracer named the real cause: `rmqueue_bulk` refills the
+per-CPU free list under the zone lock with interrupts off, 1008 pages at a
 time. The second finding was a deferred `jl_gc_collect` that re-armed its
 trigger at zero (plan 3). The preemption method also changed: "keep only a
 zero-switch run" failed on this machine, because an idle core still took three
@@ -99,12 +100,12 @@ A hardware-in-the-loop simulator must not take page faults inside its loop,
 and a measurement that cannot be reproduced is worthless. `jl_gc_heap_reserve`
 (then `jl_gc_region_reserve`) maps whole page blocks with `MAP_POPULATE` into
 the clean pool, so a loop whose heap fits the reserve maps and faults nothing.
-The first version left pages the runtime claimed at startup unfaulted: a
-512 MB reserve still showed 43, 19, and 21 faults in the light workload. The
-guess that free-list pop order caused them was wrong (the list is LIFO and
-serves the reserve first). `perf record` under `setarch -R` found JIT code
-that touched pages inside GC blocks claimed before the reserve existed. The
-second version records every claimed block and prefaults it too, with
+The first version left pages the runtime claimed at startup unfaulted: a 512
+MB reserve still showed 43, 19, and 21 faults in the light workload. The guess
+that free-list pop order caused them was wrong (the list is LIFO and serves
+the reserve first). `perf record` under `setarch -R` found JIT code that
+touched pages inside GC blocks claimed before the reserve existed. The second
+version records every claimed block and prefaults it too, with
 `MADV_POPULATE_WRITE`. The light probe then read zero faults. The documents
 say plainly that the measurement is Julia and its collector under the best
 case a simulator can arrange, not the OS, and that the peak RSS includes the
@@ -239,38 +240,38 @@ not the time of the search.
 
 ### 10. The demonstrators (2026-09-03)
 
-Four algorithms where the region runtime beats the stock collector on the
-same code, under an explicit honesty bar: the same allocation on both sides,
-the strongest stock alternative named, a bounded claim, zero quarantines. Two
+Four algorithms where the region runtime beats the stock collector on the same
+code, under an explicit honesty bar: the same allocation on both sides, the
+strongest stock alternative named, a bounded claim, zero quarantines. Two
 compute-bound demonstrators (A, backtracking graph colouring; B, a parallel
 path tracer with one sibling leaf per worker) win on collections and pauses
 with a small wall-time gain, because the collector is a small share of a
 compute-bound run. Two allocation-bound demonstrators (C, an optimistic
 concurrent persistent BST; D, optimistic Delaunay mesh refinement) share one
-shape: a trunk, per-worker speculative leaves, a committed winner, and an
-O(1) leaf reset for every loser. Their wall-time gain rises with the
-discarded speculative allocation: C from 0.44x (a loss, with almost nothing
-per attempt) to 1.63x, D from parity to 1.39x, with the region's GC time flat
-where stock's climbs from 4.6 ms to 278 ms. The stock baseline is the same
-path-copying algorithm under the stock collector; a mutable in-place tree is a
-different algorithm and is never claimed as beaten. D commits in seed-id
-order so both runs converge to the same mesh, at the cost of not being
-lock-free.
+shape: a trunk, per-worker speculative leaves, a committed winner, and an O(1)
+leaf reset for every loser. Their wall-time gain rises with the discarded
+speculative allocation: C from 0.44x (a loss, with almost nothing per attempt)
+to 1.63x, D from parity to 1.39x, with the region's GC time flat where stock's
+climbs from 4.6 ms to 278 ms. The stock baseline is the same path-copying
+algorithm under the stock collector; a mutable in-place tree is a different
+algorithm and is never claimed as beaten. D commits in seed-id order so both
+runs converge to the same mesh, at the cost of not being lock-free.
 
 ### 11. The tidy (2026-09-03 to 2026-09-04)
 
-The tidy ported the union of the four tips onto `v1.13.0-rc4` as one flat
-tree and checked the port equal to the truth. It then read every line of the
-runtime delta as a reviewer, with the rule "test first, fix in the flat
-tree, record here". The review found thirteen bugs in the development
-runtime, two more surfaced while the scripts became tests, one more in the
-final gate of the test suite, and every fix has a test that fails on the
-development binary and passes on the new one. The
-scripts became five test scripts under `test/gc/`, and the measurement
-scripts became `bench/`, `demo/`, and `tools/`. The eighteen entry points
-that survived the audit got one contract each in `src/gc-regions.h`. Every
-measurement ran again on the flat tree; six faults of the harness and five
-claims fell. The findings are in the section "Found during the tidy" below.
+The tidy ported the union of the four tips onto `v1.13.0-rc4` as one flat tree
+and checked the port equal to the truth. It then read every line of the
+runtime delta as a reviewer, with the rule "test first, fix in the flat tree,
+record here". The review found thirteen bugs in the development runtime, two
+more surfaced while the scripts became tests, one more in the final gate of
+the test suite, and every fix has a test that fails on the development binary
+and passes on the new one. The scripts became five test scripts under
+[`test/gc/`](../../test/gc), and the measurement scripts became
+[`bench/`](bench), [`demo/`](demo), and [`tools/`](tools). The eighteen entry
+points that survived the audit got one contract each in
+[`src/gc-regions.h`](../../src/gc-regions.h). Every measurement ran again on
+the flat tree; six faults of the harness and five claims fell. The findings
+are in the section "Found during the tidy" below.
 
 ## The detours
 
@@ -377,7 +378,7 @@ below fails on the development binary and passes on the new one.
 | B13 | `region_census_mark`, the stock task branch of `gc_mark_outrefs` | SIGSEGV in `gc_mark_outrefs` or `GC error (probable corruption)` at `--gcthreads=2` after a census, a stock collection, and churn. | The stock task branch re-adds an old task to the marking thread's remset; the census scanned every task and set no mark bit, so every old task sat in the remset with header `GC_OLD`, a state the stock protocol never produces. The next collection scanned the task as a remset object, its page kept `has_marked = 0`, and the sweep freed the page with the live task in it. A GC thread's root task is alone on its page. | The census saves `remset.len` and `remset_nptr` before it queues the roots and restores them after the last mark loop. | `census_leaves_remsets` in `regions_census.jl` (stop-the-world and cooperative). |
 | B14 | `jl_lookup_generic_` in `gf.c` | `REGION-ESCAPE: a DataType of region 1 was stored into a SimpleVector of region 0`; the region is quarantined after a dynamic dispatch on a signature the method cache had not seen, or after `invokelatest`. | The cache-miss path built the argument tuple type and the cache entry inside the window. | The cache-miss path runs with region 0 installed, as inference and compilation do; a cache hit pays one compare. | `first_time_code_stays_in_region_0` in `regions_window.jl`. |
 | B15 | `inst_datatype_inner` in `jltypes.c` | The same escape after `Vector{T}(undef, n)` with a run-time `T`, or a tuple of a fresh type combination, inside a window. | The cache-miss path made the new `DataType` and its parameter vector inside the window and stored them into the stock type cache. | The tail past the caches is `inst_datatype_new` and runs with region 0 installed; a cache hit pays nothing. | `first_time_code_stays_in_region_0`. |
-| B16 | `OncePerThread`, `OncePerProcess` in `base/lock.jl`; the scheduler task of `wait` in `base/task.jl` | `REGION-ESCAPE: a Task of region 2 was stored into a GenericMemory of region 0` in about 7 % of the runs of `regions_window.jl` at `JULIA_NUM_THREADS=2,0`, at the `wait` of the `interleave` case; region 2 quarantined. | Julia 1.13 makes a thread's scheduler task lazily: the first `wait` that finds the local queue empty calls `get_sched_task()`, a `OncePerThread` that does `Task(wait_forever)` on behalf of the task that waits. When that task holds a window, the scheduler task, its `ThreadSynchronizer` and the table of the `OncePerThread` are made in the region, and the store into the per-thread table is an escape. The thread's sticky work queue (`Workqueues`, also a `OncePerThread`) is made the same way at the first sticky enqueue. Which thread runs the windowed task first decides whether its scheduler task exists yet, so the failure was a race of the thread configuration. | The slow path of every `OncePerProcess` and `OncePerThread` runs with the window suspended: a new pair `jl_gc_region_suspend`, `jl_gc_region_resume` (`gc-common.c`, exported for the `ccall`) installs region 0 and installs the window again, without closing it - the task stays pinned to its thread while the slow path parks on a lock, and a `finally` runs the resume on the exception path. The C brackets of B14, B15 and inference keep `jl_gc_region_set(0)`: they never park, and an exception past them leaves the window closed, which is coherent; a suspend on those sites would leave a window counted open with no way to close it after an exception. | `lazy_state_stays_in_region_0` in `regions_window.jl`; the `interleave` case at `2,0` is the original race, 8 of 120 runs before the fix. |
+| B16 | `OncePerThread`, `OncePerProcess` in [`base/lock.jl`](../../base/lock.jl); the scheduler task of `wait` in [`base/task.jl`](../../base/task.jl) | `REGION-ESCAPE: a Task of region 2 was stored into a GenericMemory of region 0` in about 7 % of the runs of `regions_window.jl` at `JULIA_NUM_THREADS=2,0`, at the `wait` of the `interleave` case; region 2 quarantined. | Julia 1.13 makes a thread's scheduler task lazily: the first `wait` that finds the local queue empty calls `get_sched_task()`, a `OncePerThread` that does `Task(wait_forever)` on behalf of the task that waits. When that task holds a window, the scheduler task, its `ThreadSynchronizer` and the table of the `OncePerThread` are made in the region, and the store into the per-thread table is an escape. The thread's sticky work queue (`Workqueues`, also a `OncePerThread`) is made the same way at the first sticky enqueue. Which thread runs the windowed task first decides whether its scheduler task exists yet, so the failure was a race of the thread configuration. | The slow path of every `OncePerProcess` and `OncePerThread` runs with the window suspended: a new pair `jl_gc_region_suspend`, `jl_gc_region_resume` (`gc-common.c`, exported for the `ccall`) installs region 0 and installs the window again, without closing it - the task stays pinned to its thread while the slow path parks on a lock, and a `finally` runs the resume on the exception path. The C brackets of B14, B15 and inference keep `jl_gc_region_set(0)`: they never park, and an exception past them leaves the window closed, which is coherent; a suspend on those sites would leave a window counted open with no way to close it after an exception. | `lazy_state_stays_in_region_0` in `regions_window.jl`; the `interleave` case at `2,0` is the original race, 8 of 120 runs before the fix. |
 
 Three of the bugs (B10, B12, B13) are silent heap corruption in the
 development runtime, in programs that keep a region object across a stock
@@ -411,11 +412,11 @@ sound, and the barrier sees a managed store and nothing else.
 
 ### A third review, of the fixes
 
-A reading of the seven fixes above, with the same three questions, found
-seven more; the tests written for them found two more. Two are corruptions,
-one is a false quarantine, and the rest are holes in a check. Each has a
-regression script under `test/gc/`, shown to fail on the build before its
-fix. The scripts pass at every configuration of the harness: 1, 2 and 4
+A reading of the seven fixes above, with the same three questions, found seven
+more; the tests written for them found two more. Two are corruptions, one is a
+false quarantine, and the rest are holes in a check. Each has a regression
+script under [`test/gc/`](../../test/gc), shown to fail on the build before
+its fix. The scripts pass at every configuration of the harness: 1, 2 and 4
 threads, each with 0 and 1 interactive thread.
 
 | # | Where | Symptom | Cause | Fix | Test |
@@ -545,7 +546,7 @@ holds the region guard, two checks and no generational barrier.
 | C17 | `gc-wb-stock.h`, the two C-side barrier hooks | They ignored `JL_NO_REGION_STORE_BARRIER`: a build with the define had the codegen half off and the C half on. | One macro `jl_gc_region_wb_check(parent, ptr)` for both hooks, empty under the define. |
 | C18 | `jl_region_barrier_on` | The one region symbol without the `jl_gc_region_` prefix. | Renamed `jl_gc_region_barrier_on`. |
 | C19 | `ctx_switch` in `task.c` | The park and install of the window were inline in the task code. | One call, `jl_gc_region_task_switch`, in `gc-regions.c`. |
-| C20 | `contrib/memory-regions/regions.jl` | The Julia wrapper's comments named the wrong refusal codes for the census and the reset. | The comments name the codes of `gc-regions.h`. |
+| C20 | [`contrib/memory-regions/regions.jl`](regions.jl) | The Julia wrapper's comments named the wrong refusal codes for the census and the reset. | The comments name the codes of `gc-regions.h`. |
 | C21 | The census filter under `JL_NO_REGION_ALLOC` | The mark loops loaded `jl_gc_region_census_target` in the stock-only build too, which can never run a census: the define was documented as "the allocation half compiled out" while the stock mark still paid the filter. | The loops read the filter through `jl_gc_region_census_filter()`, the constant 0 under the define; `gc-stock.o` then holds 0 references to the target against 43. The documents say what each define removes and what a build with both keeps: nothing per object. |
 
 ### Stock-path changes
@@ -561,8 +562,8 @@ commit in the series, with the reason in the message.
 | S4 | `cgutils.cpp`, `emit_new_struct`; `codegen.cpp`; `llvm-pass-helpers.{h,cpp}`, `llvm-alloc-opt.cpp`, `llvm-alloc-helpers.cpp`, `llvm-julia-licm.cpp` | A second intrinsic, `julia.region_write_barrier`, emitted once per constructed object with every boxed pointer child it stores; the passes treat it as `julia.write_barrier`. | The escape barrier needs the store checked, and the fresh parent needs no generational barrier; nothing emitted under `JL_NO_REGION_STORE_BARRIER`. |
 | S5 | `llvm-late-gc-lowering.cpp` | A flag-guarded call to `jl_gc_region_wb` before the generational barrier; `julia.region_write_barrier` lowers to that guard alone. | The escape barrier; off under the same define. |
 | S6 | `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_wb_fresh`, `jl_gc_wb_current_task`, `jl_gc_wb_knownold` | The three empty annotations become declarations, and the stock collector defines them with the region check. | Each one names a store whose *generational* half a property of the parent or of the child removes. None of those properties says anything about a region, and a fresh parent takes the region of the open window while the child can come from an earlier one. The mmtk build keeps them empty. |
-| S7 | `base/array.jl`, `base/dict.jl`, `base/iobuffer.jl`, `src/iddict.c` | A replacement buffer is allocated in the region of its container, through `jl_gc_region_borrow`. | Without it a `push!` to a long-lived vector inside a window quarantines the region for an operation the program has every right to make. With no region in use the borrow reads region 0 and installs region 0: two field writes on the growth path, none on the allocation path. |
-| S7' | `contrib/memory-regions/regions.jl` | `@in_region_of container expr` exports the borrow to a program. | Base carries the rule for its own containers; a package with a container of its own could not, so its growth inside a window quarantined the region. The macro borrows the region of the container for one allocation and gives it back in a `finally`. It changes no stock path: nothing outside a region ever calls it. |
+| S7 | [`base/array.jl`](../../base/array.jl), [`base/dict.jl`](../../base/dict.jl), [`base/iobuffer.jl`](../../base/iobuffer.jl), [`src/iddict.c`](../../src/iddict.c) | A replacement buffer is allocated in the region of its container, through `jl_gc_region_borrow`. | Without it a `push!` to a long-lived vector inside a window quarantines the region for an operation the program has every right to make. With no region in use the borrow reads region 0 and installs region 0: two field writes on the growth path, none on the allocation path. |
+| S7' | [`contrib/memory-regions/regions.jl`](regions.jl) | `@in_region_of container expr` exports the borrow to a program. | Base carries the rule for its own containers; a package with a container of its own could not, so its growth inside a window quarantined the region. The macro borrows the region of the container for one allocation and gives it back in a `finally`. It changes no stock path: nothing outside a region ever calls it. |
 | S8 | `cgutils.cpp` (`emit_new_struct`, `boxed`), `intrinsics.cpp` (the box path of `pointerref`), `codegen.cpp` (the `nocapture` parent of `julia.region_write_barrier`); `gc-interface.h`, `gc-wb-stock.h`: `jl_gc_multi_wb_fresh`; `datatype.c`, `genericmemory.c`, `runtime_intrinsics.c`, `builtins.c`, `jltypes.c`, `method.c` | The region guard at every fresh-object copy of an inline value with pointers: `julia.region_write_barrier` names the tracked values of the copied value in the compiler; the fourth annotation walks the pointer fields in the runtime. | A copy of an inline value stores its pointer fields without a box and without a barrier; the parent is fresh, so vanilla needs none, and the region check needs one per pointer field. Nothing emitted under `JL_NO_REGION_STORE_BARRIER`; the mmtk annotation is empty. |
 | S9 | `jl_gc_free_page` (`gc-pages.c`) | A page that carries a region tag is kept, not freed; the line says so. | The guard named the violation and then freed the page anyway. A region owns its pages, and only a reset or a census gives a cell back, so a tagged page at this entry means a live page would go to the next claim. The page leaks instead, which is the lesser harm. No page of a program without regions carries a tag, so the stock path is unchanged. |
 
@@ -605,7 +606,7 @@ or the benchmarks meets again.
   compiles eight copies of each tight loop and reports the minimum. The rows
   that spend their time in the runtime's C code have one placement per
   binary; a difference there needs the disassembly as a second witness.
-- `src/Makefile` lists the header dependencies of the pass objects by hand
+- [`src/Makefile`](../../src/Makefile) lists the header dependencies of the pass objects by hand
   and does not follow an include. A change to `llvm-pass-helpers.h` rebuilds
   the objects that name it, and leaves `llvm-final-gc-lowering.o` and
   `llvm-late-gc-lowering-stock.o`, which reach it through
@@ -616,13 +617,13 @@ or the benchmarks meets again.
   than the library. After a change to that header, touch the two sources,
   or name the objects as goals (`make -C src llvm-final-gc-lowering.o
   llvm-late-gc-lowering-stock.o`), or run `make -C src clean`.
-- The system image does not depend on the codegen library in `sysimage.mk`.
-  A change to `src/cgutils.cpp` or `src/codegen.cpp` alone rebuilds
-  `libjulia-codegen.so` and leaves `sys.so` with the code the old codegen
-  emitted. A test of a codegen change against the image (the IR of a
-  function that Base compiled, the size of `.text`) reads the old image.
-  Remove `usr/lib/julia/{basecompiler,sysbase,sys}{-o.a,.so}` before the
-  rebuild.
+- The system image does not depend on the codegen library in [`sysimage.mk`](../../sysimage.mk).
+A change to [`src/cgutils.cpp`](../../src/cgutils.cpp) or
+[`src/codegen.cpp`](../../src/codegen.cpp) alone rebuilds
+`libjulia-codegen.so` and leaves `sys.so` with the code the old codegen
+emitted. A test of a codegen change against the image (the IR of a function
+that Base compiled, the size of `.text`) reads the old image. Remove
+`usr/lib/julia/{basecompiler,sysbase,sys}{-o.a,.so}` before the rebuild.
 - The pair check of the bulk copies (destination, source) needs a source
   with a page tag. The source of a fresh-object copy is a stack slot, an
   SSA aggregate, or a raw pointer as often as an object; a proxy check on it
@@ -778,14 +779,14 @@ deltas were smaller than the movement of their own row between runs, and
 nothing in the record said so. The whole measurement ran again on an idle
 machine, with a harness that measures rounds.
 
-What the harness does now: a round runs each binary once, the order turns
-over between rounds, and the statistic is the median of the per-round
-differences or ratios with a percentile bootstrap interval and a sign test
-beside it (`results/stats.py`). The unit costs took 25 rounds inside an
-isolated cpuset partition on a tickless core; the other rows took 10 rounds
-on the whole machine. Two rows are new: M13, the collection against the
-thread count on both binaries, and M14, what a reset costs the caller and
-the other threads.
+What the harness does now: a round runs each binary once, the order turns over
+between rounds, and the statistic is the median of the per-round differences
+or ratios with a percentile bootstrap interval and a sign test beside it
+([`results/stats.py`](results/stats.py)). The unit costs took 25 rounds inside
+an isolated cpuset partition on a tickless core; the other rows took 10 rounds
+on the whole machine. Two rows are new: M13, the collection against the thread
+count on both binaries, and M14, what a reset costs the caller and the other
+threads.
 
 What the old numbers said, and what the rounds say now, for the unused
 runtime against vanilla:
@@ -821,24 +822,25 @@ core (`USE_SCOPE=0`).
 ### The measurements, redone
 
 The tidy ran every measurement again on the flat tree, with
-`results/run_all.sh`, and read every result as a reviewer before it went
-into a table. The rule was: a number that disagrees with its claim is a
-finding, and a finding is followed to its cause before the step continues.
-Three kinds of finding came out: faults of the harness, claims the data did
-not support, and drift against the numbers of the development branch.
+[`results/run_all.sh`](results/run_all.sh), and read every result as a
+reviewer before it went into a table. The rule was: a number that disagrees
+with its claim is a finding, and a finding is followed to its cause before the
+step continues. Three kinds of finding came out: faults of the harness, claims
+the data did not support, and drift against the numbers of the development
+branch.
 
 **Faults of the harness.** None of them is a fault of the runtime; each one
 put a wrong number into a table of the development branch, or would have.
 
 | # | Where | Fault | Fix |
 | --- | --- | --- | --- |
-| H1 | `bench/gcbench.sh` | The suite prints `times = 0x…`; the script read the field as decimal, so every wall time was 0. | The parse reads both forms and `$((ns))` makes the row decimal. A run that prints no `times` field is reported as `FAILED` with the tail of its output and gets no row. |
-| H2 | `bench/paced.jl`, `bench/yardstick.jl` | The result vectors were `Vector{Int64}(undef, n)`; the first touch of each of their huge pages fell inside a measured slot and cost about 200 µs. The four slot misses of the regions run were these faults, not the runtime. | `zeros`, which touches every page before the loop. The regions run misses no slot. |
-| H3 | `bench/unit_costs.jl`, the design | One process opened a window to measure the window rows, and the barrier stays armed from the first window on. The `alloc_stock` and `construct_two` rows compared an armed process with vanilla, and the no-window cost was confounded with the armed cost. | A third run: the regions binary in a process that never opens a window. M2 has three columns. |
-| H4 | `results/run_all.sh` | Each run overwrote `log/status.tsv`; a partial rerun lost the status of the rows it did not run. | Append. |
-| H5 | `results/plot.py`, `plot_scaling` | The points were grouped by their full label, which carries the thread count, so one thread count matched and the axis had zero width. The plot had never been drawn. | Group by the name before the parenthesis. |
-| H6 | `MEASUREMENTS.md` | Every table was typed from the logs by hand. | `results/tables.py` writes every table from the data files; a table lives between two markers. |
-| H7 | `results/plot.py`, the throughput plot of M5 | The legend named the `autopool` row, which is the in-place handler under the stock collector with no region call, "region, one reset per event", and the `pooled` row, which opens a window per event, "hand-pooled, no allocation". The table of M5 was right; the plot said the opposite of it. | The legend names each row for what `census.jl` runs. Every plot was rendered and read against its data before it went in; the same pass found labels that overlapped or ran off the canvas, and markers that hid one another where two values coincide. |
+| H1 | [`bench/gcbench.sh`](bench/gcbench.sh) | The suite prints `times = 0x…`; the script read the field as decimal, so every wall time was 0. | The parse reads both forms and `$((ns))` makes the row decimal. A run that prints no `times` field is reported as `FAILED` with the tail of its output and gets no row. |
+| H2 | [`bench/paced.jl`](bench/paced.jl), [`bench/yardstick.jl`](bench/yardstick.jl) | The result vectors were `Vector{Int64}(undef, n)`; the first touch of each of their huge pages fell inside a measured slot and cost about 200 µs. The four slot misses of the regions run were these faults, not the runtime. | `zeros`, which touches every page before the loop. The regions run misses no slot. |
+| H3 | [`bench/unit_costs.jl`](bench/unit_costs.jl), the design | One process opened a window to measure the window rows, and the barrier stays armed from the first window on. The `alloc_stock` and `construct_two` rows compared an armed process with vanilla, and the no-window cost was confounded with the armed cost. | A third run: the regions binary in a process that never opens a window. M2 has three columns. |
+| H4 | [`results/run_all.sh`](results/run_all.sh) | Each run overwrote `log/status.tsv`; a partial rerun lost the status of the rows it did not run. | Append. |
+| H5 | [`results/plot.py`](results/plot.py), `plot_scaling` | The points were grouped by their full label, which carries the thread count, so one thread count matched and the axis had zero width. The plot had never been drawn. | Group by the name before the parenthesis. |
+| H6 | [`MEASUREMENTS.md`](MEASUREMENTS.md) | Every table was typed from the logs by hand. | [`results/tables.py`](results/tables.py) writes every table from the data files; a table lives between two markers. |
+| H7 | [`results/plot.py`](results/plot.py), the throughput plot of M5 | The legend named the `autopool` row, which is the in-place handler under the stock collector with no region call, "region, one reset per event", and the `pooled` row, which opens a window per event, "hand-pooled, no allocation". The table of M5 was right; the plot said the opposite of it. | The legend names each row for what `census.jl` runs. Every plot was rendered and read against its data before it went in; the same pass found labels that overlapped or ran off the canvas, and markers that hid one another where two values coincide. |
 
 **Claims the data did not support.** Five claims of the development branch
 changed.
@@ -877,7 +879,7 @@ changed.
   counter as a leak. The devdoc has a section "Counters" now, and the row
   is named "allocated through the region".
 
-**Drift.** The numbers of the development branch (its `MEASUREMENTS.md`,
+**Drift.** The numbers of the development branch (its [`MEASUREMENTS.md`](MEASUREMENTS.md),
 2026-09-01 to 2026-09-03) against the flat tree. A change inside the spread
 of the rounds is noise; every change beyond that has its cause named.
 
@@ -937,9 +939,10 @@ allocate later. Every test resets a region after its window for that reason.
 ## The audit of the entry points
 
 The development runtime exported twenty region entries from `gc-stock.c` and
-`gc-pages.c`, and three hooks. The tidy keeps eighteen entries and every
-hook, and adds one exported pair for Base (B16). Every kept entry is used by
-a test under `test/gc/` or by a program under `bench/` or `demo/`.
+`gc-pages.c`, and three hooks. The tidy keeps eighteen entries and every hook,
+and adds one exported pair for Base (B16). Every kept entry is used by a test
+under [`test/gc/`](../../test/gc) or by a program under [`bench/`](bench) or
+[`demo/`](demo).
 
 | Entry point | Fate | Reason |
 | --- | --- | --- |
@@ -992,10 +995,10 @@ region diff of the truth against rc3 differ only in lines that this table,
 the cleanups, or the bugs name. `cgutils.cpp`, `julia_threads.h`, and
 `work-stealing-queue.h` are identical in both diffs.
 
-The scripts of the development tree that became tests, and did not survive
-as files: `stage3_safety.jl` and `v2_regression.jl` (the regression
-batteries) became the five `regions_*.jl` scripts; `stage4_trap.jl` (the
-barrier trap, which passed when it exited 1) became the quarantine cases of
+The scripts of the development tree that became tests, and did not survive as
+files: `stage3_safety.jl` and `v2_regression.jl` (the regression batteries)
+became the five `regions_*.jl` scripts; `stage4_trap.jl` (the barrier trap,
+which passed when it exited 1) became the quarantine cases of
 `regions_escape.jl`; `ctor_gap_demo.jl` became `ctor_gap_quarantines_region5`.
 
 ## The obsolete branches and their tags
