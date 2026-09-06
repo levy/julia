@@ -20,9 +20,10 @@
 # and the marking threads have work to steal. `collections` full collections
 # run after a warm one; every collection is one row. The row reports the
 # wall time of the call and, when the runtime publishes them, the mark and
-# the sweep time of that collection and the longest time a thread took to
-# reach the safepoint. The last one is the pause a thread that runs Julia
-# code imposes on the collection, and it grows with the thread count.
+# the sweep time of that collection and the time the collection waited for
+# every thread to reach a safepoint. The last one is the delay a thread that
+# runs Julia code imposes on the collection, and it grows with the thread
+# count.
 #
 # Rows (REGIONS_TSV):
 #
@@ -61,10 +62,10 @@ field(gcn, name) = hasproperty(gcn, name) ? Float64(getproperty(gcn, name)) : -1
 
 function main()
     nthreads = Threads.nthreads()
-    gcthreads = try                          # the field is not in every version
-        Int(Base.JLOptions().ngcthreads)
+    gcthreads = try                          # the entry is not in every version
+        Int(Threads.ngcthreads())
     catch
-        -1
+        Int(Base.JLOptions().nmarkthreads)
     end
     live = build_live(nthreads)
     GC.gc()                                  # a warm collection; not a row
@@ -78,12 +79,16 @@ function main()
                   (field(after, :total_mark_time) - field(before, :total_mark_time)) / 1e6
         sweep_ms = field(after, :total_sweep_time) < 0 ? -1.0 :
                    (field(after, :total_sweep_time) - field(before, :total_sweep_time)) / 1e6
-        safepoint_us = field(after, :max_time_to_safepoint) < 0 ? -1.0 :
-                       field(after, :max_time_to_safepoint) / 1e3
+        # total_time_to_safepoint is cumulative, so the difference is the
+        # wait of this collection; max_time_to_safepoint is a running
+        # maximum and would repeat itself on every row.
+        safepoint_us = field(after, :total_time_to_safepoint) < 0 ? -1.0 :
+                       (field(after, :total_time_to_safepoint) -
+                        field(before, :total_time_to_safepoint)) / 1e3
         live_mb = Base.gc_live_bytes() / 2^20
         tsv_row(["threads", "gcthreads", "collection", "wall_ms", "mark_ms", "sweep_ms",
                  "safepoint_us", "live_mb"],
-                [nthreads, gcthreads, c,
+                Any[nthreads, gcthreads, c,          # Any: an Int stays an Int
                  round(wall_ms; digits = 3), round(mark_ms; digits = 3),
                  round(sweep_ms; digits = 3), round(safepoint_us; digits = 3),
                  round(live_mb; digits = 1)])
