@@ -716,14 +716,36 @@ unswitches it - it hoists the test and duplicates the loop, which is exactly
 what the hand specialization does. The filter is read once per object into a
 register, so that transformation had already happened.
 
-What the four probes and the control establish: the page metadata costs
-nothing; the thread heap is worth about two points and its interval touches
-1.00; the census filter is not the cause; and most of the six to seven
-points at 30 threads is **not attributed**. What remains to test is the
-three brackets of a collection, the region test of the page sweep, and the
-shape of the collector's compiled code. The next instrument is a profile of
-the collection on both binaries, not another pair of builds: a ratio cannot
-say which instructions cost the time.
+A profile and one more build finish the attribution.
+
+**The profile.** `perf stat` over a run of 40 collections at 30 threads:
+the region build executes 364.0 G instructions against 344.6 G, +5.7 %, and
+takes 258.4 G cycles against 245.4 G, +5.3 %. The instructions per cycle are
+the same to three digits, 1.404 against 1.409, so the collection is not
+stalling more; it is executing more. The symbols put every extra cycle
+inside the collector: 227.9 G in the `gc_*` symbols against 209.6 G, which
+is the whole difference. The sweep is not it. The arithmetic of the mark is
+19.5 G extra instructions over about 1.3 G marked objects, which is **15
+instructions per marked object**, where the source adds two branches: the
+census test of the claim and the corpse check of `gc_setmark_pool`.
+
+**The build that names the cause.** A build with both defines off -
+`JL_NO_REGION_ALLOC` and `JL_NO_REGION_STORE_BARRIER`, so no store barrier,
+no region allocation path and the filter folded to 0 - still costs
+1.05 [1.02, 1.08] at 30 threads, where the control costs 1.06 [1.05, 1.07].
+Turning off every piece of region code removes nothing measurable.
+
+So the cost is not the region code. What stays when the code is gone is the
+**data**: the thread heap is 608 bytes larger and the fields of the stock
+collector move with it, which the padding probe alone reproduces at
+1.02 [0.999, 1.03]. The rest is of the same kind - the layout of the
+structures a collection walks - and no probe separates it further.
+
+The candidate that follows is not a check to remove; it is a move: put the
+region state of a heap behind one pointer, so that `jl_thread_heap_t` grows
+by eight bytes and every field the stock collector reads keeps its offset
+and its cache line. The region paths then pay one indirection, and they are
+the paths that only run when a program uses a region.
 
 ### The measurements, redone again, with intervals (2026-09-06)
 
