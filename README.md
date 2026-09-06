@@ -22,7 +22,7 @@ page describes Julia itself.
 
 | Feature | Branch | Landing page | What it gives you |
 | --- | --- | --- | --- |
-| **Region garbage collection** | [`gc-regions-fixes`](https://github.com/levy/julia/tree/gc-regions-fixes) | [contrib/memory-regions](https://github.com/levy/julia/tree/gc-regions-fixes/contrib/memory-regions) | free a whole phase of a program at once, with no mark and no sweep |
+| **Region garbage collection** | [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) | [contrib/memory-regions](https://github.com/levy/julia/tree/gc-regions/contrib/memory-regions) | free a whole phase of a program at once, with no mark and no sweep |
 | **Fast system image rebuild** | [`reactive-compiler`](https://github.com/levy/julia/tree/reactive-compiler) | [contrib/reactive-compiler/doc](https://github.com/levy/julia/blob/reactive-compiler/contrib/reactive-compiler/doc/architecture.md) | rebuild an image after an edit in seconds instead of minutes |
 | **Sealed and trimmed AOT** | [`sealed-aot`](https://github.com/levy/julia/tree/sealed-aot) | [contrib/sealed-abstract](https://github.com/levy/julia/tree/sealed-aot/contrib/sealed-abstract) | `--trim=safe` accepts a program that dispatches on abstract types |
 | **Faster system image load** | *not published yet* | — | shorten the relocation work a process does before it runs |
@@ -31,9 +31,9 @@ page describes Julia itself.
 
 ## Region garbage collection
 
-**Branch [`gc-regions-fixes`](https://github.com/levy/julia/tree/gc-regions-fixes) ·
-[read it here](https://github.com/levy/julia/tree/gc-regions-fixes/contrib/memory-regions) ·
-[the developer documentation](https://github.com/levy/julia/blob/gc-regions-fixes/doc/src/devdocs/gc-regions.md)**
+**Branch [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) ·
+[read it here](https://github.com/levy/julia/tree/gc-regions/contrib/memory-regions) ·
+[the developer documentation](https://github.com/levy/julia/blob/gc-regions/doc/src/devdocs/gc-regions.md)**
 
 A region is a numbered part of the pool heap that a program frees as one act.
 A program opens a window on a region, allocates into it, closes the window,
@@ -58,9 +58,9 @@ Measured on an event loop that allocates about 1.7 KB per event:
 | regions, with census | 14.8 M | 70 ns | **55 µs** |
 
 The longest pause falls by a factor of about 69, and the throughput doubles.
-[MEASUREMENTS.md](https://github.com/levy/julia/blob/gc-regions-fixes/contrib/memory-regions/MEASUREMENTS.md)
+[MEASUREMENTS.md](https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/MEASUREMENTS.md)
 holds twelve such measurements with the script and the data file of each.
-[COST.md](https://github.com/levy/julia/blob/gc-regions-fixes/contrib/memory-regions/COST.md)
+[COST.md](https://github.com/levy/julia/blob/gc-regions/contrib/memory-regions/COST.md)
 says what a program that never opens a window pays for the runtime being
 there.
 
@@ -81,10 +81,11 @@ Regions beat the stock collector on wall time only when the allocation a unit
 of work discards is the larger part of what it allocates. A loop that keeps
 most of what it makes does not gain. Read `COST.md` before you adopt it.
 
-The branch [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) holds
-the same runtime as an ordered series, one mechanism per commit, for a reader
-who wants to review it rather than run it. `gc-regions-fixes` is the one to
-build.
+The branch holds the runtime as an ordered series, one mechanism per commit,
+for a reader who wants to review it rather than run it. The branch
+[`gc-regions-source`](https://github.com/levy/julia/tree/gc-regions-source)
+ends at the same tree, but it keeps the development history that the series
+was cut from. Build `gc-regions`.
 
 ---
 
