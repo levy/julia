@@ -1001,14 +1001,17 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > M4, `results/plots/max_pause.svg`.
 >
 > **Cost when unused.** On the GCBenchmarks subset (nine benchmarks, 1 and
-> 4 threads) the ratio regions / vanilla is 0.99 to 1.07 on eight of them,
-> inside the round-to-round spread of each; `many_refs` runs at 0.92 because
-> of a stock-path fix in this branch (a deferred collection re-arms its
-> trigger). The unit costs are not zero (M2): a pointer store pays one flag
-> load and a predicted branch (0.41 ns against 0.32 ns); a pool allocation
-> pays 2.40 ns against 2.12 ns; an object constructed from two shared
-> children pays a flag check that vanilla omits (3.98 ns against 3.55 ns);
-> the stock mark pays between 1 and 3 %. Two build
+> 4 threads) six of nine have a ratio whose 95 % interval crosses 1.00 over
+> ten paired rounds; `tree` is 2 % slower, and `single_ref` and `many_refs`
+> run faster because of a stock-path fix in this branch (a deferred
+> collection re-arms its trigger). The unit costs are not zero (M2, 25
+> paired rounds): a pointer store pays one flag load and a predicted branch
+> (+0.085 ns [0.084, 0.086]); a pool allocation +0.283 ns [0.277, 0.291]; an
+> object constructed from two shared children pays a flag check that vanilla
+> omits (+0.335 ns [0.320, 0.351]); a serial stock mark +1.7 %. The largest
+> number is the collection on the whole machine (M13): +2 % at one thread
+> and **+7 % at 32 threads with 16 GC threads**, on a 1 GB live set. Two
+> build
 > defines exist for measurement, not for production:
 > `JL_NO_REGION_STORE_BARRIER` takes the barrier out (a store and a
 > construction compile as vanilla compiles them), `JL_NO_REGION_ALLOC`
@@ -1016,9 +1019,13 @@ Title: **GC: memory regions — free the objects of one lifetime in O(1), beside
 > loops; a build with both keeps one page tag per page and nothing per
 > object. The region tests fail on both builds by design.
 >
-> **Cost when used.** A window pair 10.8 ns, a reset of 30 ns (the two
-> clock reads are 10 of it), an armed store 1.4 ns, an allocation in a
-> region 4.0 ns against 3.4 ns in the stock pool of the same process (M2).
+> **Cost when used.** A window pair 10.9 ns, a reset of 30 ns (the two
+> clock reads are 10 of it), an armed store 1.44 ns, an allocation in a
+> region 3.98 ns against 3.4 ns in the stock pool of the same process (M2).
+> A checked reset stops the world, so it costs the caller 27 µs alone and
+> 107 µs with 31 worker threads, and it stalls a worker by 118 µs at four
+> threads and 533 µs at sixteen (M14); the unchecked entry costs a tenth of
+> a microsecond and stalls nobody.
 > The wall-time win appears only where the discarded allocation per unit of
 > work dominates, and the demonstrators show the crossover (M10): a bare
 > optimistic insert loses at 0.44x; the same insert with heavy speculation

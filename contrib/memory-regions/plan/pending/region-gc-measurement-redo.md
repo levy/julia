@@ -174,28 +174,34 @@ hour more and doubles the resolution of their intervals.
       that states how a cost row is measured.
 - [x] A dry run of the whole rendering pipeline on synthetic data, with no
       benchmark: the tables and the four plots come out.
-- [ ] A smoke run on the machine: `ROUNDS=1 ONLY="M2 M13 M14" ./run_all.sh`
-      with small counts, to see that the three scripts run on both binaries
-      and that the data files carry what the tables expect. This is the
-      first thing to do when the machine is free.
-- [ ] Run the whole-machine rows with the partition off, then
-      `sudo tools/hil_isolation.sh on` for the latency rows and off after
-      them. Record in `MEASUREMENTS.md` which rows ran in which state; the
-      `isolated` field of `context.tsv` reads the boot set, so the document
-      must say that the partition, not the command line, carried the
-      isolation.
-- [ ] Drop the old data: `rm results/data/*.tsv results/plots/*.svg` before
-      the full run, so that no table can quote a number no file holds.
-- [ ] The full run, whole machine first, latency rows after.
-- [ ] `tables.py`, then `plot.py`, then read every table as a reviewer: a
-      claim that the interval does not support is a finding, and a finding
-      is followed to its cause before the step ends.
-- [ ] Rewrite the prose that cites a number: `MEASUREMENTS.md` claims,
-      `COST.md` tables and judgment, `README.md`, the devdoc Cost section,
-      and the pull request text in `region-gc-tidy.md`.
-- [ ] `HISTORY.md`: a short section that keeps the old headline numbers and
-      says why they were replaced.
-- [ ] Move the flat tag, take stages 17, 19 and 20 again, and run Check 1.
+- [x] The smoke run found three faults of the new row, all fixed before
+      the measurement: `Threads.ngcthreads()` gives the GC thread count, a
+      mixed `[Int, Float64]` array promotes and wrote `1.0` in an integer
+      column, and `max_time_to_safepoint` is a running maximum, so the
+      per-collection wait is the difference of `total_time_to_safepoint`.
+- [x] M1, M5, M7 to M14 ran with the partition off; M2, M3, M4 and M6 ran
+      inside it. `MEASUREMENTS.md` says which rows ran in which state, and
+      that `context.tsv` cannot show it. One fault of the driver came out of
+      the partition: `systemd-run --user --scope` moves a row into a cgroup
+      of the user's slice, outside the partition, and `taskset` then refuses
+      the isolated core. `USE_SCOPE=0` turns the scope off.
+- [x] The old data and plots were dropped before the run.
+- [x] The full run: M1, M2, M13 and M14 first, then the throughput rows,
+      then the latency rows inside the partition. The unit costs took 25
+      rounds after ten left the mark row unsettled.
+- [x] Every table and plot is regenerated, and every table was read
+      against its claim. Three findings: the collection cost is not flat in
+      the thread count (2 % at one thread, 7 % at 32), the construction row
+      is exactly three allocation deltas, and the stall column of M14 at 32
+      threads measures oversubscription in both entries.
+- [x] The prose of `MEASUREMENTS.md`, `COST.md`, `README.md`, the devdoc
+      and the pull request text carries the new numbers and the new
+      headline.
+- [x] `HISTORY.md` keeps the old readings beside the new ones, with the
+      four harness faults the run found.
+- [x] The flat tag is `0a4b78eb15`; stages 15 to 20 were taken again
+      (the devdoc is stage 15 and the README stage 16, so stage 17 was not
+      low enough), and Check 1 passes.
 
 ## Acceptance
 
