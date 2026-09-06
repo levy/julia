@@ -177,10 +177,16 @@ program the borrow to fix its own containers.
 - [x] Confirm D1, the borrow pair. It is the one new entry point. Without it
       the rule cannot be expressed. Done: `jl_gc_region_borrow` and
       `jl_gc_region_unborrow` in `src/gc-common.c`.
-- [ ] Decide whether `regions.jl` exposes the borrow to a program, so a
-      package can fix its own container. A `@in_region_of(old) …` macro is
-      the shape. Open: nothing exposes the borrow to a program yet, and the
-      test API in `test/gc/regions_api.jl` does not either.
+- [x] Decided (2026-09-06): `regions.jl` exposes the borrow as
+      `@in_region_of container expr`. Without it a package with a container
+      of its own cannot follow the rule, which is the reviewer's case one
+      level up. The macro borrows the region of the container, runs the
+      body, and gives the region back in a `finally`; its docstring carries
+      the three rules of a borrow, because the macro can enforce the
+      `finally` and not the "do not yield". `test/gc/regions_api.jl` has the
+      same pair and the same macro, and `regions_containers.jl` grows a
+      container of its own with the macro and without it: 52 checks at every
+      harness configuration.
 
 ### Step 1 — Reproduce
 
@@ -274,7 +280,7 @@ frees the data of a buffer that lives on.
 - [x] Update the developer documentation: the rule, the borrow, the residue
       that stays with the program. Done: the section "A replacement buffer".
 - [x] Done: the text names the case and carries the new cost numbers.
-- [ ] Move this plan to `plan/done/`.
+- [x] Move this plan to `plan/done/`.
 
 ## Acceptance
 
