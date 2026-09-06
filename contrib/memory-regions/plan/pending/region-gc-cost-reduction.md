@@ -180,25 +180,48 @@ the heaviest proof.
       includes zero, revert the step: a semantic risk with no measured win
       is not a trade-off, it is a loss.
 
-## Step 1c — Profile the collection, do not build another pair
+## Step 2b — The region state behind one pointer
+
+This is what the attribution names, and it is a move, not a removal. The
+thread heap carries 608 bytes of region state: 64 pointers to the per-region
+states, the live and has-child masks, and the child counts. They sit inside
+`jl_thread_heap_t`, so every field of the stock collector after them moves,
+and the structures a collection walks change their cache lines. Vanilla
+padded by 608 bytes alone costs 1.02 [0.999, 1.03] at 30 threads, and a
+build with every piece of region code compiled out still costs
+1.05 [1.02, 1.08]: the code is not the cost, the layout is.
+
+The change: one pointer in `jl_thread_heap_t` to a block that holds the
+region table, the masks and the counts, allocated when the heap first uses a
+region. `jl_thread_heap_t` then grows by eight bytes, every stock field
+keeps its offset, and the region paths pay one indirection - on the paths
+that run only when a program uses a region.
+
+- [ ] Move the state. `current_region`, `saved_region`, `finalizer_depth`
+      and `active_pools` are read by the allocation fast path and stay where
+      they are; the table, the masks and the counts move behind the pointer.
+- [ ] The allocation fast path must not gain an indirection. Check the
+      disassembly of `jl_gc_small_alloc_inner` against the current build.
+- [ ] `sizeof(jl_thread_heap_t)` is vanilla's plus eight. Check with the
+      probe, and say so in `COST.md`.
+- [ ] The gate, with the control's floor: the M13 row at 30 threads must
+      fall by more than one point to count.
+
+## Step 1c — Profile the collection: done
 
 Four A/B builds and a control leave most of the six to seven points
 unattributed. A ratio between two binaries cannot say which instructions
 cost the time, and every further pair costs an hour of builds for one
 number. The next instrument is a profile.
 
-- [ ] `perf stat` on one collection of each binary at 30 threads: cycles,
-      instructions, cache misses, branch misses. It says whether the region
-      build executes more instructions or stalls more often, which are
-      different faults with different fixes.
-- [ ] `perf record` on the collection, both binaries, and compare the mark
-      functions symbol by symbol. Where the extra cycles sit is the answer
-      the ratios cannot give.
-- [ ] If `perf` is not permitted on this machine, the fallback is a build
-      with the collector's region hooks stubbed one at a time: the three
-      brackets, the region test of the page sweep, the extra parameter of
-      the mark tree. One build each, and the control above says a change
-      must move the row by more than a point to count.
+- [x] `perf stat`: +5.7 % instructions, +5.3 % cycles, the same instructions
+      per cycle. The collection executes more, it does not stall more.
+- [x] `perf record`: every extra cycle is inside the collector, in the mark
+      path, and it is about 15 instructions per marked object where the
+      source adds two branches.
+- [x] The build with both defines off, which removes every piece of region
+      code: 1.05 [1.02, 1.08] at 30 threads against a control of 1.06
+      [1.05, 1.07]. **The code is not the cost.** Step 2b follows from it.
 
 ## Step 4 — The reserve, chosen by Step 0
 
