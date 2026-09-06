@@ -80,34 +80,58 @@ object or per array and pass it in a register, and the branch is
 `__unlikely`, so a slot costs a register compare. The measurement decides,
 not the reading.
 
-- [ ] Build A: `JL_NO_REGION_ALLOC`. It folds the census filter to the
-      constant 0 and takes the region pools out. Run M13 against vanilla.
-- [ ] Build B: the page metadata back to 40 bytes, with nothing else
-      changed (`region_next` removed, the chain kept in a scratch array that
-      only this build uses). It is a probe, not the fix. Run M13.
-- [ ] Build C, only if A and B leave the cost standing: the thread heap
-      region table reduced to one pointer. Run M13.
-- [ ] Write the attribution into `HISTORY.md`, whatever it says. A cost with
-      no cause found is a finding too.
+- [x] Build A: `JL_NO_REGION_ALLOC`. At 30 threads it gives 1.04
+      [1.02, 1.06] where the whole build gives 1.07 [1.06, 1.09], and the
+      mark falls from 1.08 to 1.03. **The census filter is the largest
+      piece, about 3 points.**
+- [x] Build B: vanilla with 8 bytes more per page metadata, which is the
+      whole growth the region branch causes. 0.996 [0.971, 1.04] at 30
+      threads. **The page metadata costs nothing.**
+- [x] Build C: vanilla with 608 bytes more per thread heap. 1.02
+      [0.999, 1.03] at 30 threads. **A small piece, about 2 points, and the
+      interval touches 1.00, so the evidence is weak.**
+- [x] The whole build measured again in the same probe conditions, so the
+      four rows compare: 1.07 [1.06, 1.09] at 30 threads, which reproduces
+      the 32-thread row of M13 in a different machine state.
+- [x] The attribution is in `HISTORY.md`. About 3 points for the filter,
+      about 2 for the thread heap, and about 2 that no probe attributes:
+      the three brackets of a collection, the region test of the page
+      sweep, and the shape of the compiled mark loops.
 
-## Step 1 — The page metadata, if Step 0 points at it
+## Step 1 — The page metadata: dropped
 
-`region_n` is free: one byte that lands in padding vanilla already wastes.
-The growth from 40 to 48 bytes is `region_next`, the intrusive chain of a
-region's pages.
+Step 0 killed this candidate before a line of it was written. Eight bytes
+more per page metadata move no width: 0.996 [0.971, 1.04] at 30 threads.
+Moving the page chain out of `jl_gc_pagemeta_t` would buy nothing on this
+row, and it would touch the page bookkeeping of every region. The 8 bytes
+stay.
 
-- [ ] Move the chain into `jl_gc_region_state_t`: an array of page pointers
-      per region, with the same three roles the chain has today (the live
-      pages, the tail, the fresh pages).
-- [ ] Keep every property the chain gives: the claim appends in amortized
-      constant time, the reset parks the whole set in constant time, the
-      census walks the set with no lock while the world is stopped, and a
-      page keeps its owner heap.
-- [ ] `jl_gc_pagemeta_t` is byte-for-byte the vanilla struct again. Check
-      with a `sizeof` probe and with `readelf`, and say so in `COST.md`.
-- [ ] The gate. M13 is the row that must move; `regions_lifetime.jl`,
-      `regions_census.jl` and `regions_many.jl` are the scripts that must
-      not.
+## Step 1b — The census filter, out of the loop the stock path runs
+
+This is what Step 0 named. The filter is not expensive to read: the mark
+loops load it once per object or per array and pass it in a register, and
+its branch is `__unlikely`. What it costs is that the loops carry a runtime
+parameter the compiler cannot fold, and `JL_NO_REGION_ALLOC` shows what the
+folding is worth - 3 points at 30 threads, and 5 points of the mark.
+
+The change: two instantiations of the mark loops, one with the filter folded
+to 0 and one with it, chosen once per collection by a flag that says whether
+any region was ever used. A program that never opens a window then runs the
+loop vanilla runs.
+
+- [ ] Find the smallest set of functions that must be duplicated. The claim
+      already takes `scoped`; the question is where the parameter stops the
+      compiler.
+- [ ] Instantiate them twice, from one source, so the two copies cannot
+      drift. A macro or an included body, not a copy by hand.
+- [ ] The flag: set at the first window of the process, never cleared, read
+      once per collection. It is not the barrier flag, which arms at the
+      same moment but is read per store.
+- [ ] Check the cost in text: `size` on `libjulia-internal`. A Julia program
+      pays that in the binary, not at run time.
+- [ ] The gate. The target is the M13 row at 30 threads: 1.07 must fall
+      toward 1.04. `regions_census.jl` and `regions_many.jl` exercise the
+      other copy, and they must pass at every harness configuration.
 
 ## Step 2 — Skip the guard where the child cannot be a region object
 
@@ -151,16 +175,16 @@ the heaviest proof.
 
 Only if the attribution names them:
 
-- [ ] **The mark loop, specialized.** Two instantiations of the hot loop,
-      one without the filter, chosen once per collection by a flag that says
-      whether any region was ever used. It costs text in
-      `libjulia-internal`, which no Julia program pays for at run time, and
-      it takes the filter out of the loop that a program without regions
-      runs. Measure the text and M13.
-- [ ] **The thread heap, smaller.** The region table is 64 pointers. A
-      program that uses one region needs one entry; the table could be a
-      pointer to a small map. Measure the heap struct with the `sizeof`
-      probe and M13.
+- [ ] **The unattributed two points.** The three brackets of a collection,
+      the region test of the page sweep, and the shape of the compiled mark
+      loops. A probe that stubs the three brackets costs one build and
+      answers the first of them.
+- [ ] **The thread heap, smaller.** Step 0 gives it 1.02 [0.999, 1.03] at
+      30 threads, so it is worth about 2 points and the evidence is weak.
+      The region table is 64 pointers, 512 of the 608 bytes. Before any
+      change, measure the padding probe again with 20 rounds: if the
+      interval still touches 1.00, the candidate is not worth a change to
+      the thread heap of every program.
 
 ## Step 5 — Close
 
