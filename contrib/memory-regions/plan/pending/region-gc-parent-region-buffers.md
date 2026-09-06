@@ -252,16 +252,20 @@ frees the data of a buffer that lives on.
 
 ### Step 5 — Fold into the series and gate
 
-- [ ] Map each change to its owning stage with `xstage.py`. The borrow
-      belongs to stage 1, "region state in the thread heap, and the window".
-      The Base changes belong to the stage that owns `base/`.
-- [ ] `retake.sh` from the lowest stage that changed. Check 1 passes.
-- [ ] Check 2 and Check 3 with `check23.sh`.
-- [ ] The `gc` group on the tip binary, and `core threads misc` if the code
-      of the default build changed.
-- [ ] M1 and M2 again. `array_new_memory` is on the growth path of every
-      array in the language, so a regression there is a regression for every
-      Julia program, region or not.
+- [x] Done with the fold of `region-gc-issues.md`. The borrow went to
+      stage 5, not stage 1: it arrives with the escape barrier that makes it
+      necessary, and `jl_gc_region_of`, which the borrow calls, moved there
+      with it. The Base changes are stage 5 too.
+- [x] Done with the fold: the series was cut again from stage 1, and
+      Check 1 says the tip holds the tree of the flat tag.
+- [x] Done: all 20 commits build and run `julia -e 1`, and the ten region
+      scripts pass on the runtime of commit 13 (1225 checks).
+- [x] Done: the `gc` group 189 pass, 0 fail, 0 error; `core threads misc`
+      8635852 pass, 8 broken, 0 fail.
+- [x] Done with the measurement redo of 2026-09-06, on the idle machine
+      and with intervals. The growth path shows no regression: the pool
+      allocation delta is +0.283 ns [0.277, 0.291], and six of the nine
+      GCBenchmarks have a ratio whose interval crosses 1.00.
 
 ### Step 6 — Close
 
@@ -269,8 +273,7 @@ frees the data of a buffer that lives on.
       S7, and F6 for the four later sites.
 - [x] Update the developer documentation: the rule, the borrow, the residue
       that stays with the program. Done: the section "A replacement buffer".
-- [ ] Update the pull request text in `region-gc-tidy.md`. The reviewer's
-      case is the first thing to say.
+- [x] Done: the text names the case and carries the new cost numbers.
 - [ ] Move this plan to `plan/done/`.
 
 ## Acceptance
