@@ -41,7 +41,7 @@ Five ideas, and nothing else:
 | --- | --- |
 | **Region** | A number from 1 to 63. Region 0 is the ordinary heap. A region is a set of pool pages, not a type and not a container. |
 | **Window** | A scope. While a window on region `n` is open, everything the **calling task** allocates lands in region `n`. |
-| **Reset** | Frees every object of a region at once. It first checks that nothing on any stack points into the region, and refuses if something does. |
+| **Reset** | Frees every object of a region at once. It first checks that nothing on any stack points into the region, and refuses if something does. A second entry, `unsafe_region_reset`, skips that check and its stop-the-world pause: it is 30 ns against 27 µs, and a reference left behind dangles. Take it only for a loop that has shown it leaves none. |
 | **The one rule** | An object in a region may reference objects of its **own region or an older one**. Region 0 is the oldest. A store that breaks the rule is caught. |
 | **Lifetime tree** | The default order is `0 <- 1 <- 2 <- ...`: region 1 outlives region 2. Declare another tree, and two leaves become isolated from each other. |
 
