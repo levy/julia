@@ -653,6 +653,48 @@ or the benchmarks meets again.
   hands the trunk as a raw pointer under `GC.@preserve` and turns it back
   into a reference in the worker's frame. The devdoc states the rule.
 
+### Where the 7 % of a parallel collection lives (2026-09-06)
+
+M13 said a full collection costs 7 % more with the region runtime present
+and unused, at 32 threads, where the same collection on one thread costs
+2 % more. Four probe builds attribute it. Each one ran against vanilla, 8
+paired rounds, on 30 usable cores, in one machine state.
+
+| Probe | 1 thread | 8 threads | 30 threads |
+| --- | --- | --- | --- |
+| The region build, whole | 1.03 [1.01, 1.04] | 1.02 [0.996, 1.04] | 1.07 [1.06, 1.09] |
+| The same with `JL_NO_REGION_ALLOC` | 0.995 [0.981, 1.01] | 1.01 [0.97, 1.03] | 1.04 [1.02, 1.06] |
+| Vanilla with 608 bytes more per thread heap | 0.999 [0.989, 1.01] | 1.02 [0.938, 1.03] | 1.02 [0.999, 1.03] |
+| Vanilla with 8 bytes more per page metadata | 0.999 [0.989, 1.01] | 1.01 [0.99, 1.03] | 0.996 [0.971, 1.04] |
+
+The mark alone at 30 threads is 1.08 [1.06, 1.10] on the whole build and
+1.03 [1.01, 1.05] without the region allocator.
+
+Three readings follow.
+
+**The census filter is the largest piece.** `JL_NO_REGION_ALLOC` folds it to
+the constant 0, and the ratio falls from 1.07 to 1.04; the mark falls from
+1.08 to 1.03. The filter is already loaded once per object or per array and
+passed in a register, and its branch is `__unlikely`, so the cost is not the
+load: it is that the mark loops carry a runtime parameter the compiler
+cannot fold. What the define buys at build time, a specialized loop could
+buy at run time.
+
+**The page metadata costs nothing.** Eight bytes more per 16 KB page - the
+whole growth of `jl_gc_pagemeta_t`, which `region_next` causes while
+`region_n` lands in padding vanilla already wastes - moves no width. The
+candidate that would have given those bytes back was the first in the cost
+plan; this probe removed it before a line was written.
+
+**The thread heap is a small, weak piece.** 608 bytes more per heap gives
+1.02 [0.999, 1.03] at 30 threads. The interval touches 1.00, so the
+evidence is weak; the region table of 64 pointers is what those bytes are.
+
+The three pieces do not add to the whole: about 3 points for the filter,
+about 2 for the heap struct, and about 2 that no probe attributes. What is
+left is the three brackets of a collection, the region test of the page
+sweep, and the shape of the compiled mark loops.
+
 ### The measurements, redone again, with intervals (2026-09-06)
 
 The first two redone measurements gave one number per row: the minimum of
