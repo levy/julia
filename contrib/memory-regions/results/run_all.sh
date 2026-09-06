@@ -23,7 +23,9 @@
 #                a count above the cores of the machine is skipped
 #
 # A row runs under `systemd-run --user --scope -p MemoryMax=…` when systemd
-# is present, under `timeout` always, and pinned with `taskset`. The
+# is present and `USE_SCOPE` is not 0, under `timeout` always, and pinned
+# with `taskset`. Set `USE_SCOPE=0` when the driver runs inside an isolated
+# cpuset partition: a scope would move the row out of it. The
 # latency rows (M3, M4, M6) take the real-time class when `chrt` grants it;
 # the others never do: a FIFO thread that spins on one core starves the
 # child process or the other threads of the same run.
@@ -71,7 +73,12 @@ STATUS=$LOG/status.tsv
 [ -s "$STATUS" ] || printf '# row\tname\texit\tseconds\n' > "$STATUS"
 want() { case " $ONLY " in *" $1 "*) return 0;; *) return 1;; esac; }
 RT=""; if [ "$RTPRIO" -gt 0 ] && chrt -f "$RTPRIO" true 2>/dev/null; then RT="chrt -f $RTPRIO"; fi
-SCOPE=""; command -v systemd-run >/dev/null && SCOPE="systemd-run --user --scope --quiet"
+# A systemd scope puts the row in a cgroup of the user's slice, which is
+# outside an isolated cpuset partition: inside the partition the scope takes
+# the CPUs away again and `taskset` then refuses. USE_SCOPE=0 turns it off,
+# and the row keeps its timeout and its pin.
+SCOPE=""
+[ "${USE_SCOPE:-1}" = 1 ] && command -v systemd-run >/dev/null && SCOPE="systemd-run --user --scope --quiet"
 
 # run <row> <name> <MemoryMax> <timeout seconds> <cores> <rt: 0|1> <command...>
 # stdout and stderr go to log/<name>.log; the exit code and the seconds to
