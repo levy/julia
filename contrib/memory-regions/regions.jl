@@ -54,6 +54,21 @@ region_quarantined(n::Int) = ccall(:jl_gc_region_quarantined, Cint, (Cint,), n) 
 # reserve takes no page fault while it runs. Returns the bytes mapped.
 region_reserve(bytes::Integer) = UInt64(ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes))
 
+# A window and a borrow are two policies over one act of the runtime: make
+# region `n` the allocation target of this thread. The task owns a window: it
+# follows the task across a yield, it counts itself so that a global reset or
+# a census knows a window is open, it pins the task to its thread, and it can
+# refuse. The thread owns a borrow: it installs and nothing else, so it never
+# refuses and it costs two field writes. A window is a scope for a unit of
+# work; a borrow is for one allocation that must land where another object
+# lives (`@in_region_of` below).
+#
+# The other two combinations of "who owns it" and "what is written down" are
+# not offered. A borrow the task owns would close the rule "do not yield
+# inside a borrow" and is deferred; a counted borrow would make an ordinary
+# `push!` refuse a global reset for the length of one allocation and buy
+# nothing. The devdoc has the table.
+#
 # The readable form of a window: run the body with region `n` current and
 # come back to the region that was current before, however the body leaves
 # (return, break, or a throw). Measured, the try/finally adds nothing over

@@ -576,6 +576,14 @@ A window and a borrow are two policies over one primitive: install region
 belongs to the thread: it installs and nothing else, so it cannot refuse and
 it costs two field writes where a window pair costs 10.9 ns.
 
+The two questions - who owns the installation, and what the runtime writes
+down - give four combinations, and the devdoc has them in a table under "A
+window and a borrow". The runtime offers two. A counted borrow is the third,
+and it is not wanted: the count exists so that a global reset, a census and
+a tree declaration can know that no window is open anywhere, and counting one
+allocation would make an ordinary `push!` refuse those operations while it
+runs, for none of the safety a window's count buys.
+
 That leaves one cell of the table empty: a borrow the **task** carries,
 uncounted and without stickiness. It is what would close the rule "do not
 yield inside a borrow", because the task switch would save and restore the

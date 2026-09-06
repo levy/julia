@@ -170,6 +170,25 @@ the stored children. The other raw stores of the runtime — method tables,
 code instances, modules, type names — run in the forced region-0 zones or
 store older objects by construction, and carry no barrier.
 
+## A window and a borrow
+
+Both forms end in one act of the runtime: install region `n` as the
+allocation target of this thread. What differs is who owns the installation
+and what the runtime writes down about it. Two questions give four
+combinations, and the runtime uses two of them.
+
+| | **counted, refusable, sticky** | **nothing written down** |
+| --- | --- | --- |
+| **the task owns it** | **the window**: `jl_gc_region_set`, `@with_region`. It is saved and restored at a task switch, it counts itself in `region_windows_open`, it pins the task to its thread, and it refuses a bad number, a quarantined region, and a thread that runs finalizers. It is a lifetime scope for a unit of work. | **deferred.** It would close the one rule a borrow needs, "do not yield inside one". See "Limits". |
+| **the thread owns it** | **useless, and harmful.** The count exists so that a global reset, a census and a tree declaration can know that no window is open anywhere. A count around one allocation would make an ordinary `push!` refuse those operations for the length of a `malloc`, and it would buy none of the safety a window's count buys. | **the borrow**: `jl_gc_region_borrow`, `@in_region_of`. It installs and nothing else, so it cannot refuse and it costs two field writes where a window pair costs about 11 ns. It is for one allocation that must land where another object lives. |
+
+The reason a replacement buffer cannot use a window follows from the top-left
+cell: a `push!` cannot fail because a region was quarantined, and it cannot
+make an unrelated global reset on another thread refuse. The reason a window
+cannot be a borrow follows from the bottom-right: a unit of work needs a
+scope the task carries across a yield, and it needs the count that makes a
+reset refuse while the work is still running.
+
 ## A replacement buffer
 
 A container that grows does not make a new object: it replaces the buffer
