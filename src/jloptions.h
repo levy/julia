@@ -74,6 +74,8 @@ typedef struct {
     int8_t gc_sweep_always_full;
     int8_t compress_sysimage;
     int8_t alert_on_critical_error;
+    int8_t sysimage_prelink;
+    const char *output_prelinked;
 } jl_options_t;
 
 #endif

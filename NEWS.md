@@ -25,6 +25,13 @@ Command-line option changes
 * The `--code-coverage=all` option now automatically throws away sysimage caches so that code coverage can be accurately measured on methods within the sysimage. It is thrown away after startup (and after startup.jl), before any user code is executed ([#59234]).
 * New `--trace-eval` command-line option to show expressions being evaluated during top-level evaluation. Supports `--trace-eval=loc` or just `--trace-eval` (show location only), `--trace-eval=full` (show full expressions), and `--trace-eval=no` (disable tracing). Also adds `Base.TRACE_EVAL` global control that takes priority over the command-line option and can be set to `:no`, `:loc`, `:full`, or `nothing` (to use command-line setting) ([#57137]).
 * Julia now automatically enables verbose debugging options (`--trace-eval` and `JULIA_TEST_VERBOSE`) when CI debugging has been triggered. i.e. via the "debug logging" UI toggle is enabled on github actions re-runs. Other platforms are supported too ([#59551]).
+* `--sysimage-prelink={yes|no}` and `--output-prelinked <file>` build and write a pre-relocated system image.
+  A restore turns every relocation of the image into a pointer and writes almost every page of the image doing
+  so; when the image is linked into a program that does not move at every start, that work can be done once and
+  written into the program file. `--sysimage-prelink=yes` reserves room in the image being written for the
+  pointers a start must still write, and `--output-prelinked` restores the program's own image and writes the
+  program with the restored image to a file. A start of that file applies the short list and reads neither
+  relocation list. Writing the file is Linux only.
 
 Multi-threading changes
 -----------------------

@@ -70,6 +70,8 @@ struct JLOptions
     gc_sweep_always_full::Int8
     compress_sysimage::Int8
     alert_on_critical_error::Int8
+    sysimage_prelink::Int8
+    output_prelinked::Ptr{UInt8}
 end
 
 # This runs early in the sysimage != is not defined yet

@@ -163,6 +163,8 @@ JL_DLLEXPORT void jl_init_options(void)
                         0, // gc_sweep_always_full
                         0, // compress_sysimage
                         0, // alert_on_critical_error
+                        0, // sysimage_prelink
+                        NULL, // output-prelinked
     };
     jl_options_initialized = 1;
 }
@@ -317,6 +319,14 @@ static const char opts_hidden[]  =
     "                                               functions\n"
     " --compress-sysimage={yes|no*}                 Compress the sys/pkgimage heap at the expense of\n"
     "                                               slightly increased load time.\n"
+    " --sysimage-prelink={yes|no*}                  Reserve room in the system image being written for\n"
+    "                                               the pointers a start of a pre-relocated image must\n"
+    "                                               write. Only an image written this way can be given\n"
+    "                                               to --output-prelinked.\n"
+    " --output-prelinked <file>                     Restore the system image of this program, write the\n"
+    "                                               program with the restored image to <file>, and stop.\n"
+    "                                               The image must be linked into a program that does not\n"
+    "                                               move at every start. Linux only.\n"
     "\n"
 
     // compiler debugging and experimental (see the devdocs for tips on using these options)
@@ -406,6 +416,8 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
            opt_rr_detach,
            opt_strip_metadata,
            opt_strip_ir,
+           opt_sysimage_prelink,
+           opt_output_prelinked,
            opt_heap_size_hint,
            opt_hard_heap_limit,
            opt_heap_target_increment,
@@ -481,6 +493,8 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
         { "rr-detach",       no_argument,       0, opt_rr_detach },
         { "strip-metadata",  no_argument,       0, opt_strip_metadata },
         { "strip-ir",        no_argument,       0, opt_strip_ir },
+        { "sysimage-prelink",required_argument, 0, opt_sysimage_prelink },
+        { "output-prelinked",required_argument, 0, opt_output_prelinked },
         { "permalloc-pkgimg",required_argument, 0, opt_permalloc_pkgimg },
         { "heap-size-hint",  required_argument, 0, opt_heap_size_hint },
         { "hard-heap-limit", required_argument, 0, opt_hard_heap_limit },
@@ -1001,6 +1015,17 @@ restart_switch:
             break;
         case opt_strip_ir:
             jl_options.strip_ir = 1;
+            break;
+        case opt_sysimage_prelink:
+            if (!strcmp(optarg, "yes"))
+                jl_options.sysimage_prelink = 1;
+            else if (!strcmp(optarg, "no"))
+                jl_options.sysimage_prelink = 0;
+            else
+                jl_errorf("julia: invalid argument to --sysimage-prelink={yes|no} (%s)", optarg);
+            break;
+        case opt_output_prelinked:
+            jl_options.output_prelinked = optarg;
             break;
         case opt_heap_size_hint:
             if (optarg != NULL)
