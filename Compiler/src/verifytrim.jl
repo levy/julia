@@ -635,7 +635,49 @@ const _SEALED_NOMATCH_BUDGET = Ref(40)
 # How many `SEALED-VERIFY-MISSING` lines to print.
 const _SEALED_MISSING_BUDGET = Ref(100000)
 
+# WHAT CODEGEN IS ABOUT TO DO. `codeinfos` IS the set the object emitter walks
+# after this returns, so the size of each body here is the LLVM work ahead —
+# and LLVM's memory is what a big build dies of, long after inference is done.
+#
+# The measure is the optimized IR statement count. It is not instructions, but
+# it is the input LLVM is handed, and it ranks the same way. Printed biggest
+# first: one body an order of magnitude above the next is what a blow-up looks
+# like, and it is usually an inlined split rather than a big function.
+#
+# `SEALED_CODEGEN_SHOW=n` prints the n largest bodies; 0 turns the report off.
+function sealed_report_codegen_size(codeinfos::Vector{Any})
+    local show = 0
+    let v = Base.get(Base.ENV, "SEALED_CODEGEN_SHOW", "40")
+        show = Base.tryparse(Int, v)
+        show === nothing && (show = 40)
+    end
+    show <= 0 && return nothing
+    local names = String[]
+    local sizes = Int[]
+    local total = 0
+    local bodies = 0
+    for i = 1:length(codeinfos)
+        local item = codeinfos[i]
+        item isa CodeInstance || continue
+        local src = codeinfos[i + 1]
+        src isa CodeInfo || continue
+        local n = length(src.code)
+        total += n
+        bodies += 1
+        push!(names, Base.string(get_ci_mi(item)))
+        push!(sizes, n)
+    end
+    Core.println("SEALED-CODEGEN ", bodies, " bodies, ", total, " IR statements")
+    local order = Base.sortperm(sizes; rev = true)
+    for k = 1:Base.min(show, length(order))
+        local j = order[k]
+        Core.println("SEALED-CODEGEN-BODY ", sizes[j], "  ", names[j])
+    end
+    nothing
+end
+
 function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
+    sealed_report_codegen_size(codeinfos)
     errors, parents = get_verify_typeinf_trim(codeinfos)
 
     # count up how many messages we printed, of each severity
