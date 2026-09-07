@@ -42,8 +42,6 @@ typedef struct _jl_ast_context_t {
     struct _jl_ast_context_t *next; // invasive list pointer for getting free contexts
 } jl_ast_context_t;
 
-static jl_ast_context_t jl_ast_main_ctx;
-
 #ifdef __clang_gcanalyzer__
 jl_ast_context_t *jl_ast_ctx(fl_context_t *fl) JL_GLOBALLY_ROOTED JL_NOTSAFEPOINT;
 #else
@@ -188,6 +186,10 @@ static void jl_init_ast_ctx(jl_ast_context_t *ctx) JL_NOTSAFEPOINT
 static uv_mutex_t flisp_lock;
 static jl_ast_context_t *jl_ast_ctx_freed = NULL;
 
+// Only the lock; `jl_ast_ctx_enter` builds a context on first use, so a
+// program that never lowers an expression never loads the flisp image.
+static int flisp_lock_ready = 0;
+
 static jl_ast_context_t *jl_ast_ctx_enter(jl_module_t *m) JL_GLOBALLY_ROOTED JL_NOTSAFEPOINT
 {
     JL_SIGATOMIC_BEGIN();
@@ -219,13 +221,10 @@ static void jl_ast_ctx_leave(jl_ast_context_t *ctx)
 
 void jl_init_flisp(void)
 {
-    if (jl_ast_ctx_freed)
+    if (flisp_lock_ready)
         return;
+    flisp_lock_ready = 1;
     uv_mutex_init(&flisp_lock);
-    jl_init_ast_ctx(&jl_ast_main_ctx);
-    // To match the one in jl_ast_ctx_leave
-    JL_SIGATOMIC_BEGIN();
-    jl_ast_ctx_leave(&jl_ast_main_ctx);
 }
 
 void jl_init_common_symbols(void)
