@@ -822,6 +822,8 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
     }
 
     res.jl_small_typeof = pointers->jl_small_typeof;
+    res.entry_thunks = pointers->entry_thunks;
+    res.entry_targets = pointers->entry_targets;
 
     return res;
 }

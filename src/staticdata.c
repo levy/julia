@@ -2037,6 +2037,9 @@ static uintptr_t get_reloc_for_item(uintptr_t reloc_item, size_t reloc_offset)
     }
 }
 
+// While recording, an entry point of the runtime is written as the image's
+// thunk for it; `prelink_entry_targets` fills the slots the thunks jump through.
+static int prelink_recording = 0;
 // Compute target location at deserialization
 static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t base, uintptr_t reloc_id, jl_array_t *link_ids, int *link_index) JL_NOTSAFEPOINT
 {
@@ -2071,29 +2074,44 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         assert(0 && "corrupt relocation item id");
         jl_unreachable(); // terminate control flow if assertion is disabled.
     case FunctionRef:
+        // written as the thunk, whose address the file can hold
         if (offset & BuiltinFunctionTag) {
             offset &= ~BuiltinFunctionTag;
             assert(offset < jl_n_builtins && "unknown function pointer ID");
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_IMAGE_ENTRY_CONVENTIONS + offset];
             return (uintptr_t)jl_builtin_f_addrs[offset];
         }
         switch ((jl_callingconv_t)offset) {
         case JL_API_BOXED:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_BOXED];
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_fptr_args;
             return (uintptr_t)NULL;
         case JL_API_WITH_PARAMETERS:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_WITH_PARAMETERS];
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_fptr_sparam;
             return (uintptr_t)NULL;
         case JL_API_OC_CALL:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_OC_CALL];
             if (s->image->fptrs.nptrs)
                 return (uintptr_t)jl_f_opaque_closure_call;
             return (uintptr_t)NULL;
         case JL_API_CONST:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_CONST];
             return (uintptr_t)jl_fptr_const_return;
         case JL_API_INTERPRETED:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_INTERPRETED];
             return (uintptr_t)jl_fptr_interpret_call;
         case JL_API_BUILTIN:
+            if (prelink_recording)
+                return (uintptr_t)s->image->entry_thunks[JL_API_BUILTIN];
             return (uintptr_t)jl_fptr_args;
         case JL_API_NULL:
         case JL_API_MAX:
@@ -2190,6 +2208,23 @@ static void prelink_failed(const char *what) JL_NOTSAFEPOINT
     // The restore is half way through: neither throwing nor the atexit hook works.
     jl_safe_printf("ERROR: pre-relocated system image: %s\n", what);
     exit(1);
+}
+
+// Fill the slots the thunks jump through, before any is called.
+static void prelink_entry_targets(jl_image_t *image) JL_NOTSAFEPOINT
+{
+    if (image->entry_targets == NULL)
+        return;
+    if (JL_IMAGE_ENTRY_CONVENTIONS + (size_t)jl_n_builtins > JL_IMAGE_ENTRY_THUNKS)
+        prelink_failed("the image holds fewer thunks than the runtime has entry points");
+    image->entry_targets[JL_API_BOXED] = (void*)jl_fptr_args;
+    image->entry_targets[JL_API_WITH_PARAMETERS] = (void*)jl_fptr_sparam;
+    image->entry_targets[JL_API_OC_CALL] = (void*)jl_f_opaque_closure_call;
+    image->entry_targets[JL_API_CONST] = (void*)jl_fptr_const_return;
+    image->entry_targets[JL_API_INTERPRETED] = (void*)jl_fptr_interpret_call;
+    image->entry_targets[JL_API_BUILTIN] = (void*)jl_fptr_args;
+    for (size_t i = 0; i < (size_t)jl_n_builtins; i++)
+        image->entry_targets[JL_IMAGE_ENTRY_CONVENTIONS + i] = (void*)jl_builtin_f_addrs[i];
 }
 
 typedef struct {
@@ -4272,6 +4307,11 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     if (prelink_output != NULL && image->fptrs.nclones != 0)
         prelink_failed("the image holds several code variants, and a pre-relocation would "
                        "freeze the one this machine selected");
+    if (!s.incremental)
+        prelink_entry_targets(image);
+    if (prelink_output != NULL && image->entry_thunks == NULL)
+        prelink_failed("the image carries no thunks for the entry points of the runtime");
+    prelink_recording = prelink_output != NULL;
     if (prelink_output != NULL)
         prelink_locate(f->buf);
     prelink_residual_t residual = {0};
@@ -4352,6 +4392,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
             jl_safe_printf("pre-relocated: %zu of %zu pointers on the list (%zu type tags, %zu other), room for %zu\n",
                            residual.n, residual.total, (size_t)residual.zone[0],
                            (size_t)residual.zone[1], residual.capacity);
+            prelink_recording = 0;
             prelink_write_back(f->buf, f->size, prelink_output);
             // Written. The fixup list was not applied, so stop here.
             exit(0);
