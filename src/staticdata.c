@@ -446,9 +446,9 @@ JL_DLLEXPORT int jl_running_on_valgrind(void)
 
 #define NBOX_C 1024
 
-// A package image references `nothing` and the small boxed integers by tag,
-// since they belong to the loading runtime; a trimmed image does too, to stay
-// small. A full system image holds them as objects.
+// A package image references `nothing`, the small boxed integers and the
+// symbols by tag, since they belong to the loading runtime; a trimmed image
+// does too, to stay small. A full system image holds them as objects.
 static int primordials_by_tag(jl_serializer_state *s) JL_NOTSAFEPOINT
 {
     return s->incremental || jl_options.trim;
@@ -460,13 +460,12 @@ static int jl_needs_serialization(jl_serializer_state *s, jl_value_t *v) JL_NOTS
     if (s->incremental && jl_object_in_image(v))
         return 0;
 
-    if (v == NULL || jl_is_symbol(v)) {
+    if (v == NULL) {
         return 0;
     }
-    // A package image names `nothing` and the small boxed integers with a tag,
-    // because they belong to the runtime that loads it. The system image is
-    // that runtime, so it holds them itself and every field that points at one
-    // is a pointer the loader does not have to write.
+    else if (primordials_by_tag(s) && jl_is_symbol(v)) {
+        return 0;
+    }
     else if (primordials_by_tag(s) && v == jl_nothing) {
         return 0;
     }
@@ -650,6 +649,14 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
 
     if (!recursive)
         goto done_fields;
+
+    // A symbol's two children are not fields of its type.
+    if (!primordials_by_tag(s) && jl_is_symbol(v)) {
+        jl_sym_t *sym = (jl_sym_t*)v;
+        jl_queue_for_serialization_(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->left), 1, immediate);
+        jl_queue_for_serialization_(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->right), 1, immediate);
+        goto done_fields;
+    }
 
     if (s->incremental && jl_is_datatype(v) && immediate) {
         jl_datatype_t *dt = (jl_datatype_t*)v;
@@ -1141,7 +1148,7 @@ static uintptr_t add_external_linkage(jl_serializer_state *s, jl_value_t *v, jl_
 static uintptr_t _backref_id(jl_serializer_state *s, jl_value_t *v, jl_array_t *link_ids) JL_GC_DISABLED
 {
     assert(v != NULL && "cannot get backref to NULL object");
-    if (jl_is_symbol(v)) {
+    if (primordials_by_tag(s) && jl_is_symbol(v)) {
         void **pidx = ptrhash_bp(&symbol_table, v);
         void *idx = *pidx;
         if (idx == HT_NOTFOUND) {
@@ -1396,7 +1403,8 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
         assert((!jl_is_datatype_singleton(t) || t->instance == v) && "detected singleton construction corruption");
         int mutabl = t->name->mutabl;
         ios_t *f = s->s;
-        if (t->smalltag) {
+        // A symbol has relocations (its children), so it stays in the data section.
+        if (t->smalltag && t != jl_symbol_type) {
             if (t->layout->npointers == 0 || t == jl_string_type) {
                 if (jl_datatype_nfields(t) == 0 || mutabl == 0 || t == jl_string_type) {
                     f = s->const_data;
@@ -1613,6 +1621,17 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
         else if (jl_is_string(v)) {
             ios_write(f, (char*)v, sizeof(void*) + jl_string_len(v));
             write_uint8(f, '\0'); // null-terminated strings for easier C-compatibility
+        }
+        else if (jl_is_symbol(v)) {
+            // left, right, hash, name; padded so the next object stays aligned
+            assert(f == s->s);
+            jl_sym_t *sym = (jl_sym_t*)v;
+            write_pointerfield(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->left));
+            write_pointerfield(s, (jl_value_t*)jl_atomic_load_relaxed(&sym->right));
+            write_uint(f, sym->hash);
+            size_t len = strlen(jl_symbol_name(sym)) + 1;
+            ios_write(f, jl_symbol_name(sym), len);
+            write_padding(f, LLT_ALIGN(len, sizeof(void*)) - len);
         }
         else if (jl_is_foreign_type(t) == 1) {
             abort(); // unreachable
@@ -3289,6 +3308,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
 #undef XX
             jl_write_value(&s, global_roots_list);
             jl_write_value(&s, global_roots_keyset);
+            jl_write_value(&s, primordials_by_tag(&s) ? NULL : (jl_value_t*)jl_get_root_symbol());
             jl_write_value(&s, s.ptls->root_task->tls);
             write_uint32(f, jl_get_gs_ctr());
             size_t world = jl_atomic_load_acquire(&jl_world_counter);
@@ -3897,6 +3917,7 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     uintptr_t offset_restored = 0, offset_init_order = 0, offset_extext_methods = 0, offset_new_ext_cis = 0, offset_method_roots_list = 0;
     // the `nothing` allocated by `julia_init`, replaced by the image's below
     jl_value_t *init_nothing = jl_nothing;
+    jl_sym_t *image_symtab = NULL;
     if (!s.incremental) {
         size_t i;
         for (i = 0; tags[i] != NULL; i++) {
@@ -3919,6 +3940,8 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         export_jl_sysimg_globals();
         jl_global_roots_list = (jl_genericmemory_t*)jl_read_value(&s);
         jl_global_roots_keyset = (jl_genericmemory_t*)jl_read_value(&s);
+        // installed after the relocations, below
+        image_symtab = (jl_sym_t*)jl_read_value(&s);
         s.ptls->root_task->tls = jl_read_value(&s);
         jl_gc_wb(s.ptls->root_task, s.ptls->root_task->tls);
 
@@ -3986,6 +4009,9 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     // s.link_ids_gvars will be processed in `jl_update_all_gvars`
     // s.link_ids_external_fns will be processed in `jl_update_all_gvars`
     jl_update_all_gvars(&s, image, external_fns_begin); // gvars relocs
+
+    if (image_symtab != NULL)
+        jl_set_root_symbol(image_symtab);
 
     // `julia_init` allocated a `nothing` before the root task existed, and the
     // image's `nothing` replaced it above. Point the root task's fields at the
