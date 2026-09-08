@@ -6482,7 +6482,9 @@ static void reactive_chain_load(jl_image_t *image)
         reactive_sections.fptr.size = h->fptr_size;
         reactive_sections.roots.ptr = blob + h->off_roots;
         reactive_sections.roots.size = h->roots_size;
-        reactive_sections.blob_span = (reactive_region_const - reactive_region_base) + new_const;
+        // the blob spans the sysimg extent: the base, the const data inside
+        // it, the headroom, and the objects of every overlay
+        reactive_sections.blob_span = new_sysimg;
         // the image of the overlay: its own functions, slots and clones
         jl_image_t oimg = jl_init_processor_pkgimg(ob);   // the JIT target of the base; this parses only
         const uint32_t *reuse = NULL;
