@@ -521,7 +521,12 @@ function compile_and_emit_native(worlds::Vector{UInt},
     empty!(reactive_stale_roots)
     if trim_mode == 0x00
         if newmodules === nothing
-            infer_all_method_defs!(all, newmethods, latestworld, specialization_worklist)
+            # Reactive reuse: the pass over the methods with a compilable
+            # signature runs for the methods newer than the loaded image;
+            # the image decided the older ones, and their code is served.
+            infer_all_method_defs!(all, reactive_reuse_enabled() ?
+                Any[m for m in newmethods if (m::Method).primary_world > reactive_base_world()] : newmethods,
+                latestworld, specialization_worklist)
         else
             # Compute new_ext_cis using queue_external_cis with global newly_inferred
             new_ext_cis = ccall(:jl_compute_new_ext_cis, Any, ())
