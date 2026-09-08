@@ -221,6 +221,22 @@ static size_t reactive_pages_append = 0;        // the append position of the sy
 static size_t reactive_pages_const_append = 0;  // the append position of the const data stream
 static size_t reactive_pages_ndirty = 0;
 static size_t reactive_pages_nrewritten = 0;
+static uint64_t *reactive_page_hashes = NULL;   // per protected page: the hash of its bytes at the load
+
+// The hash of a page: a page the process wrote and restored (a lock taken
+// and released) hashes as at the load, and the save treats it as clean.
+static uint64_t reactive_page_hash(const char *page) JL_NOTSAFEPOINT
+{
+    const uint64_t *w = (const uint64_t*)page;
+    size_t n = jl_page_size / sizeof(uint64_t);
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    for (size_t i = 0; i < n; i++) {
+        h ^= w[i];
+        h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 31;
+    }
+    return h;
+}
 
 static inline int reactive_in_sysimg(const void *v) JL_NOTSAFEPOINT
 {
@@ -3542,8 +3558,18 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
     reactive_pages_bits = (uint8_t*)malloc_s(reactive_dirty_npages);
     memcpy(reactive_pages_bits, reactive_dirty_bits, reactive_dirty_npages);
     reactive_pages_ndirty = 0;
-    for (size_t i = 0; i < reactive_dirty_npages; i++)
+    size_t restored = 0;
+    for (size_t i = 0; i < reactive_dirty_npages; i++) {
+        if (reactive_pages_bits[i] && reactive_page_hashes != NULL &&
+            reactive_page_hash(reactive_dirty_start + i * jl_page_size) == reactive_page_hashes[i]) {
+            reactive_pages_bits[i] = 0;
+            restored++;
+        }
         reactive_pages_ndirty += reactive_pages_bits[i];
+    }
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: pages: %zu pages written, %zu of them as at the load\n",
+                       reactive_pages_ndirty + restored, restored);
     reactive_pages_rewritten = (uint8_t*)calloc(reactive_base.gctags.len, 1);
     reactive_pages_nrewritten = 0;
     ios_write(sysimg, reactive_base.sysimg, reactive_base.sysimg_size);
@@ -3917,7 +3943,7 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
 
     uint64_t t_step = jl_hrtime(), t_queue = 0, t_prune = 0, t_write = 0;
     reactive_pages_on = 0;
-    if (reactive_prune_heap && reactive_pages_mode() && !reactive_pages_retry)
+    if (reactive_prune_heap && !jl_options.trim && reactive_pages_mode() && !reactive_pages_retry)
         reactive_pages_begin(&sysimg, &const_data, &symbols);
     { // step 1: record values (recursively) that need to go in the image
         size_t i;
@@ -5386,10 +5412,20 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     // jl_printf(JL_STDOUT, "%ld blobs to link against\n", jl_linkage_blobs.len >> 1);
     jl_gc_enable(en);
 
-    if (s.incremental)
+    if (s.incremental) {
         jl_add_methods(*extext_methods);
-    else
+    }
+    else {
         reactive_dirty_protect(reactive_image_base, reactive_image_len);
+        if (reactive_pages_mode() && reactive_dirty_start != NULL) {
+            // The base is mapped now: a save may replace the file later.
+            if (!reactive_base_map())
+                jl_safe_printf("reactive: pages: the base image has no file bytes; every save writes whole\n");
+            reactive_page_hashes = (uint64_t*)malloc_s(reactive_dirty_npages * sizeof(uint64_t));
+            for (size_t i = 0; i < reactive_dirty_npages; i++)
+                reactive_page_hashes[i] = reactive_page_hash(reactive_dirty_start + i * jl_page_size);
+        }
+    }
 }
 
 static jl_value_t *jl_validate_cache_file(ios_t *f, jl_array_t *depmods, uint64_t *checksum, int64_t *dataendpos, int64_t *datastartpos)
