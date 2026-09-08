@@ -398,6 +398,11 @@ one line each way, no libuv.
   (`jl_reactive_set_output`) and writes it with the exit path of the
   compiler, then `_exit`s; an error in the child ends it with 1. The parent
   keeps its heap, its ledger and its compiled code.
+- `trim <archive> [dir]` forks the same way with `jl_options.trim` set for
+  that write only (`jl_reactive_set_trim`): the fork includes the two
+  `juliac` patch files from `dir` and `trim_entrypoints.jl`, writes the
+  trimmed archive, and sends the verifier's messages to `<archive>.log`. A
+  verifier error is a refusal.
 - `status` answers the world, the saves and the resident size; `quit`
   clears the output and exits. `tool/server_request.py` sends a request.
 
@@ -455,10 +460,19 @@ code.
 - **A store pins its paths.** A snapshot records the absolute paths of
   the tracked files and of the project; a checkout that moves needs a
   founding build. The tools derive the checkout from their own location.
-- **`--trim` refuses reactive reuse** — the trim verifier walks the edges
-  that reuse skips. The plan's Stage E derives a trimmed product from the
-  untrimmed heap at a save, with the reused code as roots; until then a
-  trimmed binary is a founding of its own.
+- **The trimmed product** (`trim = :on`, Stage E). A save writes a second,
+  trimmed archive from a fork with `jl_options.trim` set. The verifier
+  takes a reused code instance with inferred IR as a compiled callee and
+  walks the `:invoke` targets of that IR; a reused code instance without IR
+  is recompiled fresh. The trimmed image links the base chain and the
+  trimmed archive, never the untrimmed delta, into `<app_dir>/trimmed`; its
+  launcher (`trimmed_wrapper.c`) calls the exported `julia_main` directly,
+  because a trimmed image has no evaluator. An edit that makes a static
+  call site dynamic is refused with the verifier's reason (T1). The routing
+  sample is not trim-clean with the stock verifier; Gate E runs on
+  `tool/trim_app/TrimApp` instead. A no-server delta build after a chain
+  carries the residue of the untrimmed chain deltas it links, which a
+  founding resets.
 - **A save writes the whole image.** The heap of 3 million objects
   costs 3.4 s on the routing sample, the dump 1.2 s and the link 1.4 s.
   The plan's Stages F and G write the image by pages, then as an overlay.
