@@ -6324,12 +6324,15 @@ static int reactive_region_grow_sysimg(size_t size)
 
 static int reactive_region_grow_const(size_t size)
 {
+    // the const data starts inside a page: the growth works in whole pages
     size_t page = jl_getpagesize();
-    size_t have = LLT_ALIGN(reactive_sections.const_data.size, page);
-    size_t need = LLT_ALIGN(size, page);
-    if (reactive_region_const + need > reactive_region_const_limit)
+    char *cur_end = reactive_region_const + reactive_sections.const_data.size;
+    char *new_end = reactive_region_const + size;
+    if (new_end > reactive_region_const_limit)
         return 0;
-    if (need > have && mprotect(reactive_region_const + have, need - have, PROT_READ | PROT_WRITE) != 0)
+    char *lo = (char*)((uintptr_t)cur_end & ~(uintptr_t)(page - 1));
+    char *hi = (char*)LLT_ALIGN((uintptr_t)new_end, page);
+    if (hi > lo && mprotect(lo, hi - lo, PROT_READ | PROT_WRITE) != 0)
         return 0;
     return 1;
 }
