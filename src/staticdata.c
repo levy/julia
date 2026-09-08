@@ -6439,7 +6439,7 @@ static void reactive_chain_load(jl_image_t *image)
         reactive_sections.roots.size = h->roots_size;
         reactive_sections.blob_span = (reactive_region_const - reactive_region_base) + new_const;
         // the image of the overlay: its own functions, slots and clones
-        jl_image_t oimg = jl_init_processor_sysimg(ob, jl_options.cpu_target);
+        jl_image_t oimg = jl_init_processor_pkgimg(ob);   // the JIT target of the base; this parses only
         const uint32_t *reuse = NULL;
         jl_dlsym(handle, "jl_fvar_reuse", (void**)&reuse, 0, 0);
         uint32_t nptrs = oimg.fptrs.nptrs;
