@@ -84,7 +84,7 @@ most of what it makes does not gain. Read `COST.md` before you adopt it.
 
 The branch holds the runtime as an ordered series, one mechanism per commit,
 for a reader who wants to review it rather than run it. The branch
-[`gc-regions-source`](https://github.com/levy/julia/tree/gc-regions-source)
+[`gc-regions-wip`](https://github.com/levy/julia/tree/gc-regions-wip)
 ends at the same tree, but it keeps the development history that the series
 was cut from. Build `gc-regions`.
 
