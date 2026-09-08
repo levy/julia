@@ -172,7 +172,11 @@ one() {
         name=${lvl%%:*}; rest=${lvl#*:}; got=${rest%%:*}; count=${rest#*:}
         # `<level>=<verdict>[:<maxcodeinfos>]` - the bound is optional, and an
         # example that does not state one is only checked for its verdict.
-        decl=$(echo "$exp" | grep -oE "$name=[a-z]+(:[0-9]+)?" | head -1)
+        # `WRONG` is a declarable verdict: a build that VERIFIES and then
+        # prints the wrong thing — or dies — is a fact about the compiler
+        # worth pinning, not a row to explain away. `interpret_residual`
+        # declares it at every stock level.
+        decl=$(echo "$exp" | grep -oE "$name=[a-zA-Z]+(:[0-9]+)?" | head -1)
         want=${decl#*=}; want=${want%%:*}
         [ -z "$want" ] && continue
         # `error` is a distinct expectation: only declared where a construct

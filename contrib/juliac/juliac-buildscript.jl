@@ -42,8 +42,22 @@ include(joinpath(@__DIR__, "abi_export.jl"))
 
 import Base.Experimental.entrypoint
 
+# SEALED_INTERPRET: a call the trim could not resolve runs in the interpreter
+# instead of dying at startup. `jl_compile_method_internal` interprets a method
+# that has source and no code only under `--compile=min` (gf.c:3635, BEFORE it
+# asks for inference), and a binary parses no julia options — so `_main` writes
+# the field itself. The offset comes from the struct Base reads through the
+# same `cglobal`, computed here at build time. JL_OPTIONS_COMPILE_MIN is 3.
+const _SEALED_INTERPRET = Base.get(Base.ENV, "SEALED_INTERPRET", "") != ""
+const _COMPILE_ENABLED_OFFSET =
+    Base.fieldoffset(Base.JLOptions, Base.fieldindex(Base.JLOptions, :compile_enabled))
+
 # for use as C main if needed
 function _main(argc::Cint, argv::Ptr{Ptr{Cchar}})::Cint
+    if _SEALED_INTERPRET
+        Base.unsafe_store!(Base.Ptr{Base.Int8}(Base.cglobal(:jl_options)) + _COMPILE_ENABLED_OFFSET,
+                           Base.Int8(3))
+    end
     args = ccall(:jl_set_ARGS, Any, (Cint, Ptr{Ptr{Cchar}}), argc, argv)::Vector{String}
     setglobal!(Base, :PROGRAM_FILE, args[1])
     popfirst!(args)
