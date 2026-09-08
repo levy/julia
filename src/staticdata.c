@@ -251,6 +251,7 @@ static int reactive_overlay_on = 0;                 // this save writes an overl
 static reactive_overlay_header_t reactive_overlay_header;
 static size_t reactive_overlay_blob_start = 0;      // the position of the blob in the output stream
 static int reactive_base_lists_ready = 0;           // reactive_base holds the lists of the loaded state
+static int reactive_base_lists_pending = 0;         // the lists of the loaded state wait in reactive_sections.relocs
 // the chain of images of an overlay-mode process, for the slot updates
 typedef struct {
     jl_image_t img;
@@ -3730,6 +3731,10 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
         // An overlay writes the dirty pages and the new objects only: the
         // buffer starts from memory, and the lists of the loaded state
         // came with the chain.
+        if (reactive_base_lists_pending) {
+            reactive_base_lists_from(reactive_sections.relocs.ptr, reactive_sections.relocs.size);
+            reactive_base_lists_pending = 0;
+        }
         if (!reactive_base_lists_ready || reactive_region_base == NULL) {
             jl_safe_printf("reactive: overlay: the loaded image has no region; the save writes whole\n");
             return -1;
@@ -6576,8 +6581,12 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     ios_static_buffer(&f, (char *)buf.data, buf.size);
 
     jl_restore_system_image_from_stream(&f, image, buf.checksum);
-    if (reactive_sections_on)
-        reactive_base_lists_from(reactive_sections.relocs.ptr, reactive_sections.relocs.size);
+    if (reactive_sections_on) {
+        // the lists of the loaded state decode at the first save: a bundle's
+        // launcher never saves, and the decode costs a large part of a start
+        reactive_base_lists_ready = 0;
+        reactive_base_lists_pending = 1;
+    }
     reactive_sections_on = 0;
 
     ios_close(&f);
