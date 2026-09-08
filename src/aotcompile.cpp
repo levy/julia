@@ -2301,6 +2301,95 @@ static unsigned compute_image_thread_count(const ModuleInfo &info) {
 
 jl_emission_params_t default_emission_params = { 1 };
 
+#if defined(_OS_LINUX_) && defined(_CPU_X86_64_)
+#include <elf.h>
+#define REACTIVE_DIRECT_SYSIMG 1
+
+// The object of the image's data, written as an ELF relocatable directly
+// (Stage F of the reactive plan): the blob in `.ldata`, its size and
+// checksum in `.rodata`, the unpack pointer in `.data.rel.ro` with one
+// relocation to `jl_image_unpack_uncomp`. LLVM's emission of the same
+// constant costs seconds for a large image; this is a copy.
+static AOTOutputs reactive_emit_sysimg_elf(const char *blob, size_t size, uint32_t checksum)
+{
+    AOTOutputs out;
+    SmallVector<char, 0> &o = out.obj;
+    // the string tables
+    const char strtab[] = "\0jl_system_image_data\0jl_system_image_size\0jl_system_image_checksum\0jl_image_unpack\0jl_image_unpack_uncomp";
+    const uint32_t name_data = 1, name_size = 22, name_checksum = 43, name_unpack = 68, name_uncomp = 84;
+    const char shstrtab[] = "\0.ldata\0.rodata\0.data.rel.ro\0.rela.data.rel.ro\0.symtab\0.strtab\0.shstrtab\0.note.GNU-stack";
+    const uint32_t sh_ldata = 1, sh_rodata = 8, sh_relro = 16, sh_rela = 29, sh_symtab = 47, sh_strtab = 55, sh_shstrtab = 63, sh_note = 73;
+    auto align_to = [&](size_t a) { while (o.size() % a) o.push_back(0); };
+    auto append = [&](const void *p, size_t n) { o.append((const char*)p, (const char*)p + n); };
+    // the header, filled at the end
+    o.resize(sizeof(Elf64_Ehdr));
+    // .rodata: the size and the checksum
+    align_to(8);
+    size_t off_rodata = o.size();
+    uint64_t size64 = size;
+    append(&size64, 8);
+    append(&checksum, 4);
+    align_to(8);
+    // .data.rel.ro: the unpack pointer
+    size_t off_relro = o.size();
+    uint64_t zero = 0;
+    append(&zero, 8);
+    // .rela.data.rel.ro
+    align_to(8);
+    size_t off_rela = o.size();
+    Elf64_Rela rela = {0, ELF64_R_INFO(5, R_X86_64_64), 0};
+    append(&rela, sizeof(rela));
+    // .symtab
+    align_to(8);
+    size_t off_symtab = o.size();
+    Elf64_Sym syms[6] = {};
+    syms[1] = (Elf64_Sym){name_data, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 1, 0, size};
+    syms[2] = (Elf64_Sym){name_size, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 2, 0, 8};
+    syms[3] = (Elf64_Sym){name_checksum, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 2, 8, 4};
+    syms[4] = (Elf64_Sym){name_unpack, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 3, 0, 8};
+    syms[5] = (Elf64_Sym){name_uncomp, ELF64_ST_INFO(STB_GLOBAL, STT_NOTYPE), 0, SHN_UNDEF, 0, 0};
+    append(syms, sizeof(syms));
+    // .strtab, .shstrtab
+    size_t off_strtab = o.size();
+    append(strtab, sizeof(strtab));
+    size_t off_shstrtab = o.size();
+    append(shstrtab, sizeof(shstrtab));
+    // .ldata: the blob, page aligned
+    align_to(jl_page_size);
+    size_t off_ldata = o.size();
+    append(blob, size);
+    // the section headers
+    align_to(8);
+    size_t off_shdr = o.size();
+    Elf64_Shdr sh[9] = {};
+    sh[1] = (Elf64_Shdr){sh_ldata, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0, off_ldata, size, 0, 0, (uint64_t)jl_page_size, 0};
+    sh[2] = (Elf64_Shdr){sh_rodata, SHT_PROGBITS, SHF_ALLOC, 0, off_rodata, 16, 0, 0, 8, 0};
+    sh[3] = (Elf64_Shdr){sh_relro, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0, off_relro, 8, 0, 0, 8, 0};
+    sh[4] = (Elf64_Shdr){sh_rela, SHT_RELA, SHF_INFO_LINK, 0, off_rela, sizeof(Elf64_Rela), 5, 3, 8, sizeof(Elf64_Rela)};
+    sh[5] = (Elf64_Shdr){sh_symtab, SHT_SYMTAB, 0, 0, off_symtab, sizeof(syms), 6, 1, 8, sizeof(Elf64_Sym)};
+    sh[6] = (Elf64_Shdr){sh_strtab, SHT_STRTAB, 0, 0, off_strtab, sizeof(strtab), 0, 0, 1, 0};
+    sh[7] = (Elf64_Shdr){sh_shstrtab, SHT_STRTAB, 0, 0, off_shstrtab, sizeof(shstrtab), 0, 0, 1, 0};
+    sh[8] = (Elf64_Shdr){sh_note, SHT_PROGBITS, 0, 0, off_shdr, 0, 0, 0, 1, 0};
+    append(sh, sizeof(sh));
+    Elf64_Ehdr eh = {};
+    memcpy(eh.e_ident, ELFMAG, SELFMAG);
+    eh.e_ident[EI_CLASS] = ELFCLASS64;
+    eh.e_ident[EI_DATA] = ELFDATA2LSB;
+    eh.e_ident[EI_VERSION] = EV_CURRENT;
+    eh.e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    eh.e_type = ET_REL;
+    eh.e_machine = EM_X86_64;
+    eh.e_version = EV_CURRENT;
+    eh.e_shoff = off_shdr;
+    eh.e_ehsize = sizeof(Elf64_Ehdr);
+    eh.e_shentsize = sizeof(Elf64_Shdr);
+    eh.e_shnum = 9;
+    eh.e_shstrndx = 7;
+    memcpy(o.data(), &eh, sizeof(eh));
+    return out;
+}
+#endif
+
 // takes the running content that has collected in the shadow module and dump it to disk
 // this builds the object file portion of the sysimage files for fast startup
 extern "C" JL_DLLEXPORT_CODEGEN
@@ -2397,6 +2486,21 @@ void jl_dump_native_impl(void *native_code,
 
         int compression = jl_options.compress_sysimage ? 15 : 0;
         uint32_t sysimg_checksum = jl_crc32c(0, z->buf, z->size);
+        bool direct = false;
+#ifdef REACTIVE_DIRECT_SYSIMG
+        // A reactive image writes the object of its data directly.
+        if (!compression && obj_fname && !bc_fname && !unopt_bc_fname && !asm_fname && jl_reactive_image_format()) {
+            uint64_t t_direct = jl_hrtime();
+            sysimg_outputs.push_back(reactive_emit_sysimg_elf(z->buf, z->size, sysimg_checksum));
+            ios_close(z);
+            free(z);
+            if (jl_reactive_timings())
+                jl_safe_printf("reactive: the object of the image data written directly in %.2f s (%zu KB)\n",
+                               (jl_hrtime() - t_direct) / 1e9, sysimg_outputs[0].obj.size() / 1024);
+            direct = true;
+        }
+#endif
+        if (!direct) {
         ArrayRef<char> sysimg_data{z->buf, (size_t)z->size};
         SmallVector<char, 0> compressed_data;
         if (compression) {
@@ -2450,6 +2554,7 @@ void jl_dump_native_impl(void *native_code,
         // to function as expected
         // no need to free the module/context, destructor handles that
         sysimg_outputs = compile(sysimgM, "sysimg", 1, [](Module &) {});
+        }
     }
 
     const bool imaging_mode = true;
