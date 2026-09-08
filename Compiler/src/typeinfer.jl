@@ -1619,6 +1619,26 @@ end
 reactive_reuse_enabled() = ccall(:jl_reactive_reuse_enabled, Cint, ()) != 0
 reactive_base_world() = ccall(:jl_reactive_base_world, Csize_t, ())
 
+# A method that no longer dispatches: deleted, or replaced by a definition
+# of the same signature. Neither bounds the code instances of the method
+# itself, so the previous image would serve them and the dead method would
+# stay in the image with its text. A reactive build compiles and reuses
+# nothing for such a method. The method table answers (the dispatch status
+# bits of a method restored from an image are cleared, staticdata.c); the
+# answer is kept per method for the pass.
+const reactive_dead_methods = IdDict{Method,Bool}()
+function reactive_method_dead(mi::MethodInstance)
+    def = mi.def
+    def isa Method || return false
+    def.is_for_opaque_closure && return false
+    dead = get(reactive_dead_methods, def, nothing)
+    if dead === nothing
+        dead = ccall(:jl_methtable_lookup, Any, (Any, Csize_t), def.sig, get_world_counter()) !== def
+        reactive_dead_methods[def] = dead
+    end
+    return dead::Bool
+end
+
 function ci_reactive_reusable(code::CodeInstance, world::UInt)
     code.owner === nothing || return false
     (code.min_world <= world <= code.max_world) || return false
@@ -1669,6 +1689,11 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
         # to compile, or an svec(rettype, sig) describing a C-callable alias to create.
         if item isa MethodInstance
             isinspected(workqueue, item) && continue
+            if reactive && reactive_method_dead(item)
+                reactive_timings() >= 2 && Core.println("reactive: dead method skipped ", item.specTypes)
+                markinspected!(workqueue, item)
+                continue
+            end
             # if this method is generally visible to the current compilation world,
             # and this is either the primary world, or not applicable in the primary world
             # then we want to compile and emit this
@@ -1683,8 +1708,12 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
         elseif item isa SimpleVector
             invokelatest_queue === nothing && continue
             (rt::Type, sig::Type) = item
-            # make a best-effort attempt to enqueue the relevant code for the ccallable
-            mi = ccall(:jl_get_specialization1, Any,
+            # make a best-effort attempt to enqueue the relevant code for the ccallable.
+            # A reactive build resolves the entry point in the latest world only:
+            # in an older world of the pass a deleted method still dispatches,
+            # and its code instance would root the dead method and keep its text.
+            mi = reactive && world != get_world_counter() ? nothing :
+                ccall(:jl_get_specialization1, Any,
                         (Any, Csize_t, Cint),
                         sig, world, #= mt_cache =# 0)
             if mi !== nothing
@@ -1701,6 +1730,11 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             callee = item
             isinspected(workqueue, callee) && continue
             mi = get_ci_mi(callee)
+            if reactive && reactive_method_dead(mi)
+                reactive_timings() >= 2 && Core.println("reactive: dead method skipped ", mi.specTypes)
+                markinspected!(workqueue, callee)
+                continue
+            end
             if reactive
                 # A callee that the previous build serves is not compiled
                 # again. When the code is in a sibling of `callee`, the call
@@ -1769,6 +1803,7 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
     if !external_linkage && reactive_reuse_enabled()
         trim_mode == TRIM_NO || error("reactive reuse does not support --trim")
         reused = Any[]
+        empty!(reactive_dead_methods)
     end
 
     # Create an "invokelatest" queue to enable eager compilation of speculative
