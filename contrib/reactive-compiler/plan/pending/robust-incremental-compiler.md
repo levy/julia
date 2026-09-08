@@ -593,9 +593,15 @@ exit.
       loaded image only; it took 1.2 s for every method. What is left of
       the save is the heap: 3.2 s for 3 million objects (the queue 1.8 s,
       the write 1.2 s), and the dump of the object 0.5 to 1.2 s.
-- [ ] the memory of the server: JIT code and old method versions stay
+- [x] the memory of the server: JIT code and old method versions stay
       until a restart; the builder restarts the server from the last
       image after a bounded number of saves or a bounded resident size.
+      *As built (2026-09-08):* `status` answers the saves and the
+      resident size; past `JULIA_REACTIVE_SERVER_SAVES` (200) or
+      `JULIA_REACTIVE_SERVER_RSS_KB` (16 GB) the builder quits the server
+      and starts one from the last image, which holds the same state. On
+      the routing sample the resident size is 500 MB after ten saves,
+      flat: the code of ten edits of one function is small.
 
 **Gate D.** Ten routing edits in a row through the server: each rebuild in
 at most 4 s; the resident size after ten saves; kill the server after save
@@ -643,6 +649,41 @@ Not planned in detail; the items that the catalog leaves open.
   multi-target image cannot be chained.
 
 ## Log
+
+**2026-09-08, Gate D.** The server (`tool/gate_d.sh`, ten routing edits
+through one server). The founding 3:07; every edit k gives the hop mean
+(k+1) times the founding's, exact; every image holds 0 closed entries, 0
+invalid code instances and 0 shadowed methods; a child rebuild from the
+copy of the bundle after save 5 with edit 6 equals the server's image 6
+by the oracle (1637 methods, 3203 roots, 11 globals) and runs the same
+mean; the resident size of the server is 492 MB after the first save and
+502 MB after the tenth. The one check that fails is the bound: a rebuild
+is 7.0 to 7.6 s of `materialize_app` (one 11.2 s), where the plan says
+4 s. The parts: the apply 1.9 s the first time and 0.4 s after (the
+signatures of the trace are cached, and a statement that did not resolve
+stays failed), the save 5.6 to 6.0 s, the link 1.4 s. Inside the save:
+the collections 0.0 s, the front 0.2 s (the walk of the methods 11 ms,
+the direct list 42 ms for 32974 code instances, the pass over the new
+methods 118 ms; it was 1.4 s and 1.2 s before), the emission of the
+delta about 0.6 s, the heap 3.4 s for 3 million objects (the queue 2.0
+s, the write 1.1 s), the dump of the object 1.2 s. The heap, the dump
+and the link are the floor of a full image, 6 s; the bound of 4 s needs
+an image that is not written whole, which the plan does not have.
+
+Three findings. A plain `fork` hung the child and corrupted the parent:
+the JIT writes code through a `/proc/self/mem` descriptor opened at
+start, and after a fork it names the parent's memory; `jl_reactive_fork`
+opens the child's own. The front print used `round` with `digits` in
+the world of the compiler, where that method is too new; the child's
+exception unwound into the loop, answered the request from the child
+and left it on the socket while the parent waited; the child of a save
+exits on any error now. And the founding's trace comes from the C
+printer of `--trace-compile`, which prints a struct in a type parameter
+with its field names, a form that no constructor accepts, while the
+trace of a refresh comes from Julia's `show`, positional; the child
+rewrites the first form into the second (113 statements of the routing
+trace), and about 800 of 3203 stay unresolved: modules the routing
+binary does not load and type forms the printer cannot round-trip.
 
 **2026-09-08, Gate C.** The fresh table and the dead code (`tool/gate_c.sh`).
 The chain on HazardApp: founding 1:00 and 6.2 GB; an edit or its reverse
