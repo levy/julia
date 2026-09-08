@@ -930,17 +930,24 @@ bound of Gate D.
       writes the object with `ld -r -b binary` and renames the symbol
       with `objcopy`, or writes the ELF directly: one section, three
       symbols, the alignment of a page.
-- [ ] the garbage of the log: a dead object on a clean page stays; the
+- [x] the garbage of the log: a dead object on a clean page stays; the
       prune of dead entries applies on the pages that changed, which is
       where a deletion writes; the option `compact` founds again after
       `saves` saves or a growth of `growth`, and `founding = true` founds
       now. The growth per edit is reported with the sizes.
-      *Measured (2026-09-08):* the first save of a server's chain appends
-      5.1 MB to the sysimg section of the routing image (the rebuilt
-      global roots, the rehashed type caches of the dirty typenames, the
-      new arrays of the edit), every save after it about 10 KB more; the
-      data of the image grows from 286.09 MB after one edit to 286.19 MB
-      after ten. The options `compact` and `founding` are not built yet.
+      *As built (2026-09-08):* `founding = true` (`JULIA_REACTIVE_FOUNDING=1`)
+      and `compact = (saves, growth)` (`JULIA_REACTIVE_COMPACT="50,0.25"`)
+      of `materialize_app`; the founding records the size of its image,
+      every rebuild reports the growth since it, and past the bound the
+      store founds again from the tracked files and the workload it
+      recorded, after the server quits. *Measured:* the first save of a
+      server's chain appends 5.1 MB to the sysimg section of the routing
+      image (the rebuilt global roots, the rehashed type caches of the
+      dirty typenames, the new arrays of the edit), every save after it
+      about 10 KB more; the data of the image grows from 286.09 MB after
+      one edit to 286.19 MB after ten. Gate C's bound (32 B per slot and
+      512 B per rebuild) is a whole write's: the log keeps the dead
+      objects of the clean pages until a founding, which `compact` bounds.
 - [x] the option `image` and its variable; a change of the value is a
       founding; the trimmed product is always a whole write.
       *As built (2026-09-08):* `image = :whole | :pages` and
@@ -973,8 +980,10 @@ server's by checks 1, 2 and 4; the hop mean of every image is the edit's;
 the server holds 623 MB after ten saves. A save is 2.8 s of the server
 (front 0.7, emit 0.2, heap 0.7, dump 1.0), the apply 0.4 s, the link with
 lld the rest. The data of the image is 286.09 MB after one edit and
-286.19 MB after ten. The compact check of the gate (a founding after the
-ten) waits on the `compact` option. The first runs found two faults: the
+286.19 MB after ten. The compact check (`compact` step of the gate): a
+founding after the ten edits gives an image 58 KB larger than the first
+founding's (the edit's code), and its run gives the founding's hop mean.
+The first runs found two faults: the
 pointer elements of the const data, and a full `/tmp` (the gate keeps ten
 images of 357 MB; the finished gates' directories were removed).
 

@@ -16,6 +16,8 @@
 #              oracle of the server's image RESTART+1: checks 1, 2 and 4
 #   oracle   - every image: `info dead 0` and `shadowed 0`
 #   memory   - the status of the server after the edits: the resident size
+#   compact  - a founding after the edits (JULIA_REACTIVE_FOUNDING=1): its
+#              image against the first founding's, and its run
 #   stop     - the server quits, the file is restored
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
@@ -31,6 +33,7 @@ N=${N:-10}
 RESTART=${RESTART:-5}
 BOUND=${BOUND:-4}
 IMAGE=${IMAGE:-whole}   # the image write of the rebuilds: whole | pages (Gate F)
+FOUNDING=${FOUNDING:-0} # 1 makes a build found the store again (the compact step)
 APP=$OUT/routing
 FILE=sample/legacy/routing/Routing.jl
 TRACKED="OmnetRunner,OmnetLegacyFormat,OmnetLegacyRouting"
@@ -46,7 +49,7 @@ lane() {
         timeout 2400s /usr/bin/time -v \
         env PATH="$JH/usr/bin:$PATH" \
             JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
-            JULIA_REACTIVE_SERVER=$server JULIA_REACTIVE_IMAGE_WRITE=$IMAGE \
+            JULIA_REACTIVE_SERVER=$server JULIA_REACTIVE_IMAGE_WRITE=$IMAGE JULIA_REACTIVE_FOUNDING=$FOUNDING \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
@@ -190,12 +193,27 @@ memory() {
     awk -v b="$BOUND" '$1 ~ /^build-[0-9]+$/ && $2 > b { over++ } END { if (over) { print "=== " over " rebuilds over the bound"; exit 1 } print "=== every rebuild within the bound" }' "$OUT/seconds.txt"
 }
 
+# A founding after the edits: the image of the fresh founding against the
+# first founding's (the log's garbage is gone), and its run.
+compact() {
+    local u0 u1
+    FOUNDING=1 build build-compact 0 "$APP" || return 1
+    grep -q "the store founds again" "$OUT/build-compact.log" || { echo "=== the build did not found again"; return 1; }
+    u0=$(size "$OUT/sys-0.so" | awk 'NR == 2 { print $2 }')
+    u1=$(size "$APP/lib/julia/sys.so" | awk 'NR == 2 { print $2 }')
+    echo "=== data of the image: first founding $u0, founding after the edits $u1, difference $((u1 - u0))"
+    [ $((u1 - u0)) -lt 1048576 ] && [ $((u0 - u1)) -lt 1048576 ] || { echo "=== the founding after the edits is not the size of a fresh founding"; return 1; }
+    local mean
+    mean=$(runsim compact "$APP") || return 1
+    echo "=== hops(compact): $mean"
+}
+
 stop() {
     echo "=== quit: $(python3 "$TOOL/server_request.py" "$APP" quit)"
     restore
 }
 
-steps=${*:-full edits restart oracle memory stop}
+steps=${*:-full edits restart oracle memory compact stop}
 for step in $steps; do
     case $step in
         full) full ;;
@@ -203,6 +221,7 @@ for step in $steps; do
         restart) restart ;;
         oracle) oracles ;;
         memory) memory ;;
+        compact) compact ;;
         stop) stop ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; python3 "$TOOL/server_request.py" "$APP" quit 2>/dev/null; restore; exit 1; }
