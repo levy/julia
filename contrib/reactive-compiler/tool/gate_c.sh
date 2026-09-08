@@ -13,7 +13,8 @@
 #   noedit       - two rebuilds with no edit; the second emits no function
 #   heap         - the heap of the image holds no closed entry and no
 #                  invalid code instance (the oracle's `info dead` line)
-#   sizes        - the sizes of the chain: the last reverse against the first
+#   sizes        - the sizes of the chain: the last reverse against the first,
+#                  within the residue of the global slots
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
 OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/gate-c}
@@ -154,14 +155,28 @@ noedit() {
     runbin noedit before
 }
 
+# The image after the last reverse equals the image after the first one
+# within the residue of the chain: the global slots of the rebuilds between
+# them (a slot is never freed; 32 bytes covers its pointer, record and
+# relocation) and a few hundred bytes of the objects that a process holds at
+# exit (an IO buffer, a symbol).
 sizes() {
     [ -f "$OUT/sizes.txt" ] || { echo "=== no sizes recorded"; return 1; }
-    local first last
+    local first last slots=0 rebuilds=0 i log bound
     first=$(awk '$1 == "reverse-1" { print $2 }' "$OUT/sizes.txt")
     last=$(awk '$1 == "reverse-'"$CYCLES"'" { print $2 }' "$OUT/sizes.txt")
     echo "=== sizes (tag loadable file):"; sed 's/^/===   /' "$OUT/sizes.txt"
     [ -n "$first" ] && [ -n "$last" ] || { echo "=== the cycle did not record both ends"; return 1; }
-    echo "=== loadable after reverse 1: $first, after reverse $CYCLES: $last, growth $((last - first)) bytes"
+    for i in $(seq 2 "$CYCLES"); do
+        for log in "$OUT/mat-edit-$i.log" "$OUT/mat-reverse-$i.log"; do
+            slots=$((slots + $(grep -oE "delta [0-9]+ functions, [0-9]+ slots" "$log" | awk '{ s += $4 } END { print s + 0 }')))
+            rebuilds=$((rebuilds + 1))
+        done
+    done
+    bound=$((32 * slots + 512 * rebuilds))
+    echo "=== loadable after reverse 1: $first, after reverse $CYCLES: $last, growth $((last - first)) bytes;" \
+         "residue $slots slots in $rebuilds rebuilds, bound $bound bytes"
+    [ $((last - first)) -le "$bound" ] || { echo "=== the chain grows beyond its residue"; return 1; }
 }
 
 steps=${*:-full format cycle noedit heap sizes}
