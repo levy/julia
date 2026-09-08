@@ -11,11 +11,12 @@ This is a fork of [JuliaLang/julia](https://github.com/JuliaLang/julia). It
 holds four lines of work on the garbage collector, on how a system image
 loads, on how a system image rebuilds, and on ahead-of-time compilation.
 
-Each one lives on its own branch, from `release-1.13`. Each one carries its
-own documentation, its own measurements and its own tests, in a folder under
-`contrib/`. Follow the link in the table to that folder: it is the landing
-page of the feature, and it says what the feature does, how to build it, how
-to run it and what it was measured at.
+Each one lives on its own branch. Three of them start from `release-1.13`. The
+fourth starts from the master branch of JuliaLang, because it is the series
+proposed there. Each one carries its own documentation, its own measurements
+and its own tests. Follow the link in the table to the landing page of the
+feature: it says what the feature does, how to build it, how to run it and
+what it was measured at.
 
 The Julia README is [README.upstream.md](README.upstream.md). Nothing on this
 page describes Julia itself.
@@ -25,7 +26,7 @@ page describes Julia itself.
 | **Region garbage collection** | [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) | [contrib/memory-regions](https://github.com/levy/julia/tree/gc-regions/contrib/memory-regions) | free a whole phase of a program at once, with no mark and no sweep |
 | **Fast system image rebuild** | [`reactive-compiler`](https://github.com/levy/julia/tree/reactive-compiler) | [contrib/reactive-compiler/doc](https://github.com/levy/julia/blob/reactive-compiler/contrib/reactive-compiler/doc/architecture.md) | rebuild an image after an edit in seconds instead of minutes |
 | **Sealed and trimmed AOT** | [`sealed-aot`](https://github.com/levy/julia/tree/sealed-aot) | [contrib/sealed-abstract](https://github.com/levy/julia/tree/sealed-aot/contrib/sealed-abstract) | `--trim=safe` accepts a program that dispatches on abstract types |
-| **Faster system image load** | *not published yet* | — | shorten the relocation work a process does before it runs |
+| **Faster system image load** | [`sysimage-prelink`](https://github.com/levy/julia/tree/sysimage-prelink) | [devdocs/sysimg.md](https://github.com/levy/julia/blob/sysimage-prelink/doc/src/devdocs/sysimg.md) | a compiled program starts in milliseconds, because the relocation is done once at build time |
 
 ---
 
@@ -167,16 +168,46 @@ holds the numbers and how to reproduce each.
 
 ## Faster system image load
 
-**Not published as a branch yet.**
+**Branch [`sysimage-prelink`](https://github.com/levy/julia/tree/sysimage-prelink) ·
+[the developer documentation](https://github.com/levy/julia/blob/sysimage-prelink/doc/src/devdocs/sysimg.md)**
 
-A Julia process spends time before it runs your code applying relocations to
-the system image it just mapped. Measured on this machine, that fix-up is 88
-to 105 ms, and the kernel spends a further 38 ms copying pages on write.
+This branch starts from the master branch of JuliaLang, not from
+`release-1.13`, because it is the series proposed there.
 
-The cost is per page, so it does not fall by making the image smaller. A
-prelink pass has to finalize every class of relocation to remove it; one class
-left over keeps the whole cost.
+A Julia process applies relocations to the system image it just mapped before
+it runs your code. The cost is per page, not per pointer: a start writes about
+40,000 pages of the image, and the kernel gives each written page a private
+copy. Making the image smaller does not help, and one class of pointer left
+unfinished keeps the whole cost.
 
-The work is in progress and it is not committed, so there is no branch to link
-to. This section is here because the other three are, and because the
-measurement above is the reason the work exists.
+A pre-relocated image does that work once, when the program is built.
+`--sysimage-prelink=yes` reserves the room a start needs for the few pointers
+that a file cannot hold. `--output-prelinked=<file>` restores the image once
+and writes a copy of the program with the restored image inside it. The start
+of that program maps the image and runs.
+
+**Use it for a compiled program**, one that holds its own system image and is
+linked `-no-pie`, so that the image is at one address at every start. A stock
+`julia` maps a `sys.so` that the loader moves, so it cannot use the mode.
+
+Measured on this machine, each program evicted from the page cache and read
+back, the minimum of fifteen runs pinned to one core:
+
+| program | start | minor faults | resident |
+| --- | --- | --- | --- |
+| hello world, normal | 74.9 ms | 30,582 | 163.2 MB |
+| hello world, pre-relocated | **7.1 ms** | **2,487** | **66.4 MB** |
+| a network simulator, normal | 101.8 ms | 48,209 | 244.9 MB |
+| the simulator, pre-relocated | **7.9 ms** | **2,824** | **106.0 MB** |
+
+A program that opens a window with SDL shows the same in a form you can watch:
+the window is on screen 183.2 ms after the program starts, and 109.6 ms after
+it when the image is pre-relocated.
+
+The resident memory falls because the pages of the image stay clean and
+file-backed, so a second process of the same program shares them instead of
+making its own dirty copy.
+
+An image that nobody pre-relocates is unchanged, to the byte: the room is
+reserved only when `--sysimage-prelink=yes` asks for it. Writing the file needs
+Linux; the fast path itself is portable.
