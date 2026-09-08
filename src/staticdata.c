@@ -4799,6 +4799,9 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     assert(ios_pos(f) % JL_CACHE_BYTE_ALIGNMENT == 0);
     ssize_t sysimg_offset = ios_pos(f);
     size_t sysimg_size = 0;
+    // The pre-relocation's own record: where the fixup list starts, and the
+    // room a start writes its residual list into.
+    size_t fixup_objs_pos = 0, residual_pos = 0, residual_capacity = 0;
     if (reactive_overlay_on) {
         // The overlay blob (Stage G): the relocation targets are finished
         // in the buffers, the merged lists written, then the dirty pages,
@@ -4864,15 +4867,13 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             jl_write_arraylist(s.relocs, &s.uniquing_objs);
             jl_write_arraylist(s.relocs, &s.fixup_types);
         }
+        fixup_objs_pos = ios_pos(s.relocs);
         jl_write_arraylist(s.relocs, &s.fixup_objs);
     }
-    size_t fixup_objs_pos = ios_pos(s.relocs);
-    jl_write_arraylist(s.relocs, &s.fixup_objs);
     // Room for the residual list: bounded by the relocations whose target is
     // outside the image data and the constant data. Reserved only when asked.
     write_padding(s.relocs, LLT_ALIGN(ios_pos(s.relocs), 8) - ios_pos(s.relocs));
-    size_t residual_pos = ios_pos(s.relocs);
-    size_t residual_capacity = 0;
+    residual_pos = ios_pos(s.relocs);
     if (!s.incremental && jl_options.sysimage_prelink) {
         arraylist_t *lists[2] = {&s.gctags_list, &s.relocs_list};
         for (int l = 0; l < 2; l++) {
