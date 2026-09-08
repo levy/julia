@@ -473,9 +473,20 @@ code.
   `tool/trim_app/TrimApp` instead. A no-server delta build after a chain
   carries the residue of the untrimmed chain deltas it links, which a
   founding resets.
-- **A save writes the whole image.** The heap of 3 million objects
-  costs 3.4 s on the routing sample, the dump 1.2 s and the link 1.4 s.
-  The plan's Stages F and G write the image by pages, then as an overlay.
+- **A save writes the image by pages** (`image = :pages`, Stage F). The
+  loader protects the sysimg section, the fault handler marks the pages
+  the process writes, and the save copies the clean pages from the file
+  of the base, rewrites the objects of the dirty pages in place, appends
+  the new objects and merges the relocation lists. The const data and
+  the symbols come from memory and the base (the loader never relocates
+  them); the pointer elements of the base's bits memories are nulled in
+  the copy. A page restored to its load state (a lock taken and
+  released) counts clean by its hash. The object of the image's data is
+  written as an ELF relocatable directly, and the image links with lld.
+  On the routing sample a rebuild is 3.1 to 3.3 s (whole: 7.0 to 7.6);
+  the heap write 0.7 s (whole: 3.4). What stays: the delta's codegen
+  and archive (1.0 s), the front (0.7 s), and the first save of a chain
+  appends 5 MB of rebuilt roots and caches. Stage G writes an overlay.
 - **The ledger sees the tracked sources alone.** A value of an old type
   inside an untyped container of a `const` is not found (the oracle's
   output check sees it); an untracked expander of a tracked macro is

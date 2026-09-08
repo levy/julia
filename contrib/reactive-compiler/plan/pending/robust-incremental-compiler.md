@@ -822,12 +822,22 @@ bound of Gate D.
       the base's objects only, and every base object stays in a log, so a
       copied page cannot dangle; a page written by a deletion or an
       invalidation is serialized again with the prune.
-- [ ] the dirty pages of the runtime: under `image = :pages` the loader
+- [x] the dirty pages of the runtime: under `image = :pages` the loader
       protects the image's data pages, the fault handler sets the page's
       bit and unprotects it, and the writer reads the bitmap
       (`jl_reactive_dirty_pages`). The base of the bitmap is the image the
       process loaded: the server accumulates the pages since its start,
       which matches the delta it writes; a child's pages are its own.
+      *As built (2026-09-08):* `JULIA_REACTIVE_IMAGE_WRITE=pages` makes
+      the loader protect the sysimg section at the end of the load, map
+      the file of the base then (a save replaces the file later), and
+      hash every page; the save snapshots the bitmap and drops a written
+      page whose hash is as at the load. That page is the common case:
+      inference and codegen take and release the locks inside methods,
+      which the measurement "before the write" of the plan never saw
+      (219 pages); from a founding-started server a routing edit writes
+      6577 pages, 1632 of them restored, 4945 dirty; from a fresh server
+      2137 written, 1677 restored, 460 dirty.
 - [ ] the writer: the bytes of a clean page come from the base image's
       file, the objects of a dirty page are serialized again in place with
       the pruning of the reactive format, the new objects are appended
@@ -887,9 +897,33 @@ bound of Gate D.
       memowner, memref and fixup lists merge by position: the base entries
       outside the dirty pages, then the new ones, sorted. The loader needs
       no change: a page-written image is a version 3 image.
-- [ ] the dump without LLVM: the blob becomes a raw section of the object
+      *As built (2026-09-08):* `reactive_pages_*` and `reactive_base_*` of
+      `src/staticdata.c`, as designed, with two facts the first runs
+      taught. The const data copied from memory carries the pointer
+      elements the runtime stored into the bits memories of the base (the
+      match contexts of PCRE): the whole write nulls them at the write,
+      the page write nulls them in the copy. The base entries of a list
+      are dropped by the object they belong to, not by the page: a
+      rewritten object that reaches into a clean page regenerates its
+      entries there. On the routing sample a save rewrites 224 000
+      objects in place and appends 44 000; the heap write is 0.7 s
+      against 3.4 s whole (a fresh server: 10 000 rewritten, 0.3 s). No
+      save refused so far; the fallback is the whole write of the same
+      state.
+- [x] the dump without LLVM: the blob becomes a raw section of the object
       through the assembler or a direct ELF writer, not an LLVM global.
       The dump drops from 1.2 s to the copy.
+      *As built (2026-09-08):* `reactive_emit_sysimg_elf` of
+      `src/aotcompile.cpp` writes the ELF relocatable directly for a
+      reactive image on Linux x86-64: `.ldata` with the blob, `.rodata`
+      with the size and the checksum, `.data.rel.ro` with the unpack
+      pointer and its one relocation, the symbol tables, a `.note.GNU-stack`.
+      The object of 278 MB takes 0.06 s; what stays of the dump (1.0 s) is
+      the codegen of the delta's shards, the archive and its write, and
+      the checksum. The link took the other second: `ld.bfd` copies the
+      278 MB object slowly, `ld.lld` does not, and PackageCompiler links a
+      reactive image with lld when it is installed
+      (`JULIA_REACTIVE_LINKER=bfd` keeps the default).
       *Design:* `jl_dump_native` makes `jl_system_image_data` a constant
       array of the module, with `jl_system_image_size` and the checksum
       beside it, in `.ldata` under the large code model. The replacement
@@ -901,10 +935,27 @@ bound of Gate D.
       where a deletion writes; the option `compact` founds again after
       `saves` saves or a growth of `growth`, and `founding = true` founds
       now. The growth per edit is reported with the sizes.
-- [ ] the option `image` and its variable; a change of the value is a
+      *Measured (2026-09-08):* the first save of a server's chain appends
+      5.1 MB to the sysimg section of the routing image (the rebuilt
+      global roots, the rehashed type caches of the dirty typenames, the
+      new arrays of the edit), every save after it about 10 KB more; the
+      data of the image grows from 286.09 MB after one edit to 286.19 MB
+      after ten. The options `compact` and `founding` are not built yet.
+- [x] the option `image` and its variable; a change of the value is a
       founding; the trimmed product is always a whole write.
-- [ ] the child and the server both write by pages: the child from the
+      *As built (2026-09-08):* `image = :whole | :pages` and
+      `JULIA_REACTIVE_IMAGE_WRITE` of `materialize_app`; the value reaches
+      the rebuild child and the server, never the founding (under pages a
+      founding would take the stock sysimage of the process as its base).
+      The server's mode is fixed at its start and recorded in the session;
+      a build with the other value restarts it. A change of the value is
+      not a founding: a page-written image is a whole version 3 image. A
+      trimmed write stays whole (`jl_options.trim`).
+- [x] the child and the server both write by pages: the child from the
       pages of its own run, the server from the pages since its start.
+      *As built (2026-09-08):* both, through the same save; the child of
+      the TrimApp smoke test rewrites 161 000 objects (its own run writes
+      more pages than a server's save), the server 104 000.
 
 **Gate F.** Gate D with `image = :pages`: each rebuild in at most 4 s;
 every image passes Gate 0; a child rebuild from image k equals the
@@ -913,6 +964,19 @@ the size after one, within the residue of the slots and the garbage the
 log reports; a founding after the ten compacts to the size of a fresh
 founding within the residue of the slots. Gate C on the page-written
 images.
+
+*Passed 2026-09-08* (`tool/gate_f.sh` = `gate_d.sh` with `IMAGE=pages`):
+ten routing edits through the server, each `materialize_app` 3.1 to 3.3
+s (Gate D whole: 7.0 to 7.6 s), the restart child 3.1 s; every image and
+the restart pass the oracle; the restart child's image equals the
+server's by checks 1, 2 and 4; the hop mean of every image is the edit's;
+the server holds 623 MB after ten saves. A save is 2.8 s of the server
+(front 0.7, emit 0.2, heap 0.7, dump 1.0), the apply 0.4 s, the link with
+lld the rest. The data of the image is 286.09 MB after one edit and
+286.19 MB after ten. The compact check of the gate (a founding after the
+ten) waits on the `compact` option. The first runs found two faults: the
+pointer elements of the const data, and a full `/tmp` (the gate keeps ten
+images of 357 MB; the finished gates' directories were removed).
 
 ## Stage G — the overlay image
 
