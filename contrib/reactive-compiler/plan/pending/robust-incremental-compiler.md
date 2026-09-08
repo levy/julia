@@ -683,6 +683,17 @@ A trimmed image derived from the compiler's heap at a save, with the
 reused code as roots, so that a trim-clean program keeps its trimmed
 binary through the edits. Option `trim`.
 
+- [ ] the trim pipeline of a store: a prerequisite, and a decision.
+      The trimmed flagship binary is built by `tool/trim-routing` of
+      omnet-julia (`trim_phase.sh`: `--trim=safe --experimental
+      --output-exe` from an entry file) with the sealed-abstract compiler
+      of the `sealed-aot` branch of julia-aot, not through
+      PackageCompiler, which has no trim at all; with the stock verifier
+      of this branch the routing sample is not trim-clean. So the
+      trimmed product of a save needs either the sealed-abstract
+      compiler on the `reactive-compiler` branch (a merge of that
+      compiler work), or a program that the stock verifier accepts for
+      Gate E, with the flagship after the merge. The user decides.
 - [ ] the reused code counts as compiled: the trim verifier
       (`verify_typeinf_trim`) takes the reused code instances as resolved
       callees, and the reachability prune of trim
