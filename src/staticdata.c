@@ -2397,7 +2397,7 @@ static void prelink_write_back(const char *blob, size_t size, const char *output
 
 // `residual` records the pointers a pre-relocation cannot finalize, or NULL.
 static void jl_read_reloclist(jl_serializer_state *s, jl_array_t *link_ids, uint8_t bits,
-                              prelink_residual_t *residual, int pass) JL_CANSAFEPOINT
+                              prelink_residual_t *residual, int pass)
 {
     uintptr_t base = (uintptr_t)s->s->buf;
     uintptr_t last_pos = 0;
@@ -2547,7 +2547,7 @@ static void jl_register_image_fptrs(jl_serializer_state *s, jl_image_t *image)
         return;
     memcpy(image->jl_small_typeof, &jl_small_typeof, sizeof(jl_small_typeof));
     int img_fvars_max = s->fptr_record->size / sizeof(void*);
-    jl_code_instance_t **linfos = (jl_code_instance_t**)&s->fptr_record->buf[0];
+    jl_method_instance_t **linfos = (jl_method_instance_t**)&s->fptr_record->buf[0];
     // Tell LLVM about the native code
     jl_register_fptrs(image->base, &fvars, linfos, img_fvars_max);
 }
@@ -4363,8 +4363,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         const jl_datatype_layout_t *task_layout = jl_task_type->layout;
         for (size_t i = 0; i < task_layout->npointers; i++) {
             jl_value_t **slot = &((jl_value_t**)root)[jl_ptr_offset(jl_task_type, i)];
-            if (*slot == init_nothing)
-                jl_gc_write(root, *slot, jl_value_t, jl_nothing);
+            if (*slot == init_nothing) {
+                *slot = jl_nothing;
+                jl_gc_wb(root, jl_nothing);
+            }
         }
     }
     if (s.incremental) {
