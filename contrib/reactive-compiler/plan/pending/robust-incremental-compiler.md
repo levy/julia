@@ -1030,16 +1030,69 @@ whole image. Option `image = :overlay`.
       sets the code instances; every image's gvar record sets its own
       slots. The dirty tracking, the reuse ids and the lists for the next
       save follow the composed state.
-- [ ] the loader: the base is mapped as now, the overlays in order, each
+      *As built (2026-09-08):* `reactive_overlay_*` and `reactive_chain_*`
+      of `src/staticdata.c`, with four facts the first runs taught. A
+      package image names a sysimage object by its offset from the blob,
+      so the region keeps the base blob's layout: the sysimg and the const
+      data map from the file at their offsets, the const headroom
+      follows, and the objects of the overlays come after it (their
+      sysimg offsets start past the headroom). The registered blob spans
+      that whole extent, else the overlays' objects count as heap
+      objects. An overlay parses as a package image (the JIT target is
+      the base's). The window of the base's last object ends at the
+      base's end, not at the next tag past the gap. A page write keeps a
+      rehashed type cache's old object in the queue and appends the new
+      one: an overlay writes a dirty page from the queue alone, and an
+      object dropped from it would land as zeros under its tag; a check
+      after the write refuses such an overlay. The collector writes the
+      header of a remembered object, so the dirty-page fault handler runs
+      before the thread-state check of the signal handler. The lists of
+      the loaded state decode at the first save, not at the load.
+- [x] the loader: the base is mapped as now, the overlays in order, each
       one's patches applied and relocations resolved; the function table
       of the last overlay names the live functions.
-- [ ] the builder: no link; the bundle gains one shared object per save;
+      *As built (2026-09-08):* `reactive_chain_load`; a chain file beside
+      the image (`sys.so.chain`) applies whatever the environment, so the
+      launcher of a bundle and the oracle need no variable. The routing
+      bundle starts in 0.22 s alone and in 0.25 s with the server's
+      overlay of 42 MB (4926 patched pages, 4 MB of new objects, 13.9 MB
+      of lists).
+- [x] the builder: no link; the bundle gains one shared object per save;
       `compact` bounds their number through a founding.
-- [ ] the option and the founding on a change of it.
+      *As built (2026-09-08):* `_reactive_overlay_link` links the save's
+      archive alone into `sys.<id>.so` (a small link, with lld), and
+      `_reactive_chain_update` puts it into the chain: a child's overlay
+      appends, the server's replaces the one it wrote before (its overlay
+      is cumulative since its start), and the replaced file goes. The
+      whole image is never linked; `create_sysimage` gets `link = false`
+      for the child. The trimmed product is not built for overlays.
+- [x] the option and the founding on a change of it.
+      *As built (2026-09-08):* `image = :overlay`; the server's mode is in
+      its session; `compact` and `founding` found again as in Stage F, and
+      the founding starts a chain. The growth report counts the overlays
+      of the chain with the base.
 
 **Gate G.** Gate F with `image = :overlay`: each rebuild in about 1 s; the
 same checks; a bundle with ten overlays starts within the residue of the
 start of the founding's bundle.
+
+*Passed 2026-09-08 but for the second* (`tool/gate_g.sh` = `gate_d.sh`
+with `IMAGE=overlay`): ten routing edits through the server, each
+`materialize_app` 2.4 to 2.6 s (pages: 3.1 to 3.3, whole: 7.0 to 7.6);
+the restart child 4.0 s (its own start included); every image and the
+restart pass the oracle; the restart child's image equals the server's
+by checks 1, 2 and 4; the hop means are the edits'; the server holds 632
+MB after ten saves; the bundle starts in 0.25 s with the server's overlay
+against 0.22 s alone (the gate's bound: a quarter). The save is 2.3 s of
+the server: front 0.7, emit 0.2, heap 0.6 (queue 0.2, write 0.2, combine
+0.2), dump 0.7 to 0.9 for the codegen and archive of the delta's 981
+functions; the apply 0.4 s; the overlay's link is small. The second of
+"about 1 s" is the compile of the delta's cone and its emission, not the
+image any more. The server's overlay carries every page written since
+its start, 20 MB here; an incremental chain of deltas with a reset of the
+bitmap after every save would write ~100 KB per save and lengthen the
+chain, which `compact` bounds: an option for later. TrimApp: a server
+rebuild in 0.5 s (heap 0.2 s, the overlay 15 MB).
 
 ## Beyond
 

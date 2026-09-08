@@ -486,7 +486,21 @@ code.
   On the routing sample a rebuild is 3.1 to 3.3 s (whole: 7.0 to 7.6);
   the heap write 0.7 s (whole: 3.4). What stays: the delta's codegen
   and archive (1.0 s), the front (0.7 s), and the first save of a chain
-  appends 5 MB of rebuilt roots and caches. Stage G writes an overlay.
+  appends 5 MB of rebuilt roots and caches.
+- **A save writes an overlay** (`image = :overlay`, Stage G). The delta is
+  a shared object of its own: the page patches of the sysimg and the
+  const data, the new objects, the new symbols, the full merged lists,
+  its own slot record, the fresh table with a reuse map for the
+  functions of the chain, and the delta's code, which calls a reused
+  function through the external-function slots of its image. The base
+  loads into a region that keeps the blob's layout (a package image
+  names a sysimage object by offset), with headroom for the const data
+  and then the objects of the overlays; the chain file beside the image
+  names the overlays, and the loader applies them in order and composes
+  the function table. The whole image is never linked. A routing rebuild
+  is 2.4 to 2.6 s: the compile of the delta's cone and its emission, not
+  the image. The server's overlay is cumulative and replaces its
+  previous one; a child's appends; a founding starts a chain.
 - **The ledger sees the tracked sources alone.** A value of an old type
   inside an untyped container of a `const` is not found (the oracle's
   output check sees it); an untracked expander of a tracked macro is
