@@ -86,6 +86,10 @@ typedef struct {
     // `jl_sysimg_gvars` holds only the new slots. All zero and empty for a
     // stock build.
     SmallVector<std::string, 0> reused_names;
+    // An overlay build (Stage G): the id in the composed table of the loaded
+    // state of every reused function, in fresh-id order; the table of the
+    // overlay holds null there, and the loader composes.
+    SmallVector<uint32_t, 0> reuse_map;
     uint32_t fvar_base = 0;
     uint32_t gvar_base = 0;
     uint32_t shard_base = 0;
@@ -497,7 +501,7 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
         // `jl_fptr_sparam` or opaque-closure callee keeps the trampoline, as
         // it does when this build compiles the callee.
         std::string reactive_name;
-        if (preal_decl.empty() && !proto.oc && jl_reactive_reuse_enabled()) {
+        if (preal_decl.empty() && !proto.oc && jl_reactive_reuse_enabled() && !jl_reactive_overlay_mode()) {
             int32_t invoke_id = 0, spec_id = 0;
             if (jl_reactive_image_ids(codeinst, &invoke_id, &spec_id)) {
                 const char *fname = NULL;
@@ -784,6 +788,8 @@ static void reactive_rebase(jl_native_code_desc_t *data, jl_array_t *reused)
         data->reused_names.push_back(name);
     }
     data->fvar_base = live.size();
+    if (jl_reactive_overlay_mode())
+        data->reuse_map.assign(live.begin(), live.end());
     for (auto &entry : data->jl_fvar_map) {
         uint32_t &func_id = std::get<0>(entry.second);
         uint32_t &cfunc_id = std::get<1>(entry.second);
@@ -968,7 +974,9 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
         params.getContext().setDiscardValueNames(true);
     params.params = cgparams;
     assert(params.imaging_mode); // `_imaging_mode` controls if broken features like code-coverage are disabled
-    params.external_linkage = external_linkage;
+    // An overlay build (Stage G) calls a reused function through the
+    // external-function slots of its own image, as a pkgimage does.
+    params.external_linkage = external_linkage || jl_reactive_overlay_mode();
     params.temporary_roots = jl_alloc_array_1d(jl_array_any_type, 0);
     bool safepoint_on_entry = params.safepoint_on_entry;
     JL_GC_PUSH3(&params.temporary_roots, &method_roots.list, &method_roots.keyset);
@@ -1314,23 +1322,40 @@ static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned n
 // the link resolves in the text objects of this build or of an older one;
 // `jl_fvar_names` holds the same names, each terminated by NUL, for the next
 // build. The table is the root that keeps a function in the image.
-static std::pair<GlobalVariable *, GlobalVariable *> emit_function_table(Module &M, Type *T_psize, ArrayRef<std::string> names) {
+static std::pair<GlobalVariable *, GlobalVariable *> emit_function_table(Module &M, Type *T_psize, ArrayRef<std::string> names,
+                                                                         ArrayRef<uint32_t> reuse_map) {
     auto &Context = M.getContext();
     auto FT = FunctionType::get(Type::getVoidTy(Context), false);
     SmallVector<Constant *, 0> ptrs;
     ptrs.reserve(names.size());
     std::string blob;
+    size_t k = 0;
     for (auto &name : names) {
-        auto F = M.getFunction(name);
-        if (!F) {
-            assert(!M.getNamedValue(name) && "a function of the image shares a name with the metadata");
-            F = Function::Create(FT, GlobalValue::ExternalLinkage, name, M);
-            F->setVisibility(GlobalValue::HiddenVisibility);
-            F->setDSOLocal(true);
+        if (k < reuse_map.size()) {
+            // an overlay: the function lives in another image of the chain,
+            // the loader takes it from the composed table by the reuse map
+            ptrs.push_back(ConstantPointerNull::get(cast<PointerType>(T_psize)));
         }
-        ptrs.push_back(ConstantExpr::getBitCast(F, T_psize));
+        else {
+            auto F = M.getFunction(name);
+            if (!F) {
+                assert(!M.getNamedValue(name) && "a function of the image shares a name with the metadata");
+                F = Function::Create(FT, GlobalValue::ExternalLinkage, name, M);
+                F->setVisibility(GlobalValue::HiddenVisibility);
+                F->setDSOLocal(true);
+            }
+            ptrs.push_back(ConstantExpr::getBitCast(F, T_psize));
+        }
         blob += name;
         blob += '\0';
+        k++;
+    }
+    if (!reuse_map.empty()) {
+        SmallVector<uint32_t, 0> reuse(names.size(), 0);
+        for (size_t i = 0; i < reuse_map.size(); i++)
+            reuse[i] = reuse_map[i];
+        auto reuse_arr = ConstantDataArray::get(Context, reuse);
+        new GlobalVariable(M, reuse_arr->getType(), true, GlobalValue::ExternalLinkage, reuse_arr, "jl_fvar_reuse");
     }
     auto ptrs_arr = ConstantArray::get(ArrayType::get(T_psize, ptrs.size()), ptrs);
     auto ptrs_gv = new GlobalVariable(M, ptrs_arr->getType(), true,
@@ -2567,6 +2592,7 @@ void jl_dump_native_impl(void *native_code,
     uint32_t shard_base = 0;
     // Reactive image: the names of the function table, in id order
     SmallVector<std::string, 0> fvar_names;
+    SmallVector<uint32_t, 0> reuse_map;
 
     // Reset the target triple to make sure it matches the new target machine
 
@@ -2636,6 +2662,7 @@ void jl_dump_native_impl(void *native_code,
             // partition and the one target keep them.
             if (reactive_format) {
                 assert(data->reused_names.size() == fvar_base);
+                reuse_map.assign(data->reuse_map.begin(), data->reuse_map.end());
                 fvar_names.assign(data->reused_names.begin(), data->reused_names.end());
                 for (auto F : data->jl_sysimg_fvars)
                     fvar_names.push_back(F->getName().str());
@@ -2762,7 +2789,7 @@ void jl_dump_native_impl(void *native_code,
             Constant *fvar_names_ptr = fvar_ptrs;
             if (reactive_format) {
                 assert(fvar_names.size() == fvar_base + nfvars);
-                auto table = emit_function_table(metadataM, T_psize, fvar_names);
+                auto table = emit_function_table(metadataM, T_psize, fvar_names, reuse_map);
                 fvar_ptrs = ConstantExpr::getBitCast(table.first, T_psize);
                 fvar_names_ptr = ConstantExpr::getBitCast(table.second, T_psize);
             }

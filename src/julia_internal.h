@@ -1348,6 +1348,7 @@ JL_DLLEXPORT uint8_t jl_object_in_image(jl_value_t* v) JL_NOTSAFEPOINT;
 // the image's own.
 JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_image_format(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT int jl_reactive_overlay_mode(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT uint32_t jl_reactive_base_version(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT;
