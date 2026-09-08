@@ -1744,7 +1744,10 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                          reactive_cached_ci(interp, mi, world)
                 if served !== nothing
                     markinspected!(workqueue, callee)
-                    push!(reused, served)
+                    if !(served in reactive_reused_set)
+                        push!(reactive_reused_set, served)
+                        push!(reused, served)
+                    end
                     continue
                 end
             end
@@ -1802,7 +1805,7 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
     reused = nothing
     if !external_linkage && reactive_reuse_enabled()
         trim_mode == TRIM_NO || error("reactive reuse does not support --trim")
-        reused = Any[]
+        reused = copy(reactive_reused_initial)   # the direct list (precompile.jl)
         empty!(reactive_dead_methods)
     end
 

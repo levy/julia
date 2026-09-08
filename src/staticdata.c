@@ -3380,6 +3380,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     jl_genericmemory_t *global_roots_list = NULL;
     jl_genericmemory_t *global_roots_keyset = NULL;
 
+    uint64_t t_step = jl_hrtime(), t_queue = 0, t_prune = 0, t_write = 0;
     { // step 1: record values (recursively) that need to go in the image
         size_t i;
         if (worklist == NULL) {
@@ -3440,6 +3441,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             jl_queue_for_serialization(&s, global_roots_keyset);
             jl_serialize_reachable(&s);
         }
+        t_queue = jl_hrtime() - t_step; t_step = jl_hrtime();
         // step 1.5: prune (garbage collect) some special weak references known caches
         for (i = 0; i < serialization_queue.len; i++) {
             jl_value_t *v = (jl_value_t*)serialization_queue.items[i];
@@ -3488,6 +3490,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         reactive_dump_heap(heapdump);
 
     uint32_t external_fns_begin = 0;
+    t_prune = jl_hrtime() - t_step; t_step = jl_hrtime();
     { // step 2: build all the sysimg sections
         write_padding(&sysimg, sizeof(uintptr_t));
         jl_write_values(&s);
@@ -3518,6 +3521,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         jl_exit(1);
     }
 
+    t_write = jl_hrtime() - t_step; t_step = jl_hrtime();
     // step 3: combine all of the sections into one file
     assert(ios_pos(f) % JL_CACHE_BYTE_ALIGNMENT == 0);
     ssize_t sysimg_offset = ios_pos(f);
@@ -3573,6 +3577,9 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     ios_copyall(f, &fptr_record);
     ios_close(&fptr_record);
 
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: heap queue %.1f s, prune %.1f s, write %.1f s, combine %.1f s, %zu objects\n",
+                       t_queue / 1e9, t_prune / 1e9, t_write / 1e9, (jl_hrtime() - t_step) / 1e9, serialization_queue.len);
     { // step 4: record locations of special roots
         write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
         s.s = f;
@@ -3795,7 +3802,10 @@ JL_DLLEXPORT void jl_create_system_image(void **_native_data, jl_array_t *workli
     jl_query_cache query_cache;
     init_query_cache(&query_cache);
     jl_finalize_precompile_inferred(worklist != NULL && _native_data != NULL && jl_options.outputo != NULL);
+    uint64_t t_heap = jl_hrtime();
     jl_save_system_image_to_stream(ff, mod_array, module_init_order, worklist, extext_methods, new_ext_cis, &query_cache);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: heap %.1f s\n", (jl_hrtime() - t_heap) / 1e9);
     if (_native_data != NULL)
         native_functions = NULL;
     // make sure we don't run any Julia code concurrently before this point

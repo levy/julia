@@ -233,6 +233,57 @@ function reactive_visit_methods(f, mt::Core.MethodTable, worlds::Vector{UInt})
     nothing
 end
 
+# Reactive reuse, the direct list (Stage D of the plan): every code instance
+# of the loaded image that is still valid in a build world is reused, and a
+# method instance that such code serves in every world stays off the
+# worklist. Without the list the compile pass reached the reused code
+# through the worklist of every method, one lookup per item per world: 1.4
+# s for 43000 code instances on the routing sample. The compile pass adds
+# the reused callees of the delta to the list; the set keeps it free of
+# duplicates.
+const reactive_reused_initial = Any[]
+const reactive_reused_set = IdSet{Any}()
+const reactive_served_mis = IdSet{Any}()
+
+# The first code instance of `mi` that the loaded image serves in `world`.
+function reactive_image_ci(mi::MethodInstance, world::UInt)
+    ci = isdefined(mi, :cache) ? mi.cache : nothing
+    while ci isa CodeInstance
+        ci_reactive_reusable(ci, world) && return ci
+        ci = isdefined(ci, :next) ? ci.next : nothing
+    end
+    return nothing
+end
+
+function reactive_direct_reuse!(newmethods, worlds::Vector{UInt})
+    empty!(reactive_reused_initial)
+    empty!(reactive_reused_set)
+    empty!(reactive_served_mis)
+    for method in newmethods
+        method = method::Method
+        specializations = method.specializations
+        for mi in (specializations isa Core.SimpleVector ? specializations : (specializations,))
+            mi isa MethodInstance || continue
+            served = 0
+            for world in worlds
+                if method.primary_world > world
+                    served += 1   # nothing to compile in a world before the method
+                    continue
+                end
+                ci = reactive_image_ci(mi, world)
+                ci === nothing && continue
+                served += 1
+                if !(ci in reactive_reused_set)
+                    push!(reactive_reused_set, ci)
+                    push!(reactive_reused_initial, ci)
+                end
+            end
+            served == length(worlds) && push!(reactive_served_mis, mi)
+        end
+    end
+    return nothing
+end
+
 # Complete method collection implementation
 function collect_all_method_defs(newmodules, mod_array, worlds::Vector{UInt})
     allmeths = Any[]
@@ -363,6 +414,7 @@ end
 
 function enqueue_specialization!(all::Bool, worklist, mi::Core.MethodInstance)
     # Translation of precompile_enq_specialization_ from C
+    mi in reactive_served_mis && return false
     codeinst = isdefined(mi, :cache) ? mi.cache : nothing
     stale = false
     while codeinst !== nothing
@@ -452,7 +504,17 @@ function compile_and_emit_native(worlds::Vector{UInt},
     end
 
     # Step 2: Collect all method definitions, filtered by worklist if provided
+    t_front = _time_ns()
     newmethods = collect_all_method_defs(newmodules, mod_array, worlds)
+    t_collect = _time_ns()
+
+    # The direct list of the reused code (reactive reuse)
+    if newmodules === nothing && !external_linkage && reactive_reuse_enabled()
+        reactive_direct_reuse!(newmethods, worlds)
+    else
+        empty!(reactive_served_mis)
+    end
+    t_direct = _time_ns()
 
     # Step 3: Collect set of method instances that seem worth compiling
     specialization_worklist = []
@@ -509,6 +571,14 @@ function compile_and_emit_native(worlds::Vector{UInt},
 
     # Step 4: Perform type inference on tocompile to create codeinfos
     # (with reactive reuse: svec(codeinfos, the reused code instances))
+    t_enqueue = _time_ns()
+    if reactive_timings() != 0 && reactive_reuse_enabled()
+        Core.println("reactive: front collect ", round((t_collect - t_front) / 1e9; digits = 2),
+                     " s, direct reuse ", round((t_direct - t_collect) / 1e9; digits = 2), " s (",
+                     length(reactive_reused_initial), " code instances, ", length(reactive_served_mis),
+                     " method instances served), enqueue ", round((t_enqueue - t_direct) / 1e9; digits = 2),
+                     " s, worklist ", length(tocompile))
+    end
     codeinfos = try
         typeinf_ext_toplevel(tocompile, worlds, trim_mode, external_linkage)
     catch exc
