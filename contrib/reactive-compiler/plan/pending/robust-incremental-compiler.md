@@ -858,6 +858,35 @@ bound of Gate D.
       slot records and the fptr record are rebuilt as now; a dead code
       instance of a clean page keeps no function and no fptr, as a
       pruned one does today.
+      *As designed (2026-09-08, from the code):* the loader uses the blob
+      of the shared object in place, so the relocations overwrite it; the
+      file bytes of the base come from a private read-only mapping of the
+      shared object at the blob's file offset (`dladdr` names the file,
+      `dl_iterate_phdr` the segment). Only the sysimg section is relocated
+      at load: the const data (bits memories, strings, layouts) and the
+      symbols are never written by the loader, so the base const data is
+      copied from memory, runtime writes included, and only the sysimg
+      pages need the dirty bitmap. A base object is referenced by a new
+      tag `BaseRef` whose finish is the DataRef offset; a base const
+      object by ConstDataRef directly; a base symbol keeps its index (the
+      symbol table is seeded from the base). The prunes decide liveness
+      by "queued": under pages a base object counts as live, else the
+      type-cache rehash drops every base type; the rebuilt global roots
+      keep the base roots. The object index of the base is the gc-tag
+      list of the base file; the objects of a dirty page are those whose
+      tag is in the page and the last one before it; they are queued
+      first, with a force flag, and the walk from them queues new objects
+      only. A queued base object is rewritten in place: the stream seeks
+      to its header, and the end must fall in the window before the next
+      object's header; a module whose `usings` capacity grew and a bigint
+      whose limbs grew do not fit, and the save refuses pages and writes
+      whole. The const data a base object owns (the data of a bits memory,
+      a layout, the atomic and const field masks) is rewritten at its base
+      offset by a seek. The fptr record gets a pass over the fresh table
+      for the base code instances that were not queued. The gc-tag, reloc,
+      memowner, memref and fixup lists merge by position: the base entries
+      outside the dirty pages, then the new ones, sorted. The loader needs
+      no change: a page-written image is a version 3 image.
 - [ ] the dump without LLVM: the blob becomes a raw section of the object
       through the assembler or a direct ELF writer, not an LLVM global.
       The dump drops from 1.2 s to the copy.
