@@ -1619,6 +1619,19 @@ end
 reactive_reuse_enabled() = ccall(:jl_reactive_reuse_enabled, Cint, ()) != 0
 reactive_base_world() = ccall(:jl_reactive_base_world, Csize_t, ())
 
+# The served code instances of a trimmed build with their IR, in pairs,
+# for the verifier: the trimmed image holds their machine code.
+const reactive_verify_reused = Any[]
+
+# The optimized IR of a served code instance, or nothing when it has none
+# (a constant, a stripped image).
+function reactive_served_ir(code::CodeInstance)
+    use_const_api(code) && return nothing
+    inf = @atomic :monotonic code.inferred
+    inf isa String && (inf = _uncompressed_ir(code, inf))
+    return inf isa CodeInfo ? inf : nothing
+end
+
 # A method that no longer dispatches: deleted, or replaced by a definition
 # of the same signature. Neither bounds the code instances of the method
 # itself, so the previous image would serve them and the dead method would
@@ -1679,6 +1692,7 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
     external_linkage::Bool,
     reused::Union{Vector{Any},Nothing} = nothing,
+    trim::Bool = false,
 )
     interp = workqueue.interp
     world = get_inference_world(interp)
@@ -1742,11 +1756,33 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                 # sibling at run time.
                 served = ci_reactive_reusable(callee, world) ? callee :
                          reactive_cached_ci(interp, mi, world)
-                if served !== nothing
+                # A trimmed image holds what the entry points reach, so a
+                # served code instance is one whose optimized IR is at hand:
+                # its callees are the targets of the `invoke`s of that IR,
+                # which its machine code calls, and the IR is verified with
+                # the delta's (`reactive_verify_reused`). The recorded edges
+                # name the dispatch-level targets as well, which a fresh
+                # compile would not compile. Without IR the code instance is
+                # compiled again from its source, as `juliac` does.
+                src = served === nothing || !trim ? nothing : reactive_served_ir(served)
+                if served !== nothing && (!trim || src !== nothing)
                     markinspected!(workqueue, callee)
                     if !(served in reactive_reused_set)
                         push!(reactive_reused_set, served)
                         push!(reused, served)
+                        if trim
+                            push!(reactive_verify_reused, served)
+                            push!(reactive_verify_reused, src)
+                            for stmt in src.code
+                                isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify) || continue
+                                target = stmt.args[1]
+                                if target isa CodeInstance || target isa MethodInstance
+                                    reactive_timings() >= 2 && Core.println("reactive: trim invoke ", get_ci_mi(served).specTypes, " -> ",
+                                                                             target isa CodeInstance ? get_ci_mi(target).specTypes : target.specTypes)
+                                    push!(workqueue, target)
+                                end
+                            end
+                        end
                     end
                     continue
                 end
@@ -1804,9 +1840,11 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
     # and a trimmed image must see every callee.
     reused = nothing
     if !external_linkage && reactive_reuse_enabled()
-        trim_mode == TRIM_NO || error("reactive reuse does not support --trim")
-        reused = copy(reactive_reused_initial)   # the direct list (precompile.jl)
+        # With trim the direct list is empty (precompile.jl): the reused
+        # code is what the walk from the entry points reaches.
+        reused = copy(reactive_reused_initial)
         empty!(reactive_dead_methods)
+        empty!(reactive_verify_reused)
     end
 
     # Create an "invokelatest" queue to enable eager compilation of speculative
@@ -1823,13 +1861,13 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
         )
 
         append!(workqueue, methods)
-        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage, reused)
+        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage, reused, trim = trim_mode != TRIM_NO)
     end
 
     if invokelatest_queue !== nothing
         # This queue is intentionally aliased, to handle e.g. a `finalizer` calling `Core.finalizer`
         # (it will enqueue into itself and immediately drain)
-        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage, reused)
+        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage, reused, trim = trim_mode != TRIM_NO)
     end
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE

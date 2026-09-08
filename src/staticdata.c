@@ -5050,6 +5050,16 @@ JL_DLLEXPORT void jl_reactive_set_output(const char *path) JL_NOTSAFEPOINT
     jl_options.outputo = path ? strdup(path) : NULL;
 }
 
+// The trim of the next image write: the trimmed product of a save (Stage E
+// of the plan) is written by a forked child that sets it, with the IR and
+// the metadata stripped as `juliac` does; the parent keeps them.
+JL_DLLEXPORT void jl_reactive_set_trim(int on) JL_NOTSAFEPOINT
+{
+    jl_options.trim = on ? JL_TRIM_SAFE : JL_TRIM_NO;
+    jl_options.strip_ir = on;
+    jl_options.strip_metadata = on;
+}
+
 // The level of the timing report: 0 off, 1 the times and the counts, 2 also
 // one line per code instance of the delta
 JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT

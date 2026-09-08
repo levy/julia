@@ -683,7 +683,7 @@ A trimmed image derived from the compiler's heap at a save, with the
 reused code as roots, so that a trim-clean program keeps its trimmed
 binary through the edits. Option `trim`.
 
-- [ ] the trim pipeline of a store: a prerequisite, and a decision.
+- [x] the trim pipeline of a store: a prerequisite, and a decision.
       The trimmed flagship binary is built by `tool/trim-routing` of
       omnet-julia (`trim_phase.sh`: `--trim=safe --experimental
       --output-exe` from an entry file) with the sealed-abstract compiler
@@ -694,7 +694,12 @@ binary through the edits. Option `trim`.
       compiler on the `reactive-compiler` branch (a merge of that
       compiler work), or a program that the stock verifier accepts for
       Gate E, with the flagship after the merge. The user decides.
-- [ ] the reused code counts as compiled: the trim verifier
+      *Decided (2026-09-08):* the reactive compiler stays apart from the
+      sealed-abstract compiler for now; a merge can come later. Gate E
+      runs on `tool/trim_app/TrimApp`, a program of one tracked file that
+      the stock trimmer accepts, with an edit that keeps it so and one
+      that makes a call site dynamic.
+- [x] the reused code counts as compiled: the trim verifier
       (`verify_typeinf_trim`) takes the reused code instances as resolved
       callees, and the reachability prune of trim
       (`jl_prune_module_bindings`, `jl_prune_method_specializations`)
@@ -702,20 +707,53 @@ binary through the edits. Option `trim`.
       compiled, and a code instance that an edit invalidated is not
       reused, so the check holds. The inferred IR of the reused code is
       in the untrimmed heap, so reachability can be computed from it.
-- [ ] a trim failure is a refusal: an edit that makes a static call site
+      *As built (2026-09-08):* `Compiler/src/typeinfer.jl` under `trim`
+      serves a reused code instance as a compiled callee only when it has
+      inferred IR (`reactive_served_ir`); the callees it enqueues are the
+      `:invoke` targets of that IR, not its recorded dispatch edges, which
+      over-approximate and named generic `setproperty!`. A reused code
+      instance without IR is recompiled fresh, so `julia_main`, which the
+      trace has no IR for, is compiled by the trim child.
+      `Compiler/src/verifytrim.jl` adds `reactive_reused_set` to the
+      inspected set and verifies the `reactive_verify_reused` pairs. The
+      two globals cross the module boundary; a keyword on the verifier
+      hit a two-argument wrapper.
+- [x] a trim failure is a refusal: an edit that makes a static call site
       dynamic invalidates the caller, the caller lands in the delta, the
       verifier names it, and the rebuild answers `refused` with the
       verifier's reason (catalog id T1). The store and the product are
       unchanged.
-- [ ] the second output of a save: after the untrimmed archive, a second
+      *As built (2026-09-08):* the server's `trim` fork and the no-server
+      child both write the verifier's messages to `<archive>.log`; a
+      refusal returns the reason (`_reactive_trim_reason`) and the builder
+      rolls back the snapshot, the next image and, for the server, quits
+      it. `tool/trim_app/compute-dynamic.jl` holds four `score` methods and
+      a `Vector{Any}`, so `score(SAMPLES[2])` stays dynamic; Gate E refuses
+      it with T1 and leaves both bundles and the store as they were.
+- [x] the second output of a save: after the untrimmed archive, a second
       forked child writes the trimmed archive with `jl_options.trim` set
       for that write only (the trimmed heap, the fresh table of the
       reachable functions, the delta's and the reused text; the linker
       drops the rest). The builder links it into `<app_dir>/trimmed/`.
       Without the server the child writes both archives before its exit.
-- [ ] the option `trim` (`:off`, `:on`, `:once`) and its variable; the
+      *As built (2026-09-08):* `rc_save(archive; trim = true)` forks with
+      `jl_reactive_fork`, sets `jl_reactive_set_trim(1)` in the fork, includes
+      the two `juliac` patch files and `trim_entrypoints.jl`, and writes the
+      archive; the parent keeps its heap. The server answers `trim`; the
+      no-server apply child appends the same fork to `child.jl` after the
+      apply, so it writes both archives from one loaded base before its exit.
+      `_reactive_trim_product` links the base chain and the trimmed archive
+      into `<app_dir>/trimmed/lib/julia/sys.so`; the untrimmed delta is never
+      linked. The trimmed bundle gets its own launcher `trimmed_wrapper.c`,
+      which calls the exported `julia_main` directly, because a trimmed image
+      has no evaluator for the untrimmed launcher's `jl_eval_string`.
+- [x] the option `trim` (`:off`, `:on`, `:once`) and its variable; the
       product's bundle beside the untrimmed one; `trim = :on` on a store
       founded with `:off`.
+      *As built (2026-09-08):* `trim::Symbol` and `JULIA_REACTIVE_TRIM`
+      (`off`/`on`/`once`) reach `_materialize_full` and `_materialize_delta`;
+      the trimmed bundle is `<app_dir>/trimmed`, its libraries the untrimmed
+      ones as hard links.
 - [ ] the incremental verification: the reachable set of a save is the
       reachable set of the base plus the delta's cone minus what the
       edits invalidated; the verifier walks the delta's edges only. Until
@@ -729,6 +767,19 @@ stays within the residue of the trimmed founding's; the untrimmed image
 passes Gate 0 as in Gate D; an edit that adds a method to a static call
 site is refused with the verifier's reason and leaves both bundles as
 they were.
+
+*Passed on TrimApp 2026-09-08* (`tool/gate_e.sh`, the decision above kept
+the reactive compiler apart from the sealed-abstract one). `TrimApp` sums
+`score(n)` over `1:10` and prints a label; the stock verifier accepts it.
+The founding and six server edits (the file alternating with `compute-after.jl`)
+each print the sum of the edit from both bundles; their trimmed images are
+4.02 MB against 167 MB untrimmed and stay within 13 KB of each other, the
+slot residue of the chain. A seventh edit through a no-server child build
+prints its sum too; its trimmed image is 4.86 MB, the residue of the six
+untrimmed chain deltas it links, which a founding resets (Stage G). The
+dynamic edit is refused with T1 and leaves both bundles and the store as
+they were. The trimmed launcher runs the trimmed image with no evaluator.
+The routing sample waits on the merge of the sealed-abstract compiler.
 
 ## Stage F — the image written by pages
 
