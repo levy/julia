@@ -6481,6 +6481,24 @@ static void reactive_chain_load(jl_image_t *image)
     reactive_gap_lo = reactive_region_base + LLT_ALIGN(reactive_region_const + reactive_sections.const_data.size - reactive_region_base, page);
 }
 
+// An image with a chain file beside it loads through the region and the
+// chain, whatever the environment: the launcher of a bundle and the oracle
+// know nothing of the mode; the mode itself makes a process that will
+// save an overlay load through the region.
+static int reactive_chain_exists(void) JL_NOTSAFEPOINT
+{
+    const char *image_file = jl_options.image_file;
+    if (image_file == NULL)
+        return 0;
+    size_t flen = strlen(image_file);
+    char *chain_path = (char*)malloc_s(flen + 8);
+    memcpy(chain_path, image_file, flen);
+    strcpy(chain_path + flen, ".chain");
+    int exists = access(chain_path, R_OK) == 0;
+    free(chain_path);
+    return exists;
+}
+
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;
@@ -6488,7 +6506,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
     reactive_chain_n = 0;
-    if (buf.kind == JL_IMAGE_KIND_SO && reactive_overlay_mode() && reactive_region_load(buf))
+    if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || reactive_chain_exists()) && reactive_region_load(buf))
         reactive_chain_load(image);
 
     if (buf.kind == JL_IMAGE_KIND_SO) {
