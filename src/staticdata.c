@@ -563,6 +563,21 @@ static int effects_foldable(uint32_t effects)
 #define jl_queue_for_serialization(s, v) jl_queue_for_serialization_((s), (jl_value_t*)(v), 1, 0)
 static void jl_queue_for_serialization_(jl_serializer_state *s, jl_value_t *v, int recursive, int immediate) JL_GC_DISABLED;
 
+// Set while a reactive image is written; the format is described below.
+static int reactive_prune_heap = 0;
+
+// A weak list of a module: the list and its memory are serialized, its
+// members only when something else reaches them. The list is pruned to the
+// serialized members once the heap is known (reactive_prune_weak_list), the
+// way the backedge lists of a binding are.
+static void reactive_queue_weak_list(jl_serializer_state *s, jl_value_t *list) JL_GC_DISABLED
+{
+    if (list == jl_nothing)
+        return;
+    jl_queue_for_serialization_(s, (jl_value_t*)((jl_array_t*)list)->ref.mem, 0, 1);
+    jl_queue_for_serialization(s, list);
+}
+
 static void jl_queue_module_for_serialization(jl_serializer_state *s, jl_module_t *m) JL_GC_DISABLED
 {
     jl_queue_for_serialization(s, m->name);
@@ -604,6 +619,14 @@ static void jl_queue_module_for_serialization(jl_serializer_state *s, jl_module_
         record_field_change((jl_value_t**)&m->usings_backedges, jl_nothing);
         record_field_change((jl_value_t**)&m->scanned_methods, jl_nothing);
     }
+    else if (reactive_prune_heap) {
+        // A module that only a `using` backedge reaches is dead: nothing can
+        // name it again. So is a method that only the scanned list reaches:
+        // a deleted one. Both lists are weak in a reactive image, or every
+        // `Module()` of a rebuild would stay in the image with its bindings.
+        reactive_queue_weak_list(s, m->usings_backedges);
+        reactive_queue_weak_list(s, m->scanned_methods);
+    }
     else {
         jl_queue_for_serialization(s, m->usings_backedges);
         jl_queue_for_serialization(s, m->scanned_methods);
@@ -626,7 +649,7 @@ static int codeinst_may_be_runnable(jl_code_instance_t *ci, int incremental) {
 // `codeinst_may_be_runnable` keeps them. A dropped entry takes its method,
 // the specializations and their code out of the image: the backedge lists
 // are pruned to the serialized code instances. A stock image keeps them all.
-static int reactive_prune_heap = 0;
+// `reactive_prune_heap` (above) is set while such an image is written.
 
 static int reactive_entry_dead(jl_typemap_entry_t *e) JL_NOTSAFEPOINT
 {
@@ -2637,6 +2660,14 @@ static void jl_prune_binding_backedges(jl_array_t *backedges)
     jl_array_del_end(backedges, n - ins);
 }
 
+// A weak list of a module (reactive_queue_weak_list): keep the serialized
+// members.
+static void reactive_prune_weak_list(jl_value_t *list)
+{
+    if (list != jl_nothing)
+        jl_prune_binding_backedges((jl_array_t*)list);
+}
+
 uint_t bindingkey_hash(size_t idx, jl_value_t *data);
 uint_t speccache_hash(size_t idx, jl_value_t *data);
 
@@ -3043,6 +3074,73 @@ static int jl_prune_internal_mtable(jl_methtable_t *mt, void *env)
 }
 
 // In addition to the system image (where `worklist = NULL`), this can also save incremental images with external linkage
+// JULIA_REACTIVE_HEAPDUMP=<path>: one line per object of the heap, its type,
+// its size and its head, so that two images can be compared object by
+// object. A tool of the reactive format: the difference between the images
+// of two rebuilds names what a rebuild keeps.
+static void reactive_dump_heap(const char *path)
+{
+    ios_t dump;
+    if (ios_file(&dump, path, 1, 1, 1, 1) != NULL) {
+        for (size_t i = 0; i < serialization_queue.len; i++) {
+            jl_value_t *v = (jl_value_t*)serialization_queue.items[i];
+            jl_datatype_t *t = (jl_datatype_t*)jl_typeof(v);
+            size_t sz = jl_is_genericmemory(v) ? ((jl_genericmemory_t*)v)->length * jl_datatype_layout(t)->size :
+                        jl_is_string(v) ? jl_string_len(v) : jl_datatype_size(t);
+            ios_printf(&dump, "%s | %zu | ", jl_typeof_str(v), sz);
+            if (jl_is_symbol(v))
+                ios_printf(&dump, "%s", jl_symbol_name((jl_sym_t*)v));
+            else if (jl_is_string(v)) {
+                const char *data = jl_string_data(v);
+                for (size_t k = 0; k < jl_string_len(v) && k < 100; k++)
+                    ios_putc(data[k] >= 0x20 && data[k] < 0x7f ? data[k] : '.', &dump);
+            }
+            else if (jl_is_module(v)) {
+                jl_module_t *m = (jl_module_t*)v;
+                ios_printf(&dump, "%s.%s", jl_symbol_name(m->parent->name), jl_symbol_name(m->name));
+            }
+            else if (jl_is_method(v)) {
+                jl_method_t *m = (jl_method_t*)v;
+                ios_printf(&dump, "%s.%s %s:%d", jl_symbol_name(m->module->name), jl_symbol_name(m->name),
+                           jl_symbol_name(m->file), m->line);
+            }
+            else if (jl_is_method_instance(v)) {
+                jl_method_instance_t *mi = (jl_method_instance_t*)v;
+                if (jl_is_method(mi->def.value))
+                    ios_printf(&dump, "%s.%s", jl_symbol_name(mi->def.method->module->name), jl_symbol_name(mi->def.method->name));
+            }
+            else if (jl_is_code_instance(v)) {
+                jl_code_instance_t *ci = (jl_code_instance_t*)v;
+                if (jl_is_method_instance(ci->def) && jl_is_method(((jl_method_instance_t*)ci->def)->def.value))
+                    ios_printf(&dump, "%s.%s", jl_symbol_name(((jl_method_instance_t*)ci->def)->def.method->module->name),
+                               jl_symbol_name(((jl_method_instance_t*)ci->def)->def.method->name));
+                ios_printf(&dump, " w%zu:%zu", jl_atomic_load_relaxed(&ci->min_world), jl_atomic_load_relaxed(&ci->max_world));
+            }
+            else if (jl_is_datatype(v)) {
+                jl_datatype_t *dt = (jl_datatype_t*)v;
+                ios_printf(&dump, "%s.%s", jl_symbol_name(dt->name->module->name), jl_symbol_name(dt->name->name));
+            }
+            else if (jl_is_typename(v)) {
+                jl_typename_t *tn = (jl_typename_t*)v;
+                ios_printf(&dump, "%s.%s", jl_symbol_name(tn->module->name), jl_symbol_name(tn->name));
+            }
+            else if (jl_is_binding(v)) {
+                jl_binding_t *b = (jl_binding_t*)v;
+                if (b->globalref)
+                    ios_printf(&dump, "%s.%s", jl_symbol_name(b->globalref->mod->name), jl_symbol_name(b->globalref->name));
+            }
+            else if (jl_typetagis(v, jl_typemap_entry_type)) {
+                jl_typemap_entry_t *e = (jl_typemap_entry_t*)v;
+                ios_printf(&dump, "w%zu:%zu", jl_atomic_load_relaxed(&e->min_world), jl_atomic_load_relaxed(&e->max_world));
+            }
+            else if (jl_is_genericmemory(v))
+                ios_printf(&dump, "%zu", ((jl_genericmemory_t*)v)->length);
+            ios_putc('\n', &dump);
+        }
+        ios_close(&dump);
+    }
+}
+
 static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
                                            jl_array_t *module_init_order, jl_array_t *worklist, jl_array_t *extext_methods,
                                            jl_array_t *new_ext_cis, jl_query_cache *query_cache)
@@ -3297,6 +3395,11 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             else if (jl_is_module(v)) {
                 if (jl_options.trim)
                     jl_prune_module_bindings((jl_module_t*)v);
+                if (reactive_prune_heap) {
+                    jl_module_t *m = (jl_module_t*)v;
+                    reactive_prune_weak_list(get_replaceable_field(&m->usings_backedges, 1));
+                    reactive_prune_weak_list(get_replaceable_field(&m->scanned_methods, 1));
+                }
             }
             else if (jl_is_typename(v)) {
                 jl_typename_t *tn = (jl_typename_t*)v;
@@ -3322,6 +3425,10 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             }
         }
     }
+
+    const char *heapdump = getenv("JULIA_REACTIVE_HEAPDUMP");
+    if (heapdump && *heapdump)
+        reactive_dump_heap(heapdump);
 
     uint32_t external_fns_begin = 0;
     { // step 2: build all the sysimg sections
