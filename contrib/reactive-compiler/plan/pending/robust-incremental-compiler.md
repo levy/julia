@@ -60,6 +60,65 @@ Recorded 2026-09-05, from the discussion that started this plan:
   PackageCompiler for the founding and the bundle, and owns the rebuild
   from Stage D on. The fork of PackageCompiler is retired at Stage D. The
   log entry "2026-09-05, PackageCompiler" has the detail.
+- **The compiler's heap is never trimmed.** Recorded 2026-09-08. A
+  trimmed image has no parser, no `eval` and no ledger, so the child and
+  the server cannot run inside it. The store keeps the untrimmed image as
+  the state of the compiler; a trimmed image is a product that a save
+  derives from that heap, with the reused code as roots of the trim, and
+  a trim failure of the delta is a refusal. Stage E.
+- **The image is a log between foundings.** Recorded 2026-09-08. A save
+  writes again only the pages of the image that the process wrote and
+  appends the new objects; a dead object on a clean page stays until a
+  founding compacts the image, the way the global slots stay. The
+  trimmed product pulls the other way, prune against append, so it stays
+  a whole write. Stages F and G.
+- **The options are orthogonal.** Recorded 2026-09-08. The server, the
+  trimmed product and the way the image is written are three keywords of
+  `materialize_app`, each with an environment default, and any
+  combination is valid. The section "The options" lists them.
+
+## The options
+
+Every option is a keyword of `materialize_app`, with an environment
+variable as its default, so that a build tool or a gate script sets it
+without a code change. The store records nothing of them: a store built
+one way can be rebuilt another way, except where the value changes the
+image format, which is a founding.
+
+| Keyword | Variable | Values | Default | Stage |
+| --- | --- | --- | --- | --- |
+| `server` | `JULIA_REACTIVE_SERVER` | `false`, `true` | `false` | D, built |
+| — | `JULIA_REACTIVE_SERVER_SAVES` | saves before a restart | 200 | D, built |
+| — | `JULIA_REACTIVE_SERVER_RSS_KB` | resident size before a restart | 16 GB | D, built |
+| `trim` | `JULIA_REACTIVE_TRIM` | `:off`, `:on`, `:once` | `:off` | E |
+| `image` | `JULIA_REACTIVE_IMAGE_WRITE` | `:whole`, `:pages`, `:overlay` | `:whole` | F, G |
+| `compact` | `JULIA_REACTIVE_COMPACT` | `(saves = N, growth = f)` | `(50, 0.25)` | F |
+| `founding` | — | `false`, `true` | `false` | F |
+| — | `JULIA_REACTIVE_TIMINGS` | 0, 1, 2 | 0 | built |
+| — | `JULIA_REACTIVE_HEAPDUMP` | a path | unset | built |
+
+- `server`: the rebuild runs in the server of the store, started from the
+  last image if none answers; the two variables bound its life.
+- `trim`: `:on` writes the trimmed product beside every save, `:once`
+  beside this build only, `:off` never. The product is a second bundle
+  under `<app_dir>/trimmed/` with its own `bin/` and `lib/julia/sys.so`;
+  the untrimmed bundle and the store's image stay as they are. A store
+  founded with `:off` can turn it on later: the product derives from the
+  heap at any save. A build without a trim-clean program refuses with the
+  verifier's reason.
+- `image`: how a save writes the image. `:whole` serializes the heap, as
+  now. `:pages` copies the clean pages of the base image and writes again
+  the pages the process wrote, with the new objects appended; the
+  linker still runs. `:overlay` writes the delta as its own shared object
+  with the patches of the base, and the loader applies them; no link. A
+  change of this value is a founding, because the format of the image
+  differs. The trimmed product is always a whole write.
+- `compact`: with `:pages` or `:overlay` the image keeps its garbage; the
+  next build founds again after `saves` saves since the last founding, or
+  when the loadable size grew by the fraction `growth` since it. `founding
+  = true` founds now.
+- `JULIA_REACTIVE_REUSE` and `JULIA_REACTIVE_IMAGE` are internal: the
+  builder sets them for the child and the server.
 
 ## The model
 
@@ -121,11 +180,12 @@ invalidation reaches, the stage that covers it, and the state today.
 | H1 | comments, whitespace, line numbers | none; update the line numbers of the methods in place | none | B | done; a quoted line number stays until the next evaluation |
 | H2 | docstrings | the expression | none | done | done |
 | H3 | move or rename a file | content-keyed diff, not path-keyed | none | B | done |
+| T1 | a static call site becomes dynamic under `trim` | the verifier names it | refusal | E | — |
 
 Every category is supportable, and the cost degrades toward a founding: a
 `convert` method or a supertype change invalidates most of the program, and
 the rebuild then costs about what a founding costs. F1 and F3 are refused
-until Stage E tracks the sources of the dependencies.
+until the ledger tracks the sources of the dependencies ("Beyond").
 
 A refusal is also the answer when the apply set leaves the tracked sources:
 a method of an untracked package whose signature names a redefined type,
@@ -611,19 +671,130 @@ by Gate 0. Every image of the ten passes Gate 0.
 through the server is apply 2.0 s (the trace 1.4 s), save 6.5 s (the
 front 1.3 s, the heap 3.2 s, the dump 1.2 s), link 1.4 s. The bound of 4
 s is below the heap write of a full image (3.2 s) plus its dump and link
-(2.6 s); the front and the trace are the parts that the server can still
-cut. The log entry below has the outcome of the other checks.
+(2.6 s); the front and the trace were the parts that the server could
+still cut, and it cut them. Stage F is the item that meets the bound:
+an image written by pages. The log entry below has the outcome of the
+other checks.
 
-## Stage E — beyond
+## Stage E — the trimmed product
 
-Not planned in detail; the items that the catalog leaves open.
+A trimmed image derived from the compiler's heap at a save, with the
+reused code as roots, so that a trim-clean program keeps its trimmed
+binary through the edits. Option `trim`.
+
+- [ ] the reused code counts as compiled: the trim verifier
+      (`verify_typeinf_trim`) takes the reused code instances as resolved
+      callees, and the reachability prune of trim
+      (`jl_prune_module_bindings`, `jl_prune_method_specializations`)
+      takes them as roots. Their edges were verified when they were
+      compiled, and a code instance that an edit invalidated is not
+      reused, so the check holds. The inferred IR of the reused code is
+      in the untrimmed heap, so reachability can be computed from it.
+- [ ] a trim failure is a refusal: an edit that makes a static call site
+      dynamic invalidates the caller, the caller lands in the delta, the
+      verifier names it, and the rebuild answers `refused` with the
+      verifier's reason (catalog id T1). The store and the product are
+      unchanged.
+- [ ] the second output of a save: after the untrimmed archive, a second
+      forked child writes the trimmed archive with `jl_options.trim` set
+      for that write only (the trimmed heap, the fresh table of the
+      reachable functions, the delta's and the reused text; the linker
+      drops the rest). The builder links it into `<app_dir>/trimmed/`.
+      Without the server the child writes both archives before its exit.
+- [ ] the option `trim` (`:off`, `:on`, `:once`) and its variable; the
+      product's bundle beside the untrimmed one; `trim = :on` on a store
+      founded with `:off`.
+- [ ] the incremental verification: the reachable set of a save is the
+      reachable set of the base plus the delta's cone minus what the
+      edits invalidated; the verifier walks the delta's edges only. Until
+      then a save with `trim = :on` pays a whole pass, a few seconds on
+      the routing sample.
+
+**Gate E.** The routing sample (the flagship is trim-clean) founded with
+`trim = :on`: the trimmed product of every one of ten edits runs the
+Backbone configuration with the hop mean of the edit; its loadable size
+stays within the residue of the trimmed founding's; the untrimmed image
+passes Gate 0 as in Gate D; an edit that adds a method to a static call
+site is refused with the verifier's reason and leaves both bundles as
+they were.
+
+## Stage F — the image written by pages
+
+A save writes again only the pages of the image that the process wrote
+and appends the new objects; the clean pages are copied from the base
+image's file. Option `image = :pages`. This is the item that meets the
+bound of Gate D.
+
+- [ ] the measurement first: a throwaway experiment protects the pages of
+      the loaded image at start (`mprotect`), counts the pages that one
+      routing edit and its save write, and lists the writers (the method
+      tables, the caches, the bindings, the GC). This decides the gain
+      before any writer code exists. The GC must not write into the
+      image's pages during a collection (the image's objects are
+      permanently marked); if it does, the dirty set is every page, and
+      the design changes to a diff of the objects at the write.
+- [ ] the dirty pages of the runtime: under `image = :pages` the loader
+      protects the image's data pages, the fault handler sets the page's
+      bit and unprotects it, and the writer reads the bitmap
+      (`jl_reactive_dirty_pages`). The base of the bitmap is the image the
+      process loaded: the server accumulates the pages since its start,
+      which matches the delta it writes; a child's pages are its own.
+- [ ] the writer: the bytes of a clean page come from the base image's
+      file, the objects of a dirty page are serialized again in place with
+      the pruning of the reactive format, the new objects are appended
+      after the base, and the relocation lists are merged by page. The
+      constant data, the symbols and the global-slot records are appended
+      the same way. The heap write drops from 3.4 s to the dirty pages
+      and the new objects.
+- [ ] the dump without LLVM: the blob becomes a raw section of the object
+      through the assembler or a direct ELF writer, not an LLVM global.
+      The dump drops from 1.2 s to the copy.
+- [ ] the garbage of the log: a dead object on a clean page stays; the
+      prune of dead entries applies on the pages that changed, which is
+      where a deletion writes; the option `compact` founds again after
+      `saves` saves or a growth of `growth`, and `founding = true` founds
+      now. The growth per edit is reported with the sizes.
+- [ ] the option `image` and its variable; a change of the value is a
+      founding; the trimmed product is always a whole write.
+- [ ] the child and the server both write by pages: the child from the
+      pages of its own run, the server from the pages since its start.
+
+**Gate F.** Gate D with `image = :pages`: each rebuild in at most 4 s;
+every image passes Gate 0; a child rebuild from image k equals the
+server's image k+1 by Gate 0; the loadable size after ten edits against
+the size after one, within the residue of the slots and the garbage the
+log reports; a founding after the ten compacts to the size of a fresh
+founding within the residue of the slots. Gate C on the page-written
+images.
+
+## Stage G — the overlay image
+
+A save writes the delta as its own shared object, with the new objects,
+the patches of the base's objects and the fresh function table; the
+loader applies the patches to the mapped base at start. No link of the
+whole image. Option `image = :overlay`.
+
+- [ ] the format of an overlay: the new objects with relocations into the
+      base, the patch list of the base's dirty pages, the fresh function
+      table, the delta's text; a chain of overlays over one base.
+- [ ] the loader: the base is mapped as now, the overlays in order, each
+      one's patches applied and relocations resolved; the function table
+      of the last overlay names the live functions.
+- [ ] the builder: no link; the bundle gains one shared object per save;
+      `compact` bounds their number through a founding.
+- [ ] the option and the founding on a change of it.
+
+**Gate G.** Gate F with `image = :overlay`: each rebuild in about 1 s; the
+same checks; a bundle with ten overlays starts within the residue of the
+start of the founding's bundle.
+
+## Beyond
+
+The items that the catalog leaves open, not planned in detail.
 
 - F3 for dependencies: the sources of the packages of the Manifest are
   available; the same diff applies to them, at the cost of a ledger for
   every package. Until then a version change is a founding.
-- `--trim` and reactive reuse: the trim verifier walks the edges that
-  reuse skips. With the fresh table and the reachability that the server
-  knows, trim can become incremental. Its own milestone.
 - the compaction of the global slots without a founding.
 
 ## Risks
@@ -647,8 +818,34 @@ Not planned in detail; the items that the catalog leaves open.
   cost.
 - The single-target rule becomes a rule of the format in Stage C. A
   multi-target image cannot be chained.
+- The GC could write into the image's pages during a collection (a mark
+  bit, a remembered-set entry). Then the dirty set of Stage F is every
+  page and the page design gives nothing; the measurement item is first
+  for that reason, and the fallback is a diff of the objects at the
+  write, which keeps the walk.
+- The relocation lists of the image may not merge by page (an entry that
+  spans two pages, an order that is not by offset). Stage F's writer then
+  rebuilds the lists of the dirty pages from the objects, at a cost.
+- The log grows with garbage between foundings; a long session without
+  a founding loses the size that Gate C won. The `compact` option and the
+  growth report bound it.
+- Trim and the log pull the other way. A trimmed product stays a whole
+  write; a session that wants both a fast rebuild and a trimmed binary at
+  every save pays the trim's pass each time.
+- A page protected by `mprotect` costs a fault on its first write. The
+  compiler process writes few image pages; a program that writes many
+  (the server never runs the program) would pay it.
 
 ## Log
+
+**2026-09-08, the plan.** Two questions after Gate D: whether the
+incremental compile can keep a trimmed binary, with and without the
+server, and whether the image can be appended to or partly overwritten
+instead of written whole. Both are yes; the decisions "The compiler's
+heap is never trimmed", "The image is a log between foundings" and "The
+options are orthogonal" record the answers, the section "The options"
+the controls, and Stages E, F and G the work, with the measurement of
+the dirty pages first.
 
 **2026-09-08, Gate D.** The server (`tool/gate_d.sh`, ten routing edits
 through one server). The founding 3:07; every edit k gives the hop mean

@@ -456,7 +456,12 @@ code.
   the tracked files and of the project; a checkout that moves needs a
   founding build. The tools derive the checkout from their own location.
 - **`--trim` refuses reactive reuse** — the trim verifier walks the edges
-  that reuse skips. The trimmed flagship binary is its own milestone.
+  that reuse skips. The plan's Stage E derives a trimmed product from the
+  untrimmed heap at a save, with the reused code as roots; until then a
+  trimmed binary is a founding of its own.
+- **A save writes the whole image.** The heap of 3 million objects
+  costs 3.4 s on the routing sample, the dump 1.2 s and the link 1.4 s.
+  The plan's Stages F and G write the image by pages, then as an overlay.
 - **The ledger sees the tracked sources alone.** A value of an old type
   inside an untyped container of a `const` is not found (the oracle's
   output check sees it); an untracked expander of a tracked macro is
