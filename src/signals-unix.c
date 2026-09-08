@@ -524,6 +524,11 @@ JL_NO_ASAN static void segv_handler(int sig, siginfo_t *info, void *context)
         sigdie_handler(sig, info, context);
         return;
     }
+#if defined(_OS_LINUX_) && defined(_CPU_X86_64_)
+    if (sig == SIGSEGV && info->si_code == SEGV_ACCERR && is_write_fault(context) &&
+        jl_reactive_dirty_fault(info->si_addr, (void*)((ucontext_t*)context)->uc_mcontext.gregs[REG_RIP]))
+        return;
+#endif
     if (sig == SIGSEGV && info->si_code == SEGV_ACCERR && jl_addr_is_safepoint((uintptr_t)info->si_addr) && !is_write_fault(context)) {
         jl_set_gc_and_wait(ct);
         // Do not raise sigint on worker thread

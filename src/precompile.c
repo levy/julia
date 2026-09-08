@@ -102,6 +102,7 @@ JL_DLLEXPORT void jl_write_compiler_output(void)
     }
 
     uint64_t t_start = jl_hrtime();
+    jl_reactive_dirty_report("before the write");
     jl_task_wait_empty(); // wait for most work to finish (except possibly finalizers)
     jl_gc_collect(JL_GC_FULL);
     jl_gc_collect(JL_GC_INCREMENTAL); // sweep finalizers
@@ -179,6 +180,7 @@ JL_DLLEXPORT void jl_write_compiler_output(void)
         jl_safe_printf("reactive: save collect %.1f s, image %.1f s, dump %.1f s\n",
                        (t_collected - t_start) / 1e9, (t_created - t_collected) / 1e9,
                        (jl_hrtime() - t_created) / 1e9);
+    jl_reactive_dirty_report("after the write");
 
     if (outputji) {
         if (jl_options.incremental) {

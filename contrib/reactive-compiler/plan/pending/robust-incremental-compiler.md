@@ -96,6 +96,7 @@ image format, which is a founding.
 | `founding` | — | `false`, `true` | `false` | F |
 | — | `JULIA_REACTIVE_TIMINGS` | 0, 1, 2 | 0 | built |
 | — | `JULIA_REACTIVE_HEAPDUMP` | a path | unset | built |
+| — | `JULIA_REACTIVE_DIRTY_PAGES` | a path | unset | F, built |
 
 - `server`: the rebuild runs in the server of the store, started from the
   last image if none answers; the two variables bound its life.
@@ -725,7 +726,7 @@ and appends the new objects; the clean pages are copied from the base
 image's file. Option `image = :pages`. This is the item that meets the
 bound of Gate D.
 
-- [ ] the measurement first: a throwaway experiment protects the pages of
+- [x] the measurement first: a throwaway experiment protects the pages of
       the loaded image at start (`mprotect`), counts the pages that one
       routing edit and its save write, and lists the writers (the method
       tables, the caches, the bindings, the GC). This decides the gain
@@ -733,6 +734,32 @@ bound of Gate D.
       image's pages during a collection (the image's objects are
       permanently marked); if it does, the dirty set is every page, and
       the design changes to a diff of the objects at the write.
+      *Measured (2026-09-08):* `JULIA_REACTIVE_DIRTY_PAGES=<path>` makes
+      the loader protect the data pages of the image after the
+      relocations (`reactive_dirty_protect`, staticdata.c), the fault
+      handler mark a page and lift its protection at its first write
+      (`jl_reactive_dirty_fault`, signals-unix.c), and the writer append a
+      report with the writers named by `dladdr`. The routing image has
+      41799 data pages (167 MB). A plain start writes 67 to 77 pages. A
+      full collection writes none: `gc_try_setmark_tag` returns before
+      the store when the object is marked, and the image's objects stay
+      marked. A child rebuild with one edit wrote 1666 pages (6.6 MB, 4
+      %) before its save, 1450 of them by the compile hint of the trace:
+      it stored the precompiled flag into the method instance and the
+      code instance of every statement, and the serializer clears both
+      flags at the write, so every rebuild stored them again. Under
+      reuse the two stores skip the objects of the image (the direct
+      list serves them, flag or not), and 219 pages remain (876 KB, 0.5
+      %): the invalidations of the edit (`jl_method_table_activate`, 59
+      pages), the locks inside image objects (31), the caches and the
+      type caches, the pushes into image arrays and the write barrier's
+      remembered bit. The save's own writes come after the snapshot of
+      the bitmap and do not count: the prune of the backedge lists
+      rewrites 24000 pages in place, the locks 1200, the direct list's
+      sets 130. A page written by nothing holds objects that reference
+      the base's objects only, and every base object stays in a log, so a
+      copied page cannot dangle; a page written by a deletion or an
+      invalidation is serialized again with the prune.
 - [ ] the dirty pages of the runtime: under `image = :pages` the loader
       protects the image's data pages, the fault handler sets the page's
       bit and unprotects it, and the writer reads the bitmap

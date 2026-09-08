@@ -4018,6 +4018,10 @@ static void _generate_from_hint(jl_method_instance_t *mi, size_t world)
     if (codeinst != jl_nothing) {
         if (jl_atomic_load_relaxed(&((jl_code_instance_t*)codeinst)->invoke) == jl_fptr_const_return)
             return; // probably not a good idea to generate code
+        // A reactive rebuild serves a code instance of the loaded image by
+        // the direct list, flag or not; the store would dirty its page.
+        if (jl_reactive_reuse_enabled() && (jl_atomic_load_relaxed(&((jl_code_instance_t*)codeinst)->flags) & JL_CI_FLAGS_FROM_IMAGE))
+            return;
         jl_atomic_store_relaxed(&((jl_code_instance_t*)codeinst)->precompile, 1);
     }
 }
@@ -4036,8 +4040,13 @@ static void jl_compile_now(jl_method_instance_t *mi)
 JL_DLLEXPORT void jl_compile_method_instance(jl_method_instance_t *mi, jl_tupletype_t *types, size_t world)
 {
     size_t tworld = jl_typeinf_world;
-    uint8_t miflags = jl_atomic_load_relaxed(&mi->flags) | JL_MI_FLAGS_MASK_PRECOMPILED;
-    jl_atomic_store_relaxed(&mi->flags, miflags);
+    // The flag is stored only when it changes: a precompile statement of a
+    // trace names a method instance of the image that carries the flag
+    // already, and a store would dirty its page for nothing (the pages of
+    // the image that a rebuild writes are the measure of Stage F).
+    uint8_t miflags = jl_atomic_load_relaxed(&mi->flags);
+    if (!(miflags & JL_MI_FLAGS_MASK_PRECOMPILED) && !(jl_reactive_reuse_enabled() && jl_object_in_image((jl_value_t*)mi)))
+        jl_atomic_store_relaxed(&mi->flags, miflags | JL_MI_FLAGS_MASK_PRECOMPILED);
     if (jl_generating_output()) {
         jl_compile_now(mi);
         // In addition to full compilation of the compilation-signature, if `types` is more specific (e.g. due to nospecialize),
@@ -4052,8 +4061,9 @@ JL_DLLEXPORT void jl_compile_method_instance(jl_method_instance_t *mi, jl_tuplet
             types2 = jl_type_intersection_env((jl_value_t*)types, (jl_value_t*)mi->def.method->sig, &tpenv2);
             jl_method_instance_t *mi2 = jl_specializations_get_linfo(mi->def.method, (jl_value_t*)types2, tpenv2);
             JL_GC_POP();
-            miflags = jl_atomic_load_relaxed(&mi2->flags) | JL_MI_FLAGS_MASK_PRECOMPILED;
-            jl_atomic_store_relaxed(&mi2->flags, miflags);
+            miflags = jl_atomic_load_relaxed(&mi2->flags);
+            if (!(miflags & JL_MI_FLAGS_MASK_PRECOMPILED))
+                jl_atomic_store_relaxed(&mi2->flags, miflags | JL_MI_FLAGS_MASK_PRECOMPILED);
             if (jl_rettype_inferred_native(mi2, world, world) == jl_nothing)
                 (void)jl_type_infer(mi2, world, SOURCE_MODE_NOT_REQUIRED, jl_options.trim);
             if (jl_typeinf_func && jl_atomic_load_relaxed(&mi->def.method->primary_world) <= tworld) {

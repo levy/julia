@@ -4139,6 +4139,103 @@ static int all_usings_unchanged_implicit(jl_module_t *mod)
     return unchanged_implicit;
 }
 
+// The dirty pages of the image (Stage F of the plan, the measurement).
+// Under JULIA_REACTIVE_DIRTY_PAGES=<path> the loader protects the data pages
+// of the image once the relocations are applied, the fault handler marks a
+// page and lifts its protection at the first write, and the write of an
+// image appends a report to the path: the pages the process wrote, and
+// the instructions that wrote them first.
+static char *reactive_image_base = NULL;   // the data of the last image restored
+static size_t reactive_image_len = 0;
+static char *reactive_dirty_start = NULL;
+static size_t reactive_dirty_len = 0;
+static uint8_t *reactive_dirty_bits = NULL;
+static size_t reactive_dirty_npages = 0;
+static const char *reactive_dirty_path = NULL;
+#define REACTIVE_DIRTY_WRITERS 128
+static uintptr_t reactive_dirty_writer_ip[REACTIVE_DIRTY_WRITERS];
+static size_t reactive_dirty_writer_n[REACTIVE_DIRTY_WRITERS];
+static size_t reactive_dirty_nwriters = 0;
+static size_t reactive_dirty_faults = 0;
+
+static void reactive_dirty_protect(char *start, size_t len)
+{
+    reactive_dirty_path = getenv("JULIA_REACTIVE_DIRTY_PAGES");
+    if (reactive_dirty_path == NULL || *reactive_dirty_path == '\0')
+        return;
+    size_t page = jl_page_size;
+    char *first = (char*)LLT_ALIGN((uintptr_t)start, page);
+    char *end = (char*)(((uintptr_t)(start + len)) & ~(uintptr_t)(page - 1));
+    if (end <= first)
+        return;
+    reactive_dirty_start = first;
+    reactive_dirty_len = end - first;
+    reactive_dirty_npages = reactive_dirty_len / page;
+    reactive_dirty_bits = (uint8_t*)calloc(reactive_dirty_npages, 1);
+    if (mprotect(first, reactive_dirty_len, PROT_READ) != 0) {
+        jl_safe_printf("reactive: dirty pages: mprotect of %p + %zu KB failed: %s\n", (void*)first,
+                       reactive_dirty_len / 1024, strerror(errno));
+        reactive_dirty_start = NULL;
+    }
+    else {
+        jl_safe_printf("reactive: dirty pages: %zu pages of the image protected\n", reactive_dirty_npages);
+    }
+}
+
+// The fault handler asks first: a write into a protected page of the
+// image marks the page, lifts its protection, and is not a fault.
+JL_DLLEXPORT int jl_reactive_dirty_fault(void *addr, void *ip) JL_NOTSAFEPOINT
+{
+    char *a = (char*)addr;
+    if (reactive_dirty_start == NULL || a < reactive_dirty_start || a >= reactive_dirty_start + reactive_dirty_len)
+        return 0;
+    size_t page = jl_page_size;
+    size_t index = (a - reactive_dirty_start) / page;
+    reactive_dirty_bits[index] = 1;
+    reactive_dirty_faults++;
+    size_t i;
+    for (i = 0; i < reactive_dirty_nwriters; i++)
+        if (reactive_dirty_writer_ip[i] == (uintptr_t)ip)
+            break;
+    if (i == reactive_dirty_nwriters && i < REACTIVE_DIRTY_WRITERS) {
+        reactive_dirty_writer_ip[i] = (uintptr_t)ip;
+        reactive_dirty_writer_n[i] = 0;
+        reactive_dirty_nwriters++;
+    }
+    if (i < REACTIVE_DIRTY_WRITERS)
+        reactive_dirty_writer_n[i]++;
+    mprotect(reactive_dirty_start + index * page, page, PROT_READ | PROT_WRITE);
+    return 1;
+}
+
+JL_DLLEXPORT void jl_reactive_dirty_report(const char *tag)
+{
+    if (reactive_dirty_start == NULL)
+        return;
+    size_t dirty = 0;
+    for (size_t i = 0; i < reactive_dirty_npages; i++)
+        dirty += reactive_dirty_bits[i];
+    ios_t out;
+    if (ios_file(&out, reactive_dirty_path, 1, 1, 1, 0) == NULL)
+        return;
+    ios_seek_end(&out);
+    ios_printf(&out, "%s: %zu of %zu pages dirty (%zu KB of %zu KB), %zu faults, %zu writers\n", tag, dirty,
+               reactive_dirty_npages, dirty * jl_page_size / 1024, reactive_dirty_len / 1024,
+               reactive_dirty_faults, reactive_dirty_nwriters);
+    for (size_t i = 0; i < reactive_dirty_nwriters; i++) {
+        Dl_info info;
+        if (dladdr((void*)reactive_dirty_writer_ip[i], &info) && info.dli_fname) {
+            ios_printf(&out, "  writer %zu pages: %s+0x%zx %s\n", reactive_dirty_writer_n[i], info.dli_fname,
+                       (size_t)(reactive_dirty_writer_ip[i] - (uintptr_t)info.dli_fbase),
+                       info.dli_sname ? info.dli_sname : "");
+        }
+        else {
+            ios_printf(&out, "  writer %zu pages: 0x%zx\n", reactive_dirty_writer_n[i], (size_t)reactive_dirty_writer_ip[i]);
+        }
+    }
+    ios_close(&out);
+}
+
 static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
                                                  jl_array_t *depmods, uint64_t checksum,
                                 /* outputs */    jl_array_t **restored,         jl_array_t **init_order,
@@ -4294,6 +4391,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     char *image_base = (char*)&sysimg.buf[0];
     reloc_t *relocs_base = (reloc_t*)&relocs.buf[0];
+    if (!s.incremental) {
+        reactive_image_base = image_base;
+        reactive_image_len = sizeof_sysdata;
+    }
 
     s.s = &sysimg;
     jl_read_reloclist(&s, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE); // gctags
@@ -4697,6 +4798,8 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     if (s.incremental)
         jl_add_methods(*extext_methods);
+    else
+        reactive_dirty_protect(reactive_image_base, reactive_image_len);
 }
 
 static jl_value_t *jl_validate_cache_file(ios_t *f, jl_array_t *depmods, uint64_t *checksum, int64_t *dataendpos, int64_t *datastartpos)
