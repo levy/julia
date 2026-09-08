@@ -30,6 +30,7 @@ LIGHT=${LIGHT:-24-27}
 N=${N:-10}
 RESTART=${RESTART:-5}
 BOUND=${BOUND:-4}
+IMAGE=${IMAGE:-whole}   # the image write of the rebuilds: whole | pages (Gate F)
 APP=$OUT/routing
 FILE=sample/legacy/routing/Routing.jl
 TRACKED="OmnetRunner,OmnetLegacyFormat,OmnetLegacyRouting"
@@ -45,12 +46,12 @@ lane() {
         timeout 2400s /usr/bin/time -v \
         env PATH="$JH/usr/bin:$PATH" \
             JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
-            JULIA_REACTIVE_SERVER=$server \
+            JULIA_REACTIVE_SERVER=$server JULIA_REACTIVE_IMAGE_WRITE=$IMAGE \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|seconds = |rc: (applied|new [0-9]|trace)|reactive: (delta|save|heap|front)|the server|ERROR|Error" "$OUT/$name.log" | head -20
+    grep -E "Elapsed \(wall|Maximum resident|seconds = |rc: (applied|new [0-9]|trace)|reactive: (delta|save|heap|front|pages)|the server|ERROR|Error" "$OUT/$name.log" | head -24
     return $rc
 }
 
@@ -124,7 +125,9 @@ check() {
 full() {
     rm -rf "$APP" "$OUT/seconds.txt" "$OUT"/sys-*.so "$OUT/routing-restart"
     restore
-    build build-full 0 "$APP" || return 1
+    # The founding writes whole: under pages it would take the stock
+    # sysimage of the process as its base.
+    IMAGE=whole build build-full 0 "$APP" || return 1
     local mean
     mean=$(runsim full "$APP") || return 1
     echo "$mean" > "$OUT/mean-1.txt"

@@ -3576,6 +3576,37 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
     reactive_pages_append = reactive_base.sysimg_size;
     ios_write(const_data, reactive_const_base, reactive_const_len);
     reactive_pages_const_append = reactive_const_len;
+    // The const data comes from memory, with the runtime's writes into the
+    // bits memories; a pointer element is null in an image, as the whole
+    // write makes it (a match context of PCRE, a handle): reset them.
+    {
+        arraylist_t *tags = &reactive_base.gctags;
+        size_t reset = 0;
+        for (size_t i = 0; i < tags->len; i++) {
+            jl_value_t *v = (jl_value_t*)(reactive_image_base + (size_t)tags->items[i] + sizeof(jl_taggedvalue_t));
+            if (!jl_is_genericmemory(v))
+                continue;
+            jl_datatype_t *t = (jl_datatype_t*)jl_typeof(v);
+            const jl_datatype_layout_t *layout = t->layout;
+            if (layout->flags.arrayelem_isboxed || layout->first_ptr >= 0)
+                continue;
+            if (!jl_is_cpointer_type(jl_tparam1(t)))
+                continue;
+            jl_genericmemory_t *m = (jl_genericmemory_t*)v;
+            if (!reactive_in_const(m->ptr))
+                continue;
+            intptr_t *out = (intptr_t*)&const_data->buf[(const char*)m->ptr - reactive_const_base];
+            const intptr_t *in = (const intptr_t*)m->ptr;
+            for (size_t k = 0; k < m->length; k++) {
+                if (in[k] != -1 && out[k] != 0) {
+                    out[k] = 0;
+                    reset++;
+                }
+            }
+        }
+        if (jl_reactive_timings())
+            jl_safe_printf("reactive: pages: %zu pointer elements of the base reset\n", reset);
+    }
     ios_write(symbols, reactive_syms_base, reactive_syms_len);
     for (size_t i = 0; i < reactive_base_syms.len; i++)
         ptrhash_put(&symbol_table, reactive_base_syms.items[i], to_seroder_entry(i));
