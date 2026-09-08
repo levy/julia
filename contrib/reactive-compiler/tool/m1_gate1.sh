@@ -22,7 +22,7 @@
 # order.
 set -u
 OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/ff3540b2-ffb0-4fd3-8928-610aacb586c1/scratchpad/m1}
-JH=${JH:-/home/projectured/workspace/julia-reactive}
+JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
 TOOL=$JH/contrib/reactive-compiler/tool
 # A worktree of omnet-julia pinned to the commit that M0 measured (e21ba2cd),

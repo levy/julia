@@ -16,7 +16,7 @@
 #   julia --project=package/OmnetLegacyRoutingExample <this file>
 
 const RC = get(ENV, "RC_SRC",
-    "/home/projectured/workspace/julia-reactive/contrib/reactive-compiler/src")
+    normpath(joinpath(@__DIR__, "..", "src")))
 include(joinpath(RC, "GraphHarvest.jl"))
 include(joinpath(RC, "MethodEdit.jl"))
 include(joinpath(RC, "ReadKey.jl"))

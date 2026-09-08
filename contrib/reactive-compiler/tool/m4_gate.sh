@@ -15,7 +15,7 @@
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
 OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/m4}
-JH=${JH:-/home/projectured/workspace/julia-reactive}
+JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
 RC=$JH/contrib/reactive-compiler
 # A worktree of omnet-julia pinned to the commit that M0 measured (e21ba2cd).

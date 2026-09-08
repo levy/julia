@@ -15,7 +15,7 @@
 # MethodInstance gains a fresh live entry almost at once and would look untouched.
 
 const RC = get(ENV, "RC_SRC",
-    "/home/projectured/workspace/julia-reactive/contrib/reactive-compiler/src")
+    normpath(joinpath(@__DIR__, "..", "src")))
 include(joinpath(RC, "GraphHarvest.jl"))
 include(joinpath(RC, "MethodEdit.jl"))
 using .GraphHarvest

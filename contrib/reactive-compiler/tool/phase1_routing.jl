@@ -10,7 +10,7 @@
 # rebuild have to repeat?
 
 const HARVEST = get(ENV, "RC_HARVEST",
-    "/home/projectured/workspace/julia-reactive/contrib/reactive-compiler/src/GraphHarvest.jl")
+    normpath(joinpath(@__DIR__, "..", "src", "GraphHarvest.jl")))
 include(HARVEST)
 using .GraphHarvest
 
