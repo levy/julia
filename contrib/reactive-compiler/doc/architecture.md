@@ -373,6 +373,46 @@ founded for another app package (the builder compares the modification
 times of the app files before and after it writes them). The tool
 environment takes PackageCompiler from `package-compiler-reactive`.
 
+## The compiler server
+
+A store can keep a compiler process (`src/reactive_server.jl` of
+PackageCompiler, Stage D of the plan). `materialize_app(...; server = true)`,
+or `JULIA_REACTIVE_SERVER=1`, starts it from the image of the last snapshot
+in the output mode of the rebuild child (`--output-o` for its whole life,
+`JULIA_REACTIVE_REUSE=1`), detached, its log in the store, and records the
+session (the socket, the base snapshot, the pid) in `server.toml`; a later
+call reuses the server that answers. The socket is a Unix socket in the
+temp directory (a socket path holds 107 bytes); both sides use raw
+`socket`, `connect`, `read` and `write` calls, one request per connection,
+one line each way, no libuv.
+
+- `apply <spec.toml>` runs `rc_apply_tracked` and the trace on the
+  arguments of the spec, the same the child script embeds. The ledger of
+  the tracked sources is recomputed from the store's copies, as in the
+  child; the parsed signatures of the trace are cached, and a statement
+  that did not resolve stays failed for the session.
+- `save <archive>` forks through `jl_reactive_fork` (cgmemmgr.cpp): the
+  child opens its own `/proc/self/mem` (the JIT writes code through that
+  descriptor, and after a fork it names the parent's memory), runs the
+  tail of the object script, points the output at the archive
+  (`jl_reactive_set_output`) and writes it with the exit path of the
+  compiler, then `_exit`s; an error in the child ends it with 1. The parent
+  keeps its heap, its ledger and its compiled code.
+- `status` answers the world, the saves and the resident size; `quit`
+  clears the output and exits. `tool/server_request.py` sends a request.
+
+The reuse test of a save sees the image the server loaded as image code:
+the code instances of a delta exist in the parent, but the slot values of
+the emitted text are objects that codegen made in the child, so the next
+save cannot reuse the text. A delta holds every change since the server
+started, one image per save links the founding's texts, the deltas of the
+base chain and the new delta, and a snapshot records its base; a chain
+entry's base is the snapshot before it. The front of a save reuses the
+image's code by a direct list (Compiler/src/precompile.jl): the walk of
+the methods costs milliseconds, and the compile pass sees the new code
+only. What a save cannot avoid is the heap of the image: 3 million
+objects in 3.2 s on the routing sample.
+
 ## The numbers (build lane, 8 image threads)
 
 | workflow | full build | steady rebuild | check |

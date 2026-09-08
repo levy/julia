@@ -532,17 +532,67 @@ exit.
       that undoes or avoids them. Record the list in the plan.
       *Not needed:* `fork` works; the child's serialization mutates the
       child's copy of the heap only.
-- [ ] the server: a Julia process in the output mode of the child
+- [x] the server: a Julia process in the output mode of the child
       (`jl_generating_output()` true for its whole life), with a command
       loop on a socket: `apply`, `save`, `refresh-trace`, `quit`. The
       builder starts it, or connects to one that runs.
-- [ ] the state invariant: after `save`, the server learns the names of
+      *As built (2026-09-08):* `src/reactive_server.jl` of PackageCompiler,
+      loaded by the server script after the child harness. The builder
+      starts `julia --sysimage=<last image> --output-o=<store>/server.a
+      <script>` with `JULIA_REACTIVE_REUSE=1`, detached, its log in the
+      store, and records the session (socket, base snapshot, pid) in
+      `server.toml`; a later `materialize_app(...; server = true)` (or
+      `JULIA_REACTIVE_SERVER=1`) reuses the server that answers `status`.
+      The socket is a Unix socket in the temp directory (a socket path
+      holds 107 bytes, a store path can be longer); raw `socket`,
+      `connect`, `read` and `write` calls on both sides, one request per
+      connection, one line each way, no libuv. `apply <spec.toml>` runs
+      `rc_apply_tracked` and the trace on the arguments of the spec (the
+      same arguments the child script embeds); `save <archive>` forks
+      through `jl_reactive_fork`, the child runs the tail of the object
+      script, `jl_reactive_set_output(archive)` and
+      `jl_write_compiler_output`, then `_exit`; `status` answers the world,
+      the saves and the resident size; `quit` clears the output and exits.
+      A refusal is an exception (`RcRefusal`): the child exits with 3 as
+      before, the server answers `refused`. `refresh-trace` is not a
+      request: the trace is store state, and an `apply` precompiles it.
+      On HazardApp an apply answers in 0.1 s and a save in 2.4 s; the
+      builder's step is 3.2 s with the link, inside a process whose own
+      start costs 5 s more.
+- [x] the state invariant: after `save`, the server learns the names of
       the image it wrote, so that the reuse test of the next save sees the
       delta as image code. A restart from the last image gives the same
       next delta as the server would give.
-- [ ] the incremental front: the server keeps the world of the last save;
+      *As decided (2026-09-08):* the server learns nothing after a save.
+      The code instances that a save emits exist in the parent (the apply
+      inferred and compiled them), but the slot values of the emitted
+      text are objects that codegen made in the child, and the parent has
+      no copy; a table of names alone would not let the next save reuse
+      the text. So the reuse test of every save sees the image the server
+      loaded as image code, the delta of a save holds every change since
+      the server started (a few functions per edit; codegen, no
+      inference), and the image of a save links the founding's texts, the
+      deltas of the base chain and the new delta: one image per save,
+      the older deltas of the server unlinked. A snapshot records its
+      base. The memory item below bounds the delta with a restart. Gate D
+      checks the restart against the server by the oracle.
+- [x] the incremental front: the server keeps the world of the last save;
       the scan for the delta filters code instances by `min_world` above
       it instead of a walk of every method table.
+      *As built (2026-09-08):* not by the world of the last save but by
+      the direct list of the image's code. The front walks the methods
+      once, and every code instance of the loaded image that is still
+      valid in a build world is reused on the spot; a method instance
+      that such code serves in every world stays off the worklist, so the
+      compile pass sees the new code only, and the reused callees it
+      finds join the list through a set. On the routing sample the walk
+      costs 11 ms and the direct list 40 ms (32975 code instances, 28876
+      method instances served), where the compile pass took 1.4 s. The
+      pass over the methods with a compilable signature
+      (`infer_all_method_defs!`) runs for the methods newer than the
+      loaded image only; it took 1.2 s for every method. What is left of
+      the save is the heap: 3.2 s for 3 million objects (the queue 1.8 s,
+      the write 1.2 s), and the dump of the object 0.5 to 1.2 s.
 - [ ] the memory of the server: JIT code and old method versions stay
       until a restart; the builder restarts the server from the last
       image after a bounded number of saves or a bounded resident size.
@@ -551,6 +601,12 @@ exit.
 at most 4 s; the resident size after ten saves; kill the server after save
 k, restart from image k, apply edit k+1: the same delta as the server gives,
 by Gate 0. Every image of the ten passes Gate 0.
+*Measured 2026-09-08* (`tool/gate_d.sh`): a rebuild of the routing sample
+through the server is apply 2.0 s (the trace 1.4 s), save 6.5 s (the
+front 1.3 s, the heap 3.2 s, the dump 1.2 s), link 1.4 s. The bound of 4
+s is below the heap write of a full image (3.2 s) plus its dump and link
+(2.6 s); the front and the trace are the parts that the server can still
+cut. The log entry below has the outcome of the other checks.
 
 ## Stage E — beyond
 
