@@ -26,7 +26,7 @@ page describes Julia itself.
 | **Region garbage collection** | [`gc-regions`](https://github.com/levy/julia/tree/gc-regions) | [contrib/memory-regions](https://github.com/levy/julia/tree/gc-regions/contrib/memory-regions) | free a whole phase of a program at once, with no mark and no sweep |
 | **Fast system image rebuild** | [`reactive-compiler`](https://github.com/levy/julia/tree/reactive-compiler) | [contrib/reactive-compiler/doc](https://github.com/levy/julia/blob/reactive-compiler/contrib/reactive-compiler/doc/architecture.md) | rebuild an image after an edit in seconds instead of minutes |
 | **Sealed and trimmed AOT** | [`sealed-aot`](https://github.com/levy/julia/tree/sealed-aot) | [contrib/sealed-abstract](https://github.com/levy/julia/tree/sealed-aot/contrib/sealed-abstract) | `--trim=safe` accepts a program that dispatches on abstract types |
-| **Faster system image load** | [`sysimage-prelink`](https://github.com/levy/julia/tree/sysimage-prelink) | [devdocs/sysimg.md](https://github.com/levy/julia/blob/sysimage-prelink/doc/src/devdocs/sysimg.md) | a compiled program starts in milliseconds, because the relocation is done once at build time |
+| **Faster system image load** | [`sysimage-prelink`](https://github.com/levy/julia/tree/sysimage-prelink) | [the section below](#faster-system-image-load) | a compiled program starts in milliseconds, because the relocation is done once at build time |
 
 ---
 
@@ -169,10 +169,15 @@ holds the numbers and how to reproduce each.
 ## Faster system image load
 
 **Branch [`sysimage-prelink`](https://github.com/levy/julia/tree/sysimage-prelink) ·
-[the developer documentation](https://github.com/levy/julia/blob/sysimage-prelink/doc/src/devdocs/sysimg.md)**
+[the source of the manual section](https://github.com/levy/julia/blob/sysimage-prelink/doc/src/devdocs/sysimg.md?plain=1)**
+
+This section is the landing page of the feature. The manual section that the
+branch adds is written for Documenter, so read it as source: GitHub renders
+neither its heading anchors nor its cross references.
 
 This branch starts from the master branch of JuliaLang, not from
-`release-1.13`, because it is the series proposed there.
+`release-1.13`, because it is the series proposed there. The port to
+`release-1.13` is not published.
 
 A Julia process applies relocations to the system image it just mapped before
 it runs your code. The cost is per page, not per pointer: a start writes about
