@@ -2977,7 +2977,17 @@ static jl_svec_t *jl_prune_type_cache_hash(jl_svec_t *cache) JL_GC_DISABLED
         return cache; // a cache of the base that the save did not queue holds live entries only
     assert(idx != HT_NOTFOUND && idx != (void*)(uintptr_t)-1);
     assert(serialization_queue.items[from_seroder_entry(idx)] == cache);
+    jl_svec_t *old = cache;
     cache = cache_rehash_set(cache, sz);
+    if (reactive_pages_on && jl_object_in_image((jl_value_t*)old)) {
+        // A page write keeps the old cache in the queue: it is rewritten in
+        // its place (its dead entries null), and the new cache appends. An
+        // overlay writes the pages of the base from the queue alone, so an
+        // object dropped from it would land as zeros under its tag.
+        arraylist_push(&serialization_queue, (void*)cache);
+        ptrhash_put(&serialization_order, cache, to_seroder_entry(serialization_queue.len - 1));
+        return cache;
+    }
     // redirect all references to the old cache to relocate to the new cache object
     ptrhash_put(&serialization_order, cache, idx);
     serialization_queue.items[from_seroder_entry(idx)] = cache;
@@ -4419,6 +4429,28 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         if (!reactive_pages_on)
             write_padding(&sysimg, sizeof(uintptr_t));
         jl_write_values(&s);
+        if (reactive_overlay_on && reactive_pages_refusal == NULL) {
+            // The pages of the base come from the queue alone: an object of
+            // a dirty page that the queue lost would land as zeros.
+            arraylist_t *tags = &reactive_base.gctags;
+            size_t page = jl_page_size;
+            for (size_t i = 0; i < tags->len; i++) {
+                if (reactive_pages_rewritten[i])
+                    continue;
+                char *addr = reactive_image_base + (size_t)tags->items[i];
+                size_t off = (size_t)tags->items[i];
+                char *next = i + 1 < tags->len ? reactive_image_base + (size_t)tags->items[i + 1]
+                                               : reactive_image_base + reactive_objects_end;
+                int dirty = reactive_pages_dirty(addr);
+                for (char *p = (char*)LLT_ALIGN((uintptr_t)addr + 1, page); !dirty && p < next; p += page)
+                    dirty = reactive_pages_dirty(p);
+                if (dirty) {
+                    jl_safe_printf("reactive: overlay: the object at %zu of a dirty page was not rewritten\n", off);
+                    reactive_pages_refusal = "an object of a dirty page left the queue";
+                    break;
+                }
+            }
+        }
         if (reactive_pages_refusal != NULL) {
             jl_safe_printf("reactive: pages: %s; the save writes whole\n", reactive_pages_refusal);
             result = -1;
