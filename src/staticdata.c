@@ -4927,6 +4927,16 @@ JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
     return env != NULL && env[0] == '1' && env[1] == '\0';
 }
 
+// The output file of the next image write, the `--output-o` of this
+// process; NULL clears it, and then the exit writes no image. A compiler
+// server writes one image per save through a forked child, so the path
+// changes while the process lives. The copy of the path is never freed: a
+// save is rare and the string small.
+JL_DLLEXPORT void jl_reactive_set_output(const char *path) JL_NOTSAFEPOINT
+{
+    jl_options.outputo = path ? strdup(path) : NULL;
+}
+
 // The level of the timing report: 0 off, 1 the times and the counts, 2 also
 // one line per code instance of the delta
 JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT
