@@ -37,33 +37,57 @@ The measured effect: the routing example image rebuilds in 21 s against
 ## The runtime patch
 
 The patch lives in `src/aotcompile.cpp`, `src/staticdata.c`,
-`src/codegen.cpp`, `src/method.c`, `Compiler/src/typeinfer.jl` and
-`Compiler/src/precompile.jl` of this branch. `JULIA_REACTIVE_REUSE=1`
-turns it on; `JULIA_REACTIVE_TIMINGS=1` prints the front, the emission and
-the delta (`=2` lists every code instance of the delta and every enqueue
-cause).
+`src/processor.cpp`, `src/codegen.cpp`, `src/method.c`,
+`Compiler/src/typeinfer.jl` and `Compiler/src/precompile.jl` of this
+branch. `JULIA_REACTIVE_IMAGE=1` selects the reactive image format for a
+founding; `JULIA_REACTIVE_REUSE=1` turns the reuse on for a rebuild (and
+implies the format); `JULIA_REACTIVE_TIMINGS=1` prints the front, the
+emission and the delta (`=2` lists every code instance of the delta and
+every enqueue cause).
 
 - **A rebuild boots from the previous image** (`julia -J A.so --output-o
   B.a`). The reused code instances are then live objects with native
   pointers, and the runtime maps them to the function ids of the image. A
   fresh process would have to match code instances across heaps by content.
-- **Append-only id spaces.** B's function ids start at A's count, its
-  global slots and shards likewise, and every defined global object of the
-  delta gets the suffix `.r<nshards>`. So A's objects and B's objects link
-  together, and the shard count is the tag of a build. This exists because
+- **The reactive image format (version 3).** A stock image spreads its
+  function table over the shards of one build (`jl_fvar_ptrs_<s>`,
+  `jl_fvar_idxs_<s>`, and the clone tables of a multi-target build), and
   two stock builds cannot share one object: every emitted name carries a
   process-wide counter, the partitions are balanced by weight, and the
-  index tables bake the emission order. The image format changes in one
-  place: version 2 adds the names table of the next bullet.
+  index tables bake the emission order. A reactive image holds **one
+  function table in `metadata.o`**: `jl_fvar_ptrs` in id order, and
+  `jl_fvar_names`, the NUL-joined symbol of every entry, which
+  `jl_image_pointers_t` reaches through `fvar_ptrs` and `fvar_names`. No
+  `fvar_idxs` exists, because the table is in id order. The shards keep
+  only their global slots (`jl_gvar_offsets_<s>`, `jl_gvar_idxs_<s>`),
+  and the header's `nshards` counts them; the function and clone fields
+  of a shard are null, and the loader takes the one target. Every
+  function and every global goes in its own section (`FunctionSections`,
+  `DataSections`), and the link runs with `--gc-sections`: the fresh
+  table is the only root of a function, so a function that the table
+  does not name — dead code of an old build — leaves with its section.
+  `jl_reactive_image_format()` answers whether the running build writes
+  this format; `JULIA_REACTIVE_IMAGE=1` selects it for a founding, reuse
+  implies it, and a rebuild from a version 2 image is refused.
+- **Fresh function ids, append-only global slots.** `reactive_rebase`
+  numbers the functions of B: the reused ones first, in the order of the
+  loaded image (which keeps a wrapper before its specialization), then
+  the delta; `fvar_base` is the reused count. The global slots stay per
+  shard and append-only: the old machine code addresses its
+  `jl_sysimg_gvars_<s>` slots directly, so B's shards start at A's count
+  (`shard_base`), and every defined global object of the delta gets the
+  suffix `.r<nshards>`, the tag of a build. A dead function's globals
+  keep a slot and a root until a founding: that is the residue that a
+  founding compacts.
 - **The reuse test is the world.** A code instance is reused when its owner
   is `nothing`, it is valid in the build's world, and the runtime returns
   image ids for it. Julia's own invalidation bounds `max_world` through the
   backedges, so the cone is never computed — it falls out of the reuse
   test. No recorded-read key is needed while a previous image exists.
 - **The delta calls reused code by symbol.** The image names every
-  function of its table: each shard carries `jl_fvar_names_<shard>`, the
-  symbol of each entry of `fvar_ptrs`, and `parse_sysimg` keeps the names
-  beside the pointers (image format version 2, about 1 MB for 90k names).
+  function of its table (`jl_fvar_names`, about 1 MB for 90k names), and
+  `parse_sysimg` keeps the names beside the pointers. The names of the
+  reused functions travel in `jl_native_code_desc_t` to the emission.
   When `resolve_workqueue` meets a callee with image ids, it declares the
   image's symbol instead of an `emit_tojlinvoke` trampoline: a specsig
   caller gets the specialization, a boxed caller gets the wrapper, and a
@@ -102,6 +126,70 @@ cause).
   the uncompressed IR are equal. A kept method keeps its own line table,
   and the child moves its `line` with the item. A generated method is
   never kept.
+- **The heap drops the closed entries and the invalid code instances.**
+  `jl_method_table_disable` closes the typemap entry of a deleted method
+  and invalidates its callers, but never bounds the code instances of the
+  deleted method itself, and `Base.visit` walks closed entries; so a
+  rebuild after a deletion would infer, name and serialize dead code. The
+  reactive sysimage path of `staticdata.c` prunes before the walk: a
+  typemap entry whose `max_world` is finite and does not hold
+  `jl_typeinf_world` is dead, and so is a code instance that
+  `codeinst_may_be_runnable` rejects. The prune unlinks a dead entry from
+  its `next` chain in `defs`, in the method cache and in the leaf cache
+  (`record_field_change`), and a dead code instance from `mi->cache` and
+  `ci->next`. An emptied slot of a level hash or of the leaf cache becomes
+  the tombstone of `iddict.c` (key `nothing`, value null): the leaf cache
+  dereferences any non-null value, and `Base.visit` has no method for
+  `nothing`. The front end (`collect_all_method_defs`) walks the entries
+  itself in the reactive format and skips a method whose entry is valid
+  in none of the build's worlds. The oracle counts what is left (`info
+  dead N closed entries, M invalid code instances`): zero in a chain, as
+  in a founding.
+- **The `using` backedges and the scanned methods of a module are weak.**
+  Every `Module()` does `using Base` and `using Core`, which pushes the
+  module into `Base.usings_backedges`; the first compile of a method that
+  names an implicit binding pushes the method into the `scanned_methods`
+  of its module, and a deletion never removes it. Stock serializes both
+  lists strongly, so every anonymous module of a rebuild (the warm-up, the
+  object script) stayed in the image with its bindings, and a deleted
+  method that was compiled once stayed with its code: 19 KB per no-edit
+  rebuild. In a reactive image both lists are weak: the serializer queues
+  the list and its memory, the members only when something else reaches
+  them, and prunes the list to the serialized members once the heap is
+  known, the way it prunes the backedge lists of a binding. Two more
+  roots live in the tooling: a closure in the object script of
+  PackageCompiler is a method, and a method-table entry roots its module
+  (a loop replaced it); a `--output-o` process runs no `__init__`, so
+  nothing registers the exit hook that deletes the temporary files of the
+  process, and their paths stayed in `Base.Filesystem.TEMP_CLEANUP` (the
+  object script purges the list before the write); and the child script
+  kept its state in a global of `Main`, the set of every method instance
+  of the rebuild (it clears the global). Two more are Julia's: the
+  interference set of a method (`Method.interferences`, the intersecting
+  methods) gains every later method with an intersecting signature, a
+  deleted method included, and nothing removes a member, so a chain of
+  redefinitions linked every dead method to the next; the set is weak in
+  a reactive image, pruned to the serialized members like the lists
+  above. And the compile pass runs once per world, the world of the
+  compiler first; a `@ccallable` entry point resolved in that world names
+  the method that dispatched there, the deleted one, and its code
+  instance rooted the method with its text. A reactive build resolves an
+  entry point in the latest world only, and compiles and reuses nothing
+  for a method that the method table no longer holds (`jl_methtable_lookup`
+  in the latest world; the dispatch status bits of a method restored from
+  an image are cleared, so they cannot say): a deleted or replaced method
+  keeps its code instances open, `jl_method_table_disable` bounds the
+  callers only, and the previous image would serve them. The skip also
+  drops the leftovers of Base's bootstrap, dead since the founding. What
+  stays is the slot residue: a slot of the loaded image keeps its value,
+  and the value of a slot of a dead function is kept with it (the
+  founding's `@ccallable` wrapper keeps the founding's code instance of
+  its target, and through it the deleted method: one, not one per
+  rebuild). `JULIA_REACTIVE_HEAPDUMP=<path>`
+  writes one line per object of the heap (address, type, size, a short
+  head, and the object that reached it first); the diff of the dumps of
+  two rebuilds names what a rebuild keeps, and `tool/heap_chain.py`
+  follows the referrers of an object up to its root.
 - **The heap (`sysimg.o`) and the tables (`metadata.o`) are always
   rebuilt.** They are cheap, and the reused objects must not depend on
   their layout.
@@ -116,9 +204,12 @@ live one, and a rebuild links
 
     ancestors' text objects + the delta + fresh sysimg.o + metadata.o
 
-The heap and the tables of an old build are never linked again. Dead code
-accumulates in the old text objects until a full build; that is the
-development mode of the design, and compaction is the release mode (open).
+The heap and the tables of an old build are never linked again. The old
+text objects are a library of named functions: the fresh table names the
+live ones, and `--gc-sections` drops the rest at the link, so the image
+of a chain holds one definition per live function and does not grow with
+the edits. The dead sections stay in the objects of the store, and the
+global slots of a dead function stay in the image, until a founding.
 
 **The trace is the set of roots, and no build executes the program.** The
 founding runs the workload once in a throwaway process under
@@ -311,11 +402,19 @@ code.
 
 - **One Julia, one target.** A chain is bound to the Julia build and the
   processor target that started it (`-C native` on this machine). The
-  names table holds the names of the base target, so with a multi-target
-  `cpu_target` the delta would call the base clone of a reused function.
-- **The image format is version 2.** An image without the names table
-  does not load (`Image file is not compatible with this version of
-  Julia`); a store founded before it needs a founding build.
+  reactive format holds no clone tables, so `create_sysimage(reactive_image
+  = true)` refuses a `cpu_target` with more than one target, and a
+  non-Linux host (`--gc-sections`).
+- **The image format is version 3.** A stock build writes version 2, and
+  a rebuild from a version 2 image is refused; a store founded before
+  version 3 needs a founding build. The residue of a chain is the global
+  slots of the dead functions: a slot is never freed, and the edit of
+  Gate C leaves 45 slots per rebuild. Gate C bounds the growth of a chain
+  by 32 bytes per slot and 512 bytes per rebuild (the objects that a
+  process holds at exit: an IO buffer, a symbol).
+- **A store pins its paths.** A snapshot records the absolute paths of
+  the tracked files and of the project; a checkout that moves needs a
+  founding build. The tools derive the checkout from their own location.
 - **`--trim` refuses reactive reuse** — the trim verifier walks the edges
   that reuse skips. The trimmed flagship binary is its own milestone.
 - **The ledger sees the tracked sources alone.** A value of an old type
@@ -330,14 +429,18 @@ code.
   keeps its old line table; the oracle strips quoted lines and drops the
   gensym counters (`var"##3#4"`), which a chain and a founding count
   differently.
-- **A replaced method stays in the image.** Julia does not close the
-  world of a replaced typemap entry: both entries stay valid, and dispatch
-  takes the newest one (`gf.c`, `get_intersect_visitor`). The child now
-  deletes the old methods of a changed expression after its evaluation,
-  which closes their entries (the oracle counted seven `shadowed` entries
-  after the two-edit chain before Stage B, and counts none now), but the
-  closed entry, its method, its source, its specializations and its text
-  are serialized still, as dead heap and dead code until Stage C.
+- **A replaced method must be deleted, not shadowed.** Julia does not
+  close the world of a replaced typemap entry: both entries stay valid,
+  and dispatch takes the newest one (`gf.c`, `get_intersect_visitor`).
+  The child deletes the old methods of a changed expression after its
+  evaluation, which closes their entries, and the serializer drops a
+  closed entry with its code instances; a method that stays shadowed
+  (one that the child did not delete) is still serialized, and the oracle
+  counts it as `shadowed`.
+- **The delta list names a method instance twice** when the main queue
+  and the `invokelatest_queue` of `typeinf_ext_toplevel` both inspect it;
+  the emission dedups by code instance, so the image holds one text
+  function of it.
 - **A root that the trace misses is compiled at run time** until
   `refresh_trace` runs. The rebuild infers what the trace names and what
   inference reaches from it; a specialization that an edit introduced

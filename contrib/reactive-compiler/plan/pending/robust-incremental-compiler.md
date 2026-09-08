@@ -448,7 +448,7 @@ file: the line tables of `-g1` keep a record of a dead function.
       (`__extendhfsf2`, `__gnu_*`) that a stock image holds in five copies;
       `__truncdfhf2` stays local to every object by design of
       `inject_aliases`, so Gate C's duplicate check skips the `__` names.
-- [ ] the heap side: a replaced method stays in the image, found by
+- [x] the heap side: a replaced method stays in the image, found by
       Gate 0. Julia does not close the world of a replaced typemap entry:
       both entries stay valid, dispatch takes the newest one (`gf.c`,
       `get_intersect_visitor`, "must pick the newest insertion"), and the
@@ -462,19 +462,43 @@ file: the line tables of `-g1` keep a record of a dead function.
       method; the invalid code instances (`max_world` closed) go with it.
       Check the `staticdata.c` sysimage path for both (the branches at
       lines 1691-1767 are the package image path).
-- [ ] one delta holds two text functions of one method instance: the
+      *As built:* the reactive serialization (`staticdata.c`) prunes the
+      heap. A dead entry has a finite `max_world` and `jl_typeinf_world`
+      outside `[min_world, max_world]`; a dead code instance fails
+      `codeinst_may_be_runnable(ci, 0)`. The prune walks `defs`, the
+      method cache, the leaf cache, `mi->cache` and the `ci->next` chains
+      through `record_field_change`; an emptied slot of an eqtable becomes
+      the tombstone of the iddict (key `jl_nothing`, value null). The
+      front end (`collect_all_method_defs`) visits the live entries only
+      (`reactive_visit_methods`), so no dead entry reaches the emission.
+      The oracle's `info dead` line counts both (`tool/oracle.jl`); Gate
+      C's `heap` step requires zero.
+- [x] one delta holds two text functions of one method instance: the
       second build of the oracle chain emits `julia_driver_1060.r8` and
       `julia_driver_1598.r8` for the one specialization of `driver`. Find
       the second code instance and drop it.
-- [ ] `nm` of the image after a chain shows one definition per live
+      *As built:* the delta list names a method instance twice when the
+      main queue and the `invokelatest_queue` of `typeinf_ext_toplevel`
+      both hold it; the emission dedups by code instance, and one text
+      function comes out. Gate C's `format` step counts one text function
+      of `driver`, `chained` and `bench_delta` after every cycle.
+- [x] `nm` of the image after a chain shows one definition per live
       function: after the reverse edit of M6, `bench_delta` has one
       definition, and `julia_bench_delta_1526.r8` is gone.
+      *As built:* Gate C's `format` step lists every text name with two
+      definitions (none; the CRT aliases `__*` are local to every object
+      by design). A stock `create_app` leaves `hazard_entry.1` and two
+      `jlcapi_hazard_entry_*` wrappers of the entry point; they are one
+      definition each.
 
 **Gate C.** M6 and M7 through Gate 0, with no closed typemap entry, no
 deleted method and no invalid code instance in the heap of the chain's
 image. The size of the image after ten edit-and-reverse cycles equals the
-size after one, within the residue of the global slots. The delta of a rebuild with no edit is zero functions
-from the second rebuild on.
+size after one, within the residue of the global slots. The delta of a
+rebuild with no edit is zero functions from the second rebuild on.
+*Passed 2026-09-08* (`tool/gate_c.sh`, the log entry below): the residue
+is 32 bytes per slot, 45 slots per rebuild of the M6 edit, and the gate
+bounds the growth of a chain by it.
 
 ## Stage D — the server
 
@@ -543,6 +567,56 @@ Not planned in detail; the items that the catalog leaves open.
   multi-target image cannot be chained.
 
 ## Log
+
+**2026-09-08, Gate C.** The fresh table and the dead code (`tool/gate_c.sh`).
+The chain on HazardApp: founding 1:00 and 6.2 GB; an edit or its reverse
+8.7 s (12 functions, 45 slots; 6 expressions applied, 1 method kept, 5
+replaced, 4 new method instances after the trace); a rebuild with no edit
+8.8 s and 0 functions. The image is version 3 with one function table and
+one text definition per live function after every rebuild (`driver`,
+`chained`, `bench_delta` one each); the heap holds 0 closed entries and 0
+invalid code instances; the loadable size after reverse 1 is 166141133,
+after reverse 10 166166261: 25128 bytes over 810 slots in 18 rebuilds,
+under the bound of 35136 (32 bytes per slot, 512 per rebuild). The size
+step of the gate fails beyond the bound. The older gates pass on the same
+build: M6 14 of 14 shapes and `state` 0 three times (founding 1:02, edit
+10.9 s, restore 9.0 s); Gate B checks 1-4 equal both ways (70/47/34/6 and
+69/47/32/6, `dead 0`); the oracle gate checks 1-4 equal (69/47/16/6).
+M7 on the routing sample of omnet-julia: founding 3:02 and 9.5 GB, the
+edit 20.9 s (63951 of 64096 functions reused, 884 emitted, 708 slots),
+the refresh 19.7 s (6 functions, 2 slots), the restore 18.3 s (1
+function, 6 slots), hop means 2.308011, 4.616022, 4.616022, 2.308011.
+The no-edit rebuild after an edit is 13 KB larger than the edit's image,
+and the reverse edit 13 KB smaller again: an edit invalidates the cache
+entries that the trace made, the next rebuild makes them again. The
+growth across a cycle is the slots.
+
+The first run of the gate found the chain growing 2.7 KB per rebuild
+beyond the slots, and a no-edit rebuild growing 19 KB. Seven roots, found
+with `JULIA_REACTIVE_HEAPDUMP` (one line per object with its first
+referrer, `tool/heap_chain.py` follows a chain): every `Module()` of a
+rebuild stayed through `Base.usings_backedges`, and the compiled method of
+the warm-up through `scanned_methods` of its module, so both lists are
+weak in a reactive image (staticdata.c); a closure in the object script of
+PackageCompiler rooted the script's module through the method table (a
+loop); a `--output-o` process runs no `__init__`, so the temporary files
+of the child stayed on the disk and their paths in
+`Base.Filesystem.TEMP_CLEANUP` (the script purges the list before the
+write); the child kept its state in `Main.rc_state`, the set of every
+method instance (cleared); `Method.interferences` linked every dead
+`hazard_entry` to the next, so the set is weak in a reactive image; the
+`@ccallable` entry point resolved in the world of the compiler named the
+deleted method (the latest world only); and a deleted method keeps its
+code instances open, so the previous image served them (the build skips a
+method that `jl_methtable_lookup` no longer finds; the skip also drops the
+leftovers of Base's bootstrap). What remains is the residue proper: a slot
+of the loaded image keeps its value, so the founding's `@ccallable`
+wrapper keeps the founding's code instance of its target and the deleted
+method behind it, once.
+
+The checkout moved to `julia-reactive-compiler` during the work: the
+tools derive the checkout from their own location now, and a store pins
+the absolute paths of its snapshot, so a moved checkout needs a founding.
 
 **2026-09-05, PackageCompiler.** PackageCompiler founds and bundles; the
 reactive compiler rebuilds. Today `materialize_app` calls two public
