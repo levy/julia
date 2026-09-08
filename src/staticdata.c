@@ -212,6 +212,7 @@ static char *reactive_region_const_limit = NULL; // the end of the const headroo
 static char *reactive_gap_lo = NULL;         // the unused pages of the const headroom
 static char *reactive_gap_hi = NULL;
 static size_t reactive_objects_end = 0;      // the end of the objects of the base and the overlays (a sysimg offset)
+static size_t reactive_base_end = 0;         // the end of the objects of the base alone: the overlays' objects lie past the const headroom
 
 // The overlay image (Stage G): the delta as a shared object of its own,
 // with the blob below; the loader applies a chain of them to the base.
@@ -1863,7 +1864,12 @@ static void reactive_pages_window(size_t tag_pos, size_t *lo, size_t *hi, size_t
     *index = i;
     size_t next = i + 1 < tags->len ? (size_t)tags->items[i + 1] : reactive_base.sysimg_size;
     size_t oid = 0;
-    if (i + 1 < tags->len) {
+    if (reactive_overlay_on && tag_pos < reactive_base_end && next > reactive_base_end) {
+        // the last object of the base: the next tag lies past the const
+        // headroom, in an overlay's objects
+        next = reactive_base_end;
+    }
+    else if (i + 1 < tags->len) {
         jl_value_t *nv = (jl_value_t*)(reactive_image_base + next + sizeof(jl_taggedvalue_t));
         oid = reactive_object_id_expected((jl_datatype_t*)jl_typeof(nv)) ? sizeof(size_t) : 0;
     }
@@ -3975,6 +3981,8 @@ static void reactive_pages_queue_dirty(jl_serializer_state *s) JL_GC_DISABLED
                                    : reactive_image_base + reactive_base.sysimg_size;
             if (reactive_overlay_on && i + 1 == n)
                 next = reactive_image_base + reactive_objects_end;
+            if (reactive_overlay_on && pos < reactive_base_end && next > reactive_image_base + reactive_base_end)
+                next = reactive_image_base + reactive_base_end;
             for (char *p = (char*)LLT_ALIGN((uintptr_t)addr + 1, page); p < next; p += page) {
                 if (reactive_pages_dirty(p)) {
                     dirty = 1;
@@ -4441,6 +4449,8 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
                 size_t off = (size_t)tags->items[i];
                 char *next = i + 1 < tags->len ? reactive_image_base + (size_t)tags->items[i + 1]
                                                : reactive_image_base + reactive_objects_end;
+                if (off < reactive_base_end && next > reactive_image_base + reactive_base_end)
+                    next = reactive_image_base + reactive_base_end;
                 int dirty = reactive_pages_dirty(addr);
                 for (char *p = (char*)LLT_ALIGN((uintptr_t)addr + 1, page); !dirty && p < next; p += page)
                     dirty = reactive_pages_dirty(p);
@@ -4451,6 +4461,8 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
                 }
             }
         }
+        if (reactive_pages_refusal != NULL && reactive_overlay_on)
+            jl_errorf("reactive: overlay: %s; the overlay cannot be written", reactive_pages_refusal);
         if (reactive_pages_refusal != NULL) {
             jl_safe_printf("reactive: pages: %s; the save writes whole\n", reactive_pages_refusal);
             result = -1;
@@ -6326,6 +6338,7 @@ static int reactive_region_load(jl_image_buf_t buf)
     reactive_gap_lo = region + mapped;
     reactive_gap_hi = region + const_limit;
     reactive_objects_end = sec.sysimg.size;
+    reactive_base_end = sec.sysimg.size;
     reactive_sections = sec;
     reactive_sections.sysimg.ptr = region;
     reactive_sections.sysimg.size = const_limit;     // the new objects of an overlay start here
