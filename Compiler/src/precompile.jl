@@ -572,12 +572,14 @@ function compile_and_emit_native(worlds::Vector{UInt},
     # Step 4: Perform type inference on tocompile to create codeinfos
     # (with reactive reuse: svec(codeinfos, the reused code instances))
     t_enqueue = _time_ns()
+    # (milliseconds as integers: this runs in the world of the compiler,
+    # where `round` with `digits` is too new)
     if reactive_timings() != 0 && reactive_reuse_enabled()
-        Core.println("reactive: front collect ", round((t_collect - t_front) / 1e9; digits = 2),
-                     " s, direct reuse ", round((t_direct - t_collect) / 1e9; digits = 2), " s (",
+        Core.println("reactive: front collect ", div(t_collect - t_front, 1_000_000),
+                     " ms, direct reuse ", div(t_direct - t_collect, 1_000_000), " ms (",
                      length(reactive_reused_initial), " code instances, ", length(reactive_served_mis),
-                     " method instances served), enqueue ", round((t_enqueue - t_direct) / 1e9; digits = 2),
-                     " s, worklist ", length(tocompile))
+                     " method instances served), enqueue ", div(t_enqueue - t_direct, 1_000_000),
+                     " ms, worklist ", length(tocompile))
     end
     codeinfos = try
         typeinf_ext_toplevel(tocompile, worlds, trim_mode, external_linkage)
