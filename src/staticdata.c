@@ -167,10 +167,92 @@ static arraylist_t layout_table;     // cache of `position(s)` for each `id` in 
 // lists by position. The const data and the symbols are never relocated at
 // load, so their base bytes are taken from memory and from the base. The
 // loader needs no change: the product is a version 3 image.
+static int reactive_overlay_mode(void) JL_NOTSAFEPOINT
+{
+    const char *env = getenv("JULIA_REACTIVE_IMAGE_WRITE");
+    return env != NULL && strcmp(env, "overlay") == 0;
+}
 static int reactive_pages_mode(void) JL_NOTSAFEPOINT
 {
     const char *env = getenv("JULIA_REACTIVE_IMAGE_WRITE");
-    return env != NULL && strcmp(env, "pages") == 0;
+    return env != NULL && (strcmp(env, "pages") == 0 || strcmp(env, "overlay") == 0);
+}
+
+// The sections of an image (Stage G): under `reactive_sections_on` the
+// loader takes them from here, not from the stream, so that the sysimg
+// and the const data can live in a region of their own.
+typedef struct {
+    const char *ptr;
+    size_t size;
+} reactive_span_t;
+typedef struct {
+    reactive_span_t sysimg;      // with its leading word
+    reactive_span_t const_data;
+    reactive_span_t symbols;
+    reactive_span_t relocs;
+    reactive_span_t gvar;
+    reactive_span_t fptr;
+    reactive_span_t roots;       // the tail of the blob after the fptr record
+    size_t blob_span;            // the registered blob: this many bytes from sysimg.ptr
+} reactive_sections_t;
+static reactive_sections_t reactive_sections;
+static int reactive_sections_on = 0;
+// The region of an overlay-mode process: the base's sysimg mapped from
+// its file, headroom for the new objects of the overlays, the const data
+// copied, headroom for its growth. One span, one blob.
+#define REACTIVE_SYSIMG_HEADROOM ((size_t)256 << 20)
+#define REACTIVE_CONST_HEADROOM ((size_t)64 << 20)
+static char *reactive_region_base = NULL;
+static size_t reactive_region_span = 0;
+static char *reactive_region_const = NULL;   // the const data inside the region
+static char *reactive_gap_lo = NULL;         // the unused pages between the sysimg and the const data
+static char *reactive_gap_hi = NULL;
+
+// The sections of a blob, in the layout the save writes.
+static int reactive_parse_blob(const char *blob, size_t size, reactive_sections_t *sec) JL_NOTSAFEPOINT
+{
+    memset(sec, 0, sizeof(*sec));
+    size_t pos = 0;
+    if (size < sizeof(uintptr_t))
+        return 0;
+    size_t sizeof_sysdata = *(const uintptr_t*)(blob + pos);
+    sec->sysimg.ptr = blob + pos;
+    sec->sysimg.size = sizeof_sysdata + sizeof(uintptr_t);
+    pos += sizeof(uintptr_t) + sizeof_sysdata;
+    if (pos + sizeof(uintptr_t) > size)
+        return 0;
+    sec->const_data.size = *(const uintptr_t*)(blob + pos);
+    pos += sizeof(uintptr_t);
+    pos = LLT_ALIGN(pos, JL_CACHE_BYTE_ALIGNMENT);
+    sec->const_data.ptr = blob + pos;
+    pos += sec->const_data.size;
+    sec->blob_span = pos;
+    sec->symbols.size = *(const uintptr_t*)(blob + pos);
+    pos += sizeof(uintptr_t);
+    pos = LLT_ALIGN(pos, 8);
+    sec->symbols.ptr = blob + pos;
+    pos += sec->symbols.size;
+    sec->relocs.size = *(const uintptr_t*)(blob + pos);
+    pos += sizeof(uintptr_t);
+    pos = LLT_ALIGN(pos, 8);
+    sec->relocs.ptr = blob + pos;
+    pos += sec->relocs.size;
+    sec->gvar.size = *(const uintptr_t*)(blob + pos);
+    pos += sizeof(uintptr_t);
+    pos = LLT_ALIGN(pos, 8);
+    sec->gvar.ptr = blob + pos;
+    pos += sec->gvar.size;
+    sec->fptr.size = *(const uintptr_t*)(blob + pos);
+    pos += sizeof(uintptr_t);
+    pos = LLT_ALIGN(pos, 8);
+    sec->fptr.ptr = blob + pos;
+    pos += sec->fptr.size;
+    pos = LLT_ALIGN(pos, 8);
+    if (pos > size)
+        return 0;
+    sec->roots.ptr = blob + pos;
+    sec->roots.size = size - pos;
+    return 1;
 }
 // the loaded image
 static char *reactive_image_base = NULL;        // the sysimg section of the loaded image (its leading word first)
@@ -489,6 +571,7 @@ typedef struct {
     jl_ptls_t ptls;
     jl_image_t *image;
     int8_t incremental;
+    char *root_base;            // the sysimg base the roots resolve against, when they are read from another stream
 } jl_serializer_state;
 
 static jl_value_t *jl_bigint_type = NULL;
@@ -2650,11 +2733,11 @@ static void _jl_write_value(jl_serializer_state *s, jl_value_t *v) JL_GC_DISABLE
 
 static jl_value_t *jl_read_value(jl_serializer_state *s)
 {
-    uintptr_t base = (uintptr_t)s->s->buf;
-    uintptr_t offset = *(reloc_t*)(base + (uintptr_t)s->s->bpos);
+    uintptr_t offset = *(reloc_t*)((uintptr_t)s->s->buf + (uintptr_t)s->s->bpos);
     s->s->bpos += sizeof(reloc_t);
     if (offset == 0)
         return NULL;
+    uintptr_t base = s->root_base ? (uintptr_t)s->root_base : (uintptr_t)s->s->buf;
     return (jl_value_t*)get_item_for_reloc(s, base, offset, NULL, NULL);
 }
 
@@ -3470,25 +3553,37 @@ static const uint8_t *reactive_base_read_positions(const uint8_t *cur, arraylist
 // Map the file bytes of the base image's blob and locate its sections and
 // lists. Answers 0 when the base has no file (a compressed image, or no
 // image), and the save writes whole.
+// The file that holds the blob at `addr`, and the blob's offset in it.
+static int reactive_blob_file(const void *addr, const char **fname, size_t *file_off) JL_NOTSAFEPOINT
+{
+    Dl_info info;
+    if (!dladdr(addr, &info) || info.dli_fname == NULL)
+        return 0;
+    struct reactive_phdr_query q = { (uintptr_t)addr, 0, 0 };
+    dl_iterate_phdr(reactive_phdr_callback, &q);
+    if (!q.found)
+        return 0;
+    *fname = info.dli_fname;
+    *file_off = q.file_off;
+    return 1;
+}
+
 static int reactive_base_map(void)
 {
     if (reactive_base_mapped)
         return 1;
     if (reactive_blob_data == NULL || reactive_sysimg_size == 0)
         return 0;
-    Dl_info info;
-    if (!dladdr(reactive_blob_data, &info) || info.dli_fname == NULL)
+    const char *fname = NULL;
+    size_t file_off = 0;
+    if (!reactive_blob_file(reactive_blob_data, &fname, &file_off))
         return 0;
-    struct reactive_phdr_query q = { (uintptr_t)reactive_blob_data, 0, 0 };
-    dl_iterate_phdr(reactive_phdr_callback, &q);
-    if (!q.found)
-        return 0;
-    int fd = open(info.dli_fname, O_RDONLY);
+    int fd = open(fname, O_RDONLY);
     if (fd < 0)
         return 0;
     size_t page = jl_page_size;
-    size_t off = q.file_off & ~(page - 1);
-    size_t delta = q.file_off - off;
+    size_t off = file_off & ~(page - 1);
+    size_t delta = file_off - off;
     size_t len = delta + reactive_blob_size;
     char *map = (char*)mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, off);
     close(fd);
@@ -3498,29 +3593,21 @@ static int reactive_base_map(void)
     memset(b, 0, sizeof(*b));
     b->map = map;
     b->map_len = len;
-    const char *blob = map + delta;
-    size_t pos = 0;
-    size_t sizeof_sysdata = *(const uintptr_t*)(blob + pos);
-    b->sysimg = blob + pos;
-    b->sysimg_size = sizeof_sysdata + sizeof(uintptr_t);
-    pos += sizeof(uintptr_t) + sizeof_sysdata;
-    b->const_size = *(const uintptr_t*)(blob + pos);
-    pos += sizeof(uintptr_t);
-    pos = LLT_ALIGN(pos, JL_CACHE_BYTE_ALIGNMENT);
-    b->const_data = blob + pos;
-    pos += b->const_size;
-    b->symbols_size = *(const uintptr_t*)(blob + pos);
-    pos += sizeof(uintptr_t);
-    pos = LLT_ALIGN(pos, 8);
-    b->symbols = blob + pos;
-    pos += b->symbols_size;
-    b->relocs_size = *(const uintptr_t*)(blob + pos);
-    pos += sizeof(uintptr_t);
-    pos = LLT_ALIGN(pos, 8);
-    b->relocs = blob + pos;
-    pos += b->relocs_size;
+    reactive_sections_t sec;
+    if (!reactive_parse_blob(map + delta, reactive_blob_size, &sec)) {
+        munmap(map, len);
+        return 0;
+    }
+    b->sysimg = sec.sysimg.ptr;
+    b->sysimg_size = sec.sysimg.size;
+    b->const_data = sec.const_data.ptr;
+    b->const_size = sec.const_data.size;
+    b->symbols = sec.symbols.ptr;
+    b->symbols_size = sec.symbols.size;
+    b->relocs = sec.relocs.ptr;
+    b->relocs_size = sec.relocs.size;
     if (b->sysimg_size != reactive_sysimg_size || b->const_size != reactive_const_len ||
-        b->symbols_size != reactive_syms_len || pos > reactive_blob_size) {
+        b->symbols_size != reactive_syms_len) {
         jl_safe_printf("reactive: pages: the file of the base image does not match the loaded image\n");
         munmap(map, len);
         return 0;
@@ -4905,44 +4992,64 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     }
 
     // step 1: read section map
+    size_t sizeof_sysdata, sizeof_constdata, sizeof_sysimg, sizeof_symbols;
+    size_t sizeof_relocations, sizeof_gvar_record, sizeof_fptr_record;
+    ios_t roots_stream;
+    ios_t *r = f;               // the stream the roots are read from
+    int sections = reactive_sections_on && !s.incremental;
+    if (sections) {
+        // The sections of the image come from the override (an overlay-mode
+        // process: the sysimg and the const data live in a region).
+        reactive_sections_t *sec = &reactive_sections;
+        sizeof_sysdata = sec->sysimg.size - sizeof(uintptr_t);
+        ios_static_buffer(&sysimg, (char*)sec->sysimg.ptr, sec->sysimg.size);
+        sizeof_constdata = sec->const_data.size;
+        ios_static_buffer(&const_data, (char*)sec->const_data.ptr, sizeof_constdata);
+        sizeof_sysimg = sec->blob_span;
+        sizeof_symbols = sec->symbols.size;
+        ios_static_buffer(&symbols, (char*)sec->symbols.ptr, sizeof_symbols);
+        sizeof_relocations = sec->relocs.size;
+        sizeof_gvar_record = sec->gvar.size;
+        sizeof_fptr_record = sec->fptr.size;
+        ios_static_buffer(&relocs, (char*)sec->relocs.ptr, sizeof_relocations);
+        ios_static_buffer(&gvar_record, (char*)sec->gvar.ptr, sizeof_gvar_record);
+        ios_static_buffer(&fptr_record, (char*)sec->fptr.ptr, sizeof_fptr_record);
+        ios_static_buffer(&roots_stream, (char*)sec->roots.ptr, sec->roots.size);
+        r = &roots_stream;
+        s.root_base = (char*)sec->sysimg.ptr;
+    }
+    else {
     assert(ios_pos(f) == 0 && f->bm == bm_mem);
-    size_t sizeof_sysdata = read_uint(f);
+    sizeof_sysdata = read_uint(f);
     ios_static_buffer(&sysimg, f->buf, sizeof_sysdata + sizeof(uintptr_t));
     ios_skip(f, sizeof_sysdata);
 
-    size_t sizeof_constdata = read_uint(f);
+    sizeof_constdata = read_uint(f);
     // realign stream to max-alignment for data
     ios_seek(f, LLT_ALIGN(ios_pos(f), JL_CACHE_BYTE_ALIGNMENT));
     ios_static_buffer(&const_data, f->buf + f->bpos, sizeof_constdata);
     ios_skip(f, sizeof_constdata);
 
-    size_t sizeof_sysimg = f->bpos;
+    sizeof_sysimg = f->bpos;
 
-    size_t sizeof_symbols = read_uint(f);
+    sizeof_symbols = read_uint(f);
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     ios_static_buffer(&symbols, f->buf + f->bpos, sizeof_symbols);
     ios_skip(f, sizeof_symbols);
-    if (!s.incremental) {
-        reactive_sysimg_size = sizeof_sysdata + sizeof(uintptr_t);
-        reactive_const_base = (char*)&const_data.buf[0];
-        reactive_const_len = sizeof_constdata;
-        reactive_syms_base = (char*)&symbols.buf[0];
-        reactive_syms_len = sizeof_symbols;
-    }
 
-    size_t sizeof_relocations = read_uint(f);
+    sizeof_relocations = read_uint(f);
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     assert(!ios_eof(f));
     ios_static_buffer(&relocs, f->buf + f->bpos, sizeof_relocations);
     ios_skip(f, sizeof_relocations);
 
-    size_t sizeof_gvar_record = read_uint(f);
+    sizeof_gvar_record = read_uint(f);
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     assert(!ios_eof(f));
     ios_static_buffer(&gvar_record, f->buf + f->bpos, sizeof_gvar_record);
     ios_skip(f, sizeof_gvar_record);
 
-    size_t sizeof_fptr_record = read_uint(f);
+    sizeof_fptr_record = read_uint(f);
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     assert(!ios_eof(f));
     ios_static_buffer(&fptr_record, f->buf + f->bpos, sizeof_fptr_record);
@@ -4951,7 +5058,15 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     // step 2: get references to special values
     ios_seek(f, LLT_ALIGN(ios_pos(f), 8));
     assert(!ios_eof(f));
-    s.s = f;
+    }
+    if (!s.incremental) {
+        reactive_sysimg_size = sizeof_sysdata + sizeof(uintptr_t);
+        reactive_const_base = (char*)&const_data.buf[0];
+        reactive_const_len = sizeof_constdata;
+        reactive_syms_base = (char*)&symbols.buf[0];
+        reactive_syms_len = sizeof_symbols;
+    }
+    s.s = r;
     uintptr_t offset_restored = 0, offset_init_order = 0, offset_extext_methods = 0, offset_new_ext_cis = 0, offset_method_roots_list = 0;
     if (!s.incremental) {
         size_t i;
@@ -4978,10 +5093,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         s.ptls->root_task->tls = jl_read_value(&s);
         jl_gc_wb(s.ptls->root_task, s.ptls->root_task->tls);
 
-        uint32_t gs_ctr = read_uint32(f);
-        jl_require_world = read_uint(f);
+        uint32_t gs_ctr = read_uint32(r);
+        jl_require_world = read_uint(r);
         jl_atomic_store_release(&jl_world_counter, jl_require_world);
-        jl_typeinf_world = read_uint(f);
+        jl_typeinf_world = read_uint(r);
         jl_set_gs_ctr(gs_ctr);
     }
     else {
@@ -4992,27 +5107,27 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         offset_method_roots_list = jl_read_offset(&s);
     }
     s.buildid_depmods_idxs = depmod_to_imageidx(depmods);
-    size_t nlinks_gctags = read_uint32(f);
+    size_t nlinks_gctags = read_uint32(r);
     if (nlinks_gctags > 0) {
         s.link_ids_gctags = jl_alloc_array_1d(jl_array_int32_type, nlinks_gctags);
-        ios_read(f, (char*)jl_array_data(s.link_ids_gctags, uint32_t), nlinks_gctags * sizeof(uint32_t));
+        ios_read(r, (char*)jl_array_data(s.link_ids_gctags, uint32_t), nlinks_gctags * sizeof(uint32_t));
     }
-    size_t nlinks_relocs = read_uint32(f);
+    size_t nlinks_relocs = read_uint32(r);
     if (nlinks_relocs > 0) {
         s.link_ids_relocs = jl_alloc_array_1d(jl_array_int32_type, nlinks_relocs);
-        ios_read(f, (char*)jl_array_data(s.link_ids_relocs, uint32_t), nlinks_relocs * sizeof(uint32_t));
+        ios_read(r, (char*)jl_array_data(s.link_ids_relocs, uint32_t), nlinks_relocs * sizeof(uint32_t));
     }
-    size_t nlinks_gvars = read_uint32(f);
+    size_t nlinks_gvars = read_uint32(r);
     if (nlinks_gvars > 0) {
         s.link_ids_gvars = jl_alloc_array_1d(jl_array_int32_type, nlinks_gvars);
-        ios_read(f, (char*)jl_array_data(s.link_ids_gvars, uint32_t), nlinks_gvars * sizeof(uint32_t));
+        ios_read(r, (char*)jl_array_data(s.link_ids_gvars, uint32_t), nlinks_gvars * sizeof(uint32_t));
     }
-    size_t nlinks_external_fnvars = read_uint32(f);
+    size_t nlinks_external_fnvars = read_uint32(r);
     if (nlinks_external_fnvars > 0) {
         s.link_ids_external_fnvars = jl_alloc_array_1d(jl_array_int32_type, nlinks_external_fnvars);
-        ios_read(f, (char*)jl_array_data(s.link_ids_external_fnvars, uint32_t), nlinks_external_fnvars * sizeof(uint32_t));
+        ios_read(r, (char*)jl_array_data(s.link_ids_external_fnvars, uint32_t), nlinks_external_fnvars * sizeof(uint32_t));
     }
-    uint32_t external_fns_begin = read_uint32(f);
+    uint32_t external_fns_begin = read_uint32(r);
     if (s.incremental) {
         assert(restored && init_order && extext_methods && internal_methods && new_ext_cis && method_roots_list);
         *restored = (jl_array_t*)jl_delayed_reloc(&s, offset_restored);
@@ -5023,9 +5138,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         *internal_methods = jl_alloc_vec_any(0);
     }
     s.s = NULL;
+    s.root_base = NULL;
 
     // step 3: apply relocations
-    assert(!ios_eof(f));
+    assert(sections || !ios_eof(f));
     jl_read_symbols(&s);
     ios_close(&symbols);
 
@@ -5447,14 +5563,22 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
         jl_add_methods(*extext_methods);
     }
     else {
-        reactive_dirty_protect(reactive_image_base, reactive_image_len);
+        if (reactive_region_base != NULL)
+            reactive_dirty_protect(reactive_region_base, reactive_region_const + reactive_const_len - reactive_region_base);
+        else
+            reactive_dirty_protect(reactive_image_base, reactive_image_len);
         if (reactive_pages_mode() && reactive_dirty_start != NULL) {
             // The base is mapped now: a save may replace the file later.
             if (!reactive_base_map())
                 jl_safe_printf("reactive: pages: the base image has no file bytes; every save writes whole\n");
             reactive_page_hashes = (uint64_t*)malloc_s(reactive_dirty_npages * sizeof(uint64_t));
-            for (size_t i = 0; i < reactive_dirty_npages; i++)
-                reactive_page_hashes[i] = reactive_page_hash(reactive_dirty_start + i * jl_page_size);
+            for (size_t i = 0; i < reactive_dirty_npages; i++) {
+                char *page = reactive_dirty_start + i * jl_page_size;
+                if (reactive_gap_lo != NULL && page >= reactive_gap_lo && page < reactive_gap_hi)
+                    reactive_page_hashes[i] = 0;    // the gap of the region: never written
+                else
+                    reactive_page_hashes[i] = reactive_page_hash(page);
+            }
         }
     }
 }
@@ -5831,12 +5955,74 @@ JL_DLLEXPORT const char *jl_reactive_image_fname(int32_t id) JL_NOTSAFEPOINT
     return reactive_image.fptrs.names[id - 1];
 }
 
+// Overlay mode (Stage G): the sysimg of the base is mapped from its file
+// into a reserved region, with headroom for the new objects of the
+// overlays; the const data is copied after the headroom. The rest of the
+// sections stay in the blob of the shared object. Answers 0 when the
+// region cannot be made, and the image loads in place.
+static int reactive_region_load(jl_image_buf_t buf)
+{
+    reactive_sections_t sec;
+    if (!reactive_parse_blob((const char*)buf.data, buf.size, &sec))
+        return 0;
+    const char *fname = NULL;
+    size_t file_off = 0;
+    if (!reactive_blob_file(buf.data, &fname, &file_off)) {
+        jl_safe_printf("reactive: overlay: the blob of the image has no file; the image loads in place\n");
+        return 0;
+    }
+    size_t page = jl_getpagesize();
+    if (file_off % page != 0) {
+        jl_safe_printf("reactive: overlay: the blob is not page aligned in its file; the image loads in place\n");
+        return 0;
+    }
+    size_t sysimg_pages = LLT_ALIGN(sec.sysimg.size, page);
+    size_t const_start = sysimg_pages + REACTIVE_SYSIMG_HEADROOM;
+    size_t const_pages = LLT_ALIGN(sec.const_data.size, page);
+    size_t span = const_start + const_pages + REACTIVE_CONST_HEADROOM;
+    char *region = (char*)mmap(NULL, span, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (region == MAP_FAILED) {
+        jl_safe_printf("reactive: overlay: the region of %zu MB cannot be reserved; the image loads in place\n", span >> 20);
+        return 0;
+    }
+    int fd = open(fname, O_RDONLY);
+    if (fd < 0 || mmap(region, sysimg_pages, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_FIXED, fd, file_off) == MAP_FAILED) {
+        jl_safe_printf("reactive: overlay: the sysimg of the base cannot be mapped from %s; the image loads in place\n", fname);
+        if (fd >= 0)
+            close(fd);
+        munmap(region, span);
+        return 0;
+    }
+    close(fd);
+    if (mmap(region + const_start, const_pages, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == MAP_FAILED) {
+        munmap(region, span);
+        return 0;
+    }
+    memcpy(region + const_start, sec.const_data.ptr, sec.const_data.size);
+    reactive_region_base = region;
+    reactive_region_span = span;
+    reactive_region_const = region + const_start;
+    reactive_gap_lo = region + sysimg_pages;
+    reactive_gap_hi = region + const_start;
+    reactive_sections = sec;
+    reactive_sections.sysimg.ptr = region;
+    reactive_sections.const_data.ptr = region + const_start;
+    reactive_sections.blob_span = const_start + sec.const_data.size;
+    reactive_sections_on = 1;
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: overlay: the base loads in a region of %zu MB (sysimg %zu MB, const %zu MB)\n",
+                       span >> 20, sec.sysimg.size >> 20, sec.const_data.size >> 20);
+    return 1;
+}
+
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;
 
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
+    if (buf.kind == JL_IMAGE_KIND_SO && reactive_overlay_mode())
+        reactive_region_load(buf);
 
     if (buf.kind == JL_IMAGE_KIND_SO) {
         assert(image->fptrs.ptrs); // jl_init_processor_sysimg should already be run
@@ -5855,6 +6041,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     ios_static_buffer(&f, (char *)buf.data, buf.size);
 
     jl_restore_system_image_from_stream(&f, image, buf.checksum);
+    reactive_sections_on = 0;
 
     ios_close(&f);
     JL_SIGATOMIC_END();
