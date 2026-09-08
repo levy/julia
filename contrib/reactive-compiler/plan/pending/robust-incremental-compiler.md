@@ -997,6 +997,39 @@ whole image. Option `image = :overlay`.
 - [ ] the format of an overlay: the new objects with relocations into the
       base, the patch list of the base's dirty pages, the fresh function
       table, the delta's text; a chain of overlays over one base.
+      *As designed (2026-09-08, from Stage F):* an overlay is a shared
+      object like the base, with a different blob: a header, the page
+      patches of the sysimg and the const sections (page index, bytes),
+      the new objects of both, the new symbols, and the full merged
+      relocation lists, the gvar record of its own slots, the fptr
+      record of the fresh table and the roots, as Stage F writes them.
+      The clean pages are never written: a dirty page is fully rewritten
+      by its objects and the zero gaps, so the writer's buffer needs no
+      file bytes, it starts from memory. The fresh function table of the
+      overlay holds null for a reused function and a reuse map names the
+      function's id in the composed table of the loaded state; nothing is
+      linked with the base. The delta's code calls a reused function
+      through the external-function slots of its own image (the
+      pkgimage mechanism, `external_linkage`), which the loader fills from
+      the code instance's pointer; the direct calls by name of Stage C are
+      off under overlays, and a boxed callee goes through `jl_invoke`. The
+      server's overlay is cumulative since its start, so it replaces the
+      previous one in the chain; a child's overlay appends; a founding
+      starts a chain. Sizes on the routing image: the relocation lists
+      13.6 MB, the first save's new objects 5 MB, the patches 20 MB from a
+      founding-started server and 2 MB from a fresh one.
+      *The loader, as designed:* it reserves an address range with
+      headroom, maps the base's sysimg section into it from the shared
+      object's file (page aligned in the blob), copies the const section,
+      then for every overlay of the chain in order copies its new objects
+      after the current end and its patches over the pages they name; the
+      last overlay's lists, records and roots then restore the image as
+      one, through the restore entry refactored to take the sections
+      instead of one stream. The function table is composed overlay by
+      overlay from the reuse maps; the fptr record of the last overlay
+      sets the code instances; every image's gvar record sets its own
+      slots. The dirty tracking, the reuse ids and the lists for the next
+      save follow the composed state.
 - [ ] the loader: the base is mapped as now, the overlays in order, each
       one's patches applied and relocations resolved; the function table
       of the last overlay names the live functions.
