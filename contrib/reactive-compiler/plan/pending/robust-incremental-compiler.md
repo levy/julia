@@ -505,13 +505,33 @@ bounds the growth of a chain by it.
 A compiler process that stays, applies edits, and saves an image without an
 exit.
 
-- [ ] a throwaway test of `fork` in a Julia process: one Julia thread, no
+- [x] a throwaway test of `fork` in a Julia process: one Julia thread, no
       GC threads; the child serializes a system image with the exit path
       and exits; the parent continues and serializes again. This decides
       the save path before any server code exists.
-- [ ] if `fork` fails: an audit of `staticdata.c` for the mutations that
+      *As built (2026-09-08):* `fork` works, with one repair in the child.
+      A plain `fork` hung the child and corrupted the parent: the JIT
+      writes new code through a descriptor of `/proc/self/mem` that it
+      opened at start (`cgmemmgr.cpp`, the self-memory allocator), and
+      after a fork that descriptor names the parent's memory. The child's
+      first toplevel thunk landed in the parent and the child ran zeros
+      (a write to `jl_fptr_args`, reported as `ReadOnlyMemoryError`).
+      `jl_reactive_fork()` (cgmemmgr.cpp) forks and, in the child, opens
+      the child's own `/proc/self/mem` before anything compiles. The
+      bundled libuv has no `uv_loop_fork`, so the child keeps the epoll
+      descriptor of the parent; it runs the loop only inside the writer's
+      wait for an empty scheduler, while the parent waits for it. With one
+      Julia thread the process has no GC thread. The test: from the Gate
+      C store's image with reuse, the child wrote a delta (5 functions,
+      2.2 s) through `jl_write_compiler_output` and `_exit`; the parent
+      collected, defined one more function and wrote its own delta at
+      exit (17 functions); both objects link with the store's ancestors
+      and both images run their functions from image code.
+- [x] if `fork` fails: an audit of `staticdata.c` for the mutations that
       the serialization makes on the live heap, and an in-process save
       that undoes or avoids them. Record the list in the plan.
+      *Not needed:* `fork` works; the child's serialization mutates the
+      child's copy of the heap only.
 - [ ] the server: a Julia process in the output mode of the child
       (`jl_generating_output()` true for its whole life), with a command
       loop on a socket: `apply`, `save`, `refresh-trace`, `quit`. The

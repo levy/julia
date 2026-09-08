@@ -369,10 +369,15 @@ static int _init_self_mem() JL_NOTSAFEPOINT
     return fd;
 }
 
-static int get_self_mem_fd() JL_NOTSAFEPOINT
+static int &self_mem_fd() JL_NOTSAFEPOINT
 {
     static int fd = _init_self_mem();
     return fd;
+}
+
+static int get_self_mem_fd() JL_NOTSAFEPOINT
+{
+    return self_mem_fd();
 }
 
 static void write_self_mem(void *dest, void *ptr, size_t size) JL_NOTSAFEPOINT
@@ -390,6 +395,31 @@ static void write_self_mem(void *dest, void *ptr, size_t size) JL_NOTSAFEPOINT
     }
 }
 #endif // _OS_LINUX_
+
+// The fork of a reactive compiler server: the child writes the image and
+// exits, the parent keeps the heap. The child needs one repair before it
+// compiles anything: the descriptor of /proc/self/mem names the parent's
+// memory after a fork (the link was resolved when it was opened), so the
+// code that the child's JIT writes through it would land in the parent and
+// the child would run zeros. The child opens its own. The event loop keeps
+// the epoll descriptor of the parent (the bundled libuv has no
+// uv_loop_fork); the child runs the loop only inside the writer's wait for
+// an empty scheduler, while the parent waits for the child.
+extern "C" JL_DLLEXPORT int jl_reactive_fork(void) JL_NOTSAFEPOINT
+{
+#ifdef _OS_LINUX_
+    int pid = fork();
+    if (pid == 0) {
+        int &fd = self_mem_fd();
+        if (fd >= 0)
+            close(fd);
+        fd = _init_self_mem();
+    }
+    return pid;
+#else
+    return -1;
+#endif
+}
 
 using namespace llvm;
 
