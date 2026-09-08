@@ -1082,8 +1082,10 @@ with `IMAGE=overlay`): ten routing edits through the server, each
 the restart child 4.0 s (its own start included); every image and the
 restart pass the oracle; the restart child's image equals the server's
 by checks 1, 2 and 4; the hop means are the edits'; the server holds 632
-MB after ten saves; the bundle starts in 0.25 s with the server's overlay
-against 0.22 s alone (the gate's bound: a quarter). The save is 2.3 s of
+MB after ten saves; the bundle starts in 0.24 s with the server's overlay
+against 0.22 s alone (the gate's bound: a quarter); a founding after the
+ten edits gives an image 13 KB smaller than the first founding's, the
+chain gone, and its run gives the founding's hop mean. The save is 2.3 s of
 the server: front 0.7, emit 0.2, heap 0.6 (queue 0.2, write 0.2, combine
 0.2), dump 0.7 to 0.9 for the codegen and archive of the delta's 981
 functions; the apply 0.4 s; the overlay's link is small. The second of
