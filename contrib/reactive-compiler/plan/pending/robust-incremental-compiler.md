@@ -784,9 +784,38 @@ bound of Gate D.
       constant data, the symbols and the global-slot records are appended
       the same way. The heap write drops from 3.4 s to the dirty pages
       and the new objects.
+      *Design (2026-09-08, from the format):* the relocation lists of an
+      image are positions, delta-coded, in ascending order, and the target
+      of a relocation is coded inside the field itself, so a list merges
+      by a re-encoding, and the field of a copied page carries its target
+      already. The gc-tag list names the header of every object, so it is
+      the object index of the base: the objects of a dirty page are the
+      entries whose start falls in the page or in the object before it.
+      The base's file bytes come from the loaded shared object, mapped
+      read-only at the file offset that `dl_iterate_phdr` gives for the
+      segment of the image's data; the file bytes are the unrelocated
+      form, with the gc bits clear. A base object on a dirty page is
+      emitted by a merge: the file bytes of the object, the bytes outside
+      the listed fields taken from memory, and a listed field kept when
+      its memory value is what the loader made of the file's encoding,
+      else coded anew: a pointer into the base as the base offset, by
+      arithmetic, a pointer to a new object through the layout table. The
+      walk of the writer starts at the objects of the dirty pages and
+      queues the new objects only, with the queue, the weak lists and the
+      prunes of the reactive format as they are; a base object needs no
+      table, its offset is its address. The fresh function table, the
+      slot records and the fptr record are rebuilt as now; a dead code
+      instance of a clean page keeps no function and no fptr, as a
+      pruned one does today.
 - [ ] the dump without LLVM: the blob becomes a raw section of the object
       through the assembler or a direct ELF writer, not an LLVM global.
       The dump drops from 1.2 s to the copy.
+      *Design:* `jl_dump_native` makes `jl_system_image_data` a constant
+      array of the module, with `jl_system_image_size` and the checksum
+      beside it, in `.ldata` under the large code model. The replacement
+      writes the object with `ld -r -b binary` and renames the symbol
+      with `objcopy`, or writes the ELF directly: one section, three
+      symbols, the alignment of a page.
 - [ ] the garbage of the log: a dead object on a clean page stays; the
       prune of dead entries applies on the pages that changed, which is
       where a deletion writes; the option `compact` founds again after
