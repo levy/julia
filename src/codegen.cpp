@@ -7879,6 +7879,15 @@ const char *jl_generate_ccallable(Module *llvmmod, jl_value_t *nameval, jl_value
     jl_value_t *ff = ft->instance;
     assert(ff);
     const char *name = !jl_is_string(nameval) ? jl_symbol_name(ft->name->singletonname) : jl_string_data(nameval);
+    // A reactive rebuild links the previous image's text in front of this
+    // module, and that text already defines the alias of every `@ccallable`
+    // method it knew. The old wrapper serves a redefined method: it resolves
+    // its target in the current world. So the delta defines no second alias.
+    if (jl_reactive_image_exports(name)) {
+        if (jl_reactive_timings() >= 2)
+            jl_safe_printf("reactive: ccallable %s is exported by the previous image; no new alias\n", name);
+        return name;
+    }
     jl_value_t *crt = declrt;
     if (jl_is_abstract_ref_type(declrt)) {
         declrt = jl_tparam0(declrt);

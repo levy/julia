@@ -1610,45 +1610,183 @@ function typeinf_ext_toplevel(mi::MethodInstance, world::UInt, source_mode::UInt
     return typeinf_ext_toplevel(interp, mi, source_mode)
 end
 
+# Reactive reuse: the image this process booted from is the previous build.
+# A code instance of that image that is still valid keeps its native code:
+# the next image links the previous build's text objects and the code
+# instance takes its function ids there. Only the code that changed is
+# emitted again. The runtime says whether reuse is on (`JULIA_REACTIVE_REUSE=1`
+# with a `.so` image loaded) and which code instances have image ids.
+reactive_reuse_enabled() = ccall(:jl_reactive_reuse_enabled, Cint, ()) != 0
+reactive_base_world() = ccall(:jl_reactive_base_world, Csize_t, ())
+
+# The served code instances of a trimmed build with their IR, in pairs,
+# for the verifier: the trimmed image holds their machine code.
+const reactive_verify_reused = Any[]
+
+# The optimized IR of a served code instance, or nothing when it has none
+# (a constant, a stripped image).
+function reactive_served_ir(code::CodeInstance)
+    use_const_api(code) && return nothing
+    inf = @atomic :monotonic code.inferred
+    inf isa String && (inf = _uncompressed_ir(code, inf))
+    return inf isa CodeInfo ? inf : nothing
+end
+
+# A method that no longer dispatches: deleted, or replaced by a definition
+# of the same signature. Neither bounds the code instances of the method
+# itself, so the previous image would serve them and the dead method would
+# stay in the image with its text. A reactive build compiles and reuses
+# nothing for such a method. The method table answers (the dispatch status
+# bits of a method restored from an image are cleared, staticdata.c); the
+# answer is kept per method for the pass.
+const reactive_dead_methods = IdDict{Method,Bool}()
+function reactive_method_dead(mi::MethodInstance)
+    def = mi.def
+    def isa Method || return false
+    def.is_for_opaque_closure && return false
+    dead = get(reactive_dead_methods, def, nothing)
+    if dead === nothing
+        dead = ccall(:jl_methtable_lookup, Any, (Any, Csize_t), def.sig, get_world_counter()) !== def
+        reactive_dead_methods[def] = dead
+    end
+    return dead::Bool
+end
+
+function ci_reactive_reusable(code::CodeInstance, world::UInt)
+    code.owner === nothing || return false
+    (code.min_world <= world <= code.max_world) || return false
+    return ccall(:jl_reactive_image_ids, Cint, (Any, Ptr{Int32}, Ptr{Int32}), code, C_NULL, C_NULL) != 0
+end
+
+# The code instance of `mi` that the previous build's native code serves in
+# `world`, else nothing. The cache returns the first valid entry of the chain;
+# a code instance that the previous build compiled at run time and inferred
+# again for the image sits before the one with the code, so the chain is
+# scanned.
+function reactive_cached_ci(interp::AbstractInterpreter, mi::MethodInstance, world::UInt)
+    ci = get(code_cache(interp), mi, nothing)
+    ci isa CodeInstance && ci_reactive_reusable(ci, world) && return ci
+    ci = isdefined(mi, :cache) ? mi.cache : nothing
+    while ci isa CodeInstance
+        ci_reactive_reusable(ci, world) && return ci
+        ci = isdefined(ci, :next) ? ci.next : nothing
+    end
+    return nothing
+end
+
+# A code instance of the loaded image that was already stale when the image
+# was written. The image keeps it for the world of the compiler, in which it
+# is still valid.
+function ci_reactive_stale(code::CodeInstance)
+    return ci_from_image(code) && code.max_world < reactive_base_world()
+end
+
+# The worklist method instances that only a stale code instance of the loaded
+# image asks for. A compile pass serves such a method instance from the image
+# in the world of that code instance and compiles nothing for it in the other
+# worlds: the previous build compiled nothing for it there either. The set is
+# filled by `enqueue_specialization!` and emptied by `compile_and_emit_native`.
+const reactive_stale_roots = IdDict{MethodInstance,Nothing}()
+
 function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
     invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
     external_linkage::Bool,
+    reused::Union{Vector{Any},Nothing} = nothing,
+    trim::Bool = false,
 )
     interp = workqueue.interp
     world = get_inference_world(interp)
+    reactive = reused !== nothing
     while !isempty(workqueue)
         item = pop!(workqueue)
         # each item in this list is either a MethodInstance indicating something
         # to compile, or an svec(rettype, sig) describing a C-callable alias to create.
         if item isa MethodInstance
             isinspected(workqueue, item) && continue
+            if reactive && reactive_method_dead(item)
+                reactive_timings() >= 2 && Core.println("reactive: dead method skipped ", item.specTypes)
+                markinspected!(workqueue, item)
+                continue
+            end
             # if this method is generally visible to the current compilation world,
             # and this is either the primary world, or not applicable in the primary world
             # then we want to compile and emit this
             if item.def.primary_world <= world
-                ci = typeinf_ext(interp, item, SOURCE_MODE_GET_SOURCE)
+                ci = reactive ? reactive_cached_ci(interp, item, world) : nothing
+                if ci === nothing && !(reactive && haskey(reactive_stale_roots, item))
+                    ci = typeinf_ext(interp, item, SOURCE_MODE_GET_SOURCE)
+                end
                 ci isa CodeInstance && push!(workqueue, ci)
             end
             markinspected!(workqueue, item)
         elseif item isa SimpleVector
             invokelatest_queue === nothing && continue
             (rt::Type, sig::Type) = item
-            # make a best-effort attempt to enqueue the relevant code for the ccallable
-            mi = ccall(:jl_get_specialization1, Any,
+            # make a best-effort attempt to enqueue the relevant code for the ccallable.
+            # A reactive build resolves the entry point in the latest world only:
+            # in an older world of the pass a deleted method still dispatches,
+            # and its code instance would root the dead method and keep its text.
+            mi = reactive && world != get_world_counter() ? nothing :
+                ccall(:jl_get_specialization1, Any,
                         (Any, Csize_t, Cint),
                         sig, world, #= mt_cache =# 0)
             if mi !== nothing
                 mi = mi::MethodInstance
-                ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE)
+                ci = reactive ? reactive_cached_ci(interp, mi, world) : nothing
+                ci === nothing && (ci = typeinf_ext(interp, mi, SOURCE_MODE_GET_SOURCE))
                 ci isa CodeInstance && push!(invokelatest_queue, ci)
             end
             # additionally enqueue the ccallable entrypoint / adapter, which implicitly
-            # invokes the above ci
+            # invokes the above ci. In a reactive build, `jl_generate_ccallable`
+            # emits no alias that the previous image already exports.
             push!(codeinfos, item)
         elseif item isa CodeInstance
             callee = item
             isinspected(workqueue, callee) && continue
             mi = get_ci_mi(callee)
+            if reactive && reactive_method_dead(mi)
+                reactive_timings() >= 2 && Core.println("reactive: dead method skipped ", mi.specTypes)
+                markinspected!(workqueue, callee)
+                continue
+            end
+            if reactive
+                # A callee that the previous build serves is not compiled
+                # again. When the code is in a sibling of `callee`, the call
+                # goes through the trampoline and `jl_invoke` finds the
+                # sibling at run time.
+                served = ci_reactive_reusable(callee, world) ? callee :
+                         reactive_cached_ci(interp, mi, world)
+                # A trimmed image holds what the entry points reach, so a
+                # served code instance is one whose optimized IR is at hand:
+                # its callees are the targets of the `invoke`s of that IR,
+                # which its machine code calls, and the IR is verified with
+                # the delta's (`reactive_verify_reused`). The recorded edges
+                # name the dispatch-level targets as well, which a fresh
+                # compile would not compile. Without IR the code instance is
+                # compiled again from its source, as `juliac` does.
+                src = served === nothing || !trim ? nothing : reactive_served_ir(served)
+                if served !== nothing && (!trim || src !== nothing)
+                    markinspected!(workqueue, callee)
+                    if !(served in reactive_reused_set)
+                        push!(reactive_reused_set, served)
+                        push!(reused, served)
+                        if trim
+                            push!(reactive_verify_reused, served)
+                            push!(reactive_verify_reused, src)
+                            for stmt in src.code
+                                isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify) || continue
+                                target = stmt.args[1]
+                                if target isa CodeInstance || target isa MethodInstance
+                                    reactive_timings() >= 2 && Core.println("reactive: trim invoke ", get_ci_mi(served).specTypes, " -> ",
+                                                                             target isa CodeInstance ? get_ci_mi(target).specTypes : target.specTypes)
+                                    push!(workqueue, target)
+                                end
+                            end
+                        end
+                    end
+                    continue
+                end
+            end
             # now make sure everything has source code, if desired
             if use_const_api(callee)
                 src = codeinfo_for_const(interp, mi, WorldRange(callee.min_world, callee.max_world), callee.edges, callee.rettype_const)
@@ -1697,6 +1835,18 @@ const TRIM_UNSAFE_WARN = 0x3
 function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_mode::UInt8, external_linkage::Bool)
     inf_params = InferenceParams(; force_enable_inference = trim_mode != TRIM_NO)
 
+    # Reactive reuse returns the reused code instances beside the code to emit.
+    # It serves a system image only: a package image links no previous build,
+    # and a trimmed image must see every callee.
+    reused = nothing
+    if !external_linkage && reactive_reuse_enabled()
+        # With trim the direct list is empty (precompile.jl): the reused
+        # code is what the walk from the entry points reaches.
+        reused = copy(reactive_reused_initial)
+        empty!(reactive_dead_methods)
+        empty!(reactive_verify_reused)
+    end
+
     # Create an "invokelatest" queue to enable eager compilation of speculative
     # invokelatest calls such as from `Core.finalizer` and `ccallable`
     invokelatest_queue = CompilationQueue(;
@@ -1711,19 +1861,74 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
         )
 
         append!(workqueue, methods)
-        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage)
+        compile!(codeinfos, workqueue; invokelatest_queue, external_linkage, reused, trim = trim_mode != TRIM_NO)
     end
 
     if invokelatest_queue !== nothing
         # This queue is intentionally aliased, to handle e.g. a `finalizer` calling `Core.finalizer`
         # (it will enqueue into itself and immediately drain)
-        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage)
+        compile!(codeinfos, invokelatest_queue; invokelatest_queue, external_linkage, reused, trim = trim_mode != TRIM_NO)
     end
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE
         verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
     end
-    return codeinfos
+    reused === nothing && return codeinfos
+    reactive_timings() != 0 && reactive_delta_report(codeinfos, methods, worlds)
+    return Core.svec(codeinfos, reused)
+end
+
+reactive_timings() = ccall(:jl_reactive_timings, Cint, ())
+
+# Why each code instance of the delta is emitted, for the timing report:
+#   const     a const-API code instance; it emits no function
+#   shadowed  another code instance of the same method instance is reusable
+#             in a world of the pass that the code instance covers: a reuse
+#             miss
+#   root      a worklist method instance without reusable code
+#   edge      a callee of a delta function without reusable code
+# `compile!` runs one pass per world; a code instance is compiled in a pass
+# whose world it covers, so a sibling that serves another world is not a miss.
+function reactive_delta_report(codeinfos::Vector{Any}, methods::Vector{Any}, worlds::Vector{UInt})
+    roots = IdDict{Any,Nothing}()
+    for item in methods
+        item isa MethodInstance && (roots[item] = nothing)
+    end
+    counts = IdDict{Symbol,Int}(:const => 0, :shadowed => 0, :root => 0, :edge => 0)
+    list = reactive_timings() >= 2
+    i = 1
+    while i <= length(codeinfos)
+        ci = codeinfos[i]
+        if ci isa CodeInstance
+            i += 2
+            mi = get_ci_mi(ci)
+            class = :edge
+            if use_const_api(ci)
+                class = :const
+            else
+                for world in worlds
+                    (ci.min_world <= world <= ci.max_world) || continue
+                    c = isdefined(mi, :cache) ? mi.cache : nothing
+                    while c isa CodeInstance
+                        if c !== ci && ci_reactive_reusable(c, world)
+                            class = :shadowed
+                            break
+                        end
+                        c = isdefined(c, :next) ? c.next : nothing
+                    end
+                    class === :shadowed && break
+                end
+                class === :edge && haskey(roots, mi) && (class = :root)
+            end
+            counts[class] += 1
+            list && class !== :const && Core.println("reactive delta: ", class, " ", mi.specTypes)
+        else
+            i += 1 # a ccallable svec
+        end
+    end
+    Core.println("reactive: delta ", counts[:const], " const, ", counts[:shadowed], " shadowed, ",
+                 counts[:root], " roots, ", counts[:edge], " edges")
+    nothing
 end
 
 const _verify_trim_world_age = RefValue{UInt}(typemax(UInt))

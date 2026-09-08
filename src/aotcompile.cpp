@@ -76,6 +76,23 @@ typedef struct {
     std::map<jl_code_instance_t*, std::tuple<uint32_t, uint32_t>> jl_fvar_map;
     SmallVector<void*, 0> jl_value_to_llvm;
     SmallVector<jl_code_instance_t*, 0> jl_external_to_llvm;
+    // Reactive reuse: the function ids of this build are fresh. The reused
+    // functions of the loaded image come first, in the image's order, with
+    // their symbol names in `reused_names` (id 1 is `reused_names[0]`);
+    // `fvar_base` is their count, and a delta function gets `fvar_base`
+    // plus its position in `jl_sysimg_fvars`. The global slot ids and the
+    // shard numbers append to the loaded image's: `jl_value_to_llvm` starts
+    // with the `gvar_base` slot values of the loaded image, and
+    // `jl_sysimg_gvars` holds only the new slots. All zero and empty for a
+    // stock build.
+    SmallVector<std::string, 0> reused_names;
+    // An overlay build (Stage G): the id in the composed table of the loaded
+    // state of every reused function, in fresh-id order; the table of the
+    // overlay holds null there, and the loader composes.
+    SmallVector<uint32_t, 0> reuse_map;
+    uint32_t fvar_base = 0;
+    uint32_t gvar_base = 0;
+    uint32_t shard_base = 0;
 } jl_native_code_desc_t;
 
 extern "C" JL_DLLEXPORT_CODEGEN
@@ -430,6 +447,13 @@ static void aot_optimize_roots(jl_codegen_params_t &params, egal_set &method_roo
     }
 }
 
+// Reactive reuse: the marker in front of the name of a declaration that names
+// a function of the loaded image. The delta's own definitions get their tag
+// after codegen (`jl_create_native_impl`), so until then one of them can carry
+// the same raw name as the image's function; the marker keeps the two apart,
+// and the final name pass strips it. No generated name starts with it.
+static const char reactive_image_marker[] = "reactive.image.";
+
 static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_roots, jl_compiled_functions_t &compiled_functions)
 {
     jl_workqueue_t workqueue;
@@ -437,6 +461,7 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
     jl_code_instance_t *codeinst = NULL;
     JL_GC_PUSH1(&codeinst);
     assert(!params.cache);
+    size_t direct_calls = 0, trampolines = 0;
     while (!workqueue.empty()) {
         auto it = workqueue.pop_back_val();
         codeinst = it.first;
@@ -469,6 +494,41 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
             if (invokeName.empty())
                 invokeName = "jl_fptr_const_return";
             preal_decl = mod->getNamedValue(gf_thunk_name)->getName();
+        }
+        // Reactive reuse: the callee has native code in the loaded image, so
+        // the delta declares the image's symbol and calls it directly, in
+        // place of the `jl_invoke` trampoline that boxes every argument. A
+        // `jl_fptr_sparam` or opaque-closure callee keeps the trampoline, as
+        // it does when this build compiles the callee.
+        std::string reactive_name;
+        if (preal_decl.empty() && !proto.oc && jl_reactive_reuse_enabled() && !jl_reactive_overlay_mode()) {
+            int32_t invoke_id = 0, spec_id = 0;
+            if (jl_reactive_image_ids(codeinst, &invoke_id, &spec_id)) {
+                const char *fname = NULL;
+                if (invoke_id > 0) {
+                    // a specsig function and its boxed wrapper: a specsig
+                    // caller takes the function, a boxed caller the wrapper
+                    fname = jl_reactive_image_fname(proto.specsig ? spec_id : invoke_id);
+                    preal_specsig = proto.specsig;
+                }
+                else if (invoke_id == -1) {
+                    // jl_fptr_args: the function takes boxed arguments; a
+                    // specsig caller gets the adapter below
+                    fname = jl_reactive_image_fname(spec_id);
+                    preal_specsig = false;
+                    invokeName = "jl_fptr_args";
+                }
+                if (fname) {
+                    reactive_name = std::string(reactive_image_marker) + fname;
+                    preal_decl = reactive_name;
+                    direct_calls++;
+                    if (jl_reactive_timings() >= 2)
+                        jl_safe_printf("reactive: direct call %s\n", fname);
+                }
+                else {
+                    trampolines++;
+                }
+            }
         }
         if (preal_decl.empty()) {
             pinvoke = emit_tojlinvoke(codeinst, invokeName, mod, params);
@@ -533,6 +593,9 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
         params.workqueue.clear();
     }
     JL_GC_POP();
+    if (jl_reactive_timings() && jl_reactive_reuse_enabled())
+        jl_safe_printf("reactive: %zu direct calls into the loaded image, %zu reused callees through the trampoline\n",
+                       direct_calls, trampolines);
 }
 
 
@@ -687,6 +750,72 @@ static bool canPartition(const Function &F)
            !F.hasFnAttribute(Attribute::InlineHint);
 }
 
+// Reactive reuse: number the functions of the image afresh, give every
+// reused code instance its fresh ids, move the ids of the emitted delta
+// after the reused ones, and put the loaded image's slot values in front of
+// the new ones. After this the serializer sees one function table, which
+// names the live functions of the loaded image's objects and the delta, and
+// one slot table that spans both. The reused functions keep the order of the
+// loaded image, so a wrapper stays in front of its specialization.
+static void reactive_rebase(jl_native_code_desc_t *data, jl_array_t *reused)
+{
+    if (jl_reactive_base_version() != 3)
+        jl_errorf("reactive reuse: the loaded image has format version %u; a founding build makes a version 3 image",
+                  jl_reactive_base_version());
+    data->gvar_base = jl_reactive_base_ngvars();
+    data->shard_base = jl_reactive_base_nshards();
+    size_t nreused = jl_array_nrows(reused);
+    SmallVector<std::pair<int32_t, int32_t>, 0> image_ids(nreused);
+    SmallVector<uint32_t, 0> live;
+    for (size_t i = 0; i < nreused; i++) {
+        jl_code_instance_t *ci = (jl_code_instance_t*)jl_array_ptr_ref(reused, i);
+        int32_t invokeptr_id = 0, specfptr_id = 0;
+        if (!jl_reactive_image_ids(ci, &invokeptr_id, &specfptr_id))
+            jl_error("reactive reuse: a reused code instance has no native code in the loaded image");
+        image_ids[i] = {invokeptr_id, specfptr_id};
+        if (invokeptr_id > 0)
+            live.push_back(invokeptr_id);
+        live.push_back(specfptr_id);
+    }
+    std::sort(live.begin(), live.end());
+    live.erase(std::unique(live.begin(), live.end()), live.end());
+    DenseMap<uint32_t, uint32_t> fresh;
+    for (size_t k = 0; k < live.size(); k++) {
+        const char *name = jl_reactive_image_fname(live[k]);
+        if (!name)
+            jl_error("reactive reuse: the loaded image has no name for a reused function");
+        fresh[live[k]] = k + 1;
+        data->reused_names.push_back(name);
+    }
+    data->fvar_base = live.size();
+    if (jl_reactive_overlay_mode())
+        data->reuse_map.assign(live.begin(), live.end());
+    for (auto &entry : data->jl_fvar_map) {
+        uint32_t &func_id = std::get<0>(entry.second);
+        uint32_t &cfunc_id = std::get<1>(entry.second);
+        if ((int32_t)func_id > 0)
+            func_id += data->fvar_base;
+        if (cfunc_id > 0)
+            cfunc_id += data->fvar_base;
+    }
+    for (size_t i = 0; i < nreused; i++) {
+        jl_code_instance_t *ci = (jl_code_instance_t*)jl_array_ptr_ref(reused, i);
+        int32_t invokeptr_id = image_ids[i].first;
+        uint32_t invoke = invokeptr_id > 0 ? fresh[invokeptr_id] : (uint32_t)invokeptr_id;
+        data->jl_fvar_map[ci] = std::make_tuple(invoke, fresh[image_ids[i].second]);
+    }
+    SmallVector<void*, 0> inits;
+    inits.reserve(data->gvar_base + data->jl_value_to_llvm.size());
+    for (uint32_t i = 0; i < data->gvar_base; i++)
+        inits.push_back(jl_reactive_base_gvar(i));
+    inits.append(data->jl_value_to_llvm.begin(), data->jl_value_to_llvm.end());
+    data->jl_value_to_llvm = std::move(inits);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: %u of %u functions of the loaded image reused, bases gvar %u shard %u; delta %zu functions, %zu slots\n",
+                       data->fvar_base, jl_reactive_base_nfvars(), data->gvar_base, data->shard_base,
+                       data->jl_sysimg_fvars.size(), data->jl_sysimg_gvars.size());
+}
+
 // this builds the object file portion of the sysimage files for fast startup
 // `external_linkage` create linkages between pkgimages.
 extern "C" JL_DLLEXPORT_CODEGEN
@@ -731,13 +860,31 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
     fargs[8] = ext_foreign_cis ? (jl_value_t*)ext_foreign_cis : jl_nothing; // ext_foreign_cis (or nothing)
     size_t last_age = ct->world_age;
     ct->world_age = jl_typeinf_world;
+    uint64_t front_start = jl_hrtime();
     fargs[0] = jl_apply(fargs, 9);
     fargs[1] = fargs[2] = fargs[3] = fargs[4] = fargs[5] = fargs[6] = fargs[7] = fargs[8] = NULL;
     ct->world_age = last_age;
     jl_value_t *codeinfos = fargs[0];
+    jl_value_t *reused = NULL;
+    if (jl_is_svec(codeinfos)) {
+        // reactive reuse: (codeinfos, the reused code instances of the loaded image)
+        reused = jl_svecref(codeinfos, 1);
+        codeinfos = jl_svecref(codeinfos, 0);
+        fargs[0] = codeinfos;
+        fargs[1] = reused;
+    }
     JL_TYPECHK(jl_create_native, array_any, codeinfos);
+    uint64_t emit_start = jl_hrtime();
     void *data = jl_emit_native((jl_array_t*)codeinfos, llvmmod, NULL, external_linkage ? 1 : 0);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: front %.1f s, jl_emit_native %.1f s, %zu codeinfos entries, %zu code instances reused\n",
+                       (emit_start - front_start) / 1e9, (jl_hrtime() - emit_start) / 1e9,
+                       (size_t)jl_array_nrows((jl_array_t*)codeinfos),
+                       reused ? (size_t)jl_array_nrows((jl_array_t*)reused) : (size_t)0);
+    if (reused)
+        reactive_rebase((jl_native_code_desc_t*)data, (jl_array_t*)reused);
     JL_GC_POP();
+    uint32_t shard_base = ((jl_native_code_desc_t*)data)->shard_base;
 
     // move everything inside, now that we've merged everything
     // (before adding the exported headers)
@@ -757,12 +904,31 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
                 G.setLinkage(GlobalValue::InternalLinkage);
                 G.setDSOLocal(true);
                 makeSafeName(G);
+                if (shard_base) {
+                    // the delta links beside the loaded image's objects, whose
+                    // names carry the same counters: tag every name of this build
+                    std::string tagged = (G.getName() + ".r" + Twine(shard_base)).str();
+                    G.setName(tagged);
+                }
                 if (Function *F = dyn_cast<Function>(&G)) {
                     if (juliapersonality_func) {
                         // Add unwind exception personalities to functions to handle async exceptions
                         F->setPersonalityFn(juliapersonality_func);
                     }
                 }
+            }
+        }
+        // Reactive reuse: every definition carries its tag now, so a
+        // declaration of a function of the loaded image drops its marker.
+        // The name is the image's symbol, hidden in the objects that the
+        // delta links with; the call is direct.
+        for (Function &F : M.functions()) {
+            if (F.isDeclaration() && F.getName().starts_with(reactive_image_marker)) {
+                std::string name = F.getName().drop_front(strlen(reactive_image_marker)).str();
+                assert(!M.getNamedValue(name) && "the delta defines a symbol of the loaded image");
+                F.setName(name);
+                F.setVisibility(GlobalValue::HiddenVisibility);
+                F.setDSOLocal(true);
             }
         }
     });
@@ -808,7 +974,9 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
         params.getContext().setDiscardValueNames(true);
     params.params = cgparams;
     assert(params.imaging_mode); // `_imaging_mode` controls if broken features like code-coverage are disabled
-    params.external_linkage = external_linkage;
+    // An overlay build (Stage G) calls a reused function through the
+    // external-function slots of its own image, as a pkgimage does.
+    params.external_linkage = external_linkage || jl_reactive_overlay_mode();
     params.temporary_roots = jl_alloc_array_1d(jl_array_any_type, 0);
     bool safepoint_on_entry = params.safepoint_on_entry;
     JL_GC_PUSH3(&params.temporary_roots, &method_roots.list, &method_roots.keyset);
@@ -1071,11 +1239,18 @@ static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionT
 void multiversioning_preannotate(Module &M);
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_shard_t.
-static GlobalVariable *emit_shard_table(Module &M, Type *T_size, Type *T_psize, unsigned threads) {
+// A reactive image (version 3) names the global slot tables of every shard
+// alone: the function and clone fields are null, and the function tables of
+// the shards stay unreferenced, so that the link drops them with the
+// functions that only they named.
+static GlobalVariable *emit_shard_table(Module &M, Type *T_size, Type *T_psize, unsigned threads, bool reactive) {
     SmallVector<Constant *, 0> tables(sizeof(jl_image_shard_t) / sizeof(void *) * threads);
     for (unsigned i = 0; i < threads; i++) {
         auto suffix = "_" + std::to_string(i);
-        auto create_gv = [&](StringRef name, bool constant) {
+        // `slot` marks the fields that a reactive image keeps
+        auto create_gv = [&](StringRef name, bool constant, bool slot = false) -> Constant * {
+            if (reactive && !slot)
+                return ConstantPointerNull::get(cast<PointerType>(T_psize));
             auto gv = new GlobalVariable(M, T_size, constant,
                                          GlobalValue::ExternalLinkage, nullptr, name + suffix);
             gv->setVisibility(GlobalValue::HiddenVisibility);
@@ -1086,11 +1261,12 @@ static GlobalVariable *emit_shard_table(Module &M, Type *T_size, Type *T_psize, 
         table[offsetof(jl_image_shard_t, fvar_count) / sizeof(void*)] = create_gv("jl_fvar_count", true);
         table[offsetof(jl_image_shard_t, fvar_ptrs) / sizeof(void*)] = create_gv("jl_fvar_ptrs", true);
         table[offsetof(jl_image_shard_t, fvar_idxs) / sizeof(void*)] = create_gv("jl_fvar_idxs", true);
-        table[offsetof(jl_image_shard_t, gvar_offsets) / sizeof(void*)] = create_gv("jl_gvar_offsets", true);
-        table[offsetof(jl_image_shard_t, gvar_idxs) / sizeof(void*)] = create_gv("jl_gvar_idxs", true);
+        table[offsetof(jl_image_shard_t, gvar_offsets) / sizeof(void*)] = create_gv("jl_gvar_offsets", true, true);
+        table[offsetof(jl_image_shard_t, gvar_idxs) / sizeof(void*)] = create_gv("jl_gvar_idxs", true, true);
         table[offsetof(jl_image_shard_t, clone_slots) / sizeof(void*)] = create_gv("jl_clone_slots", true);
         table[offsetof(jl_image_shard_t, clone_ptrs) / sizeof(void*)] = create_gv("jl_clone_ptrs", true);
         table[offsetof(jl_image_shard_t, clone_idxs) / sizeof(void*)] = create_gv("jl_clone_idxs", true);
+        table[offsetof(jl_image_shard_t, fvar_names) / sizeof(void*)] = create_gv("jl_fvar_names", true);
     }
     auto tables_arr = ConstantArray::get(ArrayType::get(T_psize, tables.size()), tables);
     auto tables_gv = new GlobalVariable(M, tables_arr->getType(), false,
@@ -1128,8 +1304,7 @@ static GlobalVariable *emit_ptls_table(Module &M, Type *T_size, Type *T_ptr) {
 }
 
 // See src/processor.h for documentation about this table. Corresponds to jl_image_header_t.
-static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned nfvars, unsigned ngvars) {
-    constexpr uint32_t version = 1;
+static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned nfvars, unsigned ngvars, uint32_t version) {
     std::array<uint32_t, 4> header{
         version,
         threads,
@@ -1140,6 +1315,59 @@ static GlobalVariable *emit_image_header(Module &M, unsigned threads, unsigned n
     auto header_gv = new GlobalVariable(M, header_arr->getType(), false,
                                         GlobalValue::InternalLinkage, header_arr, "jl_image_header");
     return header_gv;
+}
+
+// The one function table of a reactive image (version 3): `jl_fvar_ptrs`
+// names the function of every id, in id order, as a hidden declaration that
+// the link resolves in the text objects of this build or of an older one;
+// `jl_fvar_names` holds the same names, each terminated by NUL, for the next
+// build. The table is the root that keeps a function in the image.
+static std::pair<GlobalVariable *, GlobalVariable *> emit_function_table(Module &M, Type *T_psize, ArrayRef<std::string> names,
+                                                                         ArrayRef<uint32_t> reuse_map) {
+    auto &Context = M.getContext();
+    auto FT = FunctionType::get(Type::getVoidTy(Context), false);
+    SmallVector<Constant *, 0> ptrs;
+    ptrs.reserve(names.size());
+    std::string blob;
+    size_t k = 0;
+    for (auto &name : names) {
+        if (k < reuse_map.size()) {
+            // an overlay: the function lives in another image of the chain,
+            // the loader takes it from the composed table by the reuse map
+            ptrs.push_back(ConstantPointerNull::get(cast<PointerType>(T_psize)));
+        }
+        else {
+            auto F = M.getFunction(name);
+            if (!F) {
+                assert(!M.getNamedValue(name) && "a function of the image shares a name with the metadata");
+                F = Function::Create(FT, GlobalValue::ExternalLinkage, name, M);
+                F->setVisibility(GlobalValue::HiddenVisibility);
+                F->setDSOLocal(true);
+            }
+            ptrs.push_back(ConstantExpr::getBitCast(F, T_psize));
+        }
+        blob += name;
+        blob += '\0';
+        k++;
+    }
+    if (!reuse_map.empty()) {
+        SmallVector<uint32_t, 0> reuse(names.size(), 0);
+        for (size_t i = 0; i < reuse_map.size(); i++)
+            reuse[i] = reuse_map[i];
+        auto reuse_arr = ConstantDataArray::get(Context, reuse);
+        new GlobalVariable(M, reuse_arr->getType(), true, GlobalValue::ExternalLinkage, reuse_arr, "jl_fvar_reuse");
+    }
+    auto ptrs_arr = ConstantArray::get(ArrayType::get(T_psize, ptrs.size()), ptrs);
+    auto ptrs_gv = new GlobalVariable(M, ptrs_arr->getType(), true,
+                                      GlobalValue::ExternalLinkage, ptrs_arr, "jl_fvar_ptrs");
+    ptrs_gv->setVisibility(GlobalValue::HiddenVisibility);
+    ptrs_gv->setDSOLocal(true);
+    auto names_arr = ConstantDataArray::getString(Context, blob, false);
+    auto names_gv = new GlobalVariable(M, names_arr->getType(), true,
+                                       GlobalValue::ExternalLinkage, names_arr, "jl_fvar_names");
+    names_gv->setVisibility(GlobalValue::HiddenVisibility);
+    names_gv->setDSOLocal(true);
+    return {ptrs_gv, names_gv};
 }
 
 // Grab fvars and gvars data from the module
@@ -1788,7 +2016,18 @@ static void materializePreserved(Module &M, Partition &partition) {
 }
 
 // Reconstruct jl_fvars, jl_gvars, jl_fvars_idxs, and jl_gvars_idxs from the partition
-static void construct_vars(Module &M, Partition &partition, StringRef suffix) {
+// Reactive reuse: the base of one of the id spaces of this build, kept as a
+// flag on the data module by jl_dump_native. Zero on a stock build and on the
+// sysimg and metadata modules, which carry no flag.
+static uint32_t reactive_base(const Module &M, StringRef flag) {
+    if (auto *value = mdconst::extract_or_null<ConstantInt>(M.getModuleFlag(flag)))
+        return (uint32_t)value->getZExtValue();
+    return 0;
+}
+
+// The id tables of a partition give every function and slot its id in the
+// whole image: the position in the partition's own table, plus the base.
+static void construct_vars(Module &M, Partition &partition, StringRef suffix, uint32_t fvar_base, uint32_t gvar_base) {
     SmallVector<std::pair<uint32_t, GlobalValue *>> fvar_pairs;
     fvar_pairs.reserve(partition.fvars.size());
     for (auto &fvar : partition.fvars) {
@@ -1804,7 +2043,7 @@ static void construct_vars(Module &M, Partition &partition, StringRef suffix) {
     std::sort(fvar_pairs.begin(), fvar_pairs.end());
     for (auto &fvar : fvar_pairs) {
         fvars.push_back(fvar.second);
-        fvar_idxs.push_back(fvar.first);
+        fvar_idxs.push_back(fvar.first + fvar_base);
     }
     SmallVector<std::pair<uint32_t, GlobalValue *>, 0> gvar_pairs;
     gvar_pairs.reserve(partition.gvars.size());
@@ -1821,7 +2060,7 @@ static void construct_vars(Module &M, Partition &partition, StringRef suffix) {
     std::sort(gvar_pairs.begin(), gvar_pairs.end());
     for (auto &gvar : gvar_pairs) {
         gvars.push_back(gvar.second);
-        gvar_idxs.push_back(gvar.first);
+        gvar_idxs.push_back(gvar.first + gvar_base);
     }
 
     // Now commit the fvars, gvars, and idxs
@@ -1890,17 +2129,43 @@ static SmallVector<AOTOutputs, 16> add_output(Module &M, TargetMachine &TM, Stri
                 errs() << "WARNING: Invalid value for JULIA_IMAGE_TIMINGS: " << env << "\n";
         }
     }
+    // Reactive reuse: the shards of this build are numbered after the loaded
+    // image's, and the id tables of a shard append to the loaded image's ids
+    uint32_t fvar_base = reactive_base(M, "julia.reactive.fvar_base");
+    uint32_t gvar_base = reactive_base(M, "julia.reactive.gvar_base");
+    uint32_t shard_base = reactive_base(M, "julia.reactive.shard_base");
+    uint64_t counter = 0;
+    // Partitioning requires all globals to have names.
+    // We use a prefix to avoid name conflicts with user code.
+    for (auto &G : M.global_values()) {
+        if (!G.isDeclaration() && !G.hasName()) {
+            if (shard_base)
+                G.setName("jl_ext_" + Twine(counter++) + ".r" + Twine(shard_base));
+            else
+                G.setName("jl_ext_" + Twine(counter++));
+        }
+    }
     // Single-threaded case
     if (threads == 1) {
         output_timer.startTimer();
         {
             JL_TIMING(NATIVE_AOT, NATIVE_Opt);
+            // The definitions get the linkage that `partitionModule` gives
+            // them: a later build that reuses this image calls its functions
+            // by name, so every function must be a linkable symbol.
+            for (auto &G : M.global_values()) {
+                if (!G.isDeclaration() && G.hasLocalLinkage()) {
+                    G.setLinkage(GlobalValue::ExternalLinkage);
+                    G.setVisibility(GlobalValue::HiddenVisibility);
+                }
+            }
             // convert gvars to the expected offset table format for shard 0
             if (M.getGlobalVariable("jl_gvars")) {
                 auto gvars = consume_gv<Constant>(M, "jl_gvars", false);
                 Type *T_size = M.getDataLayout().getIntPtrType(M.getContext());
-                emit_offset_table(M, T_size, gvars, "jl_gvar", "_0"); // module flag "julia.mv.suffix"
-                M.getGlobalVariable("jl_gvar_idxs")->setName("jl_gvar_idxs_0");
+                std::string suffix = "_" + std::to_string(shard_base);
+                emit_offset_table(M, T_size, gvars, "jl_gvar", suffix); // module flag "julia.mv.suffix"
+                M.getGlobalVariable("jl_gvar_idxs")->setName("jl_gvar_idxs" + suffix);
             }
             outputs[0] = add_output_impl(M, TM, timers[0], unopt_out, opt_out, obj_out, asm_out);
         }
@@ -1920,14 +2185,6 @@ static SmallVector<AOTOutputs, 16> add_output(Module &M, TargetMachine &TM, Stri
     }
 
     partition_timer.startTimer();
-    uint64_t counter = 0;
-    // Partitioning requires all globals to have names.
-    // We use a prefix to avoid name conflicts with user code.
-    for (auto &G : M.global_values()) {
-        if (!G.isDeclaration() && !G.hasName()) {
-            G.setName("jl_ext_" + Twine(counter++));
-        }
-    }
     auto partitions = partitionModule(M, threads);
     partition_timer.stopTimer();
 
@@ -1964,12 +2221,12 @@ static SmallVector<AOTOutputs, 16> add_output(Module &M, TargetMachine &TM, Stri
                 timers[i].materialize.stopTimer();
 
                 timers[i].construct.startTimer();
-                std::string suffix = "_" + std::to_string(i);
-                construct_vars(*M, partitions[i], suffix);
+                std::string suffix = "_" + std::to_string(shard_base + i);
+                construct_vars(*M, partitions[i], suffix, fvar_base, gvar_base);
                 M->setModuleFlag(Module::Error, "julia.mv.suffix", MDString::get(M->getContext(), suffix));
                 // The DICompileUnit file is not used for anything, but ld64 requires it be a unique string per object file
                 // or it may skip emitting debug info for that file. Here set it to ./julia#N
-                DIFile *topfile = DIFile::get(M->getContext(), "julia#" + std::to_string(i), ".");
+                DIFile *topfile = DIFile::get(M->getContext(), "julia#" + std::to_string(shard_base + i), ".");
                 if (M->getNamedMetadata("llvm.dbg.cu"))
                     for (auto CU: M->getNamedMetadata("llvm.dbg.cu")->operands())
                         CU->replaceOperandWith(0, topfile);
@@ -2069,6 +2326,95 @@ static unsigned compute_image_thread_count(const ModuleInfo &info) {
 
 jl_emission_params_t default_emission_params = { 1 };
 
+#if defined(_OS_LINUX_) && defined(_CPU_X86_64_)
+#include <elf.h>
+#define REACTIVE_DIRECT_SYSIMG 1
+
+// The object of the image's data, written as an ELF relocatable directly
+// (Stage F of the reactive plan): the blob in `.ldata`, its size and
+// checksum in `.rodata`, the unpack pointer in `.data.rel.ro` with one
+// relocation to `jl_image_unpack_uncomp`. LLVM's emission of the same
+// constant costs seconds for a large image; this is a copy.
+static AOTOutputs reactive_emit_sysimg_elf(const char *blob, size_t size, uint32_t checksum)
+{
+    AOTOutputs out;
+    SmallVector<char, 0> &o = out.obj;
+    // the string tables
+    const char strtab[] = "\0jl_system_image_data\0jl_system_image_size\0jl_system_image_checksum\0jl_image_unpack\0jl_image_unpack_uncomp";
+    const uint32_t name_data = 1, name_size = 22, name_checksum = 43, name_unpack = 68, name_uncomp = 84;
+    const char shstrtab[] = "\0.ldata\0.rodata\0.data.rel.ro\0.rela.data.rel.ro\0.symtab\0.strtab\0.shstrtab\0.note.GNU-stack";
+    const uint32_t sh_ldata = 1, sh_rodata = 8, sh_relro = 16, sh_rela = 29, sh_symtab = 47, sh_strtab = 55, sh_shstrtab = 63, sh_note = 73;
+    auto align_to = [&](size_t a) { while (o.size() % a) o.push_back(0); };
+    auto append = [&](const void *p, size_t n) { o.append((const char*)p, (const char*)p + n); };
+    // the header, filled at the end
+    o.resize(sizeof(Elf64_Ehdr));
+    // .rodata: the size and the checksum
+    align_to(8);
+    size_t off_rodata = o.size();
+    uint64_t size64 = size;
+    append(&size64, 8);
+    append(&checksum, 4);
+    align_to(8);
+    // .data.rel.ro: the unpack pointer
+    size_t off_relro = o.size();
+    uint64_t zero = 0;
+    append(&zero, 8);
+    // .rela.data.rel.ro
+    align_to(8);
+    size_t off_rela = o.size();
+    Elf64_Rela rela = {0, ELF64_R_INFO(5, R_X86_64_64), 0};
+    append(&rela, sizeof(rela));
+    // .symtab
+    align_to(8);
+    size_t off_symtab = o.size();
+    Elf64_Sym syms[6] = {};
+    syms[1] = Elf64_Sym{name_data, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 1, 0, size};
+    syms[2] = Elf64_Sym{name_size, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 2, 0, 8};
+    syms[3] = Elf64_Sym{name_checksum, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 2, 8, 4};
+    syms[4] = Elf64_Sym{name_unpack, ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT), 0, 3, 0, 8};
+    syms[5] = Elf64_Sym{name_uncomp, ELF64_ST_INFO(STB_GLOBAL, STT_NOTYPE), 0, SHN_UNDEF, 0, 0};
+    append(syms, sizeof(syms));
+    // .strtab, .shstrtab
+    size_t off_strtab = o.size();
+    append(strtab, sizeof(strtab));
+    size_t off_shstrtab = o.size();
+    append(shstrtab, sizeof(shstrtab));
+    // .ldata: the blob, page aligned
+    align_to(jl_page_size);
+    size_t off_ldata = o.size();
+    append(blob, size);
+    // the section headers
+    align_to(8);
+    size_t off_shdr = o.size();
+    Elf64_Shdr sh[9] = {};
+    sh[1] = Elf64_Shdr{sh_ldata, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0, off_ldata, size, 0, 0, (uint64_t)jl_page_size, 0};
+    sh[2] = Elf64_Shdr{sh_rodata, SHT_PROGBITS, SHF_ALLOC, 0, off_rodata, 16, 0, 0, 8, 0};
+    sh[3] = Elf64_Shdr{sh_relro, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE, 0, off_relro, 8, 0, 0, 8, 0};
+    sh[4] = Elf64_Shdr{sh_rela, SHT_RELA, SHF_INFO_LINK, 0, off_rela, sizeof(Elf64_Rela), 5, 3, 8, sizeof(Elf64_Rela)};
+    sh[5] = Elf64_Shdr{sh_symtab, SHT_SYMTAB, 0, 0, off_symtab, sizeof(syms), 6, 1, 8, sizeof(Elf64_Sym)};
+    sh[6] = Elf64_Shdr{sh_strtab, SHT_STRTAB, 0, 0, off_strtab, sizeof(strtab), 0, 0, 1, 0};
+    sh[7] = Elf64_Shdr{sh_shstrtab, SHT_STRTAB, 0, 0, off_shstrtab, sizeof(shstrtab), 0, 0, 1, 0};
+    sh[8] = Elf64_Shdr{sh_note, SHT_PROGBITS, 0, 0, off_shdr, 0, 0, 0, 1, 0};
+    append(sh, sizeof(sh));
+    Elf64_Ehdr eh = {};
+    memcpy(eh.e_ident, ELFMAG, SELFMAG);
+    eh.e_ident[EI_CLASS] = ELFCLASS64;
+    eh.e_ident[EI_DATA] = ELFDATA2LSB;
+    eh.e_ident[EI_VERSION] = EV_CURRENT;
+    eh.e_ident[EI_OSABI] = ELFOSABI_SYSV;
+    eh.e_type = ET_REL;
+    eh.e_machine = EM_X86_64;
+    eh.e_version = EV_CURRENT;
+    eh.e_shoff = off_shdr;
+    eh.e_ehsize = sizeof(Elf64_Ehdr);
+    eh.e_shentsize = sizeof(Elf64_Shdr);
+    eh.e_shnum = 9;
+    eh.e_shstrndx = 7;
+    memcpy(o.data(), &eh, sizeof(eh));
+    return out;
+}
+#endif
+
 // takes the running content that has collected in the shadow module and dump it to disk
 // this builds the object file portion of the sysimage files for fast startup
 extern "C" JL_DLLEXPORT_CODEGEN
@@ -2118,12 +2464,21 @@ void jl_dump_native_impl(void *native_code,
         // On PPC the small model is limited to 16bit offsets. For very large images the small code model
         CMModel = CodeModel::Medium; //  isn't good enough on x86 so use Medium, it has no cost because only the image goes in .ldata
     }
+    // Reactive image (version 3): every function and every global gets its
+    // own section, so that the link drops what the fresh function table and
+    // the live code do not reference (`--gc-sections`).
+    const bool reactive_format = jl_reactive_image_format();
+    TargetOptions Options = jl_ExecutionEngine->getTargetOptions();
+    if (reactive_format) {
+        Options.FunctionSections = true;
+        Options.DataSections = true;
+    }
     std::unique_ptr<TargetMachine> SourceTM(
         jl_ExecutionEngine->getTarget().createTargetMachine(
             TheTriple.getTriple(),
             jl_ExecutionEngine->getTargetCPU(),
             jl_ExecutionEngine->getTargetFeatureString(),
-            jl_ExecutionEngine->getTargetOptions(),
+            Options,
             RelocModel,
             CMModel,
             CodeGenOptLevelFor(jl_options.opt_level) // respect the command-line -O flag
@@ -2156,6 +2511,21 @@ void jl_dump_native_impl(void *native_code,
 
         int compression = jl_options.compress_sysimage ? 15 : 0;
         uint32_t sysimg_checksum = jl_crc32c(0, z->buf, z->size);
+        bool direct = false;
+#ifdef REACTIVE_DIRECT_SYSIMG
+        // A reactive image writes the object of its data directly.
+        if (!compression && obj_fname && !bc_fname && !unopt_bc_fname && !asm_fname && jl_reactive_image_format()) {
+            uint64_t t_direct = jl_hrtime();
+            sysimg_outputs.push_back(reactive_emit_sysimg_elf(z->buf, z->size, sysimg_checksum));
+            ios_close(z);
+            free(z);
+            if (jl_reactive_timings())
+                jl_safe_printf("reactive: the object of the image data written directly in %.2f s (%zu KB)\n",
+                               (jl_hrtime() - t_direct) / 1e9, sysimg_outputs[0].obj.size() / 1024);
+            direct = true;
+        }
+#endif
+        if (!direct) {
         ArrayRef<char> sysimg_data{z->buf, (size_t)z->size};
         SmallVector<char, 0> compressed_data;
         if (compression) {
@@ -2209,12 +2579,20 @@ void jl_dump_native_impl(void *native_code,
         // to function as expected
         // no need to free the module/context, destructor handles that
         sysimg_outputs = compile(sysimgM, "sysimg", 1, [](Module &) {});
+        }
     }
 
     const bool imaging_mode = true;
     unsigned threads = 1;
     unsigned nfvars = 0;
     unsigned ngvars = 0;
+    // Reactive reuse: copied out of `data` before `compile` deletes it
+    uint32_t fvar_base = 0;
+    uint32_t gvar_base = 0;
+    uint32_t shard_base = 0;
+    // Reactive image: the names of the function table, in id order
+    SmallVector<std::string, 0> fvar_names;
+    SmallVector<uint32_t, 0> reuse_map;
 
     // Reset the target triple to make sure it matches the new target machine
 
@@ -2269,9 +2647,29 @@ void jl_dump_native_impl(void *native_code,
             ngvars = data->jl_sysimg_gvars.size();
             emit_table(dataM, data->jl_sysimg_gvars, "jl_gvars", T_psize);
             emit_table(dataM, data->jl_sysimg_fvars, "jl_fvars", T_psize);
+            // Reactive reuse: the ids of this build follow the reused ones
+            fvar_base = data->fvar_base;
+            gvar_base = data->gvar_base;
+            shard_base = data->shard_base;
+            if (shard_base) {
+                dataM.addModuleFlag(Module::Error, "julia.reactive.fvar_base", fvar_base);
+                dataM.addModuleFlag(Module::Error, "julia.reactive.gvar_base", gvar_base);
+                dataM.addModuleFlag(Module::Error, "julia.reactive.shard_base", shard_base);
+            }
+            // Reactive image: the function table names the reused functions
+            // first, then the delta's. The names are final here: the
+            // definitions carry their tag since `jl_create_native`, and the
+            // partition and the one target keep them.
+            if (reactive_format) {
+                assert(data->reused_names.size() == fvar_base);
+                reuse_map.assign(data->reuse_map.begin(), data->reuse_map.end());
+                fvar_names.assign(data->reused_names.begin(), data->reused_names.end());
+                for (auto F : data->jl_sysimg_fvars)
+                    fvar_names.push_back(F->getName().str());
+            }
             SmallVector<uint32_t, 0> idxs;
             idxs.resize(data->jl_sysimg_gvars.size());
-            std::iota(idxs.begin(), idxs.end(), 0);
+            std::iota(idxs.begin(), idxs.end(), gvar_base);
             auto gidxs = ConstantDataArray::get(Context, idxs);
             auto gidxs_var = new GlobalVariable(dataM, gidxs->getType(), true,
                                                 GlobalVariable::ExternalLinkage,
@@ -2280,14 +2678,14 @@ void jl_dump_native_impl(void *native_code,
             gidxs_var->setDSOLocal(true);
             idxs.clear();
             idxs.resize(data->jl_sysimg_fvars.size());
-            std::iota(idxs.begin(), idxs.end(), 0);
+            std::iota(idxs.begin(), idxs.end(), fvar_base);
             auto fidxs = ConstantDataArray::get(Context, idxs);
             auto fidxs_var = new GlobalVariable(dataM, fidxs->getType(), true,
                                                 GlobalVariable::ExternalLinkage,
                                                 fidxs, "jl_fvar_idxs");
             fidxs_var->setVisibility(GlobalValue::HiddenVisibility);
             fidxs_var->setDSOLocal(true);
-            dataM.addModuleFlag(Module::Error, "julia.mv.suffix", MDString::get(Context, "_0"));
+            dataM.addModuleFlag(Module::Error, "julia.mv.suffix", MDString::get(Context, "_" + std::to_string(shard_base)));
 
             // let the compiler know we are going to internalize a copy of this,
             // if it has a current usage with ExternalLinkage
@@ -2359,6 +2757,8 @@ void jl_dump_native_impl(void *native_code,
         }
         if (imaging_mode) {
             auto specs = jl_get_llvm_clone_targets(jl_options.cpu_target);
+            if (reactive_format && specs.size() > 1)
+                jl_error("reactive image: the image format holds one CPU target");
             const uint32_t base_flags = has_veccall ? JL_TARGET_VEC_CALL : 0;
             SmallVector<uint8_t, 0> data;
             auto push_i32 = [&] (uint32_t v) {
@@ -2376,9 +2776,26 @@ void jl_dump_native_impl(void *native_code,
             auto target_ids = new GlobalVariable(metadataM, value->getType(), true,
                                         GlobalVariable::InternalLinkage,
                                         value, "jl_dispatch_target_ids");
-            auto shards = emit_shard_table(metadataM, T_size, T_psize, threads);
+            // Reactive reuse: the image spans the loaded image's shards and
+            // this build's; the loader resolves every shard's tables by name
+            auto shards = emit_shard_table(metadataM, T_size, T_psize, shard_base + threads, reactive_format);
             auto ptls = emit_ptls_table(metadataM, T_size, T_ptr);
-            auto header = emit_image_header(metadataM, threads, nfvars, ngvars);
+            auto header = emit_image_header(metadataM, shard_base + threads, fvar_base + nfvars, gvar_base + ngvars,
+                                            reactive_format ? 3 : 2);
+            // Version 3: the one function table, in id order, is the root
+            // that keeps a function alive under `--gc-sections`; the per-shard
+            // function tables are then unreferenced and the linker drops them
+            Constant *fvar_ptrs = ConstantPointerNull::get(cast<PointerType>(T_psize));
+            Constant *fvar_names_ptr = fvar_ptrs;
+            if (reactive_format) {
+                assert(fvar_names.size() == fvar_base + nfvars);
+                auto table = emit_function_table(metadataM, T_psize, fvar_names, reuse_map);
+                fvar_ptrs = ConstantExpr::getBitCast(table.first, T_psize);
+                fvar_names_ptr = ConstantExpr::getBitCast(table.second, T_psize);
+            }
+            if (jl_reactive_timings())
+                jl_safe_printf("reactive: image header version %u shards %u functions %u slots %u\n",
+                               reactive_format ? 3 : 2, shard_base + threads, fvar_base + nfvars, gvar_base + ngvars);
             auto AT = ArrayType::get(T_size, sizeof(jl_small_typeof) / sizeof(void*));
             auto jl_small_typeof_copy = new GlobalVariable(metadataM, AT, false,
                                                         GlobalVariable::ExternalLinkage,
@@ -2428,7 +2845,7 @@ void jl_dump_native_impl(void *native_code,
                                             ConstantArray::get(entry_thunks_ty, entry_thunk_ptrs),
                                             "jl_image_entry_thunks");
 
-            AT = ArrayType::get(T_psize, 8);
+            AT = ArrayType::get(T_psize, 10);
             auto pointers = new GlobalVariable(metadataM, AT, false,
                                             GlobalVariable::ExternalLinkage,
                                             ConstantArray::get(AT, {
@@ -2439,7 +2856,9 @@ void jl_dump_native_impl(void *native_code,
                                                     ConstantExpr::getBitCast(target_ids, T_psize),
                                                     ConstantExpr::getBitCast(cpu_target_global, T_psize),
                                                     ConstantExpr::getBitCast(entry_thunks, T_psize),
-                                                    ConstantExpr::getBitCast(entry_targets, T_psize)
+                                                    ConstantExpr::getBitCast(entry_targets, T_psize),
+                                                    fvar_ptrs,
+                                                    fvar_names_ptr
                                             }),
                                             "jl_image_pointers");
             addComdat(pointers, TheTriple);

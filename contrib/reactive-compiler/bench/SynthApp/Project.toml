@@ -1,0 +1,6 @@
+name = "SynthApp"
+uuid = "b1a9f4d2-3c7e-4a51-9f26-8d0e5c7a1b34"
+version = "0.1.0"
+
+[compat]
+julia = "1.13"

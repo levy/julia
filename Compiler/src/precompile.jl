@@ -183,8 +183,109 @@ function compile_all_union(sig)
     return all_success
 end
 
+reactive_image_format() = ccall(:jl_reactive_image_format, Cint, ()) != 0
+
+# A deleted or replaced method (`jl_method_table_disable`) closes its method
+# table entry but keeps its code instances open, and `Base.visit` reads the
+# method of every entry, the closed ones too. A reactive image does not carry
+# a closed entry (staticdata.c drops it), so the build does not compile its
+# method: the walk of `Base.visit` at the entry level, without the entries
+# that no world of the build runs.
+function reactive_visit_methods(f, mt::Core.MethodTable, worlds::Vector{UInt})
+    function visit_entry(e)
+        while e !== nothing
+            live = false
+            for w in worlds
+                if e.min_world <= w <= e.max_world
+                    live = true
+                    break
+                end
+            end
+            live && f(e.func)
+            e = e.next
+        end
+        nothing
+    end
+    visit_any(x) = x isa Core.TypeMapEntry ? visit_entry(x) : visit_level(x)
+    function visit_level(mc::Core.TypeMapLevel)
+        function each(mem::Memory{Any})
+            for i in 2:2:length(mem)
+                isassigned(mem, i) || continue
+                ei = mem[i]
+                if ei isa Memory{Any}
+                    for j in 2:2:length(ei)
+                        isassigned(ei, j) && visit_any(ei[j])
+                    end
+                else
+                    visit_any(ei)
+                end
+            end
+        end
+        mc.targ === nothing || each(mc.targ::Memory{Any})
+        mc.arg1 === nothing || each(mc.arg1::Memory{Any})
+        mc.tname === nothing || each(mc.tname::Memory{Any})
+        mc.name1 === nothing || each(mc.name1::Memory{Any})
+        mc.list === nothing || visit_entry(mc.list)
+        mc.any === nothing || visit_any(mc.any)
+        nothing
+    end
+    mt.defs === nothing || visit_any(mt.defs)
+    nothing
+end
+
+# Reactive reuse, the direct list (Stage D of the plan): every code instance
+# of the loaded image that is still valid in a build world is reused, and a
+# method instance that such code serves in every world stays off the
+# worklist. Without the list the compile pass reached the reused code
+# through the worklist of every method, one lookup per item per world: 1.4
+# s for 43000 code instances on the routing sample. The compile pass adds
+# the reused callees of the delta to the list; the set keeps it free of
+# duplicates.
+const reactive_reused_initial = Any[]
+const reactive_reused_set = IdSet{Any}()
+const reactive_served_mis = IdSet{Any}()
+
+# The first code instance of `mi` that the loaded image serves in `world`.
+function reactive_image_ci(mi::MethodInstance, world::UInt)
+    ci = isdefined(mi, :cache) ? mi.cache : nothing
+    while ci isa CodeInstance
+        ci_reactive_reusable(ci, world) && return ci
+        ci = isdefined(ci, :next) ? ci.next : nothing
+    end
+    return nothing
+end
+
+function reactive_direct_reuse!(newmethods, worlds::Vector{UInt})
+    empty!(reactive_reused_initial)
+    empty!(reactive_reused_set)
+    empty!(reactive_served_mis)
+    for method in newmethods
+        method = method::Method
+        specializations = method.specializations
+        for mi in (specializations isa Core.SimpleVector ? specializations : (specializations,))
+            mi isa MethodInstance || continue
+            served = 0
+            for world in worlds
+                if method.primary_world > world
+                    served += 1   # nothing to compile in a world before the method
+                    continue
+                end
+                ci = reactive_image_ci(mi, world)
+                ci === nothing && continue
+                served += 1
+                if !(ci in reactive_reused_set)
+                    push!(reactive_reused_set, ci)
+                    push!(reactive_reused_initial, ci)
+                end
+            end
+            served == length(worlds) && push!(reactive_served_mis, mi)
+        end
+    end
+    return nothing
+end
+
 # Complete method collection implementation
-function collect_all_method_defs(newmodules, mod_array)
+function collect_all_method_defs(newmodules, mod_array, worlds::Vector{UInt})
     allmeths = Any[]
 
     function method_visitor(method)
@@ -200,7 +301,11 @@ function collect_all_method_defs(newmodules, mod_array)
     end
 
     # Always visit the global method table first
-    visit(method_visitor, Core.methodtable)
+    if reactive_image_format()
+        reactive_visit_methods(method_visitor, Core.methodtable, worlds)
+    else
+        visit(method_visitor, Core.methodtable)
+    end
 
     # If mod_array is provided, iterate through modules looking for MethodTable objects
     #if mod_array !== nothing
@@ -309,11 +414,17 @@ end
 
 function enqueue_specialization!(all::Bool, worklist, mi::Core.MethodInstance)
     # Translation of precompile_enq_specialization_ from C
+    mi in reactive_served_mis && return false
     codeinst = isdefined(mi, :cache) ? mi.cache : nothing
+    stale = false
     while codeinst !== nothing
         do_compile = false
         if codeinst.owner !== nothing
             # This code instance is from a foreign interpreter, so we skip it
+        elseif ci_reactive_stale(codeinst)
+            # The loaded image serves this code instance in the world of the
+            # compiler; it does not ask for a compile in another world.
+            stale = true
         elseif use_const_api(codeinst) # Check if invoke is jl_fptr_const_return
             do_compile = true
         elseif codeinst.invoke != C_NULL || codeinst.precompile
@@ -329,12 +440,39 @@ function enqueue_specialization!(all::Bool, worklist, mi::Core.MethodInstance)
         end
         if do_compile
             push!(worklist, mi)
+            reactive_enqueue_report(all, mi, codeinst)
             return true
         end
         # Move to the next code instance in the chain
         codeinst = isdefined(codeinst, :next) ? codeinst.next : nothing
     end
+    if stale
+        # Only a stale code instance of the loaded image asks for `mi`: the
+        # passes reuse it and compile nothing new.
+        push!(worklist, mi)
+        reactive_stale_roots[mi] = nothing
+    end
     return true
+end
+
+# Reactive reuse, timing level 2: why is a method instance without reusable
+# code on the worklist? One line names the code instance that put it there.
+function reactive_enqueue_report(all::Bool, mi::Core.MethodInstance, codeinst::CodeInstance)
+    reactive_timings() >= 2 && reactive_reuse_enabled() || return nothing
+    world = get_world_counter()
+    ci = mi.cache
+    while ci isa CodeInstance
+        ci_reactive_reusable(ci, world) && return nothing
+        ci = isdefined(ci, :next) ? ci.next : nothing
+    end
+    why = use_const_api(codeinst) ? "const" :
+          codeinst.invoke != C_NULL ? "invoke" :
+          codeinst.precompile ? "precompile" :
+          all ? "all" :
+          codeinst.inferred === nothing ? "noinferred" : "cost"
+    Core.println("reactive enqueue: ", why, " world=", codeinst.min_world, ":", codeinst.max_world,
+                 " flags=", codeinst.flags, " ", mi.specTypes)
+    nothing
 end
 
 # Main unified compilation and emission function
@@ -366,13 +504,33 @@ function compile_and_emit_native(worlds::Vector{UInt},
     end
 
     # Step 2: Collect all method definitions, filtered by worklist if provided
-    newmethods = collect_all_method_defs(newmodules, mod_array)
+    t_front = _time_ns()
+    newmethods = collect_all_method_defs(newmodules, mod_array, worlds)
+    t_collect = _time_ns()
+
+    # The direct list of the reused code (reactive reuse). Not with trim:
+    # a trimmed image holds what the entry points reach, and the compile
+    # pass finds the reused code through the edges.
+    if newmodules === nothing && !external_linkage && reactive_reuse_enabled() && trim_mode == TRIM_NO
+        reactive_direct_reuse!(newmethods, worlds)
+    else
+        empty!(reactive_reused_initial)
+        empty!(reactive_reused_set)
+        empty!(reactive_served_mis)
+    end
+    t_direct = _time_ns()
 
     # Step 3: Collect set of method instances that seem worth compiling
     specialization_worklist = []
+    empty!(reactive_stale_roots)
     if trim_mode == 0x00
         if newmodules === nothing
-            infer_all_method_defs!(all, newmethods, latestworld, specialization_worklist)
+            # Reactive reuse: the pass over the methods with a compilable
+            # signature runs for the methods newer than the loaded image;
+            # the image decided the older ones, and their code is served.
+            infer_all_method_defs!(all, reactive_reuse_enabled() ?
+                Any[m for m in newmethods if (m::Method).primary_world > reactive_base_world()] : newmethods,
+                latestworld, specialization_worklist)
         else
             # Compute new_ext_cis using queue_external_cis with global newly_inferred
             new_ext_cis = ccall(:jl_compute_new_ext_cis, Any, ())
@@ -421,14 +579,26 @@ function compile_and_emit_native(worlds::Vector{UInt},
     end
 
     # Step 4: Perform type inference on tocompile to create codeinfos
+    # (with reactive reuse: svec(codeinfos, the reused code instances))
+    t_enqueue = _time_ns()
+    # (milliseconds as integers: this runs in the world of the compiler,
+    # where `round` with `digits` is too new)
+    if reactive_timings() != 0 && reactive_reuse_enabled()
+        Core.println("reactive: front collect ", div(t_collect - t_front, 1_000_000),
+                     " ms, direct reuse ", div(t_direct - t_collect, 1_000_000), " ms (",
+                     length(reactive_reused_initial), " code instances, ", length(reactive_served_mis),
+                     " method instances served), enqueue ", div(t_enqueue - t_direct, 1_000_000),
+                     " ms, worklist ", length(tocompile))
+    end
     codeinfos = try
         typeinf_ext_toplevel(tocompile, worlds, trim_mode, external_linkage)
     catch exc
         # Handle trimming failures
         isa(exc, Core.TrimFailure) || rethrow()
         # The verification check failed. The error message should already have
-        # been printed, so give up here and exit (w/o a stack trace).
-        invokelatest(exit, 1)
+        # been printed. The failure goes up as the exception: a reactive save
+        # answers it as a refusal, and a plain build exits through it.
+        rethrow()
     end
 
     return codeinfos
