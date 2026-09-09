@@ -704,7 +704,10 @@ jl_value_t *jl_code_or_ci_for_interpreter(jl_method_instance_t *mi, size_t world
     jl_value_t *ret = NULL;
     jl_code_info_t *src = NULL;
     if (jl_is_method(mi->def.value)) {
-        if (mi->def.method->source) {
+        // A stripped method holds `nothing`, not NULL: that is "no source",
+        // and the answer below is MissingCodeError rather than an attempt to
+        // uncompress `nothing`.
+        if (mi->def.method->source && mi->def.method->source != jl_nothing) {
             jl_method_t *m = mi->def.method;
             src = (jl_code_info_t*)m->source;
             if (!jl_is_code_info(src)) {
@@ -752,8 +755,17 @@ jl_code_info_t *jl_code_for_interpreter(jl_method_instance_t *mi, size_t world)
 
 // interpreter entry points
 
+// How many calls ran here. A trimmed binary that interprets a hot path is
+// slow and silent otherwise; the count makes it visible.
+static _Atomic(uint64_t) jl_interpreted_calls = 0;
+JL_DLLEXPORT uint64_t jl_get_interpreted_calls(void)
+{
+    return jl_atomic_load_relaxed(&jl_interpreted_calls);
+}
+
 jl_value_t *NOINLINE jl_fptr_interpret_call(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_code_instance_t *codeinst)
 {
+    jl_atomic_fetch_add_relaxed(&jl_interpreted_calls, 1);
     interpreter_state *s;
     jl_method_instance_t *mi = jl_get_ci_mi(codeinst);
     jl_task_t *ct = jl_current_task;

@@ -54,7 +54,7 @@ run_case() {
     local exe="$WORK/$name" log="$WORK/$name.log"
     local start end peak=0 rc out
     start=$(date +%s.%N)
-    ( julia +1.13 --startup-file=no --project="$HERE/env2" \
+    ( $SEALED_HOST_JULIA --startup-file=no --project="$HERE/env2" \
         "$SEALED_JULIAC" --output-exe "$exe" \
         --experimental --trim=safe "$src" ) > "$log" 2>&1 &
     local bpid=$!
@@ -82,9 +82,9 @@ run_case() {
 # The cases. `abstract6` is the feature the patch exists for; the `product`
 # cases are the union-product class (DESIGN.md §8c) — a record of n optional fields.
 build_sources() {
-    julia +1.13 --startup-file=no "$HERE/probe.jl" source abstract 6 > "$WORK/abstract6.jl"
+    $SEALED_HOST_JULIA --startup-file=no "$HERE/probe.jl" source abstract 6 > "$WORK/abstract6.jl"
     for n in 2 6 10; do
-        julia +1.13 --startup-file=no "$HERE/union_product.jl" source "$n" > "$WORK/product$n.jl"
+        $SEALED_HOST_JULIA --startup-file=no "$HERE/union_product.jl" source "$n" > "$WORK/product$n.jl"
     done
 }
 

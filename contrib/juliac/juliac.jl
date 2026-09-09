@@ -182,7 +182,10 @@ function compile_products(enable_trim::Bool)
         # SEALED_INTERPRET keeps the lowered IR. A call the trim could not
         # resolve then runs in the interpreter, which reads `Method.source` —
         # and `--strip-ir` under `--trim` clears that for every method.
-        get(ENV, "SEALED_INTERPRET", "") == "" && push!(strip_args, "--strip-ir")
+        # `SEALED_INTERPRET=1` keeps `--strip-ir`: the fork's runtime exempts the
+        # retained methods (staticdata.c). `SEALED_INTERPRET=all` keeps every
+        # method's IR — the stock-host fallback, and the size measurement.
+        get(ENV, "SEALED_INTERPRET", "") == "all" || push!(strip_args, "--strip-ir")
         push!(strip_args, "--strip-metadata")
     end
 

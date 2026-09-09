@@ -2,6 +2,10 @@
 
 import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call,
     SEALED_REPAIR, SEALED_GENERIC, SEALED_GENERIC_POLICY,
+    SEALED_INTERPRET, SEALED_INTERPRET_RETAINED, SEALED_INTERPRET_REFUSED, SEALED_INTERPRET_SITES,
+    SEALED_INTERPRET_SEEN, SEALED_INTERPRET_DEBUG, SEALED_INTERPRET_ANALYSED, SEALED_INTERPRET_BUDGET,
+    SEALED_INTERPRET_PROVEN, SEALED_INTERPRET_OVER, SEALED_INTERPRET_FLOOR, SEALED_INTERPRET_FLOOR_DONE,
+    typeinf_code, specialize_method,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
     # the why-chain: this file lives in a SUBMODULE, so the parent's names are
     # not in scope without asking. Omitting them made every chain throw an
@@ -231,6 +235,9 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
         isexpr(stmt, :(=)) && (stmt = stmt.args[2])
         error = ""
         warn = false
+        # set where the candidates of a dynamic site are known; read where
+        # the site's error is named, which is outside that scope
+        interp_warn = false
         if isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify)
             error = "unresolved invoke"
             edge = stmt.args[1]
@@ -241,6 +248,16 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                 if edge_mi === edge.def
                     ci = get(caches, edge_mi, nothing)
                     ci isa CodeInstance && continue # assume that only this_world matters for trim
+                end
+            end
+            # SEAL TO AN INTERPRETER: an invoke whose instance has no code
+            # reaches `jl_compile_method_internal` at run time, which
+            # interprets the method's source — retained here.
+            if SEALED_INTERPRET[] && SEALED_REPAIR[] === nothing && edge isa CodeInstance
+                local d = get_ci_mi(edge).def
+                if d isa Method && sealed_retain_for_interpreter!(d)
+                    warn = true
+                    error = "unresolved invoke, interpreted at run time"
                 end
             end
             # TODO: check for calls to Base.atexit?
@@ -300,6 +317,13 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                             end
                             handled && continue
                             error = "unresolved call to function"
+                            # THE FLOOR answers this class: whatever function
+                            # value arrives, its methods are present, and one
+                            # with no code interprets.
+                            if SEALED_INTERPRET[]
+                                warn = true
+                                error = "unresolved call to function, interpreted at run time"
+                            end
                         else
                             for i in 4:length(stmt.args)
                                 atyp = widenconst(argextype(stmt.args[i], codeinfo, sptypes))
@@ -323,6 +347,10 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                         end
                     end
                     error = "unresolved finalizer registered"
+                    if SEALED_INTERPRET[]
+                        warn = true
+                        error = "unresolved finalizer registered, interpreted at run time"
+                    end
                 elseif Core._apply isa ftyp
                     error = "trim verification not yet implemented for builtin `Core._apply`"
                 elseif Core._call_in_world_total isa ftyp
@@ -457,6 +485,36 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                                     break
                                 end
                             end
+                            # SEAL TO AN INTERPRETER: on the final pass, keep
+                            # every candidate in the image with its source —
+                            # a method with SOME instance is in the table but
+                            # a specialization it lacks is a crash without the
+                            # source — and let the site through as a warning
+                            # when every candidate can be interpreted.
+                            if SEALED_INTERPRET[] && SEALED_REPAIR[] !== nothing
+                                # the collect pass: the oracle hands the repair
+                                # loop what it can prove inside each candidate
+                                for j = 1:length(matchvec)
+                                    sealed_analyse_for_interpreter!(
+                                        (matchvec[j]::MethodMatch).method, SEALED_REPAIR[], interp)
+                                end
+                            end
+                            if SEALED_INTERPRET[] && SEALED_REPAIR[] === nothing
+                                local _iok = true
+                                for j = 1:length(matchvec)
+                                    # every candidate is retained, so no short-circuit
+                                    local _r = sealed_retain_for_interpreter!(
+                                        (matchvec[j]::MethodMatch).method)
+                                    _iok = _iok && _r
+                                end
+                                if !allcompiled
+                                    SEALED_INTERPRET_SITES[] += 1
+                                    _iok && (interp_warn = true)
+                                    Core.println("SEALED-INTERPRET site in=", get_ci_mi(codeinst).def,
+                                                 " stmt#", i, " candidates=", length(matchvec),
+                                                 _iok ? " interpretable" : " a candidate needs the compiler")
+                                end
+                            end
                             # REPAIR MODE: record the widened signature so
                         # `typeinf_trim` can expand it into the concrete
                         # instances dispatch will look for (`SEALED_REPAIR`).
@@ -502,6 +560,10 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                 end
                 # ----------------------------------------------------------------
                 error = "unresolved call"
+                if interp_warn
+                    warn = true
+                    error = "unresolved call, interpreted at run time"
+                end
             end
             extyp = argextype(SSAValue(i), codeinfo, sptypes)
             if extyp === Union{}
@@ -566,7 +628,242 @@ end
 
 ## entry-point ##
 
+# SEAL TO AN INTERPRETER — the verifier's half. See `SEALED_INTERPRET`.
+
+# The lowered source of `m`, if the interpreter can run it: no `foreigncall`,
+# `cfunction` or opaque closure, each of which `interpreter.c` refuses.
+# Uncompressed the way `Base.uncompressed_ir` does it.
+function sealed_interpretable_source(m::Method)
+    isdefined(m, :source) || return nothing
+    local s = m.source
+    (s === nothing || s isa UInt8) && return nothing
+    local src = s isa CodeInfo ? s :
+        ccall(:jl_uncompress_ir, Ref{CodeInfo}, (Any, Ptr{Cvoid}, Any), m, Ptr{Cvoid}(0), s)
+    for stmt in src.code
+        if stmt isa Expr && (stmt.head === :foreigncall || stmt.head === :cfunction ||
+                             stmt.head === :new_opaque_closure)
+            return nothing
+        end
+    end
+    return src
+end
+
+# A lowered body names a global two ways: `GlobalRef(M, :x)`, or the call
+# `getproperty(M, :x)` with the name quoted — which is how `Base.round` reads
+# in an uninferred method, and there `M` is an SSA value that holds the
+# module's own GlobalRef one statement earlier. `ssaval` maps a statement
+# index to the `(module, name)` it evaluates to, filled in statement order.
+# This answers the `(module, name)` a value names, or nothing.
+function sealed_named_global(@nospecialize(x), ssaval::IdDict{Int,Any})
+    if x isa GlobalRef
+        return (x.mod, x.name)
+    elseif x isa Expr && x.head === :call && length(x.args) == 3
+        local gp = x.args[1]
+        local mr = x.args[2]
+        local nm = x.args[3]
+        (gp isa GlobalRef && gp.name === :getproperty && nm isa QuoteNode && nm.value isa Symbol) ||
+            return nothing
+        local mg = mr isa SSAValue ? Base.get(ssaval, mr.id, nothing) : sealed_named_global(mr, ssaval)
+        mg === nothing && return nothing
+        isdefined(mg[1], mg[2]) || return nothing
+        local mv = Core.getglobal(mg[1], mg[2])
+        mv isa Module && return (mv, nm.value::Symbol)
+    end
+    return nothing
+end
+
+# Every global `x` names, at any depth of the expression, keeps its binding:
+# the interpreter reads `Main.Int` through the module's table, which trim
+# otherwise empties.
+function sealed_retain_globalrefs!(@nospecialize(x), ssaval::IdDict{Int,Any})
+    local g = sealed_named_global(x, ssaval)
+    if g !== nothing
+        ccall(:jl_sealed_retain_binding, Cvoid, (Any, Any), g[1], g[2])
+    end
+    if x isa Expr
+        for a in x.args
+            sealed_retain_globalrefs!(a, ssaval)
+        end
+    end
+    nothing
+end
+
+# The function a call's head names, through a GlobalRef, a `getproperty`
+# read, or an SSA value that holds one — or nothing.
+function sealed_call_head_function(@nospecialize(head), ssaval::IdDict{Int,Any})
+    local g = head isa SSAValue ? Base.get(ssaval, head.id, nothing) : sealed_named_global(head, ssaval)
+    g === nothing && return nothing
+    isdefined(g[1], g[2]) || return nothing
+    local fv = Core.getglobal(g[1], g[2])
+    # a type is a callee too: `Float64(x)` dispatches on `Type{Float64}`
+    ((fv isa Function && !(fv isa Core.Builtin)) || fv isa Type) || return nothing
+    return fv
+end
+
+# Retain `m` in the image with its source, and every binding its body reads.
+# What the body CALLS is not chased here: the oracle below compiles what it can
+# prove, and the floor holds Base for everything else. Answers whether `m`
+# itself can be interpreted.
+function sealed_retain_for_interpreter!(m::Method)
+    (m in SEALED_INTERPRET_SEEN) && return true
+    local src = sealed_interpretable_source(m)
+    if src === nothing
+        SEALED_INTERPRET_REFUSED[] += 1
+        SEALED_INTERPRET_DEBUG[] && Core.println("SEALED-INTERPRET refused ", m)
+        return false
+    end
+    Base.push!(SEALED_INTERPRET_SEEN, m)
+    ccall(:jl_sealed_retain_method, Cvoid, (Any,), m)
+    SEALED_INTERPRET_RETAINED[] += 1
+    SEALED_INTERPRET_DEBUG[] && Core.println("SEALED-INTERPRET retain ", m)
+    local ssaval = IdDict{Int,Any}()
+    for k = 1:length(src.code)
+        local st = src.code[k]
+        st isa Expr && st.head === :(=) && (st = st.args[2])
+        local g = sealed_named_global(st, ssaval)
+        g === nothing || (ssaval[k] = g)
+        sealed_retain_globalrefs!(st, ssaval)
+    end
+    return true
+end
+
+# THE BUILD-TIME ORACLE. A method behind a dynamic site is inferred at its OWN
+# signature — abstract arguments and all. Inference answers, per inner call,
+# whether the argument types are provable from the body: a call with concrete
+# types is handed to the repair loop and compiled; a call whose types derive
+# from the abstract parameters is not provable here, and its candidates get
+# the same analysis. Each method is analysed once. At run time the interpreter
+# runs the method's source, and its dynamic calls dispatch to the instances
+# proved here — or, past the floor, interpret in turn.
+function sealed_analyse_for_interpreter!(m::Method, repair::Vector{Any}, interp)
+    haskey(SEALED_INTERPRET_ANALYSED, m) && return nothing
+    SEALED_INTERPRET_ANALYSED[m] = true
+    # THE PROGRAM, NOT BASE. Base is the floor: present with source, interpreted
+    # where it has no code, its hot instances compiled from the trace. Inferring
+    # Base methods at their own signatures proves the concrete calls on their
+    # error paths — `string(...)` in a `throw` — and compiling those brought
+    # 8 326 methods and 112 dynamic sites into a 30-line program (measured).
+    Base.moduleroot(m.module) === Base && return nothing
+    if length(SEALED_INTERPRET_ANALYSED) > SEALED_INTERPRET_BUDGET[]
+        SEALED_INTERPRET_OVER[] += 1
+        return nothing
+    end
+    sealed_interpretable_source(m) === nothing && return nothing
+    # THE UNSPECIALIZED INSTANCE, and not `specialize_method` at the method's own
+    # signature: a `where` method's signature is a UnionAll, and an instance with
+    # UnionAll specTypes inserted into the specializations cache corrupts it —
+    # `speccache_hash` reads a DataType's hash off it, and the next lookup
+    # segfaults (measured). `jl_get_unspecialized` keeps its instance OUT of
+    # the cache, which is exactly why the runtime uses it for this purpose.
+    local mi = ccall(:jl_get_unspecialized, Any, (Any,), m)
+    mi isa MethodInstance || return nothing
+    local src = try
+        typeinf_code(interp, mi, false)
+    catch
+        nothing
+    end
+    src isa CodeInfo || return nothing
+    local sptypes = sptypes_from_meth_instance(mi)
+    for i = 1:length(src.code)
+        local stmt = src.code[i]
+        isexpr(stmt, :(=)) && (stmt = stmt.args[2])
+        isexpr(stmt, :call) || continue
+        local argtypes = Any[]
+        local ok = true
+        for a in stmt.args
+            local t = try
+                widenconst(argextype(a, src, sptypes))
+            catch
+                ok = false
+                break
+            end
+            Base.push!(argtypes, t)
+        end
+        ok || continue
+        local ft = argtypes[1]
+        (ft isa DataType && ft <: Core.Builtin) && continue
+        isconcretetype(ft) || continue            # an unknown callee names nothing
+        local concrete = true
+        for k = 2:length(argtypes)
+            isconcretetype(argtypes[k]) || (concrete = false; break)
+        end
+        local atype = try
+            argtypes_to_type(argtypes)
+        catch
+            continue
+        end
+        if concrete
+            Base.push!(repair, atype)             # proven inside an interpreted body
+            SEALED_INTERPRET_PROVEN[] += 1
+        else
+            local mm = findall(atype, method_table(interp); limit = SEALED_MAX_METHODS[])
+            (mm === nothing || mm === false) && continue
+            for j = 1:length(mm.matches)
+                sealed_analyse_for_interpreter!((mm.matches[j]::MethodMatch).method, repair, interp)
+            end
+        end
+    end
+    nothing
+end
+
+# THE FLOOR. A trimmed table holds only the methods something compiled, so a
+# call the interpreter makes into Base finds nothing: `getproperty(::Module,
+# ::Symbol)`, `promote`, `Float64(::Int)` were all absent from a 30-line
+# example. The floor modules — Base, Main, and the program's roots — are kept
+# PRESENT: every method with its source, every binding, so any call lands on a
+# method and interprets when it has no code. Measured for Base: 15 556 methods,
+# 3.6 MB of compressed source. Compiled instances are the optimisation on top.
+function sealed_floor!()
+    SEALED_INTERPRET_FLOOR_DONE[] && return nothing
+    SEALED_INTERPRET_FLOOR_DONE[] = true
+    local roots = SEALED_INTERPRET_FLOOR[]
+    local rootset = IdSet{Any}()
+    for r in roots
+        Base.push!(rootset, r)
+    end
+    local ms = Method[]
+    Base.visit(Core.methodtable) do m
+        m isa Method && (Base.moduleroot(m.module) in rootset) && Base.push!(ms, m)
+    end
+    # SEALED_FLOOR_NO_METHODS / SEALED_FLOOR_NO_BINDINGS: each half alone, to
+    # isolate a fault.
+    if Base.get(Base.ENV, "SEALED_FLOOR_NO_METHODS", "") == ""
+        for m in ms
+            ccall(:jl_sealed_retain_method, Cvoid, (Any,), m)
+        end
+    end
+    local nb = 0
+    local todo = Module[]
+    local seen = IdSet{Any}()
+    if Base.get(Base.ENV, "SEALED_FLOOR_NO_BINDINGS", "") == ""
+        for r in roots
+            Base.push!(todo, r)
+            Base.push!(seen, r)
+        end
+    end
+    while !isempty(todo)
+        local mod = Base.pop!(todo)
+        for n in Base.names(mod; all = true)
+            ccall(:jl_sealed_retain_binding, Cvoid, (Any, Any), mod, n)
+            nb += 1
+            local v = try
+                isdefined(mod, n) ? Core.getglobal(mod, n) : nothing
+            catch
+                nothing
+            end
+            if v isa Module && !(v in seen) && Base.parentmodule(v) === mod
+                Base.push!(seen, v)
+                Base.push!(todo, v)
+            end
+        end
+    end
+    Core.println("SEALED-INTERPRET floor: ", length(roots), " root module(s) present with source — ",
+                 length(ms), " methods, ", nb, " bindings retained")
+    nothing
+end
+
 function get_verify_typeinf_trim(codeinfos::Vector{Any})
+    SEALED_INTERPRET[] && sealed_floor!()
     Core.println("SEALED-VERIFY-BEGIN codeinfos=", length(codeinfos))
     this_world = get_world_counter()
     interp = NativeInterpreter(this_world)
@@ -679,6 +976,14 @@ end
 function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
     sealed_report_codegen_size(codeinfos)
     errors, parents = get_verify_typeinf_trim(codeinfos)
+    SEALED_INTERPRET[] &&
+        Core.println("SEALED-INTERPRET sites=", SEALED_INTERPRET_SITES[],
+                     " retained=", SEALED_INTERPRET_RETAINED[],
+                     " refused=", SEALED_INTERPRET_REFUSED[],
+                     " bindings=", ccall(:jl_sealed_retained_binding_count, Csize_t, ()),
+                     " analysed=", length(SEALED_INTERPRET_ANALYSED),
+                     " proven=", SEALED_INTERPRET_PROVEN[],
+                     " over-budget=", SEALED_INTERPRET_OVER[])
 
     # count up how many messages we printed, of each severity
     counts = [0, 0] # errors, warnings

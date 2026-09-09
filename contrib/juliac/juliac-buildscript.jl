@@ -51,6 +51,20 @@ import Base.Experimental.entrypoint
 const _SEALED_INTERPRET = Base.get(Base.ENV, "SEALED_INTERPRET", "") != ""
 const _COMPILE_ENABLED_OFFSET =
     Base.fieldoffset(Base.JLOptions, Base.fieldindex(Base.JLOptions, :compile_enabled))
+# Whether THIS host's libjulia carries the fork's accounting. Stock juliaup does
+# not, and a `ccall` to a symbol the linked libjulia lacks fails at link time,
+# so the call is only written into the image when the symbol exists here.
+const _SEALED_HOST_COUNTS =
+    try; Base.cglobal(:jl_get_interpreted_calls); true; catch; false; end
+# SEALED_KEEP_SOURCE=1 keeps every method's source while stripping inferred
+# IR — the size measurement of retention, on the fork's host only.
+if Base.get(Base.ENV, "SEALED_KEEP_SOURCE", "") != ""
+    try
+        Base.unsafe_store!(Base.cglobal(:jl_sealed_keep_source, Base.Cint), Base.Cint(1))
+    catch
+        Core.println("SEALED-INTERPRET the host has no jl_sealed_keep_source; SEALED_KEEP_SOURCE ignored")
+    end
+end
 
 # for use as C main if needed
 function _main(argc::Cint, argv::Ptr{Ptr{Cchar}})::Cint
@@ -62,7 +76,15 @@ function _main(argc::Cint, argv::Ptr{Ptr{Cchar}})::Cint
     setglobal!(Base, :PROGRAM_FILE, args[1])
     popfirst!(args)
     append!(Base.ARGS, args)
-    return Main.main(args)
+    rc = Main.main(args)
+    # JULIA_REPORT_INTERPRETED at run time: how many calls the interpreter ran.
+    # Zero on the benchmark path is the gate; anything else is the residual.
+    if _SEALED_HOST_COUNTS &&
+       ccall(:getenv, Ptr{UInt8}, (Cstring,), "JULIA_REPORT_INTERPRETED") != C_NULL
+        Base.print(Core.stderr, "INTERPRETED-CALLS ",
+                   ccall(:jl_get_interpreted_calls, UInt64, ()), "\n")
+    end
+    return rc
 end
 
 using Compiler
@@ -109,6 +131,14 @@ end
 # SEALED_GENERIC=1 admits the generic fallback: a splat with no nameable
 # callee compiles the callee's own method signature instead of erroring.
 Compiler.SEALED_GENERIC_POLICY[] = Base.get(Base.ENV, "SEALED_GENERIC", "") != ""
+# SEALED_INTERPRET=1: an unresolved call whose candidates can be interpreted is
+# a warning, and the candidates stay in the image with their source
+# (plan/pending/seal-to-interpreter.md). SEALED_INTERPRET_BUDGET bounds how
+# many methods the build-time oracle infers at their own signature.
+Compiler.SEALED_INTERPRET[] = _SEALED_INTERPRET
+Compiler.SEALED_INTERPRET_BUDGET[] =
+    Base.parse(Int, Base.get(Base.ENV, "SEALED_INTERPRET_BUDGET", "5000"))
+Compiler.SEALED_INTERPRET_DEBUG[] = Base.get(Base.ENV, "SEALED_DEBUG_RETAIN", "") != ""
 let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
     v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))
 end
@@ -431,6 +461,35 @@ let include_result = Base.include(Main, ARGS[1])
                 error("To generate an executable a `@main` function must be defined in the `Main` module.")
             end
         end
+    end
+end
+
+# THE FLOOR's roots, resolved now that the program is loaded: Base, Main, and
+# every module SEALED_TRACE_ROOTS names. The verifier keeps them present with
+# source (Compiler.sealed_floor!).
+# SEALED_INTERPRET_FLOOR=1 keeps Base, Main and the roots present in full.
+# Measured on a 30-line program: the methods alone are 26.6 MB and the
+# bindings alone 51.9 MB — a method drags the types its signature names and a
+# binding drags its value graph — and the two together break inference's
+# specialization lookup (open). The default is selective: only what the
+# verifier and the oracle name is retained.
+if _SEALED_INTERPRET && Base.get(Base.ENV, "SEALED_INTERPRET_FLOOR", "") != ""
+    let floor = Module[Base, Main]
+        for s in Base.split(Base.get(Base.ENV, "SEALED_TRACE_ROOTS", ""), ",")
+            local name = Base.strip(s)
+            Base.isempty(name) && continue
+            for (k, mod) in Base.loaded_modules
+                if Base.String(k.name) == name && !(mod in floor)
+                    Base.push!(floor, mod)
+                end
+            end
+        end
+        Compiler.SEALED_INTERPRET_FLOOR[] = floor
+        Core.print(Core.stdout, "SEALED-INTERPRET floor roots:")
+        for m in floor
+            Core.print(Core.stdout, " ", Base.nameof(m))
+        end
+        Core.println()
     end
 end
 

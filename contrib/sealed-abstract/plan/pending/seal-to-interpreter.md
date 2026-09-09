@@ -1,6 +1,6 @@
 # Seal to an interpreter
 
-**Status: Stage 0 DONE and measured; Stage 1 needs a decision (see its section).**
+**Status: Stages 0 and 1 DONE and measured; the floor is open; Stage 3 (the flagship) is running.**
 
 ## The idea
 
@@ -142,6 +142,61 @@ switched — one infrastructure step, then two small C additions. The generic
 path needs no C and is bounded by the same transitive set, proven rather than
 dispatched. Stage 0's number that matters for either: retention must be
 selective, because unselective IR is 38 MB.
+
+### Stage 1 — what was built, and what it measured
+
+**The fork is built and is the host.** `SEALED_HOST_JULIA` in
+`sealed_paths.sh` names it; every script that spelled `julia +1.13` now reads
+the variable. The sysimage is built from stock rc3's `Compiler/` — the sealed
+`Compiler/` is a package loaded over it and has never been bootstrapped as
+`Core.Compiler` (`const SEALED_WORLD = Ref(false)` fails there). A rebuild
+must check out stock `Compiler/` first; `make -C src` alone rebuilds the
+runtime library without touching the sysimage.
+
+**Runtime (C, ~90 lines).** `jl_sealed_retain_method(m)` puts a method's
+unspecialized instance into the set `jl_rebuild_methtables` builds from and
+exempts its source from `--strip-ir`; `jl_sealed_retain_binding(mod, name)`
+keeps a binding through the trim filter; `jl_get_interpreted_calls()` counts;
+`JULIA_REPORT_INTERPRETED` names each instance the first time the interpreter
+takes it, and each one refused for a `ccall`. `jl_code_or_ci_for_interpreter`
+treats a stripped `source` (`nothing`) as absent instead of uncompressing it.
+
+**Verifier (Julia).** Under `SEALED_INTERPRET=1`: every candidate of a dynamic
+site is retained with its source and the bindings its body names — a lowered
+body spells `Base.round` as `getproperty(%3, :round)` with the module in an
+SSA value, so both spellings are resolved; the site is a warning when every
+candidate can be interpreted; `unresolved call to function`, `unresolved
+finalizer` and `unresolved invoke` are demoted the same way. **The oracle**
+infers each candidate at its own signature — the UNSPECIALIZED instance,
+never `specialize_method` at a `where` signature, which inserts a UnionAll
+key into the specializations cache and segfaults the next lookup (measured)
+— and hands every inner call with concrete argument types to the repair loop,
+whose round cap is 12 under this mode. The oracle is restricted to the
+program: inferring Base methods proves the concrete calls on their error
+paths, and compiling those brought 8 326 methods and 112 sites into a 30-line
+program.
+
+**Measured, on `interpret_residual.jl` with the fork as host:**
+
+| level | result |
+| --- | --- |
+| sealed, selective retention | binary 1.8 MB; the interpreter runs `apply_mode(Fast, Float64)` and stops with a clean `MethodError` at `*(2.5, 2)`: no Base method behind it is in the table |
+| trace, selective retention | binary 7.4 MB, prints **53**, `INTERPRETED-CALLS 0`: the recorded run compiled the specialization, so nothing interpreted |
+| the by-name closure (retired) | depth 3: 8 721 methods retained, 18 MB, still not closed |
+| the floor, methods only | 26.6 MB — a `Method` drags the types its signature names |
+| the floor, bindings only | 51.9 MB — a binding drags its value graph |
+| the floor, both | inference segfaults in `speccache_eq` — open |
+
+**The floor is therefore opt-in** (`SEALED_INTERPRET_FLOOR=1`) and open.
+The compressed source of Base is 3.6 MB; what the serializer keeps with it
+is not. The selective policy — candidates, their bindings, the oracle's
+proven instances, the trace's hot instances — is the default, and a residual
+that reaches an uncompiled Base method reports a `MethodError` that names it.
+
+**Open.** A candidate with a `ccall` cannot be interpreted; it must be
+compiled at its own signature (`jl_generate_fptr_for_unspecialized` is what
+stock does). `Base.MPFR._unchecked_cast` is that class, reached by the ladder's
+trace entry through BigFloat printing.
 
 ### Stage 2 — the verifier sorts the residual
 

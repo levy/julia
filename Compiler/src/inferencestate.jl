@@ -1113,6 +1113,35 @@ const SEALED_WORLD = Ref(false)
 const SEALED_GENERIC = Ref{Any}(nothing)
 const SEALED_GENERIC_POLICY = Ref(false)
 
+# SEAL TO AN INTERPRETER (contrib/sealed-abstract/plan/pending/seal-to-interpreter.md).
+# A trimmed binary can not execute a dynamic call, because the method it finds
+# has no code and the Compiler is not in the image. With the runtime set to
+# `--compile=min` it interprets the method's source instead — if the source is
+# in the image and the method is in the table. `SEALED_INTERPRET` keeps both
+# for every candidate method of every dynamic site the verifier sees, to
+# `SEALED_INTERPRET_DEPTH` by METHOD TABLE around each — linear in methods,
+# never a product of types — and demotes the site to a warning when every
+# candidate can be interpreted. A candidate with a `ccall` can not, and stays
+# an error.
+const SEALED_INTERPRET = Ref(false)
+const SEALED_INTERPRET_RETAINED = Ref(0)
+const SEALED_INTERPRET_REFUSED = Ref(0)
+const SEALED_INTERPRET_SITES = Ref(0)
+const SEALED_INTERPRET_SEEN = IdSet{Any}()          # methods retained
+const SEALED_INTERPRET_DEBUG = Ref(false)           # SEALED_DEBUG_RETAIN: name every method retained or refused
+# THE BUILD-TIME ORACLE. A method behind a dynamic site is inferred at its own
+# signature; every inner call with provable concrete arguments is compiled, and
+# every other inner call's candidates get the same analysis. Once per method,
+# bounded by SEALED_INTERPRET_BUDGET.
+const SEALED_INTERPRET_ANALYSED = IdDict{Any,Bool}()
+const SEALED_INTERPRET_BUDGET = Ref(5000)
+const SEALED_INTERPRET_PROVEN = Ref(0)              # concrete inner calls handed to the repair loop
+const SEALED_INTERPRET_OVER = Ref(0)                # methods the budget refused to analyse
+# THE FLOOR: the modules kept present with source — Base, Main and the
+# program's roots — set by the build once the program is loaded.
+const SEALED_INTERPRET_FLOOR = Ref{Vector{Module}}(Module[])
+const SEALED_INTERPRET_FLOOR_DONE = Ref(false)
+
 const SEALED_SPLIT_LIMIT = Ref(20000)
 
 const SEALED_MAX_METHODS = Ref(20000)  # REQUIRED at 20000: the routing payload dispatch splits ~6300 ways; at 100 five dynamic remnants survive

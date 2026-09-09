@@ -40,7 +40,7 @@ NAMES=${*:-$(ls examples/*.jl | xargs -n1 basename | sed 's/\.jl$//')}
 build() {           # build <program> <out> <extra env...>
     local prog=$1 out=$2; shift 2
     rm -f "$out"
-    env "$@" SEALED_TRACE_PROGRAM="$HERE/$prog" timeout 60 julia +1.13 --startup-file=no \
+    env "$@" SEALED_TRACE_PROGRAM="$HERE/$prog" timeout 60 $SEALED_HOST_JULIA --startup-file=no \
         --project=env2 "$SEALED_JULIAC" --output-exe "$out" --experimental \
         --trim=safe "$3" > "$out.log" 2>&1
     [ $? -eq 0 ] && [ -x "$out" ]
@@ -63,7 +63,7 @@ classify() {          # classify <binary> <log> <source>
         local want got
         # `-L seal_hints.jl` so a program that calls a hint runs with no
         # compiler at all. Every hint is the identity there.
-        want=$(timeout 60 julia +1.13 --startup-file=no -L seal_hints.jl "$src" 2>/dev/null | tail -1)
+        want=$(timeout 60 $SEALED_HOST_JULIA --startup-file=no -L seal_hints.jl "$src" 2>/dev/null | tail -1)
         got=$("$bin" 2>&1 | tail -1)
         [ "$got" = "$want" ] && echo pass || echo WRONG
         return
@@ -108,12 +108,12 @@ one() {
     rm -f $W/$n.row
 
     rm -f $W/$n.proven; SEALED_WORLD=0 SEALED_SPLIT_LIMIT=4 SEALED_SPLIT=0 \
-        SEALED_TRACE_PROGRAM="$HERE/$p" timeout 60 julia +1.13 \
+        SEALED_TRACE_PROGRAM="$HERE/$p" timeout 60 $SEALED_HOST_JULIA \
         --startup-file=no --project=env2 "$SEALED_JULIAC" --output-exe $W/$n.proven \
         --experimental --trim=safe "$p" > $W/$n.proven.log 2>&1
     pv=$(classify $W/$n.proven $W/$n.proven.log "$p")
 
-    rm -f $W/$n.sealed; SEALED_TRACE_PROGRAM="$HERE/$p" timeout 60 julia +1.13 \
+    rm -f $W/$n.sealed; SEALED_TRACE_PROGRAM="$HERE/$p" timeout 60 $SEALED_HOST_JULIA \
         --startup-file=no --project=env2 "$SEALED_JULIAC" --output-exe $W/$n.sealed \
         --experimental --trim=safe "$p" > $W/$n.sealed.log 2>&1
     sl=$(classify $W/$n.sealed $W/$n.sealed.log "$p")
@@ -124,7 +124,7 @@ one() {
     # buildcheck.sh exists for, and it hid a broken recorder once already.
     rm -f $W/$n.trace
     SEALED_RECORD_ONLY=1 SEALED_SPLIT=0 SEALED_TRACE_PROGRAM="$HERE/$p" \
-        SEALED_TRACE_OUT=$W/$n.trace timeout 60 julia +1.13 --startup-file=no --project=env2 \
+        SEALED_TRACE_OUT=$W/$n.trace timeout 60 $SEALED_HOST_JULIA --startup-file=no --project=env2 \
         "$SEALED_JULIAC" --output-exe $W/$n.ignore --experimental --trim=safe \
         entry_from_edges.jl > $W/$n.rec.log 2>&1
     d=$(grep -oE '[0-9]+ entries' $W/$n.rec.log | head -1)
@@ -132,7 +132,7 @@ one() {
     [ -f $W/$n.trace ] || d="RECORDER-FAILED"
     rm -f $W/$n.trace_build
     SEALED_SPLIT=0 SEALED_TRACE_PROGRAM="$HERE/$p" SEALED_TRACE_IN=$W/$n.trace timeout 60 \
-        julia +1.13 --startup-file=no --project=env2 "$SEALED_JULIAC" \
+        $SEALED_HOST_JULIA --startup-file=no --project=env2 "$SEALED_JULIAC" \
         --output-exe $W/$n.trace_build --experimental --trim=safe entry_build_from_trace.jl \
         > $W/$n.trace.log 2>&1
     tr=$(classify $W/$n.trace_build $W/$n.trace.log "$p")

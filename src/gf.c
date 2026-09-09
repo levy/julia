@@ -3635,6 +3635,17 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
     if (compile_option == JL_OPTIONS_COMPILE_OFF ||
         compile_option == JL_OPTIONS_COMPILE_MIN) {
         jl_code_info_t *src = jl_code_for_interpreter(mi, world);
+        // JULIA_REPORT_INTERPRETED names each instance the first time it is
+        // handed to the interpreter, and each one refused for a `ccall`. In a
+        // trimmed binary that is the residual, as a list.
+        static int report_interpreted = -1;
+        if (report_interpreted < 0)
+            report_interpreted = getenv("JULIA_REPORT_INTERPRETED") != NULL;
+        if (report_interpreted) {
+            jl_printf(JL_STDERR, jl_code_requires_compiler(src, 0) ? "INTERPRET-REFUSED (needs the compiler): " : "INTERPRETED: ");
+            jl_static_show(JL_STDERR, (jl_value_t*)mi);
+            jl_printf(JL_STDERR, "\n");
+        }
         if (!jl_code_requires_compiler(src, 0)) {
             jl_debuginfo_t *di = NULL;
             jl_svec_t *edges = jl_emptysvec;

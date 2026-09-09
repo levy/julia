@@ -14,6 +14,11 @@ if [ ! -d "$SEALED_JULIA/Compiler" ]; then
 fi
 SEALED_JULIA="$(cd "$SEALED_JULIA" && pwd)"
 SEALED_JULIAC="$SEALED_JULIA/contrib/juliac/juliac.jl"
+# THE HOST: the julia that runs juliac and whose libjulia the binary links.
+# Stock juliaup by default; the fork's own build once `make` has produced it,
+# which is what a change under src/ needs to take effect.
+SEALED_HOST_JULIA="${SEALED_HOST_JULIA:-julia +1.13}"
+export SEALED_HOST_JULIA
 # THE HINTS ARE THE PROGRAM'S HALF, so this repository names its own file. The
 # buildscript errors if the path it is given does not exist.
 export SEALED_HINTS="$_sp_here/seal_hints.jl"

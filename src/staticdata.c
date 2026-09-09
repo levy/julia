@@ -185,6 +185,66 @@ static void *to_seroder_entry(size_t idx) JL_NOTSAFEPOINT
 }
 
 static htable_t new_methtables;
+
+// SEALED RETENTION (see julia.h). `jl_rebuild_methtables` keeps a method only
+// if one of its instances was compiled; a method kept for the interpreter has
+// none, so its unspecialized instance is listed here and joins `MIs` below,
+// and `strip_all_codeinfos__` leaves its source alone.
+static arraylist_t sealed_retained;          // jl_method_instance_t*
+static htable_t sealed_retained_methods;     // jl_method_t* -> present
+static int sealed_retained_init = 0;
+int jl_sealed_keep_source = 0;
+
+JL_DLLEXPORT void jl_sealed_retain_method(jl_method_t *m)
+{
+    if (!sealed_retained_init) {
+        arraylist_new(&sealed_retained, 0);
+        htable_new(&sealed_retained_methods, 0);
+        sealed_retained_init = 1;
+    }
+    if (ptrhash_has(&sealed_retained_methods, m))
+        return;
+    jl_method_instance_t *mi = jl_get_unspecialized(m);
+    if ((jl_value_t*)mi == jl_nothing)
+        return;                              // a generated function with no source
+    ptrhash_put(&sealed_retained_methods, m, m);
+    arraylist_push(&sealed_retained, mi);
+}
+
+JL_DLLEXPORT size_t jl_sealed_retained_count(void)
+{
+    return sealed_retained_init ? sealed_retained.len : 0;
+}
+
+static int sealed_is_retained(jl_method_t *m)
+{
+    return sealed_retained_init && ptrhash_has(&sealed_retained_methods, m);
+}
+
+static htable_t sealed_retained_bindings;    // jl_binding_t* -> present
+static int sealed_retained_bindings_init = 0;
+
+JL_DLLEXPORT void jl_sealed_retain_binding(jl_module_t *m, jl_sym_t *name)
+{
+    if (!sealed_retained_bindings_init) {
+        htable_new(&sealed_retained_bindings, 0);
+        sealed_retained_bindings_init = 1;
+    }
+    jl_binding_t *b = jl_get_module_binding(m, name, 0);
+    if (b == NULL)
+        return;
+    ptrhash_put(&sealed_retained_bindings, b, b);
+}
+
+static int sealed_is_retained_binding(jl_binding_t *b)
+{
+    return sealed_retained_bindings_init && ptrhash_has(&sealed_retained_bindings, b);
+}
+
+JL_DLLEXPORT size_t jl_sealed_retained_binding_count(void)
+{
+    return sealed_retained_bindings_init ? sealed_retained_bindings.size / 2 : 0;
+}
 //static size_t precompilation_world;
 
 static int ptr_cmp(const void *l, const void *r) JL_NOTSAFEPOINT
@@ -579,6 +639,15 @@ static void jl_queue_module_for_serialization(jl_serializer_state *s, jl_module_
                 break;
             jl_value_t *val = jl_get_binding_value_in_world(b, jl_atomic_load_relaxed(&jl_world_counter));
             // keep binding objects that are defined in the latest world and ...
+            if (sealed_is_retained_binding(b)) {
+                jl_queue_for_serialization(s, b);       // SEALED RETENTION
+                if (getenv("SEALED_DEBUG_RETAIN")) {
+                    jl_printf(JL_STDERR, "RETAIN-BINDING ");
+                    jl_static_show(JL_STDERR, (jl_value_t*)m);
+                    jl_printf(JL_STDERR, ".%s\n", jl_symbol_name(b->globalref->name));
+                }
+                continue;
+            }
             if (val &&
                 // ... point to modules ...
                 (jl_is_module(val) ||
@@ -2624,6 +2693,11 @@ static int strip_all_codeinfos__(jl_typemap_entry_t *def, void *_env)
                     should_strip_ir = 1;
                 }
             }
+            // SEALED RETENTION: a method the interpreter is to run keeps its
+            // source, and `jl_sealed_keep_source` keeps every method's — the
+            // inferred IR of compiled instances is stripped either way.
+            if (should_strip_ir && (jl_sealed_keep_source || sealed_is_retained(m)))
+                should_strip_ir = 0;
             if (should_strip_ir) {
                 record_field_change(&m->source, jl_nothing);
                 record_field_change((jl_value_t**)&m->roots, NULL);
@@ -2989,6 +3063,12 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         }
     }
     if (jl_options.trim) {
+        // SEALED RETENTION: the methods the program kept for the interpreter
+        // join the compiled set, so the rebuilt tables hold them.
+        if (sealed_retained_init) {
+            for (size_t i = 0; i < sealed_retained.len; i++)
+                arraylist_push(&MIs, sealed_retained.items[i]);
+        }
         jl_rebuild_methtables(&MIs, &new_methtables);
     }
 

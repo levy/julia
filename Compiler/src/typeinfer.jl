@@ -2141,7 +2141,10 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
         # each round can only request instances of methods the previous round
         # already matched, and the loop is capped as well.
         let rounds = 0
-            while rounds < 3
+            # Under SEALED_INTERPRET the oracle keeps handing the loop what it
+            # proves inside interpreted bodies, and each round's instances have
+            # bodies of their own: the cap is what lets that converge.
+            while rounds < (SEALED_INTERPRET[] ? 12 : 3)
                 rounds += 1
                 wanted = Any[]
                 generic = Any[]

@@ -2037,6 +2037,20 @@ JL_DLLEXPORT void jl_set_module_optlevel(jl_module_t *self, int lvl);
 JL_DLLEXPORT int jl_get_module_optlevel(jl_module_t *m);
 JL_DLLEXPORT void jl_set_module_compile(jl_module_t *self, int value);
 JL_DLLEXPORT int jl_get_module_compile(jl_module_t *m);
+// SEALED RETENTION. A trimmed image keeps only methods that have a compiled
+// instance. A method the interpreter is to run has none, so the program names
+// it; its unspecialized instance joins the compiled set and its source stays.
+JL_DLLEXPORT void jl_sealed_retain_method(jl_method_t *m);
+JL_DLLEXPORT size_t jl_sealed_retained_count(void);
+// A global an interpreted body names — `Main.Int`, `Base.round` — must keep its
+// binding; trim keeps only bindings that name a module or `__init__`.
+JL_DLLEXPORT void jl_sealed_retain_binding(jl_module_t *m, jl_sym_t *name);
+JL_DLLEXPORT size_t jl_sealed_retained_binding_count(void);
+// Keep `Method.source` for EVERY method while still stripping inferred IR —
+// the size measurement, not the mechanism.
+JL_DLLEXPORT extern int jl_sealed_keep_source;
+// How many calls the interpreter ran in this process.
+JL_DLLEXPORT uint64_t jl_get_interpreted_calls(void);
 JL_DLLEXPORT void jl_set_module_infer(jl_module_t *self, int value);
 JL_DLLEXPORT int jl_get_module_infer(jl_module_t *m);
 JL_DLLEXPORT void jl_set_module_max_methods(jl_module_t *self, int value);

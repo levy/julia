@@ -14,9 +14,9 @@ printf '%3s  %9s  %9s  %7s  %s\n' n "2^n" "wall(s)" "peak(MB)" "result"
 for n in "$@"; do
     src="$HERE/work-product/rec$n.jl"
     exe="$HERE/work-product/rec$n"
-    julia +1.13 --startup-file=no "$HERE/union_product.jl" source "$n" > "$src"
+    $SEALED_HOST_JULIA --startup-file=no "$HERE/union_product.jl" source "$n" > "$src"
     start=$(date +%s.%N)
-    ( julia +1.13 --startup-file=no --project="$HERE/env2" \
+    ( $SEALED_HOST_JULIA --startup-file=no --project="$HERE/env2" \
         "$SEALED_JULIAC" --output-exe "$exe" \
         --experimental --trim=safe "$src" ) > "$HERE/work-product/rec$n.log" 2>&1 &
     bpid=$!

@@ -16,7 +16,7 @@ source "$HERE/sealed_paths.sh"
 OUT=$1; ENTRY=$2; shift 2
 rm -f "$OUT"
 start=$(date +%s)
-julia +1.13 --startup-file=no --project="$HERE/env2" \
+$SEALED_HOST_JULIA --startup-file=no --project="$HERE/env2" \
     "$SEALED_JULIAC" --output-exe "$OUT" \
     --experimental --trim=safe "$ENTRY" "$@" > "$OUT.log" 2>&1
 rc=$?
