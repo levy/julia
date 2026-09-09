@@ -590,6 +590,8 @@ function compile_and_emit_native(worlds::Vector{UInt},
                      " method instances served), enqueue ", div(t_enqueue - t_direct, 1_000_000),
                      " ms, worklist ", length(tocompile))
     end
+    # The memo of the last accepted trimmed pass, by the ids of this process.
+    trim_mode != TRIM_NO && reactive_reuse_enabled() && reactive_trim_memo_prepare!(newmethods, worlds)
     codeinfos = try
         typeinf_ext_toplevel(tocompile, worlds, trim_mode, external_linkage)
     catch exc

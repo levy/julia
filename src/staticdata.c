@@ -6409,6 +6409,12 @@ JL_DLLEXPORT void jl_reactive_set_trim(int on) JL_NOTSAFEPOINT
     jl_options.strip_metadata = on;
 }
 
+// The memo of a trimmed pass (Stage E): the served functions of the last
+// accepted pass and their callees, by name, in the file that
+// JULIA_REACTIVE_TRIM_MEMO names; one line per served function, the name
+// then the names of its callees, tab-separated. The compile pass keys the
+// memo by the ids of the loaded image: a name survives a new chain, an id
+// does not. A line with a name the image no longer has is dropped.
 // The memo file of the trimmed pass, NULL without one.
 static const char *reactive_trim_memo_path(void) JL_NOTSAFEPOINT
 {
@@ -6419,9 +6425,131 @@ JL_DLLEXPORT void jl_reactive_set_trim_memo(const char *path) JL_NOTSAFEPOINT
 {
     jl_options.reactive_trim_memo = path ? strdup(path) : NULL;
 }
+JL_DLLEXPORT int jl_reactive_trim_memo_on(void) JL_NOTSAFEPOINT
+{
     return jl_reactive_reuse_enabled() && jl_options.trim && reactive_trim_memo_path() != NULL;
+}
+
+// The memo as a flat Vector{Int32}: for every entry the id, the count of
+// its callees, then their ids. Nothing without a memo file.
+JL_DLLEXPORT jl_value_t *jl_reactive_trim_memo_read(void)
+{
     const char *path = reactive_trim_memo_path();
+    if (path == NULL || !jl_reactive_reuse_enabled() || reactive_image.fptrs.names == NULL)
+        return jl_nothing;
+    FILE *f = fopen(path, "r");
+    if (f == NULL)
+        return jl_nothing;
+    // the id of every name: the names as symbols, in a pointer table
+    uint32_t n = reactive_image.fptrs.nptrs;
+    htable_t ids;
+    htable_new(&ids, n);
+    for (uint32_t id = 1; id <= n; id++) {
+        const char *name = reactive_image.fptrs.names[id - 1];
+        if (name != NULL)
+            ptrhash_put(&ids, (void*)jl_symbol(name), (void*)(uintptr_t)id);
+    }
+    jl_array_t *out = jl_alloc_array_1d(jl_array_int32_type, 0);
+    JL_GC_PUSH1(&out);
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    size_t entries = 0, dropped = 0;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
+            line[--len] = '\0';
+        if (len == 0)
+            continue;
+        size_t start = jl_array_nrows(out);
+        int ok = 1, first = 1;
+        int32_t ncallees = 0;
+        char *save = NULL;
+        for (char *tok = strtok_r(line, "\t", &save); tok != NULL; tok = strtok_r(NULL, "\t", &save)) {
+            void *v = ptrhash_get(&ids, (void*)jl_symbol(tok));
+            if (v == HT_NOTFOUND) {
+                ok = 0;
+                break;
+            }
+            int32_t id = (int32_t)(uintptr_t)v;
+            if (first) {
+                jl_array_grow_end(out, 2);
+                jl_array_data(out, int32_t)[start] = id;
+                first = 0;
+            }
+            else {
+                jl_array_grow_end(out, 1);
+                jl_array_data(out, int32_t)[jl_array_nrows(out) - 1] = id;
+                ncallees++;
+            }
+        }
+        if (!ok || first) {
+            jl_array_del_end(out, jl_array_nrows(out) - start);
+            dropped++;
+            continue;
+        }
+        jl_array_data(out, int32_t)[start + 1] = ncallees;
+        entries++;
+    }
+    free(line);
+    fclose(f);
+    htable_free(&ids);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: trim memo read: %zu entries, %zu lines dropped\n", entries, dropped);
+    JL_GC_POP();
+    return (jl_value_t*)out;
+}
+
+// Write the memo of an accepted pass, `flat` as `jl_reactive_trim_memo_read`
+// answers it, by name; an entry with a function without a name is left out.
+// `stats` counts the pass: served from the memo, walked, recorded, not
+// recordable.
+JL_DLLEXPORT void jl_reactive_trim_memo_write(jl_value_t *flat, jl_value_t *stats)
+{
     const char *path = reactive_trim_memo_path();
+    if (path == NULL || !jl_is_array(flat))
+        return;
+    if (jl_reactive_timings() && jl_is_array(stats) && jl_array_nrows((jl_array_t*)stats) >= 4) {
+        int64_t *c = jl_array_data((jl_array_t*)stats, int64_t);
+        jl_safe_printf("reactive: trim memo: %lld served from the memo, %lld walked, %lld recorded, %lld not recordable\n",
+                       (long long)c[0], (long long)c[1], (long long)c[2], (long long)c[3]);
+    }
+    size_t plen = strlen(path);
+    char *next = (char*)malloc_s(plen + 6);
+    memcpy(next, path, plen);
+    memcpy(next + plen, ".next", 6);
+    FILE *f = fopen(next, "w");
+    if (f == NULL) {
+        free(next);
+        return;
+    }
+    int32_t *data = jl_array_data((jl_array_t*)flat, int32_t);
+    size_t n = jl_array_nrows((jl_array_t*)flat), i = 0, entries = 0;
+    while (i + 1 < n) {
+        int32_t id = data[i], ncallees = data[i + 1];
+        if (ncallees < 0 || i + 2 + (size_t)ncallees > n)
+            break;
+        const char *name = jl_reactive_image_fname(id);
+        int ok = name != NULL;
+        for (int32_t k = 0; ok && k < ncallees; k++)
+            ok = jl_reactive_image_fname(data[i + 2 + k]) != NULL;
+        if (ok) {
+            fputs(name, f);
+            for (int32_t k = 0; k < ncallees; k++) {
+                fputc('\t', f);
+                fputs(jl_reactive_image_fname(data[i + 2 + k]), f);
+            }
+            fputc('\n', f);
+            entries++;
+        }
+        i += 2 + (size_t)ncallees;
+    }
+    fclose(f);
+    rename(next, path);
+    free(next);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: trim memo written: %zu entries\n", entries);
+}
+
 // The level of the timing report: 0 off, 1 the times and the counts, 2 also
 // one line per code instance of the delta
 JL_DLLEXPORT int jl_reactive_timings(void) JL_NOTSAFEPOINT

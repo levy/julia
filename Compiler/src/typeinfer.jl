@@ -1623,6 +1623,160 @@ reactive_base_world() = ccall(:jl_reactive_base_world, Csize_t, ())
 # for the verifier: the trimmed image holds their machine code.
 const reactive_verify_reused = Any[]
 
+# The memo of a trimmed pass (Stage E of the reactive plan): the served
+# code instances of the last accepted pass and their callees, by the id of
+# their function in the loaded image (`reactive_trim_memo_in`), the entries
+# of this pass (`reactive_trim_memo_out`, in `reactive_trim_memo_ids` order),
+# and the code instance that holds every id (`reactive_trim_memo_cis`). A
+# served code instance in the memo is taken without its IR, which the image
+# mostly does not keep, and without a compile: its callees are enqueued from
+# the memo, and the verifier's answer of the last pass stands, because the
+# code of an image is immutable and an edit that changed a callee
+# invalidated the caller, which is then not served. The runtime keeps the
+# memo by name in the file that JULIA_REACTIVE_TRIM_MEMO names; the ids are
+# those of this process.
+const reactive_trim_memo_in = IdDict{Int,Vector{Int}}()
+const reactive_trim_memo_out = IdDict{Int,Vector{Int}}()
+const reactive_trim_memo_ids = Int[]
+const reactive_trim_memo_cis = IdDict{Int,CodeInstance}()
+const reactive_trim_memo_stats = Int[0, 0, 0, 0]   # served from the memo, walked, recorded, not recordable
+reactive_trim_memo_on() = ccall(:jl_reactive_trim_memo_on, Cint, ()) != 0
+
+# The id of the function of `code` in the loaded image, 0 without one.
+function reactive_image_spec_id(code::CodeInstance)
+    spec = RefValue{Int32}(0)
+    ok = ccall(:jl_reactive_image_ids, Cint, (Any, Ptr{Int32}, Ptr{Int32}), code, C_NULL, spec) != 0
+    return ok ? Int(spec[]) : 0
+end
+
+# The memo file into the ids of this process, and the code instance of
+# every id from the specializations of `methods`.
+function reactive_trim_memo_prepare!(methods, worlds::Vector{UInt})
+    empty!(reactive_trim_memo_in)
+    empty!(reactive_trim_memo_out)
+    empty!(reactive_trim_memo_ids)
+    empty!(reactive_trim_memo_cis)
+    for k = 1:4
+        reactive_trim_memo_stats[k] = 0
+    end
+    reactive_trim_memo_on() || return nothing
+    t0 = _time_ns()
+    flat = ccall(:jl_reactive_trim_memo_read, Any, ())
+    if flat isa Vector{Int32}
+        i = 1
+        while i + 1 <= length(flat)
+            id = Int(flat[i])
+            n = Int(flat[i + 1])
+            callees = Vector{Int}(undef, n)
+            for k = 1:n
+                callees[k] = Int(flat[i + 1 + k])
+            end
+            reactive_trim_memo_in[id] = callees
+            i += 2 + n
+        end
+    end
+    if !isempty(reactive_trim_memo_in)
+        for method in methods
+            method = method::Method
+            specializations = method.specializations
+            for mi in (specializations isa Core.SimpleVector ? specializations : (specializations,))
+                mi isa MethodInstance || continue
+                ci = isdefined(mi, :cache) ? mi.cache : nothing
+                while ci isa CodeInstance
+                    if ci_from_image(ci)
+                        id = reactive_image_spec_id(ci)
+                        id == 0 || haskey(reactive_trim_memo_cis, id) || (reactive_trim_memo_cis[id] = ci)
+                    end
+                    ci = isdefined(ci, :next) ? ci.next : nothing
+                end
+            end
+        end
+    end
+    if reactive_timings() != 0
+        Core.println("reactive: trim memo prepared in ", div(_time_ns() - t0, 1_000_000), " ms: ",
+                     length(reactive_trim_memo_in), " entries, ", length(reactive_trim_memo_cis), " code instances by id")
+    end
+    return nothing
+end
+
+# The callees of `served` from the memo, when the memo holds it and every
+# callee is a valid code instance of this process; else nothing, and the
+# pass walks it.
+function reactive_trim_memo_callees(served::CodeInstance, world::UInt)
+    isempty(reactive_trim_memo_in) && return nothing
+    id = reactive_image_spec_id(served)
+    id == 0 && return nothing
+    ids = get(reactive_trim_memo_in, id, nothing)
+    ids === nothing && return nothing
+    callees = Vector{CodeInstance}(undef, length(ids))
+    for k = 1:length(ids)
+        ci = get(reactive_trim_memo_cis, ids[k], nothing)
+        (ci === nothing || !ci_reactive_reusable(ci, world)) && return nothing
+        callees[k] = ci
+    end
+    if !haskey(reactive_trim_memo_out, id)
+        reactive_trim_memo_out[id] = ids
+        push!(reactive_trim_memo_ids, id)
+    end
+    return callees
+end
+
+# Record `served` with its callees: every target a code instance of the
+# image with an id. A target without one, or a method instance without a
+# served code instance, leaves the entry out, and the next pass walks the
+# code instance again.
+function reactive_trim_memo_record!(served::CodeInstance, targets, world::UInt, interp::AbstractInterpreter)
+    reactive_trim_memo_on() || return nothing
+    id = reactive_image_spec_id(served)
+    id == 0 && return nothing
+    haskey(reactive_trim_memo_out, id) && return nothing
+    ids = Vector{Int}(undef, length(targets))
+    for k = 1:length(targets)
+        target = targets[k]
+        if target isa MethodInstance
+            target = reactive_cached_ci(interp, target, world)
+        end
+        if !(target isa CodeInstance)
+            reactive_trim_memo_stats[4] += 1
+            return nothing
+        end
+        tid = reactive_image_spec_id(target)
+        if tid == 0
+            reactive_trim_memo_stats[4] += 1
+            return nothing
+        end
+        ids[k] = tid
+    end
+    reactive_trim_memo_out[id] = ids
+    push!(reactive_trim_memo_ids, id)
+    reactive_trim_memo_stats[3] += 1
+    return nothing
+end
+
+# Write the memo of an accepted pass, by id; the runtime keeps it by name,
+# and reports the counts (a forked writer exits without a flush of the
+# Julia streams, so the report is the runtime's). The map from id to code
+# instance is emptied here: it names every code instance of the image, and
+# the trimmed heap would keep them all through this module.
+function reactive_trim_memo_flush()
+    empty!(reactive_trim_memo_cis)
+    reactive_trim_memo_on() || return nothing
+    flat = Int32[]
+    for id in reactive_trim_memo_ids
+        ids = reactive_trim_memo_out[id]
+        push!(flat, Int32(id))
+        push!(flat, Int32(length(ids)))
+        for x in ids
+            push!(flat, Int32(x))
+        end
+    end
+    ccall(:jl_reactive_trim_memo_write, Cvoid, (Any, Any), flat, reactive_trim_memo_stats)
+    empty!(reactive_trim_memo_in)
+    empty!(reactive_trim_memo_out)
+    empty!(reactive_trim_memo_ids)
+    return nothing
+end
+
 # The optimized IR of a served code instance, or nothing when it has none
 # (a constant, a stripped image).
 function reactive_served_ir(code::CodeInstance)
@@ -1756,6 +1910,23 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                 # sibling at run time.
                 served = ci_reactive_reusable(callee, world) ? callee :
                          reactive_cached_ci(interp, mi, world)
+                if served !== nothing && trim
+                    # The memo of the last accepted pass serves the code
+                    # instance without its IR and without a compile.
+                    memo = reactive_trim_memo_callees(served, world)
+                    if memo !== nothing
+                        markinspected!(workqueue, callee)
+                        if !(served in reactive_reused_set)
+                            push!(reactive_reused_set, served)
+                            push!(reused, served)
+                            reactive_trim_memo_stats[1] += 1
+                            for target in memo
+                                push!(workqueue, target)
+                            end
+                        end
+                        continue
+                    end
+                end
                 # A trimmed image holds what the entry points reach, so a
                 # served code instance is one whose optimized IR is at hand:
                 # its callees are the targets of the `invoke`s of that IR,
@@ -1773,6 +1944,7 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                         if trim
                             push!(reactive_verify_reused, served)
                             push!(reactive_verify_reused, src)
+                            targets = Any[]
                             for stmt in src.code
                                 isexpr(stmt, :invoke) || isexpr(stmt, :invoke_modify) || continue
                                 target = stmt.args[1]
@@ -1780,8 +1952,11 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
                                     reactive_timings() >= 2 && Core.println("reactive: trim invoke ", get_ci_mi(served).specTypes, " -> ",
                                                                              target isa CodeInstance ? get_ci_mi(target).specTypes : target.specTypes)
                                     push!(workqueue, target)
+                                    push!(targets, target)
                                 end
                             end
+                            reactive_trim_memo_stats[2] += 1
+                            reactive_trim_memo_record!(served, targets, world, interp)
                         end
                     end
                     continue
@@ -1807,7 +1982,19 @@ function compile!(codeinfos::Vector{Any}, workqueue::CompilationQueue;
             markinspected!(workqueue, callee)
             if src isa CodeInfo
                 sptypes = sptypes_from_meth_instance(mi)
+                n0 = length(workqueue.tocompile)
+                n1 = invokelatest_queue === nothing ? 0 : length(invokelatest_queue.tocompile)
                 collectinvokes!(workqueue, src, sptypes; invokelatest_queue, external_linkage)
+                if reactive && trim && served !== nothing && invokelatest_queue !== workqueue
+                    # The image holds the code of this code instance without
+                    # its IR: the callees of the fresh compile go to the memo,
+                    # so that the next pass serves the image's code. An entry
+                    # point or a finalizer it enqueues is not a callee, and
+                    # such a code instance is walked every time.
+                    reactive_trim_memo_stats[2] += 1
+                    (invokelatest_queue === nothing || length(invokelatest_queue.tocompile) == n1) &&
+                        reactive_trim_memo_record!(served, workqueue.tocompile[n0 + 1:end], world, interp)
+                end
                 # try to reuse an existing CodeInstance from before to avoid making duplicates in the cache
                 if iszero(ccall(:jl_mi_cache_has_ci, Cint, (Any, Any), mi, callee))
                     cached = ccall(:jl_get_ci_equiv, Any, (Any, UInt), callee, world)::CodeInstance
@@ -1878,6 +2065,9 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
 
     if trim_mode != TRIM_NO && trim_mode != TRIM_UNSAFE
         verify_typeinf_trim(codeinfos, trim_mode == TRIM_UNSAFE_WARN)
+        # The pass is accepted: its memo serves the next one.
+        reused === nothing || reactive_trim_memo_flush()
+    end
     reused === nothing && return codeinfos
     reactive_timings() != 0 && reactive_delta_report(codeinfos, methods, worlds)
     return Core.svec(codeinfos, reused)
