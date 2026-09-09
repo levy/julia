@@ -3447,6 +3447,7 @@ static void reactive_dump_heap(const char *path)
     jl_genericmemory_t *global_roots_list = NULL;
     jl_genericmemory_t *global_roots_keyset = NULL;
 
+    uint64_t t_step = jl_hrtime(), t_queue = 0, t_prune = 0, t_write = 0;
     { // step 1: record values (recursively) that need to go in the image
         size_t i;
         if (worklist == NULL) {
@@ -3507,6 +3508,7 @@ static void reactive_dump_heap(const char *path)
             jl_queue_for_serialization(&s, global_roots_keyset);
             jl_serialize_reachable(&s);
         }
+        t_queue = jl_hrtime() - t_step; t_step = jl_hrtime();
         // step 1.5: prune (garbage collect) some special weak references known caches
         for (i = 0; i < serialization_queue.len; i++) {
             jl_value_t *v = (jl_value_t*)serialization_queue.items[i];
@@ -3555,6 +3557,7 @@ static void reactive_dump_heap(const char *path)
         reactive_dump_heap(heapdump);
 
     uint32_t external_fns_begin = 0;
+    t_prune = jl_hrtime() - t_step; t_step = jl_hrtime();
     { // step 2: build all the sysimg sections
         write_padding(&sysimg, sizeof(uintptr_t));
         jl_write_values(&s);
@@ -3585,6 +3588,7 @@ static void reactive_dump_heap(const char *path)
         jl_exit(1);
     }
 
+    t_write = jl_hrtime() - t_step; t_step = jl_hrtime();
     // step 3: combine all of the sections into one file
     assert(ios_pos(f) % JL_CACHE_BYTE_ALIGNMENT == 0);
     ssize_t sysimg_offset = ios_pos(f);
@@ -3640,6 +3644,9 @@ static void reactive_dump_heap(const char *path)
     ios_copyall(f, &fptr_record);
     ios_close(&fptr_record);
 
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: heap queue %.1f s, prune %.1f s, write %.1f s, combine %.1f s, %zu objects\n",
+                       t_queue / 1e9, t_prune / 1e9, t_write / 1e9, (jl_hrtime() - t_step) / 1e9, serialization_queue.len);
     { // step 4: record locations of special roots
         write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
         s.s = f;
@@ -3862,7 +3869,9 @@ JL_DLLEXPORT void jl_create_system_image(void **_native_data, jl_array_t *workli
     jl_query_cache query_cache;
     init_query_cache(&query_cache);
     jl_finalize_precompile_inferred(worklist != NULL && _native_data != NULL && jl_options.outputo != NULL);
-    jl_save_system_image_to_stream(ff, mod_array, module_init_order, worklist, extext_methods, new_ext_cis, &query_cache);
+    uint64_t t_heap = jl_hrtime();
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: heap %.1f s\n", (jl_hrtime() - t_heap) / 1e9);
     if (_native_data != NULL)
         native_functions = NULL;
     // make sure we don't run any Julia code concurrently before this point
@@ -4992,6 +5001,16 @@ JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
     if (!reactive_image_loaded)
         return 0;
     return reactive_option_level(jl_options.reactive_reuse, "JULIA_REACTIVE_REUSE", 0) == 1;
+}
+
+// The output file of the next image write, the `--output-o` of this
+// process; NULL clears it, and then the exit writes no image. A compiler
+// server writes one image per save through a forked child, so the path
+// changes while the process lives. The copy of the path is never freed: a
+// save is rare and the string small.
+JL_DLLEXPORT void jl_reactive_set_output(const char *path) JL_NOTSAFEPOINT
+{
+    jl_options.outputo = path ? strdup(path) : NULL;
 }
 
 // The memo file of the trimmed pass, NULL without one.
