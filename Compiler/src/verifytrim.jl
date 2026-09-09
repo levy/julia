@@ -9,6 +9,7 @@ import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, com
     SEALED_INTERPRET_COMPILED, SEALED_INTERPRET_GENERICS, SEALED_INTERPRET_CLOSURE,
     SEALED_INTERPRET_COMPILED_N, SEALED_INTERPRET_GENERICS_N,
     SEALED_INTERPRET_SUPPORT, SEALED_INTERPRET_SUPPORT_SET, SEALED_INTERPRET_SUPPORT_N, SEALED_INTERPRET_HOST,
+    SEALED_INTERPRET_CLOSURES, SEALED_INTERPRET_CLOSURES_N,
     typeinf_code, specialize_method,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
     # the why-chain: this file lives in a SUBMODULE, so the parent's names are
@@ -816,6 +817,35 @@ function sealed_retain_scope!(caches::IdDict{MethodInstance,CodeInstance})
             sealed_retain_for_interpreter!(m) && (SEALED_INTERPRET_GENERICS_N[] += 1)
         end
     end
+    if SEALED_INTERPRET_CLOSURES[]
+        # a closure type is an anonymous DataType whose name starts with `#`;
+        # program-owned means neither Base nor Core is its root
+        local cs = Method[]
+        Base.visit(Core.methodtable) do m
+            m isa Method || return
+            # every test below can throw on an odd type; a throw here is a
+            # fatal error in the build session (measured), so each is guarded
+            try
+                local root = Base.moduleroot(m.module)
+                (root === Base || root === Core) && return
+                local sig = Base.unwrap_unionall(m.sig)
+                sig isa DataType || return
+                local ft = sig.parameters[1]
+                ft isa DataType || return
+                local nm = Base.String(ft.name.name)
+                (length(nm) > 1 && nm[1] == '#') || return
+                # a CAPTURING closure has fields; a keyword sorter or an inner
+                # helper is a singleton, and there are 25 931 of those (measured)
+                (isdefined(ft, :types) && !isempty(ft.types)) || return
+                Base.push!(cs, m)
+            catch
+            end
+            nothing
+        end
+        for m in cs
+            sealed_retain_for_interpreter!(m) && (SEALED_INTERPRET_CLOSURES_N[] += 1)
+        end
+    end
     if SEALED_INTERPRET_SUPPORT[]
         for (name, argt) in SEALED_INTERPRET_SUPPORT_SET
             isdefined(Base, name::Symbol) || continue
@@ -1106,6 +1136,7 @@ function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
                      " compiled-src=", SEALED_INTERPRET_COMPILED_N[],
                      " generics=", SEALED_INTERPRET_GENERICS_N[],
                      " support=", SEALED_INTERPRET_SUPPORT_N[],
+                     " closures=", SEALED_INTERPRET_CLOSURES_N[],
                      " analysed=", length(SEALED_INTERPRET_ANALYSED),
                      " proven=", SEALED_INTERPRET_PROVEN[],
                      " over-budget=", SEALED_INTERPRET_OVER[])

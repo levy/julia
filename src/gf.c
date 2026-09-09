@@ -3193,7 +3193,7 @@ static void JL_NORETURN jl_method_error_bare(jl_value_t *f, jl_value_t *args, si
             report_me = getenv("JULIA_REPORT_INTERPRETED") != NULL;
         if (report_me) {
             jl_printf(JL_STDERR, "METHOD-ERROR: ");
-            jl_static_show(JL_STDERR, f);
+            jl_static_show(JL_STDERR, jl_typeof(f));   // the type: a closure's VALUE dumps its captures
             jl_printf(JL_STDERR, " with ");
             jl_static_show(JL_STDERR, jl_typeof(args));   // the argument tuple's type
             jl_printf(JL_STDERR, "\n");

@@ -1162,6 +1162,12 @@ const SEALED_INTERPRET_SUPPORT_SET = Any[
     (:setproperty!, Tuple{Any, Symbol, Any}),
 ]
 const SEALED_INTERPRET_SUPPORT_N = Ref(0)
+# A closure stored in a field is a VALUE the image keeps, but its call method
+# is dropped like any other uncompiled method, and no site can name it as a
+# candidate: the flagship stopped at `var"#14#15"{PlcaState}` through a
+# `::Function` field. Every method of every program-owned closure type is kept.
+const SEALED_INTERPRET_CLOSURES = Ref(true)
+const SEALED_INTERPRET_CLOSURES_N = Ref(0)
 # Whether the host's libjulia carries the retention entry points; a stock
 # host does not, and the build says so once instead of failing on a ccall.
 const SEALED_INTERPRET_HOST = Ref(false)
