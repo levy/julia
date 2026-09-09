@@ -1165,7 +1165,7 @@ const SEALED_INTERPRET_SUPPORT_N = Ref(0)
 # Whether the host's libjulia carries the retention entry points; a stock
 # host does not, and the build says so once instead of failing on a ccall.
 const SEALED_INTERPRET_HOST = Ref(false)
-const SEALED_INTERPRET_CLOSURE = Ref(false)          # the program's callees by name
+const SEALED_INTERPRET_CLOSURE = Ref(true)           # the program's OWN functions, by name
 const SEALED_INTERPRET_COMPILED_N = Ref(0)
 const SEALED_INTERPRET_GENERICS_N = Ref(0)
 # THE FLOOR: the modules kept present with source — Base, Main and the

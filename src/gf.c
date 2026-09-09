@@ -3184,6 +3184,21 @@ JL_DLLEXPORT void jl_method_table_insert(jl_methtable_t *mt, jl_method_t *method
 
 static void JL_NORETURN jl_method_error_bare(jl_value_t *f, jl_value_t *args, size_t world)
 {
+    // A trimmed binary often cannot PRINT the MethodError it is about to
+    // throw — the printer itself is trimmed — so under JULIA_REPORT_INTERPRETED
+    // the runtime names the call here, first.
+    {
+        static int report_me = -1;
+        if (report_me < 0)
+            report_me = getenv("JULIA_REPORT_INTERPRETED") != NULL;
+        if (report_me) {
+            jl_printf(JL_STDERR, "METHOD-ERROR: ");
+            jl_static_show(JL_STDERR, f);
+            jl_printf(JL_STDERR, " with ");
+            jl_static_show(JL_STDERR, jl_typeof(args));   // the argument tuple's type
+            jl_printf(JL_STDERR, "\n");
+        }
+    }
     if (jl_methoderror_type) {
         jl_value_t *e = jl_new_struct_uninit(jl_methoderror_type);
         struct jl_method_error {

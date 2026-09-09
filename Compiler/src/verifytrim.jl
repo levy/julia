@@ -746,12 +746,20 @@ function sealed_retain_for_interpreter!(m::Method)
     # and was still not closed, while the program is bounded by its own size.
     # A program method of a Base function (`*(::Quantity, ::Quantity)`) is a
     # program method and is kept.
+    # THE PROGRAM'S OWN FUNCTIONS, by name. `_apply_scalars` calls
+    # `_apply_pair`, a function the program owns, and the flagship died on it
+    # with nothing else to retain it. Following EVERY name — a program's
+    # methods of `*` and `show` — kept 22 088 methods and 94 MB; following the
+    # program's own functions is bounded by the program's own call graph.
     SEALED_INTERPRET_CLOSURE[] || return true
     for stmt in src.code
         stmt isa Expr && stmt.head === :(=) && (stmt = stmt.args[2])
         (stmt isa Expr && stmt.head === :call) || continue
         local fv = sealed_call_head_function(stmt.args[1], ssaval)
         fv === nothing && continue
+        local owner = fv isa Type ? (fv isa DataType ? fv.name.module : Base) : Base.parentmodule(fv)
+        local root = Base.moduleroot(owner)
+        (root === Base || root === Core) && continue   # Core owns Core.Compiler: 4 000 methods (measured)
         for mm in Base.methods(fv)
             Base.moduleroot((mm::Method).module) === Base && continue
             sealed_retain_for_interpreter!(mm::Method)
@@ -812,13 +820,16 @@ function sealed_retain_scope!(caches::IdDict{MethodInstance,CodeInstance})
         for (name, argt) in SEALED_INTERPRET_SUPPORT_SET
             isdefined(Base, name::Symbol) || continue
             local f = Core.getglobal(Base, name::Symbol)
-            local sig = Tuple{typeof(f), (argt::DataType).parameters...}
-            local ms = findall(sig, method_table(NativeInterpreter(get_world_counter())); limit = 64)
-            (ms === nothing || ms === false) && continue
-            for j = 1:length(ms.matches)
-                sealed_retain_for_interpreter!((ms.matches[j]::MethodMatch).method) &&
-                    (SEALED_INTERPRET_SUPPORT_N[] += 1)
+            # THE generic method, by `which`: `findall` over every package's
+            # `getproperty` methods exceeds any limit and answers nothing
+            # (measured on the flagship, support=0).
+            local m = try
+                Base.which(f, argt::DataType)
+            catch
+                nothing
             end
+            m isa Method || continue
+            sealed_retain_for_interpreter!(m) && (SEALED_INTERPRET_SUPPORT_N[] += 1)
         end
     end
     nothing

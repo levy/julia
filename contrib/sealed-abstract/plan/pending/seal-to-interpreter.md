@@ -275,6 +275,20 @@ program's residual is covered by the candidates of each site plus the source
 of every compiled method — cheap, because their types are already in the
 image.
 
+**Two more scope facts from the flagship, found with the runtime naming its
+MethodErrors** (`METHOD-ERROR: f with Tuple{…}` under `JULIA_REPORT_INTERPRETED`,
+because the trimmed error printer itself fails and hid them):
+
+- `_apply_pair(Char, Int64, Int64)` — a program function one hop below an
+  interpreted body, retained by nothing. The closure by name is needed for
+  the program, but bounded to **the program's own functions**: following
+  every name (a program's methods of `*`, `show`) was the 94 MB; following
+  the program's own functions is bounded by its own call graph. `Core` is
+  excluded like `Base` — it owns `Core.Compiler`, and the example's retention
+  went 192 → 4 089 through it before that was measured.
+- `findall` over every package's `getproperty` methods exceeds any limit and
+  answers nothing, so the support set names THE generic method with `which`.
+
 ### Stage 4 — scope and size
 
 Retention scoped by the trace: the transitive closure by METHOD TABLE from

@@ -150,7 +150,7 @@ Compiler.SEALED_INTERPRET_MAX_CANDIDATES[] =
 Compiler.SEALED_INTERPRET_COMPILED[] = Base.get(Base.ENV, "SEALED_INTERPRET_COMPILED", "1") != "0"
 Compiler.SEALED_INTERPRET_GENERICS[] = Base.get(Base.ENV, "SEALED_INTERPRET_GENERICS", "") != ""
 Compiler.SEALED_INTERPRET_SUPPORT[] = Base.get(Base.ENV, "SEALED_INTERPRET_SUPPORT", "1") != "0"
-Compiler.SEALED_INTERPRET_CLOSURE[] = Base.get(Base.ENV, "SEALED_INTERPRET_CLOSURE", "") != ""
+Compiler.SEALED_INTERPRET_CLOSURE[] = Base.get(Base.ENV, "SEALED_INTERPRET_CLOSURE", "1") != "0"
 Compiler.SEALED_INTERPRET_DEBUG[] = Base.get(Base.ENV, "SEALED_DEBUG_RETAIN", "") != ""
 let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
     v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))
