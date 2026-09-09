@@ -74,6 +74,19 @@ typedef struct {
     int8_t gc_sweep_always_full;
     int8_t compress_sysimage;
     int8_t alert_on_critical_error;
+    const char *reactive_server;
+    // The reactive compiler's options (contrib/reactive-compiler, Stage H):
+    // a flag sets the field; an unset field (-1, NULL) reads the variable
+    // JULIA_REACTIVE_* of the same name, so a build tool drives a child
+    // through either and the flag wins.
+    int8_t reactive_reuse;            // JULIA_REACTIVE_REUSE
+    int8_t reactive_image_format;     // JULIA_REACTIVE_IMAGE
+    int8_t reactive_image_write;      // JULIA_REACTIVE_IMAGE_WRITE: 0 whole, 1 pages, 2 overlay
+    int8_t reactive_delta_opt;        // JULIA_REACTIVE_DELTA_OPT: 0 to 3
+    int8_t reactive_timings;          // JULIA_REACTIVE_TIMINGS: 0 to 2
+    const char *reactive_trim_memo;   // JULIA_REACTIVE_TRIM_MEMO
+    const char *reactive_heapdump;    // JULIA_REACTIVE_HEAPDUMP
+    const char *reactive_dirty_pages; // JULIA_REACTIVE_DIRTY_PAGES
 } jl_options_t;
 
 #endif

@@ -154,7 +154,41 @@ static htable_t nullptrs;
 // before the "wrapper" type so they can be properly recached against the running system.
 static arraylist_t serialization_queue;
 static arraylist_t layout_table;     // cache of `position(s)` for each `id` in `serialization_order`
+// The reactive options (Stage H of the plan): a flag of the command line
+// sets a field of `jl_options`; an unset field reads the variable
+// JULIA_REACTIVE_* of the same name, so a build tool drives a child through
+// either, and the flag wins. A string option is unset as NULL, a level as -1.
+static const char *reactive_option_string(const char *flag, const char *var) JL_NOTSAFEPOINT
+{
+    const char *value = flag != NULL ? flag : getenv(var);
+    return value != NULL && *value != '\0' ? value : NULL;
+}
+// A one-digit level: the flag, else the variable's digit, else `absent`.
+static int reactive_option_level(int8_t flag, const char *var, int absent) JL_NOTSAFEPOINT
+{
+    if (flag >= 0)
+        return flag;
+    const char *env = getenv(var);
+    if (env == NULL || env[0] < '0' || env[0] > '9' || env[1] != '\0')
+        return absent;
+    return env[0] - '0';
+}
+// How a save writes the image: 0 whole, 1 pages, 2 overlay.
+static int reactive_image_write(void) JL_NOTSAFEPOINT
+{
+    if (jl_options.reactive_image_write >= 0)
+        return jl_options.reactive_image_write;
+    const char *env = getenv("JULIA_REACTIVE_IMAGE_WRITE");
+    if (env == NULL)
+        return 0;
+    return strcmp(env, "overlay") == 0 ? 2 : strcmp(env, "pages") == 0 ? 1 : 0;
+}
+
+    return reactive_image_write() == 2;
+    return reactive_image_write() >= 1;
+static const char *reactive_dirty_path = NULL;
 static arraylist_t object_worklist;  // used to mimic recursion by jl_serialize_reachable
+static int reactive_dump_on = 0;
 static arraylist_t deferred_supers;  // deferred datatype super fields, handled by jl_serialize_reachable once the pre-order recursion has unwound
 
 // Permanent list of void* (begin, end+1) pairs of system/package images we've loaded previously
@@ -3013,6 +3047,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     arraylist_new(&object_worklist, 0);
     arraylist_new(&deferred_supers, 0);
     arraylist_new(&serialization_queue, 0);
+    reactive_dump_on = reactive_option_string(jl_options.reactive_heapdump, "JULIA_REACTIVE_HEAPDUMP") != NULL;
     ios_t sysimg, const_data, symbols, relocs, gvar_record, fptr_record;
     ios_mem(&sysimg, 0);
     ios_mem(&const_data, 0);
@@ -3169,6 +3204,8 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
         }
     }
 
+    const char *heapdump = reactive_option_string(jl_options.reactive_heapdump, "JULIA_REACTIVE_HEAPDUMP");
+    if (heapdump)
     uint32_t external_fns_begin = 0;
     { // step 2: build all the sysimg sections
         write_padding(&sysimg, sizeof(uintptr_t));
@@ -3803,6 +3840,7 @@ static int all_usings_unchanged_implicit(jl_module_t *mod)
     return unchanged_implicit;
 }
 
+    reactive_dirty_path = reactive_option_string(jl_options.reactive_dirty_pages, "JULIA_REACTIVE_DIRTY_PAGES");
 static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
                                                  jl_array_t *depmods, uint64_t checksum,
                                 /* outputs */    jl_array_t **restored,         jl_array_t **init_order,
@@ -4519,6 +4557,37 @@ JL_DLLEXPORT jl_value_t *jl_restore_incremental(const char *fname, jl_array_t *d
     return ret;
 }
 
+static int reactive_image_loaded = 0;
+JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
+{
+    if (!reactive_image_loaded)
+        return 0;
+    return reactive_option_level(jl_options.reactive_reuse, "JULIA_REACTIVE_REUSE", 0) == 1;
+}
+// The memo file of the trimmed pass, NULL without one.
+static const char *reactive_trim_memo_path(void) JL_NOTSAFEPOINT
+{
+    return reactive_option_string(jl_options.reactive_trim_memo, "JULIA_REACTIVE_TRIM_MEMO");
+}
+// A forked trim child names the memo of its store.
+JL_DLLEXPORT void jl_reactive_set_trim_memo(const char *path) JL_NOTSAFEPOINT
+{
+    jl_options.reactive_trim_memo = path ? strdup(path) : NULL;
+}
+    return jl_reactive_reuse_enabled() && jl_options.trim && reactive_trim_memo_path() != NULL;
+    const char *path = reactive_trim_memo_path();
+    const char *path = reactive_trim_memo_path();
+    return reactive_option_level(jl_options.reactive_timings, "JULIA_REACTIVE_TIMINGS", 0);
+}
+
+// The optimization level of a delta's code, -1 for the build's own.
+JL_DLLEXPORT int jl_reactive_delta_opt(void) JL_NOTSAFEPOINT
+{
+    int level = reactive_option_level(jl_options.reactive_delta_opt, "JULIA_REACTIVE_DELTA_OPT", -1);
+    return level >= 0 && level <= 3 ? level : -1;
+// for with --reactive-image-format (JULIA_REACTIVE_IMAGE=1), and implied
+// by reuse.
+    return reactive_option_level(jl_options.reactive_image_format, "JULIA_REACTIVE_IMAGE", 0) == 1;
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;

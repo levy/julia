@@ -70,6 +70,15 @@ struct JLOptions
     gc_sweep_always_full::Int8
     compress_sysimage::Int8
     alert_on_critical_error::Int8
+    reactive_server::Ptr{UInt8}
+    reactive_reuse::Int8
+    reactive_image_format::Int8
+    reactive_image_write::Int8
+    reactive_delta_opt::Int8
+    reactive_timings::Int8
+    reactive_trim_memo::Ptr{UInt8}
+    reactive_heapdump::Ptr{UInt8}
+    reactive_dirty_pages::Ptr{UInt8}
 end
 
 # This runs early in the sysimage != is not defined yet

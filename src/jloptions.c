@@ -163,6 +163,15 @@ JL_DLLEXPORT void jl_init_options(void)
                         0, // gc_sweep_always_full
                         0, // compress_sysimage
                         0, // alert_on_critical_error
+                        NULL, // reactive_server
+                        -1,   // reactive_reuse
+                        -1,   // reactive_image_format
+                        -1,   // reactive_image_write
+                        -1,   // reactive_delta_opt
+                        -1,   // reactive_timings
+                        NULL, // reactive_trim_memo
+                        NULL, // reactive_heapdump
+                        NULL, // reactive_dirty_pages
     };
     jl_options_initialized = 1;
 }
@@ -339,6 +348,23 @@ static const char opts_hidden[]  =
     " --image-codegen                               Force generate code in imaging mode\n"
     " --permalloc-pkgimg={yes|no*}                  Copy the data section of package images into memory\n\n"
 
+    " --reactive-server=<socket>                    Serve the requests of a reactive build on the Unix\n"
+    "                                               socket until `quit` (the stdlib ReactiveCompiler)\n"
+    " --reactive-reuse                              Reuse the code of the loaded reactive image in the\n"
+    "                                               image this process writes (JULIA_REACTIVE_REUSE=1)\n"
+    " --reactive-image-format                       Write the image in the reactive format, version 3\n"
+    "                                               (JULIA_REACTIVE_IMAGE=1; implied by --reactive-reuse)\n"
+    " --reactive-image={whole|pages|overlay}        How a reactive save writes the image\n"
+    "                                               (JULIA_REACTIVE_IMAGE_WRITE)\n"
+    " --reactive-delta-opt=<n>                      The optimization level of the delta's code, 0 to 3\n"
+    "                                               (JULIA_REACTIVE_DELTA_OPT)\n"
+    " --reactive-timings=<n>                        The timing report of a reactive build, 0 to 2\n"
+    "                                               (JULIA_REACTIVE_TIMINGS)\n"
+    " --reactive-trim-memo=<file>                   The memo of the trimmed pass (JULIA_REACTIVE_TRIM_MEMO)\n"
+    " --reactive-heapdump=<file>                    Dump the roots of the image's heap at the write\n"
+    "                                               (JULIA_REACTIVE_HEAPDUMP)\n"
+    " --reactive-dirty-pages=<file>                 Report the pages the process wrote and their writers\n"
+    "                                               (JULIA_REACTIVE_DIRTY_PAGES)\n"
     " --trim={no*|safe|unsafe|unsafe-warn}          Build a sysimage including only code provably\n"
     "                                               reachable from methods marked by calling\n"
     "                                               `entrypoint`. In unsafe mode, the resulting binary\n"
@@ -416,6 +442,15 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
            opt_trace_eval,
            opt_experimental_features,
            opt_compress_sysimage,
+           opt_reactive_server,
+           opt_reactive_reuse,
+           opt_reactive_image_format,
+           opt_reactive_image,
+           opt_reactive_delta_opt,
+           opt_reactive_timings,
+           opt_reactive_trim_memo,
+           opt_reactive_heapdump,
+           opt_reactive_dirty_pages,
     };
     static const char* const shortopts = "+vhqH:e:E:L:J:C:it:p:O:g:m:";
     static const struct option longopts[] = {
@@ -489,6 +524,15 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
         { "trim",  optional_argument, 0, opt_trim },
         { "compress-sysimage", required_argument, 0, opt_compress_sysimage },
         { "trace-eval",       optional_argument, 0, opt_trace_eval },
+        { "reactive-server",  required_argument, 0, opt_reactive_server },
+        { "reactive-reuse",   no_argument,       0, opt_reactive_reuse },
+        { "reactive-image-format", no_argument,  0, opt_reactive_image_format },
+        { "reactive-image",   required_argument, 0, opt_reactive_image },
+        { "reactive-delta-opt", required_argument, 0, opt_reactive_delta_opt },
+        { "reactive-timings", required_argument, 0, opt_reactive_timings },
+        { "reactive-trim-memo", required_argument, 0, opt_reactive_trim_memo },
+        { "reactive-heapdump", required_argument, 0, opt_reactive_heapdump },
+        { "reactive-dirty-pages", required_argument, 0, opt_reactive_dirty_pages },
         { 0, 0, 0, 0 }
     };
 
@@ -1070,6 +1114,47 @@ restart_switch:
                 jl_options.trim = JL_TRIM_UNSAFE_WARN;
             else
                 jl_errorf("julia: invalid argument to --trim={safe|no|unsafe|unsafe-warn} (%s)", optarg);
+            break;
+        case opt_reactive_server:
+            // the compiler server of a reactive store: the stdlib
+            // ReactiveCompiler answers the requests of a build tool on the
+            // socket (contrib/reactive-compiler)
+            jl_options.reactive_server = strdup(optarg);
+            break;
+        case opt_reactive_reuse:
+            jl_options.reactive_reuse = 1;
+            break;
+        case opt_reactive_image_format:
+            jl_options.reactive_image_format = 1;
+            break;
+        case opt_reactive_image:
+            if (!strcmp(optarg, "whole"))
+                jl_options.reactive_image_write = 0;
+            else if (!strcmp(optarg, "pages"))
+                jl_options.reactive_image_write = 1;
+            else if (!strcmp(optarg, "overlay"))
+                jl_options.reactive_image_write = 2;
+            else
+                jl_errorf("julia: invalid argument to --reactive-image={whole|pages|overlay} (%s)", optarg);
+            break;
+        case opt_reactive_delta_opt:
+            if (optarg[0] < '0' || optarg[0] > '3' || optarg[1] != '\0')
+                jl_errorf("julia: --reactive-delta-opt takes 0 to 3 (%s)", optarg);
+            jl_options.reactive_delta_opt = optarg[0] - '0';
+            break;
+        case opt_reactive_timings:
+            if (optarg[0] < '0' || optarg[0] > '2' || optarg[1] != '\0')
+                jl_errorf("julia: --reactive-timings takes 0 to 2 (%s)", optarg);
+            jl_options.reactive_timings = optarg[0] - '0';
+            break;
+        case opt_reactive_trim_memo:
+            jl_options.reactive_trim_memo = strdup(optarg);
+            break;
+        case opt_reactive_heapdump:
+            jl_options.reactive_heapdump = strdup(optarg);
+            break;
+        case opt_reactive_dirty_pages:
+            jl_options.reactive_dirty_pages = strdup(optarg);
             break;
         case opt_trace_eval:
             if (optarg == NULL || !strcmp(optarg,"loc"))
