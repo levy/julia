@@ -86,6 +86,9 @@ External links:
 #else
 #include <dlfcn.h>
 #include <sys/mman.h>
+#include <link.h>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 
 #include "valgrind.h"
@@ -154,6 +157,16 @@ static htable_t nullptrs;
 // before the "wrapper" type so they can be properly recached against the running system.
 static arraylist_t serialization_queue;
 static arraylist_t layout_table;     // cache of `position(s)` for each `id` in `serialization_order`
+
+// ── the image written by pages (Stage F of the reactive plan) ──────────
+// `JULIA_REACTIVE_IMAGE_WRITE=pages`: the loader protects the pages of the
+// sysimg section and the fault handler marks the pages the process writes
+// (reactive_dirty_protect, jl_reactive_dirty_fault). A save then copies the
+// clean pages from the file of the base image, rewrites the objects of the
+// dirty pages in place, appends the new objects, and merges the relocation
+// lists by position. The const data and the symbols are never relocated at
+// load, so their base bytes are taken from memory and from the base. The
+// loader needs no change: the product is a version 3 image.
 // The reactive options (Stage H of the plan): a flag of the command line
 // sets a field of `jl_options`; an unset field reads the variable
 // JULIA_REACTIVE_* of the same name, so a build tool drives a child through
@@ -185,8 +198,157 @@ static int reactive_image_write(void) JL_NOTSAFEPOINT
 }
 
     return reactive_image_write() == 2;
+static int reactive_pages_mode(void) JL_NOTSAFEPOINT
+{
     return reactive_image_write() >= 1;
+static reactive_sections_t reactive_sections;
+static char *reactive_region_const = NULL;   // the const data inside the region
+static char *reactive_region_const_limit = NULL; // the end of the const headroom: the new objects start here
+static char *reactive_gap_lo = NULL;         // the unused pages of the const headroom
+static char *reactive_gap_hi = NULL;
+static size_t reactive_objects_end = 0;      // the end of the objects of the base and the overlays (a sysimg offset)
+static size_t reactive_base_end = 0;         // the end of the objects of the base alone: the overlays' objects lie past the const headroom
+static size_t reactive_base_file_extent = 0; // the sysimg extent of the base FILE as mapped: a baseline past it is not in the file
+
+// The overlay image (Stage G): the delta as a shared object of its own,
+// with the blob below; the loader applies a chain of them to the base.
+#define REACTIVE_OVERLAY_MAGIC 0x324c5245564f4c4aULL   // "JLOVERL2": the sysimg patches are objects
+typedef struct {
+    uint64_t offset;             // in the sysimg
+    uint64_t size;
+} reactive_patch_t;
+static int reactive_overlay_on = 0;                 // this save writes an overlay
+static reactive_overlay_header_t reactive_overlay_header;
+static size_t reactive_overlay_blob_start = 0;      // the position of the blob in the output stream
+static int reactive_base_lists_ready = 0;           // reactive_base holds the lists of the loaded state
+static int reactive_base_lists_pending = 0;         // the lists of the loaded state wait in reactive_sections.relocs
+// the chain of images of an overlay-mode process, for the slot updates
+typedef struct {
+    jl_image_t img;
+    reactive_span_t gvar;
+    uint32_t external_fns_begin;
+    size_t objects_start;        // the sysimg offset where this overlay's new objects begin
+    const reactive_patch_t *patches;   // the object patches of the overlay, ascending by offset
+    const char *patch_bytes;
+    size_t npatches;
+    const uint32_t *const_pages;       // the const page patches, ascending
+    const char *const_bytes;
+    size_t nconst_pages;
+} reactive_chain_image_t;
+static reactive_chain_image_t reactive_chain[REACTIVE_CHAIN_MAX];
+static size_t reactive_chain_n = 0;
+}
+// the loaded image
+static char *reactive_image_base = NULL;        // the sysimg section of the loaded image (its leading word first)
+static size_t reactive_image_len = 0;
+static size_t reactive_sysimg_size = 0;         // the sysimg section with its leading word
+static const char *reactive_blob_data = NULL;   // the blob of the loaded image, used in place
+static size_t reactive_blob_size = 0;
+static char *reactive_const_base = NULL;        // the const data section of the loaded image
+static size_t reactive_const_len = 0;
+static char *reactive_syms_base = NULL;         // the symbols section of the loaded image
+static size_t reactive_syms_len = 0;
+static arraylist_t reactive_base_syms;          // the symbols of the base, in index order
+static int reactive_base_syms_kept = 0;
+// the dirty pages
+static char *reactive_dirty_start = NULL;
+static size_t reactive_dirty_len = 0;
+static uint8_t *reactive_dirty_bits = NULL;
+static size_t reactive_dirty_npages = 0;
 static const char *reactive_dirty_path = NULL;
+// the base image, from its file: the sections and the lists
+typedef struct {
+    char *map;                  // the private mapping of the file bytes of the blob
+    size_t map_len;
+    const char *sysimg;         // the sections, file bytes
+    size_t sysimg_size;         // with the leading word
+    const char *const_data;
+    size_t const_size;
+    const char *symbols;
+    size_t symbols_size;
+    const char *relocs;
+    size_t relocs_size;
+    arraylist_t gctags;         // the positions of the lists of the base, ascending
+    arraylist_t relocs_list;
+    arraylist_t memowner;
+    arraylist_t memref;
+    arraylist_t fixups;         // the fixup objects of the base (offsets)
+} reactive_base_t;
+static reactive_base_t reactive_base;
+static int reactive_base_mapped = 0;
+// this save
+static int reactive_pages_on = 0;               // the save writes by pages
+static int reactive_pages_force = 0;            // the pre-queue of the dirty objects passes the base test
+static int reactive_pages_retry = 0;            // a refused page write runs again as a whole write
+static uint8_t *reactive_pages_bits = NULL;     // the snapshot of the dirty bitmap
+static uint8_t *reactive_pages_rewritten = NULL; // per base object: rewritten in place
+static const char *reactive_pages_refusal = NULL; // the reason the save writes whole instead
+static size_t reactive_pages_append = 0;        // the append position of the sysimg stream
+static size_t reactive_pages_const_append = 0;  // the append position of the const data stream
+static size_t reactive_pages_ndirty = 0;
+static size_t reactive_pages_nrewritten = 0;
+static uint64_t *reactive_page_hashes = NULL;   // per protected page: the hash of its bytes at the load
+
+// The hash of a page: a page the process wrote and restored (a lock taken
+// and released) hashes as at the load, and the save treats it as clean.
+static uint64_t reactive_page_hash(const char *page) JL_NOTSAFEPOINT
+{
+    const uint64_t *w = (const uint64_t*)page;
+    size_t n = jl_page_size / sizeof(uint64_t);
+    uint64_t h = 0x9E3779B97F4A7C15ULL;
+    for (size_t i = 0; i < n; i++) {
+        h ^= w[i];
+        h *= 0xBF58476D1CE4E5B9ULL;
+        h ^= h >> 31;
+    }
+    return h;
+}
+
+static inline int reactive_in_sysimg(const void *v) JL_NOTSAFEPOINT
+{
+    return reactive_image_base != NULL && (const char*)v >= reactive_image_base &&
+           (const char*)v < reactive_image_base + reactive_sysimg_size;
+}
+
+static inline int reactive_in_const(const void *v) JL_NOTSAFEPOINT
+{
+    return reactive_const_base != NULL && (const char*)v >= reactive_const_base &&
+           (const char*)v < reactive_const_base + reactive_const_len;
+}
+
+// A page of the sysimg section that the process wrote since the load. The
+// bytes outside the protected range count as written.
+static int reactive_pages_dirty(const char *addr) JL_NOTSAFEPOINT
+{
+    if (reactive_dirty_start == NULL || addr < reactive_dirty_start ||
+        addr >= reactive_dirty_start + reactive_dirty_len)
+        return 1;
+    return reactive_pages_bits[(addr - reactive_dirty_start) / jl_page_size];
+}
+
+// The liveness test of the prunes: queued, or an object of the base when
+// the save writes by pages (the base stays whole).
+static inline int reactive_pages_live(jl_value_t *v) JL_NOTSAFEPOINT
+{
+    return ptrhash_get(&serialization_order, v) != HT_NOTFOUND ||
+           (reactive_pages_on && jl_object_in_image(v));
+}
+
+// The index of the base object whose tag is at `pos`, or of the last object
+// whose tag is before `pos`.
+static size_t reactive_base_object_at(size_t pos) JL_NOTSAFEPOINT
+{
+    arraylist_t *tags = &reactive_base.gctags;
+    size_t lo = 0, hi = tags->len;
+    while (hi - lo > 1) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((size_t)tags->items[mid] <= pos)
+            lo = mid;
+        else
+            hi = mid;
+    }
+    return lo;
+}
 static arraylist_t object_worklist;  // used to mimic recursion by jl_serialize_reachable
 // JULIA_REACTIVE_HEAPDUMP (reactive_dump_heap): the object whose fields are
 // walked, and the first referrer of every object.
@@ -418,7 +580,8 @@ enum RefTags {
     SymbolRef,          // symbols
     FunctionRef,        // functions
     SysimageLinkage,    // reference to the sysimage (from pkgimage)
-    ExternalLinkage     // reference to some other pkgimage
+    ExternalLinkage,    // reference to some other pkgimage
+    BaseRef             // an object of the base of a page-written image, by its final offset
 };
 
 #define SYS_EXTERNAL_LINK_UNIT sizeof(void*)
@@ -509,6 +672,11 @@ static int jl_needs_serialization(jl_serializer_state *s, jl_value_t *v) JL_NOTS
     else if (v == (jl_value_t*)s->ptls->root_task) {
         return 0;
     }
+    // A page-written image copies the objects of the base from the base
+    // file: the walk stops at them, except at the dirty objects that the
+    // save queues first.
+    if (reactive_pages_on && !reactive_pages_force && jl_object_in_image(v))
+        return 0;
 
     return 1;
 }
@@ -1338,6 +1506,22 @@ static uintptr_t add_external_linkage(jl_serializer_state *s, jl_value_t *v, jl_
     return 0;
 }
 
+// The reference to an object of the base that the page write did not
+// queue: its offset in the base, with the tag BaseRef for the sysimg section
+// (the finish makes it a DataRef) and ConstDataRef for the const data.
+static uintptr_t reactive_pages_base_ref(jl_value_t *v) JL_NOTSAFEPOINT
+{
+    if (reactive_in_sysimg(v))
+        return ((uintptr_t)BaseRef << RELOC_TAG_OFFSET) + ((const char*)v - reactive_image_base);
+    if (reactive_in_const(v)) {
+        size_t off = (const char*)v - reactive_const_base;
+        assert(off % sizeof(void*) == 0);
+        return ((uintptr_t)ConstDataRef << RELOC_TAG_OFFSET) + off / sizeof(void*);
+    }
+    jl_safe_printf("reactive: pages: an object of the image lies outside the base sections\n");
+    abort();
+}
+
 // Return the integer `id` for `v`. Generically this is looked up in `serialization_order`,
 // but symbols, small integers, and a couple of special items (`nothing` and the root Task)
 // have special handling.
@@ -1386,6 +1570,8 @@ static uintptr_t _backref_id(jl_serializer_state *s, jl_value_t *v, jl_array_t *
         return item;
     }
     void *idx = ptrhash_get(&serialization_order, v);
+    if (idx == HT_NOTFOUND && reactive_pages_on && jl_object_in_image(v))
+        return reactive_pages_base_ref(v);
     if (idx == HT_NOTFOUND) {
         jl_(jl_typeof(v));
         jl_(v);
@@ -1580,6 +1766,58 @@ static void record_external_fns(jl_serializer_state *s, arraylist_t *external_fn
 }
 
 jl_value_t *jl_find_ptr = NULL;
+
+static inline int reactive_object_id_expected(jl_datatype_t *t) JL_NOTSAFEPOINT
+{
+    return t->name->mutabl &&
+           t != jl_datatype_type &&
+           t != jl_typename_type &&
+           t != jl_string_type &&
+           t != jl_simplevector_type &&
+           t != jl_module_type;
+}
+
+// The window the in-place write of the base object with the tag at `tag_pos`
+// must end in: before the header of the next object, and after the padding
+// that the writer puts in front of it.
+static void reactive_pages_window(size_t tag_pos, size_t *lo, size_t *hi, size_t *index) JL_NOTSAFEPOINT
+{
+    arraylist_t *tags = &reactive_base.gctags;
+    size_t i = reactive_base_object_at(tag_pos);
+    assert((size_t)tags->items[i] == tag_pos);
+    *index = i;
+    if (i + 1 == tags->len) {
+        // the last object of the image: no object follows it, only the
+        // padding of the section, so its place is bounded above alone
+        *lo = tag_pos;
+        *hi = reactive_base.sysimg_size;
+        return;
+    }
+    size_t next = (size_t)tags->items[i + 1];
+    size_t oid = 0;
+    if (reactive_overlay_on && tag_pos < reactive_base_end && next > reactive_base_end) {
+        // the last object of the base: the next tag lies past the const
+        // headroom, in an overlay's objects
+        *hi = reactive_base_end;
+        *lo = tag_pos;
+        return;
+    }
+    jl_value_t *nv = (jl_value_t*)(reactive_image_base + next + sizeof(jl_taggedvalue_t));
+    oid = reactive_object_id_expected((jl_datatype_t*)jl_typeof(nv)) ? sizeof(size_t) : 0;
+    *hi = next - oid;
+    for (size_t k = 1; k < reactive_chain_n; k++) {
+        size_t start = reactive_chain[k].objects_start;
+        if (tag_pos < start && start <= next) {
+            // the last object of an overlay: the next object is the first
+            // of a later overlay, and the gap between them is the padding
+            // of two sections, not the writer's before one object
+            *lo = tag_pos;
+            return;
+        }
+    }
+    *lo = *hi - 16;
+}
+
 // The main function for serializing all the items queued in `serialization_order`
 // (They are also stored in `serialization_queue` which is order-preserving, unlike the hash table used
 //  for `serialization_order`).
@@ -1608,14 +1846,22 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
             }
         }
 
+        uintptr_t object_id_expected = reactive_object_id_expected(t);
+        // An object of the base of a page-written image is rewritten in
+        // place: the stream seeks to its header in the base, and its end
+        // must fall in the window before the next object.
+        int in_place = 0;
+        size_t in_place_lo = 0, in_place_hi = 0, in_place_index = 0;
+        if (reactive_pages_on && jl_object_in_image(v)) {
+            assert(f == s->s && reactive_in_sysimg(v));
+            size_t data_off = (char*)v - reactive_image_base;
+            size_t tag_pos = data_off - sizeof(jl_taggedvalue_t);
+            reactive_pages_window(tag_pos, &in_place_lo, &in_place_hi, &in_place_index);
+            ios_seek(f, tag_pos - (object_id_expected ? sizeof(size_t) : 0));
+            in_place = 1;
+        }
         // realign stream to expected gc alignment (16 bytes) after tag
         uintptr_t skip_header_pos = ios_pos(f) + sizeof(jl_taggedvalue_t);
-        uintptr_t object_id_expected = mutabl &&
-                 t != jl_datatype_type &&
-                 t != jl_typename_type &&
-                 t != jl_string_type &&
-                 t != jl_simplevector_type &&
-                 t != jl_module_type;
         if (object_id_expected)
             skip_header_pos += sizeof(size_t);
         write_padding(f, LLT_ALIGN(skip_header_pos, 16) - skip_header_pos);
@@ -1717,6 +1963,8 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                     size_t alignment_amt = JL_SMALL_BYTE_ALIGNMENT;
                     if (tot >= ARRAY_CACHE_ALIGN_THRESHOLD)
                         alignment_amt = JL_CACHE_BYTE_ALIGNMENT;
+                    if (in_place && reactive_in_const(m->ptr))
+                        ios_seek(s->const_data, (char*)m->ptr - reactive_const_base);
                     uintptr_t data = LLT_ALIGN(ios_pos(s->const_data), alignment_amt);
                     write_padding(s->const_data, data - ios_pos(s->const_data));
                     // write data and relocations
@@ -1829,6 +2077,11 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
         else if (jl_bigint_type && jl_typetagis(v, jl_bigint_type)) {
             // foreign types require special handling
             assert(f == s->s);
+            if (in_place) {
+                // the limbs of the base may not hold the value
+                reactive_pages_refusal = "a bigint of the base changed";
+                return;
+            }
             jl_value_t *sizefield = jl_get_nth_field(v, 1);
             int32_t sz = jl_unbox_int32(sizefield);
             int32_t nw = (sz == 0 ? 1 : (sz < 0 ? -sz : sz));
@@ -2082,6 +2335,8 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                     size_t fldsize = sizeof(jl_datatype_layout_t) + nf * fieldsize;
                     if (!is_foreign_type && dt->layout->first_ptr != -1)
                         fldsize += np * jl_fielddesc_ptr_size(dt->layout->flags.fielddesc_type);
+                    if (in_place && reactive_in_const(dt->layout))
+                        ios_seek(s->const_data, (char*)dt->layout - reactive_const_base);
                     uintptr_t layout = LLT_ALIGN(ios_pos(s->const_data), sizeof(void*));
                     write_padding(s->const_data, layout - ios_pos(s->const_data)); // realign stream
                     newdt->layout = NULL; // relocation offset
@@ -2107,6 +2362,8 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                 jl_typename_t *newtn = (jl_typename_t*)&f->buf[reloc_offset];
                 if (tn->atomicfields != NULL) {
                     size_t nb = (jl_svec_len(tn->names) + 31) / 32 * sizeof(uint32_t);
+                    if (in_place && reactive_in_const(tn->atomicfields))
+                        ios_seek(s->const_data, (char*)tn->atomicfields - reactive_const_base);
                     uintptr_t layout = LLT_ALIGN(ios_pos(s->const_data), sizeof(void*));
                     write_padding(s->const_data, layout - ios_pos(s->const_data)); // realign stream
                     newtn->atomicfields = NULL; // relocation offset
@@ -2117,6 +2374,8 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
                 }
                 if (tn->constfields != NULL) {
                     size_t nb = (jl_svec_len(tn->names) + 31) / 32 * sizeof(uint32_t);
+                    if (in_place && reactive_in_const(tn->constfields))
+                        ios_seek(s->const_data, (char*)tn->constfields - reactive_const_base);
                     uintptr_t layout = LLT_ALIGN(ios_pos(s->const_data), sizeof(void*));
                     write_padding(s->const_data, layout - ios_pos(s->const_data)); // realign stream
                     newtn->constfields = NULL; // relocation offset
@@ -2141,6 +2400,25 @@ static void jl_write_values(jl_serializer_state *s) JL_GC_DISABLED
             else {
                 write_padding(f, jl_datatype_size(t) - tot);
             }
+        }
+        if (in_place) {
+            size_t end = ios_pos(f);
+            if (end <= in_place_lo || end > in_place_hi) {
+                // a module whose usings grew: it does not fit its place
+                jl_safe_printf("reactive: the object at %zu (%s) ends at %zu, its place ends in %zu..%zu\n",
+                               (size_t)reactive_base.gctags.items[in_place_index], jl_typeof_str(v),
+                               end, in_place_lo, in_place_hi);
+                reactive_pages_refusal = "an object of the base does not fit its place";
+                return;
+            }
+            reactive_pages_rewritten[in_place_index] = 1;
+            reactive_pages_nrewritten++;
+            ios_seek(f, reactive_pages_append);
+            ios_seek(s->const_data, reactive_pages_const_append);
+        }
+        else if (reactive_pages_on) {
+            reactive_pages_append = ios_pos(s->s);
+            reactive_pages_const_append = ios_pos(s->const_data);
         }
     }
     assert(s->uniquing_super.len == 0);
@@ -2170,6 +2448,11 @@ static void jl_read_symbols(jl_serializer_state *s)
 static uintptr_t get_reloc_for_item(uintptr_t reloc_item, size_t reloc_offset)
 {
     enum RefTags tag = (enum RefTags)(reloc_item >> RELOC_TAG_OFFSET);
+    if (tag == BaseRef) {
+        // an object of the base of a page-written image: its offset is final
+        uintptr_t offset = reloc_item & (((uintptr_t)1 << RELOC_TAG_OFFSET) - 1);
+        return ((uintptr_t)DataRef << RELOC_TAG_OFFSET) + offset + reloc_offset;
+    }
     if (tag == DataRef) {
         // first serialized segment
         // need to compute the final relocation offset via the layout table
@@ -2309,6 +2592,8 @@ static inline uintptr_t get_item_for_reloc(jl_serializer_state *s, uintptr_t bas
         assert(2*i < jl_linkage_blobs.len);
         return (uintptr_t)jl_linkage_blobs.items[2*i] + offset*SYS_EXTERNAL_LINK_UNIT;
     }
+    case BaseRef:
+        break; // never in an image: the finish of a save makes it a DataRef
     }
     abort();
 }
@@ -2629,7 +2914,7 @@ static jl_svec_t *jl_prune_type_cache_hash(jl_svec_t *cache) JL_GC_DISABLED
         jl_value_t *ti = jl_svecref(cache, i);
         if (ti == jl_nothing)
             continue;
-        if (ptrhash_get(&serialization_order, ti) == HT_NOTFOUND)
+        if (!reactive_pages_live(ti))
             jl_svecset(cache, i, jl_nothing);
         else
             sz += 1;
@@ -2638,9 +2923,21 @@ static jl_svec_t *jl_prune_type_cache_hash(jl_svec_t *cache) JL_GC_DISABLED
         sz = HT_N_INLINE;
 
     void *idx = ptrhash_get(&serialization_order, cache);
+    if (reactive_pages_on && idx == HT_NOTFOUND)
+        return cache; // a cache of the base that the save did not queue holds live entries only
     assert(idx != HT_NOTFOUND && idx != (void*)(uintptr_t)-1);
     assert(serialization_queue.items[from_seroder_entry(idx)] == cache);
+    jl_svec_t *old = cache;
     cache = cache_rehash_set(cache, sz);
+    if (reactive_pages_on && jl_object_in_image((jl_value_t*)old)) {
+        // A page write keeps the old cache in the queue: it is rewritten in
+        // its place (its dead entries null), and the new cache appends. An
+        // overlay writes the pages of the base from the queue alone, so an
+        // object dropped from it would land as zeros under its tag.
+        arraylist_push(&serialization_queue, (void*)cache);
+        ptrhash_put(&serialization_order, cache, to_seroder_entry(serialization_queue.len - 1));
+        return cache;
+    }
     // redirect all references to the old cache to relocate to the new cache object
     ptrhash_put(&serialization_order, cache, idx);
     serialization_queue.items[from_seroder_entry(idx)] = cache;
@@ -2654,7 +2951,7 @@ static void jl_prune_type_cache_linear(jl_svec_t *cache)
         jl_value_t *ti = jl_svecref(cache, i);
         if (ti == jl_nothing)
             break;
-        if (ptrhash_get(&serialization_order, ti) != HT_NOTFOUND)
+        if (reactive_pages_live(ti))
             jl_svecset(cache, ins++, ti);
     }
     while (ins < l)
@@ -2670,7 +2967,7 @@ static void jl_prune_mi_backedges(jl_array_t *backedges)
         jl_value_t *invokeTypes;
         jl_code_instance_t *caller;
         i = get_next_edge(backedges, i, &invokeTypes, &caller);
-        if (ptrhash_get(&serialization_order, caller) != HT_NOTFOUND)
+        if (reactive_pages_live((jl_value_t*)caller))
             ins = set_next_edge(backedges, ins, invokeTypes, caller);
     }
     jl_array_del_end(backedges, n - ins);
@@ -2681,7 +2978,7 @@ static void jl_prune_tn_backedges(jl_array_t *backedges)
     size_t i = 0, ins = 0, n = jl_array_nrows(backedges);
     for (i = 1; i < n; i += 2) {
         jl_value_t *ci = jl_array_ptr_ref(backedges, i);
-        if (ptrhash_get(&serialization_order, ci) != HT_NOTFOUND) {
+        if (reactive_pages_live(ci)) {
             jl_array_ptr_set(backedges, ins++, jl_array_ptr_ref(backedges, i - 1));
             jl_array_ptr_set(backedges, ins++, ci);
         }
@@ -2706,7 +3003,7 @@ static void jl_prune_binding_backedges(jl_array_t *backedges)
     size_t i = 0, ins = 0, n = jl_array_nrows(backedges);
     for (i = 0; i < n; i++) {
         jl_value_t *b = jl_array_ptr_ref(backedges, i);
-        if (ptrhash_get(&serialization_order, b) != HT_NOTFOUND) {
+        if (reactive_pages_live(b)) {
             jl_array_ptr_set(backedges, ins, b);
             ins++;
         }
@@ -2733,6 +3030,7 @@ static void reactive_prune_interferences(jl_method_t *m)
         jl_value_t *k = jl_genericmemory_ptr_ref(keys, i);
         if (k == NULL)
             break;
+        if (reactive_pages_live(k))
             jl_genericmemory_ptr_set(keys, ins++, k);
     }
     for (; ins < n; ins++)
@@ -3225,49 +3523,336 @@ static void reactive_dump_heap(const char *path)
     }
 }
 
-    int en = jl_gc_enable(0);
-    if (native_functions) {
-        size_t num_gvars, num_external_fns;
-        jl_get_llvm_gv_inits(native_functions, &num_gvars, NULL);
-        arraylist_grow(&gvars, num_gvars);
-        jl_get_llvm_gv_inits(native_functions, &num_gvars, gvars.items);
-        jl_get_llvm_external_fns(native_functions, &num_external_fns, NULL);
-        arraylist_grow(&external_fns, num_external_fns);
-        jl_get_llvm_external_fns(native_functions, &num_external_fns,
-                                 (jl_code_instance_t *)external_fns.items);
-        if (jl_options.trim) {
-            size_t num_mis;
-            jl_get_llvm_cis(native_functions, &num_mis, NULL);
-            arraylist_grow(&MIs, num_mis);
+// ── the page write: the base ───────────────────────────────────────────
 
-            // Record MethodInstances for user-provided code (as reported by codegen)
-            jl_get_llvm_cis(native_functions, &num_mis, (jl_code_instance_t**)MIs.items);
-            for (size_t i = 0; i < num_mis; i++) {
-                jl_code_instance_t *ci = (jl_code_instance_t*)MIs.items[i];
-                MIs.items[i] = (void*)jl_get_ci_mi(ci);
+struct reactive_phdr_query {
+    uintptr_t addr;
+    uintptr_t file_off;
+    int found;
+};
+
+static int reactive_phdr_callback(struct dl_phdr_info *info, size_t size, void *data) JL_NOTSAFEPOINT
+{
+    struct reactive_phdr_query *q = (struct reactive_phdr_query*)data;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        if (ph->p_type != PT_LOAD)
+            continue;
+        uintptr_t start = info->dlpi_addr + ph->p_vaddr;
+        if (q->addr >= start && q->addr < start + ph->p_filesz) {
+            q->file_off = ph->p_offset + (q->addr - start);
+            q->found = 1;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Read a list of positions, delta-coded as jl_write_offsetlist writes them.
+static const uint8_t *reactive_base_read_positions(const uint8_t *cur, arraylist_t *out) JL_NOTSAFEPOINT
+{
+    size_t last = 0;
+    while (1) {
+        size_t diff = 0, cnt = 0;
+        while (1) {
+            int8_t c = (int8_t)*cur++;
+            diff |= ((size_t)c & 0x7F) << (7 * cnt++);
+            if ((c >> 7) == 0)
+                break;
+        }
+        if (diff == 0)
+            break;
+        last += diff;
+        arraylist_push(out, (void*)last);
+    }
+    return cur;
+}
+
+// Map the file bytes of the base image's blob and locate its sections and
+// lists. Answers 0 when the base has no file (a compressed image, or no
+// image), and the save writes whole.
+{
+        return 1;
+        return 0;
+        return 0;
+    if (fd < 0)
+        return 0;
+    size_t page = jl_page_size;
+    size_t len = delta + reactive_blob_size;
+    char *map = (char*)mmap(NULL, len, PROT_READ, MAP_PRIVATE, fd, off);
+    close(fd);
+    if (map == MAP_FAILED)
+        return 0;
+    reactive_base_t *b = &reactive_base;
+    b->map = map;
+    b->map_len = len;
+    if (b->sysimg_size != reactive_sysimg_size || b->const_size != reactive_const_len ||
+        jl_safe_printf("reactive: pages: the file of the base image does not match the loaded image\n");
+        return 0;
+    }
+    reactive_base_mapped = 1;
+    return 1;
+}
+
+// Begin a page write: the snapshot of the dirty bitmap, the base in the
+// three streams the save appends to, and the base symbols in the table.
+static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols)
+{
+        jl_safe_printf("reactive: pages: the base image has no file bytes; the save writes whole\n");
+        return -1;
+    }
+    if (reactive_dirty_bits == NULL || !reactive_base_syms_kept) {
+        jl_safe_printf("reactive: pages: the loader tracked no pages; the save writes whole\n");
+        return -1;
+    }
+    reactive_pages_bits = (uint8_t*)malloc_s(reactive_dirty_npages);
+    memcpy(reactive_pages_bits, reactive_dirty_bits, reactive_dirty_npages);
+    reactive_pages_ndirty = 0;
+    size_t restored = 0;
+    for (size_t i = 0; i < reactive_dirty_npages; i++) {
+        if (reactive_pages_bits[i] && reactive_page_hashes != NULL &&
+            reactive_page_hash(reactive_dirty_start + i * jl_page_size) == reactive_page_hashes[i]) {
+            reactive_pages_bits[i] = 0;
+            restored++;
+        }
+        reactive_pages_ndirty += reactive_pages_bits[i];
+    }
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: pages: %zu pages written, %zu of them as at the load\n",
+                       reactive_pages_ndirty + restored, restored);
+    reactive_pages_rewritten = (uint8_t*)calloc(reactive_base.gctags.len, 1);
+    reactive_pages_nrewritten = 0;
+    reactive_pages_const_append = reactive_const_len;
+    // The const data comes from memory, with the runtime's writes into the
+    // bits memories; a pointer element is null in an image, as the whole
+    // write makes it (a match context of PCRE, a handle): reset them.
+    {
+        arraylist_t *tags = &reactive_base.gctags;
+        size_t reset = 0;
+        for (size_t i = 0; i < tags->len; i++) {
+            jl_value_t *v = (jl_value_t*)(reactive_image_base + (size_t)tags->items[i] + sizeof(jl_taggedvalue_t));
+            if (!jl_is_genericmemory(v))
+                continue;
+            jl_datatype_t *t = (jl_datatype_t*)jl_typeof(v);
+            const jl_datatype_layout_t *layout = t->layout;
+            if (layout->flags.arrayelem_isboxed || layout->first_ptr >= 0)
+                continue;
+            if (!jl_is_cpointer_type(jl_tparam1(t)))
+                continue;
+            jl_genericmemory_t *m = (jl_genericmemory_t*)v;
+            if (!reactive_in_const(m->ptr))
+                continue;
+            intptr_t *out = (intptr_t*)&const_data->buf[(const char*)m->ptr - reactive_const_base];
+            const intptr_t *in = (const intptr_t*)m->ptr;
+            for (size_t k = 0; k < m->length; k++) {
+                if (in[k] != -1 && out[k] != 0) {
+                    out[k] = 0;
+                    reset++;
+                }
             }
+        }
+        if (jl_reactive_timings())
+            jl_safe_printf("reactive: pages: %zu pointer elements of the base reset\n", reset);
+    }
+    ios_write(symbols, reactive_syms_base, reactive_syms_len);
+    for (size_t i = 0; i < reactive_base_syms.len; i++)
+        ptrhash_put(&symbol_table, reactive_base_syms.items[i], to_seroder_entry(i));
+    nsym_tag = reactive_base_syms.len;
+    reactive_pages_refusal = NULL;
+    reactive_pages_on = 1;
+    return 0;
+}
 
-            // Record MethodInstances for built-ins (used when dynamically dispatching to a
-            // built-in, e.g., in the Core._apply_iterate implementation)
-            jl_datatype_t *tt = NULL;
-            JL_GC_PUSH1(&tt);
-            for (size_t i = 0; i < jl_n_builtins; i++) {
-                jl_value_t *builtin = jl_builtin_instances[i];
-                if (builtin == NULL)
-                    continue;
+static void reactive_pages_end(void)
+{
+    free(reactive_pages_bits);
+    reactive_pages_bits = NULL;
+    free(reactive_pages_rewritten);
+    reactive_pages_rewritten = NULL;
+    reactive_pages_on = 0;
+    reactive_pages_force = 0;
+}
 
-                jl_datatype_t *dt = (jl_datatype_t*)jl_typeof(builtin);
-                jl_value_t *params[2];
-                params[0] = dt->name->wrapper;
-                params[1] = jl_tparam0(jl_anytuple_type);
-                tt = (jl_datatype_t*)jl_apply_tuple_type_v(params, 2);
-                jl_method_instance_t *mi = (jl_method_instance_t *)jl_method_lookup_by_tt(
-                    tt, /* world */ 1, /* mt */ jl_nothing
-                );
-                assert(!jl_is_nothing(mi));
-                arraylist_push(&MIs, mi);
-            }
-            JL_GC_POP();
+// Queue the objects of the dirty pages: the objects whose tag is in a dirty
+// page, and an object whose bytes reach into one.
+static void reactive_pages_queue_dirty(jl_serializer_state *s) JL_GC_DISABLED
+{
+    // The walk goes by dirty page: the objects whose tag is in the page,
+    // and the object before the first of them, whose bytes may reach in.
+    arraylist_t *tags = &reactive_base.gctags;
+    size_t n = tags->len;
+    size_t page = jl_page_size;
+    size_t queued = 0;
+    size_t extent = reactive_overlay_on ? reactive_objects_end : reactive_base.sysimg_size;
+    size_t last_queued = (size_t)-1;
+    reactive_pages_force = 1;
+    for (size_t off = 0; off < extent; off += page) {
+        char *addr = reactive_image_base + off;
+        if (reactive_overlay_on && addr >= reactive_region_const && addr < reactive_region_const_limit)
+            continue;
+        if (!reactive_pages_dirty(addr))
+            continue;
+        // the first tag in the page, and the object before it
+        size_t lo = 0, hi = n;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if ((size_t)tags->items[mid] < off)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        size_t first = lo > 0 ? lo - 1 : lo;
+        for (size_t i = first; i < n; i++) {
+            size_t pos = (size_t)tags->items[i];
+            if (pos >= off + page)
+                break;
+            if (i == last_queued)
+                continue;
+            if (pos < off && reactive_overlay_on && pos < reactive_base_end && off >= reactive_base_end)
+                continue;   // the last object of the base does not reach past the const headroom
+            last_queued = i;
+            jl_value_t *v = (jl_value_t*)(reactive_image_base + pos + sizeof(jl_taggedvalue_t));
+            jl_queue_for_serialization(s, v);
+            queued++;
+        }
+    }
+    reactive_pages_force = 0;
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: pages: %zu dirty pages of %zu, %zu objects of the base queued\n",
+                       reactive_pages_ndirty, reactive_dirty_npages, queued);
+}
+
+// The fptr record of the code instances of the base that the save did not
+// queue: the fresh function table names them by their base offset.
+static void reactive_pages_fptrs(jl_serializer_state *s)
+{
+    if (native_functions == NULL)
+        return;
+    size_t n = 0;
+    jl_get_llvm_cis(native_functions, &n, NULL);
+    if (n == 0)
+        return;
+    jl_code_instance_t **cis = (jl_code_instance_t**)malloc_s(n * sizeof(void*));
+    jl_get_llvm_cis(native_functions, &n, cis);
+    size_t written = 0;
+    for (size_t i = 0; i < n; i++) {
+        jl_code_instance_t *ci = cis[i];
+        if (!jl_object_in_image((jl_value_t*)ci) || !reactive_in_sysimg(ci))
+            continue;
+        if (ptrhash_get(&serialization_order, ci) != HT_NOTFOUND)
+            continue;
+        size_t off = (char*)ci - reactive_image_base;
+        int32_t invokeptr_id = 0, specfptr_id = 0;
+        jl_get_function_id(native_functions, ci, &invokeptr_id, &specfptr_id);
+        if (invokeptr_id > 0) {
+            ios_ensureroom(s->fptr_record, invokeptr_id * sizeof(void*));
+            ios_seek(s->fptr_record, (invokeptr_id - 1) * sizeof(void*));
+            write_reloc_t(s->fptr_record, (reloc_t)~off);
+#ifdef _P64
+            if (sizeof(reloc_t) < 8)
+                write_padding(s->fptr_record, 8 - sizeof(reloc_t));
+#endif
+        }
+        if (specfptr_id > 0) {
+            ios_ensureroom(s->fptr_record, specfptr_id * sizeof(void*));
+            ios_seek(s->fptr_record, (specfptr_id - 1) * sizeof(void*));
+            write_reloc_t(s->fptr_record, off);
+#ifdef _P64
+            if (sizeof(reloc_t) < 8)
+                write_padding(s->fptr_record, 8 - sizeof(reloc_t));
+#endif
+            written++;
+        }
+    }
+    free(cis);
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: pages: %zu functions of the base keep their code instance\n", written);
+}
+
+static int reactive_pages_cmp_pos(const void *a, const void *b) JL_NOTSAFEPOINT
+{
+    size_t x = *(const size_t*)a, y = *(const size_t*)b;
+    return x < y ? -1 : x > y ? 1 : 0;
+}
+
+static void reactive_pages_write_diff(ios_t *s, size_t pos_diff) JL_NOTSAFEPOINT
+{
+    while (pos_diff) {
+        if (pos_diff <= 127) {
+            write_int8(s, pos_diff);
+            break;
+        }
+        int8_t ns = pos_diff & (int8_t)0x7F;
+        pos_diff >>= 7;
+        ns |= (!!pos_diff) << 7;
+        write_int8(s, ns);
+    }
+}
+
+// Write a list of positions: the entries of the base outside the rewritten
+// objects, merged with the entries of this save, ascending.
+static void reactive_pages_write_list(ios_t *out, size_t size, arraylist_t *base, arraylist_t *pairs)
+{
+    size_t nnew = pairs->len / 2;
+    size_t *fresh = (size_t*)malloc_s((nnew + 1) * sizeof(size_t));
+    for (size_t i = 0; i < nnew; i++)
+        fresh[i] = (size_t)pairs->items[2 * i];
+    qsort(fresh, nnew, sizeof(size_t), reactive_pages_cmp_pos);
+    arraylist_t *tags = &reactive_base.gctags;
+    size_t j = 0;           // the base object the base entry belongs to
+    size_t k = 0;           // the next fresh entry
+    size_t last = 0;
+    for (size_t i = 0; i < base->len; i++) {
+        size_t pos = (size_t)base->items[i];
+        while (j + 1 < tags->len && (size_t)tags->items[j + 1] <= pos)
+            j++;
+        if (reactive_pages_rewritten[j])
+            continue;
+        while (k < nnew && fresh[k] < pos) {
+            assert(fresh[k] > last);
+            reactive_pages_write_diff(out, fresh[k] - last);
+            last = fresh[k++];
+        }
+        assert(pos > last && "a base entry and a fresh entry share a position");
+        reactive_pages_write_diff(out, pos - last);
+        last = pos;
+    }
+    while (k < nnew) {
+        assert(fresh[k] > last && fresh[k] < size);
+        reactive_pages_write_diff(out, fresh[k] - last);
+        last = fresh[k++];
+    }
+    write_int8(out, 0);
+    free(fresh);
+}
+
+// Write the fixup objects: the base's outside the rewritten objects, then
+// this save's.
+static void reactive_pages_write_fixups(ios_t *out, arraylist_t *base, arraylist_t *fresh)
+{
+    arraylist_t merged;
+    arraylist_new(&merged, base->len + fresh->len);
+    for (size_t i = 0; i < base->len; i++) {
+        size_t pos = (size_t)base->items[i];
+        size_t j = reactive_base_object_at(pos);
+        if (!reactive_pages_rewritten[j])
+            arraylist_push(&merged, (void*)pos);
+    }
+    for (size_t i = 0; i < fresh->len; i++)
+        arraylist_push(&merged, fresh->items[i]);
+    jl_write_arraylist(out, &merged);
+    arraylist_free(&merged);
+}
+
+// Answers 0, or -1 when a page write refuses and the caller writes whole.
+static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
+                                           jl_array_t *module_init_order, jl_array_t *worklist, jl_array_t *extext_methods,
+                                           jl_array_t *new_ext_cis, jl_query_cache *query_cache)
+{
+    htable_new(&field_replace, 0);
+    htable_new(&bits_replace, 0);
+    if (worklist)
+        jl_foreach_reachable_mtable(jl_prune_internal_mtable, mod_array, NULL);
     // A reactive image drops the closed typemap entries and the invalid
     // code instances: the next build must not reuse a deleted method.
     reactive_prune_heap = (worklist == NULL && jl_reactive_image_format());
@@ -3395,6 +3980,7 @@ static void reactive_dump_heap(const char *path)
     ios_mem(&gvar_record, 0);
     ios_mem(&fptr_record, 0);
     jl_serializer_state s = {0};
+    int result = 0;
     s.query_cache = query_cache;
     s.incremental = !(worklist == NULL);
     s.s = &sysimg;
@@ -3448,8 +4034,17 @@ static void reactive_dump_heap(const char *path)
     jl_genericmemory_t *global_roots_keyset = NULL;
 
     uint64_t t_step = jl_hrtime(), t_queue = 0, t_prune = 0, t_write = 0;
+    reactive_pages_on = 0;
+    if (reactive_prune_heap && !jl_options.trim && reactive_pages_mode() && !reactive_pages_retry)
+        reactive_pages_begin(&sysimg, &const_data, &symbols);
     { // step 1: record values (recursively) that need to go in the image
         size_t i;
+        if (reactive_pages_on) {
+            // The objects of the dirty pages first: the walk from them
+            // queues the new objects and stops at the rest of the base.
+            reactive_pages_queue_dirty(&s);
+            jl_serialize_reachable(&s);
+        }
         if (worklist == NULL) {
             for (i = 0; tags[i] != NULL; i++) {
                 jl_value_t *tag = *tags[i];
@@ -3498,7 +4093,7 @@ static void reactive_dump_heap(const char *path)
             global_roots_keyset = jl_alloc_memory_any(0);
             for (size_t i = 0; i < jl_global_roots_list->length; i++) {
                 jl_value_t *val = jl_genericmemory_ptr_ref(jl_global_roots_list, i);
-                if (val && ptrhash_get(&serialization_order, val) != HT_NOTFOUND) {
+                if (val && reactive_pages_live(val)) {
                     ssize_t idx;
                     global_roots_list = jl_idset_put_key(global_roots_list, val, &idx);
                     global_roots_keyset = jl_idset_put_idx(global_roots_list, global_roots_keyset, idx);
@@ -3559,9 +4154,49 @@ static void reactive_dump_heap(const char *path)
     uint32_t external_fns_begin = 0;
     t_prune = jl_hrtime() - t_step; t_step = jl_hrtime();
     { // step 2: build all the sysimg sections
-        write_padding(&sysimg, sizeof(uintptr_t));
+        if (!reactive_pages_on)
+            write_padding(&sysimg, sizeof(uintptr_t));
         jl_write_values(&s);
+        if (reactive_overlay_on && reactive_pages_refusal == NULL) {
+            // The pages of the base come from the queue alone: an object of
+            // a dirty page that the queue lost would land as zeros.
+            arraylist_t *tags = &reactive_base.gctags;
+            size_t page = jl_page_size;
+            for (size_t i = 0; i < tags->len; i++) {
+                if (reactive_pages_rewritten[i])
+                    continue;
+                char *addr = reactive_image_base + (size_t)tags->items[i];
+                size_t off = (size_t)tags->items[i];
+                char *next = i + 1 < tags->len ? reactive_image_base + (size_t)tags->items[i + 1]
+                                               : reactive_image_base + reactive_objects_end;
+                if (off < reactive_base_end && next > reactive_image_base + reactive_base_end)
+                    next = reactive_image_base + reactive_base_end;
+                int dirty = reactive_pages_dirty(addr);
+                for (char *p = (char*)LLT_ALIGN((uintptr_t)addr + 1, page); !dirty && p < next; p += page)
+                    dirty = reactive_pages_dirty(p);
+                if (dirty) {
+                    jl_safe_printf("reactive: overlay: the object at %zu of a dirty page was not rewritten\n", off);
+                    reactive_pages_refusal = "an object of a dirty page left the queue";
+                    break;
+                }
+            }
+        }
+        if (reactive_pages_refusal != NULL && reactive_overlay_on)
+            jl_errorf("reactive: overlay: %s; the overlay cannot be written", reactive_pages_refusal);
+        if (reactive_pages_refusal != NULL) {
+            jl_safe_printf("reactive: pages: %s; the save writes whole\n", reactive_pages_refusal);
+            result = -1;
+            ios_close(&sysimg);
+            ios_close(&const_data);
+            ios_close(&symbols);
+            ios_close(&relocs);
+            ios_close(&gvar_record);
+            ios_close(&fptr_record);
+            goto cleanup;
+        }
         external_fns_begin = write_gvars(&s, &gvars, &external_fns);
+        if (reactive_pages_on)
+            reactive_pages_fptrs(&s);
     }
 
     // This ensures that we can use the low bit of addresses for
@@ -3616,16 +4251,25 @@ static void reactive_dump_heap(const char *path)
     char *base = &f->buf[0];
     jl_finish_relocs(base + sysimg_offset, sysimg_size, &s.gctags_list);
     jl_finish_relocs(base + sysimg_offset, sysimg_size, &s.relocs_list);
-    jl_write_offsetlist(s.relocs, sysimg_size, &s.gctags_list);
-    jl_write_offsetlist(s.relocs, sysimg_size, &s.relocs_list);
-    jl_write_offsetlist(s.relocs, sysimg_size, &s.memowner_list);
-    jl_write_offsetlist(s.relocs, sysimg_size, &s.memref_list);
-    if (s.incremental) {
-        jl_write_arraylist(s.relocs, &s.uniquing_types);
-        jl_write_arraylist(s.relocs, &s.uniquing_objs);
-        jl_write_arraylist(s.relocs, &s.fixup_types);
+    if (reactive_pages_on) {
+        reactive_pages_write_list(s.relocs, sysimg_size, &reactive_base.gctags, &s.gctags_list);
+        reactive_pages_write_list(s.relocs, sysimg_size, &reactive_base.relocs_list, &s.relocs_list);
+        reactive_pages_write_list(s.relocs, sysimg_size, &reactive_base.memowner, &s.memowner_list);
+        reactive_pages_write_list(s.relocs, sysimg_size, &reactive_base.memref, &s.memref_list);
+        reactive_pages_write_fixups(s.relocs, &reactive_base.fixups, &s.fixup_objs);
     }
-    jl_write_arraylist(s.relocs, &s.fixup_objs);
+    else {
+        jl_write_offsetlist(s.relocs, sysimg_size, &s.gctags_list);
+        jl_write_offsetlist(s.relocs, sysimg_size, &s.relocs_list);
+        jl_write_offsetlist(s.relocs, sysimg_size, &s.memowner_list);
+        jl_write_offsetlist(s.relocs, sysimg_size, &s.memref_list);
+        if (s.incremental) {
+            jl_write_arraylist(s.relocs, &s.uniquing_types);
+            jl_write_arraylist(s.relocs, &s.uniquing_objs);
+            jl_write_arraylist(s.relocs, &s.fixup_types);
+        }
+        jl_write_arraylist(s.relocs, &s.fixup_objs);
+    }
     write_uint(f, relocs.size);
     write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
     ios_seek(&relocs, 0);
@@ -3647,6 +4291,10 @@ static void reactive_dump_heap(const char *path)
     if (jl_reactive_timings())
         jl_safe_printf("reactive: heap queue %.1f s, prune %.1f s, write %.1f s, combine %.1f s, %zu objects\n",
                        t_queue / 1e9, t_prune / 1e9, t_write / 1e9, (jl_hrtime() - t_step) / 1e9, serialization_queue.len);
+    if (jl_reactive_timings() && reactive_pages_on)
+        jl_safe_printf("reactive: pages: %zu objects rewritten in place, %zu appended; sysimg %zu KB of which %zu KB new\n",
+                       reactive_pages_nrewritten, serialization_queue.len - reactive_pages_nrewritten,
+                       sysimg_size / 1024, (sysimg_size - reactive_base.sysimg_size) / 1024);
     { // step 4: record locations of special roots
         write_padding(f, LLT_ALIGN(ios_pos(f), 8) - ios_pos(f));
         s.s = f;
@@ -3697,9 +4345,10 @@ static void reactive_dump_heap(const char *path)
         write_uint32(f, external_fns_begin);
     }
 
-    assert(object_worklist.len == 0);
+cleanup:
+    if (reactive_pages_on)
+        reactive_pages_end();
     arraylist_free(&object_worklist);
-    assert(deferred_supers.len == 0);
     arraylist_free(&deferred_supers);
     arraylist_free(&serialization_queue);
     if (reactive_dump_on)
@@ -3729,6 +4378,7 @@ static void reactive_dump_heap(const char *path)
     reactive_prune_heap = 0;
 
     jl_gc_enable(en);
+    return result;
 }
 
 static int ci_not_internal_cache(jl_code_instance_t *ci)
@@ -3870,6 +4520,15 @@ JL_DLLEXPORT void jl_create_system_image(void **_native_data, jl_array_t *workli
     init_query_cache(&query_cache);
     jl_finalize_precompile_inferred(worklist != NULL && _native_data != NULL && jl_options.outputo != NULL);
     uint64_t t_heap = jl_hrtime();
+    reactive_pages_retry = 0;
+    if (jl_save_system_image_to_stream(ff, mod_array, module_init_order, worklist, extext_methods, new_ext_cis, &query_cache) != 0) {
+        // the page write refused: the whole write, from the same state
+        ios_seek(ff, datastartpos);
+        ios_trunc(ff, datastartpos);
+        reactive_pages_retry = 1;
+        jl_save_system_image_to_stream(ff, mod_array, module_init_order, worklist, extext_methods, new_ext_cis, &query_cache);
+        reactive_pages_retry = 0;
+    }
     if (jl_reactive_timings())
         jl_safe_printf("reactive: heap %.1f s\n", (jl_hrtime() - t_heap) / 1e9);
     if (_native_data != NULL)
@@ -4205,7 +4864,96 @@ static int all_usings_unchanged_implicit(jl_module_t *mod)
     return unchanged_implicit;
 }
 
+// The dirty pages of the image (Stage F of the plan, the measurement).
+// Under JULIA_REACTIVE_DIRTY_PAGES=<path> the loader protects the data pages
+// of the image once the relocations are applied, the fault handler marks a
+// page and lifts its protection at the first write, and the write of an
+// image appends a report to the path: the pages the process wrote, and
+// the instructions that wrote them first.
+#define REACTIVE_DIRTY_WRITERS 128
+static uintptr_t reactive_dirty_writer_ip[REACTIVE_DIRTY_WRITERS];
+static size_t reactive_dirty_writer_n[REACTIVE_DIRTY_WRITERS];
+static size_t reactive_dirty_nwriters = 0;
+static size_t reactive_dirty_faults = 0;
+
+static void reactive_dirty_protect(char *start, size_t len)
+{
     reactive_dirty_path = reactive_option_string(jl_options.reactive_dirty_pages, "JULIA_REACTIVE_DIRTY_PAGES");
+    if (reactive_dirty_path == NULL && !reactive_pages_mode())
+        return;
+    size_t page = jl_page_size;
+    char *first = (char*)LLT_ALIGN((uintptr_t)start, page);
+    char *end = (char*)(((uintptr_t)(start + len)) & ~(uintptr_t)(page - 1));
+    if (end <= first)
+        return;
+    reactive_dirty_start = first;
+    reactive_dirty_len = end - first;
+    reactive_dirty_npages = reactive_dirty_len / page;
+    reactive_dirty_bits = (uint8_t*)calloc(reactive_dirty_npages, 1);
+    if (mprotect(first, reactive_dirty_len, PROT_READ) != 0) {
+        jl_safe_printf("reactive: dirty pages: mprotect of %p + %zu KB failed: %s\n", (void*)first,
+                       reactive_dirty_len / 1024, strerror(errno));
+        reactive_dirty_start = NULL;
+    }
+    else if (reactive_dirty_path != NULL || jl_reactive_timings()) {
+        jl_safe_printf("reactive: dirty pages: %zu pages of the image protected\n", reactive_dirty_npages);
+    }
+}
+
+// The fault handler asks first: a write into a protected page of the
+// image marks the page, lifts its protection, and is not a fault.
+JL_DLLEXPORT int jl_reactive_dirty_fault(void *addr, void *ip) JL_NOTSAFEPOINT
+{
+    char *a = (char*)addr;
+    if (reactive_dirty_start == NULL || a < reactive_dirty_start || a >= reactive_dirty_start + reactive_dirty_len)
+        return 0;
+    size_t page = jl_page_size;
+    size_t index = (a - reactive_dirty_start) / page;
+    reactive_dirty_bits[index] = 1;
+    reactive_dirty_faults++;
+    size_t i;
+    for (i = 0; i < reactive_dirty_nwriters; i++)
+        if (reactive_dirty_writer_ip[i] == (uintptr_t)ip)
+            break;
+    if (i == reactive_dirty_nwriters && i < REACTIVE_DIRTY_WRITERS) {
+        reactive_dirty_writer_ip[i] = (uintptr_t)ip;
+        reactive_dirty_writer_n[i] = 0;
+        reactive_dirty_nwriters++;
+    }
+    if (i < REACTIVE_DIRTY_WRITERS)
+        reactive_dirty_writer_n[i]++;
+    mprotect(reactive_dirty_start + index * page, page, PROT_READ | PROT_WRITE);
+    return 1;
+}
+
+JL_DLLEXPORT void jl_reactive_dirty_report(const char *tag)
+{
+    if (reactive_dirty_start == NULL || reactive_dirty_path == NULL)
+        return;
+    size_t dirty = 0;
+    for (size_t i = 0; i < reactive_dirty_npages; i++)
+        dirty += reactive_dirty_bits[i];
+    ios_t out;
+    if (ios_file(&out, reactive_dirty_path, 1, 1, 1, 0) == NULL)
+        return;
+    ios_seek_end(&out);
+    ios_printf(&out, "%s: %zu of %zu pages dirty (%zu KB of %zu KB), %zu faults, %zu writers\n", tag, dirty,
+               reactive_dirty_npages, dirty * jl_page_size / 1024, reactive_dirty_len / 1024,
+               reactive_dirty_faults, reactive_dirty_nwriters);
+    for (size_t i = 0; i < reactive_dirty_nwriters; i++) {
+        Dl_info info;
+        if (dladdr((void*)reactive_dirty_writer_ip[i], &info) && info.dli_fname) {
+            ios_printf(&out, "  writer %zu pages: %s+0x%zx %s\n", reactive_dirty_writer_n[i], info.dli_fname,
+                       (size_t)(reactive_dirty_writer_ip[i] - (uintptr_t)info.dli_fbase),
+                       info.dli_sname ? info.dli_sname : "");
+        }
+        else {
+            ios_printf(&out, "  writer %zu pages: 0x%zx\n", reactive_dirty_writer_n[i], (size_t)reactive_dirty_writer_ip[i]);
+        }
+    }
+    ios_close(&out);
+}
+
 static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
                                                  jl_array_t *depmods, uint64_t checksum,
                                 /* outputs */    jl_array_t **restored,         jl_array_t **init_order,
@@ -4361,6 +5109,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     char *image_base = (char*)&sysimg.buf[0];
     reloc_t *relocs_base = (reloc_t*)&relocs.buf[0];
+    if (!s.incremental) {
+        reactive_image_base = image_base;
+        reactive_image_len = sizeof_sysdata;
+    }
 
     s.s = &sysimg;
     jl_read_reloclist(&s, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE); // gctags
@@ -4737,6 +5489,13 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     if (!s.incremental)
         jl_gc_reset_alloc_count();
+    if (!s.incremental && reactive_pages_mode() && !reactive_base_syms_kept) {
+        // The base symbols keep their index in a page-written image.
+        arraylist_new(&reactive_base_syms, deser_sym.len);
+        memcpy(reactive_base_syms.items, deser_sym.items, deser_sym.len * sizeof(void*));
+        reactive_base_syms.len = deser_sym.len;
+        reactive_base_syms_kept = 1;
+    }
     arraylist_free(&deser_sym);
 
     // Prepare for later external linkage against the sysimg
@@ -4762,8 +5521,16 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     // jl_printf(JL_STDOUT, "%ld blobs to link against\n", jl_linkage_blobs.len >> 1);
     jl_gc_enable(en);
 
-    if (s.incremental)
+    if (s.incremental) {
         jl_add_methods(*extext_methods);
+    }
+    else {
+        if (reactive_pages_mode() && reactive_dirty_start != NULL) {
+            // The base is mapped now: a save may replace the file later.
+                jl_safe_printf("reactive: pages: the base image has no file bytes; every save writes whole\n");
+            reactive_page_hashes = (uint64_t*)malloc_s(reactive_dirty_npages * sizeof(uint64_t));
+        }
+    }
 }
 
 static jl_value_t *jl_validate_cache_file(ios_t *f, jl_array_t *depmods, uint64_t *checksum, int64_t *dataendpos, int64_t *datastartpos)
@@ -5142,6 +5909,10 @@ JL_DLLEXPORT const char *jl_reactive_image_fname(int32_t id) JL_NOTSAFEPOINT
     return reactive_image.fptrs.names[id - 1];
 }
 
+    reactive_base_end = sec.sysimg.size;
+        size_t objects_start = reactive_sections.sysimg.size;
+        size_t new_sysimg = objects_start + h->new_sysimg_size;
+        reactive_chain[reactive_chain_n].objects_start = objects_start;
 JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
 {
     ios_t f;
@@ -5157,6 +5928,10 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
         reactive_image_loaded = 1;
     }
 
+    if (buf.kind == JL_IMAGE_KIND_SO) {
+        reactive_blob_data = buf.data;
+        reactive_blob_size = buf.size;
+    }
 
     JL_SIGATOMIC_BEGIN();
     ios_static_buffer(&f, (char *)buf.data, buf.size);
