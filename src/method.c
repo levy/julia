@@ -1257,6 +1257,19 @@ JL_DLLEXPORT jl_methcache_t *jl_method_get_cache(jl_method_t *method JL_PROPAGAT
     return jl_method_get_table(method)->cache;
 }
 
+// The method filter of a reactive rebuild: a Julia function that the rebuild
+// child installs around the apply of an edit, and that sees every method of
+// the global table before its insertion. It answers true to keep the method
+// that the table has instead: an identical redefinition would move the world
+// and invalidate every caller for nothing. The caller keeps the function
+// alive; `nothing` removes the filter.
+static _Atomic(jl_value_t*) jl_reactive_method_filter = NULL;
+
+JL_DLLEXPORT void jl_reactive_set_method_filter(jl_value_t *f)
+{
+    jl_atomic_store_release(&jl_reactive_method_filter, f == jl_nothing ? NULL : f);
+}
+
 JL_DLLEXPORT jl_method_t* jl_method_def(jl_svec_t *argdata,
                                         jl_methtable_t *mt,
                                         jl_code_info_t *f,
@@ -1385,6 +1398,14 @@ JL_DLLEXPORT jl_method_t* jl_method_def(jl_svec_t *argdata,
     m->line = line;
     jl_method_set_source(m, f);
 
+    jl_value_t *filter = jl_atomic_load_acquire(&jl_reactive_method_filter);
+    if (filter != NULL && !external_mt) {
+        jl_value_t *keep = jl_apply_generic(filter, (jl_value_t**)&m, 1);
+        if (keep == jl_true) {
+            JL_GC_POP();
+            return m;
+        }
+    }
     jl_method_table_insert(mt, m, NULL);
     if (jl_newmeth_tracer)
         jl_call_tracer(jl_newmeth_tracer, (jl_value_t*)m);
