@@ -3,8 +3,8 @@
 This document describes the system as it stands and the reasons behind its
 shape. The chronological record — what was tried, measured and decided, gate
 by gate — lives in
-[plan/pending/reactive-materialization.md](../plan/pending/reactive-materialization.md)
-and in [plan/pending/hypothesis-case.md](../plan/pending/hypothesis-case.md).
+[plan/done/reactive-materialization.md](../plan/done/reactive-materialization.md)
+and in [plan/done/hypothesis-case.md](../plan/done/hypothesis-case.md).
 Read this file to work on the system; read the plan to learn how it got here.
 
 ## What this is
