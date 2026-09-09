@@ -11,9 +11,9 @@
 # Needs: a store under $OMNET/build/routing with at least one rebuild
 # (`bin/build_omnet_legacy_sample routing --reactive`, then one bare build).
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/gate-h}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/gate-h}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
-OMNET=${OMNET:-/home/projectured/workspace/omnet-julia-m1}
+OMNET=${OMNET:-$(cd "$JH/.." && pwd)/omnet-julia-m1}
 LANE=${LANE:-16-23}
 FILE=sample/legacy/routing/Routing.jl
 COPY=$OUT/routing

@@ -18,11 +18,11 @@
 # IMAGE=whole|pages|overlay picks how the untrimmed image is written (the
 # trimmed product is always a whole write); OUT the directory of the run.
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/gate-e}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/gate-e}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
 TOOL=$JH/contrib/reactive-compiler/tool
-PC=${PC:-/home/projectured/workspace/package-compiler-reactive}
+PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 TA=$TOOL/trim_app
 PKG=$TA/TrimApp
 FILE=$PKG/src/compute.jl

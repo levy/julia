@@ -17,10 +17,10 @@
 #                  within the residue of the global slots
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/gate-c}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/gate-c}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
-PC=${PC:-/home/projectured/workspace/package-compiler-reactive}
+PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 HZ=$JH/contrib/reactive-compiler/tool/m6_hazard
 THREADS=${THREADS:-8}
 TIMINGS=${TIMINGS:-1}

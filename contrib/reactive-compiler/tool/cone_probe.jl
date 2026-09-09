@@ -12,8 +12,9 @@ mod === nothing && error("OmnetLegacyRouting is not loaded")
 NM = getfield(mod, :NetworkModule)
 f = NM.handle_message!
 AApp = getfield(mod, :AApp)
-file = "/home/projectured/workspace/omnet-julia-m1/sample/legacy/routing/App.jl"
 old = only(m for m in methods(f) if endswith(String(m.file), "App.jl") && m.line == 49)
+# the source of the method, as the build recorded it; APP_FILE names another
+file = get(ENV, "APP_FILE", String(old.file))
 println("old method: ", old.sig, " line ", old.line)
 # the old code instances of the method
 oldcis = Any[]

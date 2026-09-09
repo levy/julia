@@ -17,11 +17,11 @@
 #   mat-noop     - no change; the delta must shrink toward zero
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/m5}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/m5}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
-PC=${PC:-/home/projectured/workspace/package-compiler-reactive}
-OMNET=${OMNET:-/home/projectured/workspace/omnet-julia-m1}
+PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
+OMNET=${OMNET:-$(cd "$JH/.." && pwd)/omnet-julia-m1}
 THREADS=${THREADS:-8}
 TIMINGS=${TIMINGS:-2}
 LANE=${LANE:-16-23}

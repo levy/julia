@@ -36,10 +36,10 @@
 #   refuse-untracked - a type with an untracked dependent: the same
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/gate-b}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/gate-b}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=$JH/usr/bin/julia
-PC=${PC:-/home/projectured/workspace/package-compiler-reactive}
+PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 TOOL=$JH/contrib/reactive-compiler/tool
 HZ=$TOOL/m6_hazard
 SRC=$HZ/HazardApp/src

@@ -19,9 +19,9 @@
 #   rebuild-restore, run-restored - the reverse edit, and 2.308011 again
 # Pass step names to run some steps, or nothing to run all of them in order.
 set -u
-OUT=${OUT:-/tmp/claude-1001/-home-projectured-workspace-projectured-julia/7c34d767-9c8b-40c1-8ef9-6fa021e2073f/scratchpad/m7}
+OUT=${OUT:-${TMPDIR:-/tmp}/reactive/m7}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
-OMNET=${OMNET:-/home/projectured/workspace/omnet-julia-m1}
+OMNET=${OMNET:-$(cd "$JH/.." && pwd)/omnet-julia-m1}
 THREADS=${THREADS:-8}
 TIMINGS=${TIMINGS:-2}
 LANE=${LANE:-16-23}
