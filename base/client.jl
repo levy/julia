@@ -331,6 +331,16 @@ function exec_options(opts)
         end
     end
 
+    # The compiler server of a reactive store (the stdlib ReactiveCompiler):
+    # the process answers the requests of a build tool on the socket until
+    # `quit`, and exits from there; it runs no program of its own.
+    if opts.reactive_server != C_NULL
+        exit_on_sigint(true)
+        rc = require(PkgId(UUID("1dda119b-71a3-45fb-bd14-d17b1eb16859"), "ReactiveCompiler"))
+        invokelatest(rc.serve, unsafe_string(opts.reactive_server))
+        exit(0)
+    end
+
     # load file
     if arg_is_program
         # program
