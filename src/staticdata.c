@@ -188,7 +188,11 @@ static int reactive_image_write(void) JL_NOTSAFEPOINT
     return reactive_image_write() >= 1;
 static const char *reactive_dirty_path = NULL;
 static arraylist_t object_worklist;  // used to mimic recursion by jl_serialize_reachable
+// JULIA_REACTIVE_HEAPDUMP (reactive_dump_heap): the object whose fields are
+// walked, and the first referrer of every object.
 static int reactive_dump_on = 0;
+static jl_value_t *reactive_dump_walking = NULL;
+static htable_t reactive_dump_parents;
 static arraylist_t deferred_supers;  // deferred datatype super fields, handled by jl_serialize_reachable once the pre-order recursion has unwound
 
 // Permanent list of void* (begin, end+1) pairs of system/package images we've loaded previously
@@ -597,6 +601,21 @@ static int effects_foldable(uint32_t effects)
 #define jl_queue_for_serialization(s, v) jl_queue_for_serialization_((s), (jl_value_t*)(v), 1, 0)
 static void jl_queue_for_serialization_(jl_serializer_state *s, jl_value_t *v, int recursive, int immediate) JL_GC_DISABLED;
 
+// Set while a reactive image is written; the format is described below.
+static int reactive_prune_heap = 0;
+
+// A weak list of a module: the list and its memory are serialized, its
+// members only when something else reaches them. The list is pruned to the
+// serialized members once the heap is known (reactive_prune_weak_list), the
+// way the backedge lists of a binding are.
+static void reactive_queue_weak_list(jl_serializer_state *s, jl_value_t *list) JL_GC_DISABLED
+{
+    if (list == jl_nothing)
+        return;
+    jl_queue_for_serialization_(s, (jl_value_t*)((jl_array_t*)list)->ref.mem, 0, 1);
+    jl_queue_for_serialization(s, list);
+}
+
 static void jl_queue_module_for_serialization(jl_serializer_state *s, jl_module_t *m) JL_GC_DISABLED
 {
     jl_queue_for_serialization(s, m->name);
@@ -638,6 +657,14 @@ static void jl_queue_module_for_serialization(jl_serializer_state *s, jl_module_
         record_field_change((jl_value_t**)&m->usings_backedges, jl_nothing);
         record_field_change((jl_value_t**)&m->scanned_methods, jl_nothing);
     }
+    else if (reactive_prune_heap) {
+        // A module that only a `using` backedge reaches is dead: nothing can
+        // name it again. So is a method that only the scanned list reaches:
+        // a deleted one. Both lists are weak in a reactive image, or every
+        // `Module()` of a rebuild would stay in the image with its bindings.
+        reactive_queue_weak_list(s, m->usings_backedges);
+        reactive_queue_weak_list(s, m->scanned_methods);
+    }
     else {
         jl_queue_for_serialization(s, m->usings_backedges);
         jl_queue_for_serialization(s, m->scanned_methods);
@@ -653,6 +680,136 @@ static int codeinst_may_be_runnable(jl_code_instance_t *ci, int incremental) {
     return jl_atomic_load_relaxed(&ci->min_world) <= jl_typeinf_world && jl_typeinf_world <= max_world;
 }
 
+// The reactive image format drops what no world of the image runs: a method
+// table entry that a deleted method closed (`jl_method_table_disable`), and
+// a code instance that an edit invalidated. Both have a finite `max_world`;
+// the ones that the world of the compiler still runs stay, as
+// `codeinst_may_be_runnable` keeps them. A dropped entry takes its method,
+// the specializations and their code out of the image: the backedge lists
+// are pruned to the serialized code instances. A stock image keeps them all.
+// `reactive_prune_heap` (above) is set while such an image is written.
+
+static int reactive_entry_dead(jl_typemap_entry_t *e) JL_NOTSAFEPOINT
+{
+    size_t max_world = jl_atomic_load_relaxed(&e->max_world);
+    if (max_world == ~(size_t)0)
+        return 0;
+    return !(jl_atomic_load_relaxed(&e->min_world) <= jl_typeinf_world && jl_typeinf_world <= max_world);
+}
+
+static jl_typemap_entry_t *reactive_live_entry(jl_typemap_entry_t *e) JL_NOTSAFEPOINT
+{
+    while ((jl_value_t*)e != jl_nothing && reactive_entry_dead(e))
+        e = jl_atomic_load_relaxed(&e->next);
+    return e;
+}
+
+static jl_code_instance_t *reactive_live_ci(jl_code_instance_t *ci) JL_NOTSAFEPOINT
+{
+    while (ci != NULL && !codeinst_may_be_runnable(ci, 0))
+        ci = jl_atomic_load_relaxed(&ci->next);
+    return ci;
+}
+
+// Record the `next` changes that take the dead entries out of the chain at
+// `head`; returns the live head (`jl_nothing` for an empty chain).
+static jl_typemap_entry_t *reactive_prune_entries(jl_typemap_entry_t *head) JL_NOTSAFEPOINT
+{
+    jl_typemap_entry_t *live = reactive_live_entry(head);
+    for (jl_typemap_entry_t *e = live; (jl_value_t*)e != jl_nothing; ) {
+        jl_typemap_entry_t *next = jl_atomic_load_relaxed(&e->next);
+        jl_typemap_entry_t *nlive = reactive_live_entry(next);
+        if (nlive != next)
+            record_field_change((jl_value_t**)&e->next, (jl_value_t*)nlive);
+        e = nlive;
+    }
+    return live;
+}
+
+static void reactive_prune_typemap_memory(jl_genericmemory_t *a) JL_NOTSAFEPOINT;
+
+// Record the field changes that take the dead entries out of a typemap
+// (`Union{TypeMapLevel, TypeMapEntry, Nothing}`) held in `slot`.
+static void reactive_prune_typemap(jl_value_t **slot) JL_NOTSAFEPOINT
+{
+    jl_value_t *v = *slot;
+    if (v == NULL || v == jl_nothing)
+        return;
+    if (jl_typetagis(v, jl_typemap_entry_type)) {
+        jl_typemap_entry_t *live = reactive_prune_entries((jl_typemap_entry_t*)v);
+        if ((jl_value_t*)live != v)
+            record_field_change(slot, (jl_value_t*)live);
+    }
+    else if (jl_typetagis(v, jl_typemap_level_type)) {
+        jl_typemap_level_t *node = (jl_typemap_level_t*)v;
+        reactive_prune_typemap_memory(jl_atomic_load_relaxed(&node->targ));
+        reactive_prune_typemap_memory(jl_atomic_load_relaxed(&node->arg1));
+        reactive_prune_typemap_memory(jl_atomic_load_relaxed(&node->tname));
+        reactive_prune_typemap_memory(jl_atomic_load_relaxed(&node->name1));
+        reactive_prune_typemap((jl_value_t**)&node->linear);
+        reactive_prune_typemap((jl_value_t**)&node->any);
+    }
+}
+
+// The entry chain in the value slot `i` of an eqtable (`data[i - 1]` holds
+// the key). An empty chain is not a value there: `lookup_leafcache` and
+// `Base.visit` read the fields of a value; the slot becomes the deleted-key
+// tombstone of the eqtable (key `nothing`, value NULL), which both skip.
+static void reactive_prune_eqtable_chain(jl_value_t **data, size_t i) JL_NOTSAFEPOINT
+{
+    jl_value_t *d = data[i];
+    jl_typemap_entry_t *live = reactive_prune_entries((jl_typemap_entry_t*)d);
+    if ((jl_value_t*)live == jl_nothing) {
+        record_field_change(&data[i - 1], jl_nothing);
+        record_field_change(&data[i], NULL);
+    }
+    else if ((jl_value_t*)live != d) {
+        record_field_change(&data[i], (jl_value_t*)live);
+    }
+}
+
+// The values of a typemap hash (`jl_typemap_memory_visitor`): a typemap, or
+// a hash of typemaps.
+static void reactive_prune_typemap_memory(jl_genericmemory_t *a) JL_NOTSAFEPOINT
+{
+    if (a == NULL || a == (jl_genericmemory_t*)jl_an_empty_memory_any)
+        return;
+    jl_value_t **data = (jl_value_t**)a->ptr;
+    for (size_t i = 1; i < a->length; i += 2) {
+        jl_value_t *d = data[i];
+        if (d == NULL)
+            continue;
+        if (jl_is_genericmemory(d))
+            reactive_prune_typemap_memory((jl_genericmemory_t*)d);
+        else if (jl_typetagis(d, jl_typemap_entry_type))
+            reactive_prune_eqtable_chain(data, i);
+        else
+            reactive_prune_typemap(&data[i]);
+    }
+}
+
+// The leaf cache is an eqtable from a type tuple to an entry chain.
+static void reactive_prune_leafcache(jl_genericmemory_t *a) JL_NOTSAFEPOINT
+{
+    if (a == NULL || a == (jl_genericmemory_t*)jl_an_empty_memory_any)
+        return;
+    jl_value_t **data = (jl_value_t**)a->ptr;
+    for (size_t i = 1; i < a->length; i += 2) {
+        if (data[i] != NULL)
+            reactive_prune_eqtable_chain(data, i);
+    }
+}
+
+static int reactive_prune_mtable(jl_methtable_t *mt, void *env)
+{
+    (void)env;
+    reactive_prune_typemap((jl_value_t**)&mt->defs);
+    jl_methcache_t *mc = mt->cache;
+    reactive_prune_typemap((jl_value_t**)&mc->cache);
+    reactive_prune_leafcache(jl_atomic_load_relaxed(&mc->leafcache));
+    return 1;
+}
+
 // Anything that requires uniquing or fixing during deserialization needs to be "toplevel"
 // in serialization (i.e., have its own entry in `serialization_order`). Consequently,
 // objects that act as containers for other potentially-"problematic" objects must add such "children"
@@ -663,6 +820,9 @@ static int codeinst_may_be_runnable(jl_code_instance_t *ci, int incremental) {
 // be the "source" rather than merely a cross-reference.
 static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_t *v, int recursive, int immediate) JL_GC_DISABLED
 {
+    jl_value_t *dump_walking = reactive_dump_walking;
+    if (reactive_dump_on)
+        reactive_dump_walking = v;
     jl_datatype_t *t = (jl_datatype_t*)jl_typeof(v);
     jl_queue_for_serialization_(s, (jl_value_t*)t, 1, immediate);
     const jl_datatype_layout_t *layout = t->layout;
@@ -711,6 +871,12 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
             // them wrong and segfault. The jl_code_for_staged function should
             // prevent this from happening, so we do not need to detect that user
             // error now.
+        }
+        else if (reactive_prune_heap) {
+            jl_code_instance_t *head = jl_atomic_load_relaxed(&mi->cache);
+            jl_code_instance_t *live = reactive_live_ci(head);
+            if (live != head)
+                record_field_change((jl_value_t**)&mi->cache, (jl_value_t*)live);
         }
         // don't recurse into all backedges memory (yet)
         jl_value_t *backedges = get_replaceable_field((jl_value_t**)&mi->backedges, 1);
@@ -807,6 +973,12 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
                 // TODO: if (ci in ci->defs->cache)
                 record_field_change((jl_value_t**)&ci->next, NULL);
             }
+        }
+        else if (reactive_prune_heap) {
+            jl_code_instance_t *next = jl_atomic_load_relaxed(&ci->next);
+            jl_code_instance_t *live = reactive_live_ci(next);
+            if (live != next)
+                record_field_change((jl_value_t**)&ci->next, (jl_value_t*)live);
         }
         jl_value_t *inferred = jl_atomic_load_relaxed(&ci->inferred);
         if (inferred && inferred != jl_nothing && !jl_is_uint8(inferred)) { // disregard if there is nothing here to delete (e.g. builtins, unspecialized)
@@ -967,6 +1139,15 @@ static void jl_insert_into_serialization_queue(jl_serializer_state *s, jl_value_
             //    jl_binding_partition_t *bpart = (jl_binding_partition_t*)v;
             //}
         }
+        if (reactive_prune_heap && jl_is_method(v)) {
+            // The interference set of a method is weak in a reactive image:
+            // an insertion adds the new method to the set of every method it
+            // intersects, a deleted one included, and nothing removes a
+            // member. A strong set would keep a deleted method in the image
+            // with its specializations and their code (reactive_prune_interferences).
+            jl_method_t *m = (jl_method_t*)v;
+            jl_queue_for_serialization_(s, (jl_value_t*)jl_atomic_load_relaxed(&m->interferences), 0, 1);
+        }
         char *data = (char*)jl_data_ptr(v);
         size_t i, np = layout->npointers;
         size_t fldidx = 1;
@@ -1015,6 +1196,7 @@ done_fields: ;
             jl_queue_for_serialization_(s, fld, 1, immediate);
         }
     }
+    reactive_dump_walking = dump_walking;
 }
 
 
@@ -1048,8 +1230,11 @@ static void jl_queue_for_serialization_(jl_serializer_state *s, jl_value_t *v, i
 
     void **bp = ptrhash_bp(&serialization_order, v);
     assert(!immediate || *bp != (void*)(uintptr_t)-2);
-    if (*bp == HT_NOTFOUND)
+    if (*bp == HT_NOTFOUND) {
         *bp = (void*)(uintptr_t)-1; // now enqueued
+        if (reactive_dump_on)
+            ptrhash_put(&reactive_dump_parents, v, reactive_dump_walking ? reactive_dump_walking : jl_nothing);
+    }
     else if (!s->incremental || !immediate || !recursive || *bp != (void*)(uintptr_t)-1)
         return;
 
@@ -2529,6 +2714,31 @@ static void jl_prune_binding_backedges(jl_array_t *backedges)
     jl_array_del_end(backedges, n - ins);
 }
 
+// A weak list of a module (reactive_queue_weak_list): keep the serialized
+// members.
+static void reactive_prune_weak_list(jl_value_t *list)
+{
+    if (list != jl_nothing)
+        jl_prune_binding_backedges((jl_array_t*)list);
+}
+
+// The interference set of a method (weak, see jl_insert_into_serialization_queue):
+// keep the serialized members at the front, the rest of the memory null, the
+// layout of the set (idset.c).
+static void reactive_prune_interferences(jl_method_t *m)
+{
+    jl_genericmemory_t *keys = jl_atomic_load_relaxed(&m->interferences);
+    size_t ins = 0, n = keys->length;
+    for (size_t i = 0; i < n; i++) {
+        jl_value_t *k = jl_genericmemory_ptr_ref(keys, i);
+        if (k == NULL)
+            break;
+            jl_genericmemory_ptr_set(keys, ins++, k);
+    }
+    for (; ins < n; ins++)
+        jl_genericmemory_ptr_set(keys, ins, NULL);
+}
+
 uint_t bindingkey_hash(size_t idx, jl_value_t *data);
 uint_t speccache_hash(size_t idx, jl_value_t *data);
 
@@ -2935,14 +3145,134 @@ static int jl_prune_internal_mtable(jl_methtable_t *mt, void *env)
 }
 
 // In addition to the system image (where `worklist = NULL`), this can also save incremental images with external linkage
-static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
-                                           jl_array_t *module_init_order, jl_array_t *worklist, jl_array_t *extext_methods,
-                                           jl_array_t *new_ext_cis, jl_query_cache *query_cache)
+// JULIA_REACTIVE_HEAPDUMP (reactive_dump_heap): the head of an object.
+static void reactive_describe(ios_t *dump, jl_value_t *v)
 {
-    htable_new(&field_replace, 0);
-    htable_new(&bits_replace, 0);
-    if (worklist)
-        jl_foreach_reachable_mtable(jl_prune_internal_mtable, mod_array, NULL);
+    if (jl_is_symbol(v))
+        ios_printf(dump, "%s", jl_symbol_name((jl_sym_t*)v));
+    else if (jl_is_string(v)) {
+        const char *data = jl_string_data(v);
+        for (size_t k = 0; k < jl_string_len(v) && k < 100; k++)
+            ios_putc(data[k] >= 0x20 && data[k] < 0x7f ? data[k] : '.', dump);
+    }
+    else if (jl_is_module(v)) {
+        jl_module_t *m = (jl_module_t*)v;
+        ios_printf(dump, "%s.%s", jl_symbol_name(m->parent->name), jl_symbol_name(m->name));
+    }
+    else if (jl_is_method(v)) {
+        jl_method_t *m = (jl_method_t*)v;
+        ios_printf(dump, "%s.%s %s:%d w%zu status %d", jl_symbol_name(m->module->name), jl_symbol_name(m->name),
+                   jl_symbol_name(m->file), m->line, jl_atomic_load_relaxed(&m->primary_world),
+                   jl_atomic_load_relaxed(&m->dispatch_status));
+    }
+    else if (jl_is_method_instance(v)) {
+        jl_method_instance_t *mi = (jl_method_instance_t*)v;
+        if (jl_is_method(mi->def.value))
+            ios_printf(dump, "%s.%s", jl_symbol_name(mi->def.method->module->name), jl_symbol_name(mi->def.method->name));
+    }
+    else if (jl_is_code_instance(v)) {
+        jl_code_instance_t *ci = (jl_code_instance_t*)v;
+        if (jl_is_method_instance(ci->def) && jl_is_method(((jl_method_instance_t*)ci->def)->def.value))
+            ios_printf(dump, "%s.%s", jl_symbol_name(((jl_method_instance_t*)ci->def)->def.method->module->name),
+                       jl_symbol_name(((jl_method_instance_t*)ci->def)->def.method->name));
+        ios_printf(dump, " w%zu:%zu", jl_atomic_load_relaxed(&ci->min_world), jl_atomic_load_relaxed(&ci->max_world));
+    }
+    else if (jl_is_datatype(v)) {
+        jl_datatype_t *dt = (jl_datatype_t*)v;
+        ios_printf(dump, "%s.%s", jl_symbol_name(dt->name->module->name), jl_symbol_name(dt->name->name));
+    }
+    else if (jl_is_typename(v)) {
+        jl_typename_t *tn = (jl_typename_t*)v;
+        ios_printf(dump, "%s.%s", jl_symbol_name(tn->module->name), jl_symbol_name(tn->name));
+    }
+    else if (jl_is_binding(v)) {
+        jl_binding_t *b = (jl_binding_t*)v;
+        if (b->globalref)
+            ios_printf(dump, "%s.%s", jl_symbol_name(b->globalref->mod->name), jl_symbol_name(b->globalref->name));
+    }
+    else if (jl_typetagis(v, jl_typemap_entry_type)) {
+        jl_typemap_entry_t *e = (jl_typemap_entry_t*)v;
+        ios_printf(dump, "w%zu:%zu", jl_atomic_load_relaxed(&e->min_world), jl_atomic_load_relaxed(&e->max_world));
+    }
+    else if (jl_is_genericmemory(v))
+        ios_printf(dump, "%zu", ((jl_genericmemory_t*)v)->length);
+}
+
+// JULIA_REACTIVE_HEAPDUMP=<path>: one line per object of the heap: its
+// address, its type, its size, its head, and after `<-` the address, the
+// type and the head of the object that reached it first. A tool of the reactive format: the difference
+// between the dumps of two rebuilds names what a rebuild keeps, and the
+// referrer names why.
+static void reactive_dump_heap(const char *path)
+{
+    ios_t dump;
+    if (ios_file(&dump, path, 1, 1, 1, 1) != NULL) {
+        for (size_t i = 0; i < serialization_queue.len; i++) {
+            jl_value_t *v = (jl_value_t*)serialization_queue.items[i];
+            jl_datatype_t *t = (jl_datatype_t*)jl_typeof(v);
+            size_t sz = jl_is_genericmemory(v) ? ((jl_genericmemory_t*)v)->length * jl_datatype_layout(t)->size :
+                        jl_is_string(v) ? jl_string_len(v) : jl_datatype_size(t);
+            ios_printf(&dump, "%p | %s | %zu | ", (void*)v, jl_typeof_str(v), sz);
+            reactive_describe(&dump, v);
+            jl_value_t *parent = (jl_value_t*)ptrhash_get(&reactive_dump_parents, v);
+            if (parent != HT_NOTFOUND && parent != jl_nothing) {
+                ios_printf(&dump, " <- %p %s ", (void*)parent, jl_typeof_str(parent));
+                reactive_describe(&dump, parent);
+            }
+            ios_putc('\n', &dump);
+        }
+        ios_close(&dump);
+    }
+}
+
+    int en = jl_gc_enable(0);
+    if (native_functions) {
+        size_t num_gvars, num_external_fns;
+        jl_get_llvm_gv_inits(native_functions, &num_gvars, NULL);
+        arraylist_grow(&gvars, num_gvars);
+        jl_get_llvm_gv_inits(native_functions, &num_gvars, gvars.items);
+        jl_get_llvm_external_fns(native_functions, &num_external_fns, NULL);
+        arraylist_grow(&external_fns, num_external_fns);
+        jl_get_llvm_external_fns(native_functions, &num_external_fns,
+                                 (jl_code_instance_t *)external_fns.items);
+        if (jl_options.trim) {
+            size_t num_mis;
+            jl_get_llvm_cis(native_functions, &num_mis, NULL);
+            arraylist_grow(&MIs, num_mis);
+
+            // Record MethodInstances for user-provided code (as reported by codegen)
+            jl_get_llvm_cis(native_functions, &num_mis, (jl_code_instance_t**)MIs.items);
+            for (size_t i = 0; i < num_mis; i++) {
+                jl_code_instance_t *ci = (jl_code_instance_t*)MIs.items[i];
+                MIs.items[i] = (void*)jl_get_ci_mi(ci);
+            }
+
+            // Record MethodInstances for built-ins (used when dynamically dispatching to a
+            // built-in, e.g., in the Core._apply_iterate implementation)
+            jl_datatype_t *tt = NULL;
+            JL_GC_PUSH1(&tt);
+            for (size_t i = 0; i < jl_n_builtins; i++) {
+                jl_value_t *builtin = jl_builtin_instances[i];
+                if (builtin == NULL)
+                    continue;
+
+                jl_datatype_t *dt = (jl_datatype_t*)jl_typeof(builtin);
+                jl_value_t *params[2];
+                params[0] = dt->name->wrapper;
+                params[1] = jl_tparam0(jl_anytuple_type);
+                tt = (jl_datatype_t*)jl_apply_tuple_type_v(params, 2);
+                jl_method_instance_t *mi = (jl_method_instance_t *)jl_method_lookup_by_tt(
+                    tt, /* world */ 1, /* mt */ jl_nothing
+                );
+                assert(!jl_is_nothing(mi));
+                arraylist_push(&MIs, mi);
+            }
+            JL_GC_POP();
+    // A reactive image drops the closed typemap entries and the invalid
+    // code instances: the next build must not reuse a deleted method.
+    reactive_prune_heap = (worklist == NULL && jl_reactive_image_format());
+    if (reactive_prune_heap)
+        jl_foreach_reachable_mtable(reactive_prune_mtable, mod_array, NULL);
     // strip metadata and IR when requested
     if (jl_options.strip_metadata || jl_options.strip_ir) {
         if (jl_options.strip_metadata) {
@@ -3055,6 +3385,8 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     arraylist_new(&deferred_supers, 0);
     arraylist_new(&serialization_queue, 0);
     reactive_dump_on = reactive_option_string(jl_options.reactive_heapdump, "JULIA_REACTIVE_HEAPDUMP") != NULL;
+    if (reactive_dump_on)
+        htable_new(&reactive_dump_parents, 0);
     ios_t sysimg, const_data, symbols, relocs, gvar_record, fptr_record;
     ios_mem(&sysimg, 0);
     ios_mem(&const_data, 0);
@@ -3181,10 +3513,17 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
             if (jl_is_method(v)) {
                 if (jl_options.trim)
                     jl_prune_method_specializations((jl_method_t*)v);
+                if (reactive_prune_heap)
+                    reactive_prune_interferences((jl_method_t*)v);
             }
             else if (jl_is_module(v)) {
                 if (jl_options.trim)
                     jl_prune_module_bindings((jl_module_t*)v);
+                if (reactive_prune_heap) {
+                    jl_module_t *m = (jl_module_t*)v;
+                    reactive_prune_weak_list(get_replaceable_field(&m->usings_backedges, 1));
+                    reactive_prune_weak_list(get_replaceable_field(&m->scanned_methods, 1));
+                }
             }
             else if (jl_is_typename(v)) {
                 jl_typename_t *tn = (jl_typename_t*)v;
@@ -3213,6 +3552,8 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
 
     const char *heapdump = reactive_option_string(jl_options.reactive_heapdump, "JULIA_REACTIVE_HEAPDUMP");
     if (heapdump)
+        reactive_dump_heap(heapdump);
+
     uint32_t external_fns_begin = 0;
     { // step 2: build all the sysimg sections
         write_padding(&sysimg, sizeof(uintptr_t));
@@ -3354,6 +3695,9 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     assert(deferred_supers.len == 0);
     arraylist_free(&deferred_supers);
     arraylist_free(&serialization_queue);
+    if (reactive_dump_on)
+        htable_free(&reactive_dump_parents);
+    reactive_dump_on = 0;
     arraylist_free(&layout_table);
     arraylist_free(&s.uniquing_types);
     arraylist_free(&s.uniquing_super);
@@ -3375,6 +3719,7 @@ static void jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     htable_free(&fptr_to_id);
     htable_free(&new_methtables);
     nsym_tag = 0;
+    reactive_prune_heap = 0;
 
     jl_gc_enable(en);
 }
@@ -4581,6 +4926,7 @@ JL_DLLEXPORT jl_value_t *jl_restore_incremental(const char *fname, jl_array_t *d
 static jl_image_t reactive_image;
 static int reactive_image_loaded = 0;
 static uint32_t reactive_nshards = 0;
+static uint32_t reactive_image_version = 0;
 static size_t reactive_base_world = 0;
 
 typedef struct {
@@ -4675,9 +5021,22 @@ JL_DLLEXPORT int jl_reactive_delta_opt(void) JL_NOTSAFEPOINT
     return level >= 0 && level <= 3 ? level : -1;
 }
 
+// Whether this build emits the reactive image format (version 3): asked
 // for with --reactive-image-format (JULIA_REACTIVE_IMAGE=1), and implied
 // by reuse.
+JL_DLLEXPORT int jl_reactive_image_format(void) JL_NOTSAFEPOINT
+{
+    if (jl_reactive_reuse_enabled())
+        return 1;
     return reactive_option_level(jl_options.reactive_image_format, "JULIA_REACTIVE_IMAGE", 0) == 1;
+}
+
+// The format version of the loaded image, 0 without one
+JL_DLLEXPORT uint32_t jl_reactive_base_version(void) JL_NOTSAFEPOINT
+{
+    return reactive_image_loaded ? reactive_image_version : 0;
+}
+
 JL_DLLEXPORT uint32_t jl_reactive_base_nfvars(void) JL_NOTSAFEPOINT
 {
     return jl_reactive_reuse_enabled() ? reactive_image.fptrs.nptrs : 0;
@@ -4775,6 +5134,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
         assert(image->fptrs.ptrs); // jl_init_processor_sysimg should already be run
         reactive_image = *image;
         reactive_nshards = ((const jl_image_pointers_t*)buf.pointers)->header->nshards;
+        reactive_image_version = ((const jl_image_pointers_t*)buf.pointers)->header->version;
         reactive_image_loaded = 1;
     }
 

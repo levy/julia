@@ -183,6 +183,56 @@ function compile_all_union(sig)
     return all_success
 end
 
+reactive_image_format() = ccall(:jl_reactive_image_format, Cint, ()) != 0
+
+# A deleted or replaced method (`jl_method_table_disable`) closes its method
+# table entry but keeps its code instances open, and `Base.visit` reads the
+# method of every entry, the closed ones too. A reactive image does not carry
+# a closed entry (staticdata.c drops it), so the build does not compile its
+# method: the walk of `Base.visit` at the entry level, without the entries
+# that no world of the build runs.
+function reactive_visit_methods(f, mt::Core.MethodTable, worlds::Vector{UInt})
+    function visit_entry(e)
+        while e !== nothing
+            live = false
+            for w in worlds
+                if e.min_world <= w <= e.max_world
+                    live = true
+                    break
+                end
+            end
+            live && f(e.func)
+            e = e.next
+        end
+        nothing
+    end
+    visit_any(x) = x isa Core.TypeMapEntry ? visit_entry(x) : visit_level(x)
+    function visit_level(mc::Core.TypeMapLevel)
+        function each(mem::Memory{Any})
+            for i in 2:2:length(mem)
+                isassigned(mem, i) || continue
+                ei = mem[i]
+                if ei isa Memory{Any}
+                    for j in 2:2:length(ei)
+                        isassigned(ei, j) && visit_any(ei[j])
+                    end
+                else
+                    visit_any(ei)
+                end
+            end
+        end
+        mc.targ === nothing || each(mc.targ::Memory{Any})
+        mc.arg1 === nothing || each(mc.arg1::Memory{Any})
+        mc.tname === nothing || each(mc.tname::Memory{Any})
+        mc.name1 === nothing || each(mc.name1::Memory{Any})
+        mc.list === nothing || visit_entry(mc.list)
+        mc.any === nothing || visit_any(mc.any)
+        nothing
+    end
+    mt.defs === nothing || visit_any(mt.defs)
+    nothing
+end
+
 # Reactive reuse, the direct list (Stage D of the plan): every code instance
 # of the loaded image that is still valid in a build world is reused, and a
 # method instance that such code serves in every world stays off the
@@ -235,7 +285,7 @@ function reactive_direct_reuse!(newmethods, worlds::Vector{UInt})
 end
 
 # Complete method collection implementation
-function collect_all_method_defs(newmodules, mod_array)
+function collect_all_method_defs(newmodules, mod_array, worlds::Vector{UInt})
     allmeths = Any[]
 
     function method_visitor(method)
@@ -251,7 +301,11 @@ function collect_all_method_defs(newmodules, mod_array)
     end
 
     # Always visit the global method table first
-    visit(method_visitor, Core.methodtable)
+    if reactive_image_format()
+        reactive_visit_methods(method_visitor, Core.methodtable, worlds)
+    else
+        visit(method_visitor, Core.methodtable)
+    end
 
     # If mod_array is provided, iterate through modules looking for MethodTable objects
     #if mod_array !== nothing
@@ -451,6 +505,7 @@ function compile_and_emit_native(worlds::Vector{UInt},
 
     # Step 2: Collect all method definitions, filtered by worklist if provided
     t_front = _time_ns()
+    newmethods = collect_all_method_defs(newmodules, mod_array, worlds)
     t_collect = _time_ns()
 
         reactive_direct_reuse!(newmethods, worlds)
