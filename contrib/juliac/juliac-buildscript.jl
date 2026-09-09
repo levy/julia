@@ -134,10 +134,15 @@ Compiler.SEALED_GENERIC_POLICY[] = Base.get(Base.ENV, "SEALED_GENERIC", "") != "
 # SEALED_INTERPRET=1: an unresolved call whose candidates can be interpreted is
 # a warning, and the candidates stay in the image with their source
 # (plan/pending/seal-to-interpreter.md). SEALED_INTERPRET_BUDGET bounds how
-# many methods the build-time oracle infers at their own signature.
+# many methods the build-time oracle INFERS at their own signature; every
+# method it reaches is retained regardless. At 20 000 the flagship's verify
+# ran past the build's ten-minute limit (inference at abstract signatures is
+# the cost); at 5 000 it fits.
 Compiler.SEALED_INTERPRET[] = _SEALED_INTERPRET
 Compiler.SEALED_INTERPRET_BUDGET[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_INTERPRET_BUDGET", "5000"))
+Compiler.SEALED_INTERPRET_MAX_CANDIDATES[] =
+    Base.parse(Int, Base.get(Base.ENV, "SEALED_INTERPRET_MAX_CANDIDATES", "32"))
 Compiler.SEALED_INTERPRET_DEBUG[] = Base.get(Base.ENV, "SEALED_DEBUG_RETAIN", "") != ""
 let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
     v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))

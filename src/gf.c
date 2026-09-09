@@ -3632,8 +3632,31 @@ jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t 
     }
 
     // if that didn't work and compilation is off, try running in the interpreter
-    if (compile_option == JL_OPTIONS_COMPILE_OFF ||
+    // A GENERATED function has no source until its generator runs, and the
+    // generator is build-time code a trimmed image does not carry: asking for
+    // it segfaults inside the generator's dispatch (measured on the flagship).
+    // Say so and fall through to the inference error, which names the instance.
+    static int report_refused = -1;
+    if (report_refused < 0)
+        report_refused = getenv("JULIA_REPORT_INTERPRETED") != NULL;
+    if ((compile_option == JL_OPTIONS_COMPILE_OFF || compile_option == JL_OPTIONS_COMPILE_MIN) &&
+        jl_is_method(def) && def->generator != NULL &&
+        (def->source == NULL || def->source == jl_nothing)) {
+        if (report_refused) {
+            jl_printf(JL_STDERR, "INTERPRET-REFUSED (generated function): ");
+            jl_static_show(JL_STDERR, (jl_value_t*)mi);
+            jl_printf(JL_STDERR, "\n");
+        }
+    }
+    else if (compile_option == JL_OPTIONS_COMPILE_OFF ||
         compile_option == JL_OPTIONS_COMPILE_MIN) {
+        if (report_refused) {
+            jl_printf(JL_STDERR, "INTERPRET-TRY: ");
+            jl_static_show(JL_STDERR, (jl_value_t*)mi);
+            jl_printf(JL_STDERR, " generator=%d source=%s\n",
+                      jl_is_method(def) && def->generator != NULL,
+                      !jl_is_method(def) ? "-" : def->source == NULL ? "NULL" : def->source == jl_nothing ? "nothing" : "present");
+        }
         jl_code_info_t *src = jl_code_for_interpreter(mi, world);
         // JULIA_REPORT_INTERPRETED names each instance the first time it is
         // handed to the interpreter, and each one refused for a `ccall`. In a

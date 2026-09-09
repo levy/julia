@@ -5,6 +5,7 @@ import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, com
     SEALED_INTERPRET, SEALED_INTERPRET_RETAINED, SEALED_INTERPRET_REFUSED, SEALED_INTERPRET_SITES,
     SEALED_INTERPRET_SEEN, SEALED_INTERPRET_DEBUG, SEALED_INTERPRET_ANALYSED, SEALED_INTERPRET_BUDGET,
     SEALED_INTERPRET_PROVEN, SEALED_INTERPRET_OVER, SEALED_INTERPRET_FLOOR, SEALED_INTERPRET_FLOOR_DONE,
+    SEALED_INTERPRET_MAX_CANDIDATES, SEALED_INTERPRET_WIDE,
     typeinf_code, specialize_method,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
     # the why-chain: this file lives in a SUBMODULE, so the parent's names are
@@ -491,7 +492,14 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                             # a specialization it lacks is a crash without the
                             # source — and let the site through as a warning
                             # when every candidate can be interpreted.
-                            if SEALED_INTERPRET[] && SEALED_REPAIR[] !== nothing
+                            local _wide = length(matchvec) > SEALED_INTERPRET_MAX_CANDIDATES[]
+                            if SEALED_INTERPRET[] && _wide && SEALED_REPAIR[] === nothing
+                                SEALED_INTERPRET_WIDE[] += 1
+                                Core.println("SEALED-INTERPRET site in=", get_ci_mi(codeinst).def,
+                                             " stmt#", i, " candidates=", length(matchvec),
+                                             " too wide to retain — the trace must cover it")
+                            end
+                            if SEALED_INTERPRET[] && !_wide && SEALED_REPAIR[] !== nothing
                                 # the collect pass: the oracle hands the repair
                                 # loop what it can prove inside each candidate
                                 for j = 1:length(matchvec)
@@ -499,7 +507,7 @@ function verify_codeinstance!(interp::NativeInterpreter, codeinst::CodeInstance,
                                         (matchvec[j]::MethodMatch).method, SEALED_REPAIR[], interp)
                                 end
                             end
-                            if SEALED_INTERPRET[] && SEALED_REPAIR[] === nothing
+                            if SEALED_INTERPRET[] && !_wide && SEALED_REPAIR[] === nothing
                                 local _iok = true
                                 for j = 1:length(matchvec)
                                     # every candidate is retained, so no short-circuit
@@ -634,6 +642,9 @@ end
 # `cfunction` or opaque closure, each of which `interpreter.c` refuses.
 # Uncompressed the way `Base.uncompressed_ir` does it.
 function sealed_interpretable_source(m::Method)
+    # a generated function's body comes from its generator, which the image
+    # does not carry: it cannot be interpreted, so it must be compiled
+    isdefined(m, :generator) && m.generator !== nothing && return nothing
     isdefined(m, :source) || return nothing
     local s = m.source
     (s === nothing || s isa UInt8) && return nothing
@@ -724,6 +735,24 @@ function sealed_retain_for_interpreter!(m::Method)
         g === nothing || (ssaval[k] = g)
         sealed_retain_globalrefs!(st, ssaval)
     end
+    # THE PROGRAM'S CALLEES, BY NAME. What this body calls, the interpreter
+    # can reach, and retention must not wait for the oracle: a method past
+    # the inference budget still has callees. So every method of every
+    # function the body names is retained — but only the PROGRAM's methods,
+    # never Base's: the same walk over Base retained 8 721 methods at depth 3
+    # and was still not closed, while the program is bounded by its own size.
+    # A program method of a Base function (`*(::Quantity, ::Quantity)`) is a
+    # program method and is kept.
+    for stmt in src.code
+        stmt isa Expr && stmt.head === :(=) && (stmt = stmt.args[2])
+        (stmt isa Expr && stmt.head === :call) || continue
+        local fv = sealed_call_head_function(stmt.args[1], ssaval)
+        fv === nothing && continue
+        for mm in Base.methods(fv)
+            Base.moduleroot((mm::Method).module) === Base && continue
+            sealed_retain_for_interpreter!(mm::Method)
+        end
+    end
     return true
 end
 
@@ -744,11 +773,18 @@ function sealed_analyse_for_interpreter!(m::Method, repair::Vector{Any}, interp)
     # error paths — `string(...)` in a `throw` — and compiling those brought
     # 8 326 methods and 112 dynamic sites into a 30-line program (measured).
     Base.moduleroot(m.module) === Base && return nothing
+    # RETAIN FIRST, ANALYSE WITHIN BUDGET. What the oracle reaches, the
+    # interpreter can reach: a callee of an interpreted body with no provable
+    # arguments dispatches at run time to one of these, so each is retained
+    # with its source and its bindings whether or not it is analysed.
+    # `_apply_scalars(Char, Any, Any)` was reached past the budget, neither
+    # analysed nor retained, and the flagship died on it (measured). Retention
+    # is a list push; analysis is an inference, and the budget bounds that.
+    sealed_retain_for_interpreter!(m) || return nothing
     if length(SEALED_INTERPRET_ANALYSED) > SEALED_INTERPRET_BUDGET[]
         SEALED_INTERPRET_OVER[] += 1
         return nothing
     end
-    sealed_interpretable_source(m) === nothing && return nothing
     # THE UNSPECIALIZED INSTANCE, and not `specialize_method` at the method's own
     # signature: a `where` method's signature is a UnionAll, and an instance with
     # UnionAll specTypes inserted into the specializations cache corrupts it —
@@ -981,6 +1017,7 @@ function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
                      " retained=", SEALED_INTERPRET_RETAINED[],
                      " refused=", SEALED_INTERPRET_REFUSED[],
                      " bindings=", ccall(:jl_sealed_retained_binding_count, Csize_t, ()),
+                     " wide=", SEALED_INTERPRET_WIDE[],
                      " analysed=", length(SEALED_INTERPRET_ANALYSED),
                      " proven=", SEALED_INTERPRET_PROVEN[],
                      " over-budget=", SEALED_INTERPRET_OVER[])

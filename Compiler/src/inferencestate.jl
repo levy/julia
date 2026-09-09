@@ -1137,6 +1137,12 @@ const SEALED_INTERPRET_ANALYSED = IdDict{Any,Bool}()
 const SEALED_INTERPRET_BUDGET = Ref(5000)
 const SEALED_INTERPRET_PROVEN = Ref(0)              # concrete inner calls handed to the repair loop
 const SEALED_INTERPRET_OVER = Ref(0)                # methods the budget refused to analyse
+# A site whose candidate set is a whole method table — `+(Any, Any)` matches
+# 18 450 methods — cannot be retained: retaining it cost 24 422 methods and an
+# 88 MB flagship. Past this bound a site stays an error, and the trace must
+# cover it.
+const SEALED_INTERPRET_MAX_CANDIDATES = Ref(32)
+const SEALED_INTERPRET_WIDE = Ref(0)                # sites refused for width
 # THE FLOOR: the modules kept present with source — Base, Main and the
 # program's roots — set by the build once the program is loaded.
 const SEALED_INTERPRET_FLOOR = Ref{Vector{Module}}(Module[])

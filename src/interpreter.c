@@ -725,7 +725,20 @@ jl_value_t *jl_code_or_ci_for_interpreter(jl_method_instance_t *mi, size_t world
             jl_code_instance_t *cache = jl_atomic_load_relaxed(&mi->cache);
             jl_code_instance_t *uninferred = jl_cached_uninferred(cache, world);
             if (!uninferred) {
-                assert(mi->def.method->generator);
+                // A method with no source and no generator has nothing to
+                // interpret: say which one, rather than run a generator that
+                // is not there (the assert below it is gone in a release
+                // build, and the call segfaulted — measured).
+                if (mi->def.method->generator == NULL) {
+                    // Name it here: a trimmed binary may not be able to print
+                    // the exception it is about to throw.
+                    if (getenv("JULIA_REPORT_INTERPRETED")) {
+                        jl_printf(JL_STDERR, "INTERPRET-NO-SOURCE: ");
+                        jl_static_show(JL_STDERR, (jl_value_t*)mi);
+                        jl_printf(JL_STDERR, "\n");
+                    }
+                    jl_throw(jl_new_struct(jl_missingcodeerror_type, (jl_value_t*)mi));
+                }
                 src = jl_code_for_staged(mi, world, &uninferred);
             }
             ret = (jl_value_t*)uninferred;

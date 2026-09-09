@@ -1,6 +1,6 @@
 # Seal to an interpreter
 
-**Status: Stages 0 and 1 DONE and measured; the floor is open; Stage 3 (the flagship) is running.**
+**Status: Stages 0 and 1 DONE and measured; Stage 3 (the flagship) measured — the mechanism holds, the retention scope is the open question, with numbers below.**
 
 ## The idea
 
@@ -151,7 +151,8 @@ the variable. The sysimage is built from stock rc3's `Compiler/` — the sealed
 `Compiler/` is a package loaded over it and has never been bootstrapped as
 `Core.Compiler` (`const SEALED_WORLD = Ref(false)` fails there). A rebuild
 must check out stock `Compiler/` first; `make -C src` alone rebuilds the
-runtime library without touching the sysimage.
+runtime library without touching the sysimage. `Make.user` is gitignored and
+holds one line, `JULIA_PRECOMPILE=1`, as the built siblings do.
 
 **Runtime (C, ~90 lines).** `jl_sealed_retain_method(m)` puts a method's
 unspecialized instance into the set `jl_rebuild_methtables` builds from and
@@ -212,6 +213,44 @@ T1S at `SEALED_INTERPRET=1` and split budget 256: the 97 errors become
 warnings, the binary builds — does it run, and how many interpreted calls per
 event on `Benchmark`? Zero means done. Any other number is a ranked list of
 what to compile next, replacing the error list.
+
+### Stage 3 — the flagship, measured
+
+Built on the fork host, `SEALED_INTERPRET=1`, `--trim=unsafe-warn`, split
+budget 256, every build inside the ten-minute rule. Each row is one build and
+one run of the binary with `JULIA_REPORT_INTERPRETED=1`.
+
+| retention scope | retained | binary | the run |
+| --- | --- | --- | --- |
+| candidates of each site, unbounded | 24 422 | 88.6 MB | segfault in a generator: `canonicalize(Dates.CompoundPeriod)` has sites with **18 450 candidates** — the whole method table of `+` |
+| candidates, ≤ 32 per site (73 sites refused as too wide) | 235 | 22.8 MB | 2 instances interpreted, then a segfault: the runtime's no-source branch calls `jl_code_for_staged` on a NON-generated method, its `assert` gone in release |
+| + what the oracle analyses | 3 369 | 28.8 MB | the same stop, now a clean `MissingCodeError` naming `_apply_scalars(Char, Any, Any)`: reached past the inference budget, so never retained |
+| + retain before the budget | 4 633 | 30.6 MB | the same stop: retention happened only THROUGH analysis, and the budget cut the chain |
+| + the program's callees by name (Base excluded) | **22 088** | **94.3 MB** | **5 methods deep** — `_scalar_operand → _apply → _apply_scalars → _apply_pair → _claim_matches` — then a clean error at Base's generic `getproperty(Any, Symbol)`, which compiled code never calls dynamically |
+
+**What holds.** The runtime half is complete: a residual call goes past
+inference into the interpreter, chains through interpreted methods, dispatches
+into compiled instances on the way, and a missing method is a named error and
+not a crash. Three runtime holes were closed on the way: a stripped source
+read as `nothing`, a non-generated method with no source sent to a generator,
+and a generated method asked for a body its image cannot produce.
+
+**What does not.** Static retention scope. Every hop the interpreter takes
+needs the next method present, and no static rule predicted the chain without
+over-approximating by an order of magnitude: the per-site candidates miss the
+second hop, the oracle's reach misses the third, and the by-name closure over
+the program keeps most of the program. The cost is not source — Base's is
+3.6 MB — but what the serializer keeps with a method: the types its signature
+names. Nothing here contradicts the design; it says the SCOPE must come from
+a run, not from names.
+
+**Two facts for the next step.** The build's own warm run already touches the
+residual with the real inputs: `SEALED-WARM-TABLE: 938 instances across 236
+methods`. Retaining source for the methods the trace observed covers "same
+method, other types" at the trace's size. And the stop at `getproperty(Any,
+Symbol)` is a class of its own — Base's generic fallbacks, which compiled code
+inlines and interpreted code dispatches to — small, enumerable, and the honest
+form of a floor.
 
 ### Stage 4 — scope and size
 
