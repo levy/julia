@@ -508,8 +508,14 @@ function compile_and_emit_native(worlds::Vector{UInt},
     newmethods = collect_all_method_defs(newmodules, mod_array, worlds)
     t_collect = _time_ns()
 
+    # The direct list of the reused code (reactive reuse). Not with trim:
+    # a trimmed image holds what the entry points reach, and the compile
+    # pass finds the reused code through the edges.
+    if newmodules === nothing && !external_linkage && reactive_reuse_enabled() && trim_mode == TRIM_NO
         reactive_direct_reuse!(newmethods, worlds)
     else
+        empty!(reactive_reused_initial)
+        empty!(reactive_reused_set)
         empty!(reactive_served_mis)
     end
     t_direct = _time_ns()
@@ -590,8 +596,9 @@ function compile_and_emit_native(worlds::Vector{UInt},
         # Handle trimming failures
         isa(exc, Core.TrimFailure) || rethrow()
         # The verification check failed. The error message should already have
-        # been printed, so give up here and exit (w/o a stack trace).
-        invokelatest(exit, 1)
+        # been printed. The failure goes up as the exception: a reactive save
+        # answers it as a refusal, and a plain build exits through it.
+        rethrow()
     end
 
     return codeinfos

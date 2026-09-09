@@ -197,12 +197,20 @@ static int reactive_image_write(void) JL_NOTSAFEPOINT
     return strcmp(env, "overlay") == 0 ? 2 : strcmp(env, "pages") == 0 ? 1 : 0;
 }
 
+// A trimmed write is a whole write (Stage E): the trimmed product prunes
+// the heap, which a page or overlay write cannot, so under `jl_options.trim`
+// the modes are off for the writer and the emitter. The loader's state of
+// a process in these modes stays; the trim of a save is set after the load.
 static int reactive_overlay_mode(void) JL_NOTSAFEPOINT
 {
+    if (jl_options.trim)
+        return 0;
     return reactive_image_write() == 2;
 }
 static int reactive_pages_mode(void) JL_NOTSAFEPOINT
 {
+    if (jl_options.trim)
+        return 0;
     return reactive_image_write() >= 1;
 }
 
@@ -6316,6 +6324,12 @@ typedef struct {
 } reactive_fptr_entry_t;
 static reactive_fptr_entry_t *reactive_fptr_map = NULL;
 static size_t reactive_fptr_map_len = 0;
+// The image of the chain that holds the function of every id of the
+// composed table (Stage G): 0 the base, n the n-th overlay. NULL without
+// a chain. A whole write from an overlay-loaded heap (the trimmed
+// product) reuses the base's functions only: the texts of an overlay were
+// compiled against the overlay's own slot table and cannot join the link.
+static uint8_t *reactive_fvar_origin = NULL;
 
 static int reactive_fptr_entry_cmp(const void *a, const void *b) JL_NOTSAFEPOINT
 {
@@ -6383,6 +6397,16 @@ JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT
 JL_DLLEXPORT void jl_reactive_set_output(const char *path) JL_NOTSAFEPOINT
 {
     jl_options.outputo = path ? strdup(path) : NULL;
+}
+
+// The trim of the next image write: the trimmed product of a save (Stage E
+// of the plan) is written by a forked child that sets it, with the IR and
+// the metadata stripped as `juliac` does; the parent keeps them.
+JL_DLLEXPORT void jl_reactive_set_trim(int on) JL_NOTSAFEPOINT
+{
+    jl_options.trim = on ? JL_TRIM_SAFE : JL_TRIM_NO;
+    jl_options.strip_ir = on;
+    jl_options.strip_metadata = on;
 }
 
 // The memo file of the trimmed pass, NULL without one.
@@ -6498,6 +6522,11 @@ JL_DLLEXPORT int jl_reactive_image_ids(jl_code_instance_t *ci, int32_t *invokept
             return 0;
         inv = (int32_t)wrapper;
     }
+    // a trimmed write links the founding's texts alone: a function of an
+    // overlay is compiled again from its IR
+    if (jl_options.trim && reactive_fvar_origin != NULL &&
+        (reactive_fvar_origin[spec - 1] != 0 || (inv > 0 && reactive_fvar_origin[inv - 1] != 0)))
+        return 0;
     if (invokeptr_id)
         *invokeptr_id = inv;
     if (specfptr_id)
@@ -6640,6 +6669,7 @@ static void reactive_chain_load(jl_image_t *image)
     reactive_chain[0].external_fns_begin = (uint32_t)(reactive_sections.gvar.size / sizeof(reloc_t));
     reactive_chain_n = 1;
     jl_image_fptrs_t composed = image->fptrs;
+    uint8_t *origin = (uint8_t*)calloc_s(composed.nptrs + 1);
     size_t page = jl_getpagesize();
     char line[4096];
     size_t applied = 0;
@@ -6721,17 +6751,22 @@ static void reactive_chain_load(jl_image_t *image)
         jl_dlsym(handle, "jl_fvar_reuse", (void**)&reuse, 0, 0);
         uint32_t nptrs = oimg.fptrs.nptrs;
         void **ptrs = (void**)malloc_s(sizeof(void*) * (nptrs + 1));
+        uint8_t *norigin = (uint8_t*)malloc_s(nptrs + 1);
         for (uint32_t k = 0; k < nptrs; k++) {
             uint32_t src = reuse ? reuse[k] : 0;
             if (src != 0) {
                 if (src > composed.nptrs)
                     jl_errorf("reactive: overlay %s reuses function %u of a table of %u", path, src, composed.nptrs);
                 ptrs[k] = composed.ptrs[src - 1];
+                norigin[k] = origin[src - 1];
             }
             else {
                 ptrs[k] = oimg.fptrs.ptrs[k];
+                norigin[k] = (uint8_t)reactive_chain_n;
             }
         }
+        free(origin);
+        origin = norigin;
         composed.nptrs = nptrs;
         composed.ptrs = ptrs;
         composed.names = oimg.fptrs.names;
@@ -6760,9 +6795,11 @@ static void reactive_chain_load(jl_image_t *image)
     free(dir);
     if (applied == 0) {
         reactive_chain_n = 0;
+        free(origin);
         return;
     }
     image->fptrs = composed;
+    reactive_fvar_origin = origin;
     reactive_objects_end = reactive_sections.sysimg.size;
     reactive_gap_lo = reactive_region_base + LLT_ALIGN(reactive_region_const + reactive_sections.const_data.size - reactive_region_base, page);
 }
