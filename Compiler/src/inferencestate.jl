@@ -1143,6 +1143,31 @@ const SEALED_INTERPRET_OVER = Ref(0)                # methods the budget refused
 # cover it.
 const SEALED_INTERPRET_MAX_CANDIDATES = Ref(32)
 const SEALED_INTERPRET_WIDE = Ref(0)                # sites refused for width
+# SCOPE FROM THE BUILD, NOT FROM NAMES. Retaining a method costs the types its
+# signature drags; a method with a compiled instance already has them in the
+# image, so keeping its SOURCE too costs only the source — and covers "same
+# method, other types". Base methods whose signatures name only Core types
+# are the generic fallbacks compiled code inlines and interpreted code
+# dispatches to (`getproperty(::Any, ::Symbol)`); they drag nothing new.
+# The by-name closure over the program kept 22 088 methods and 94 MB.
+const SEALED_INTERPRET_COMPILED = Ref(true)          # keep source for every compiled method
+const SEALED_INTERPRET_GENERICS = Ref(false)         # keep EVERY Core-typed Base method: 8 142, 20 MB — the measurement
+# THE INTERPRETER'S SUPPORT SET. Compiled code inlines these; an interpreted
+# body dispatches to them. Found one at a time by JULIA_REPORT_INTERPRETED:
+# `getproperty(U1, :v)` was the whole floor the blow-up example needed, and
+# the Core-typed filter above kept 8 142 methods to supply it.
+const SEALED_INTERPRET_SUPPORT = Ref(true)
+const SEALED_INTERPRET_SUPPORT_SET = Any[
+    (:getproperty, Tuple{Any, Symbol}),
+    (:setproperty!, Tuple{Any, Symbol, Any}),
+]
+const SEALED_INTERPRET_SUPPORT_N = Ref(0)
+# Whether the host's libjulia carries the retention entry points; a stock
+# host does not, and the build says so once instead of failing on a ccall.
+const SEALED_INTERPRET_HOST = Ref(false)
+const SEALED_INTERPRET_CLOSURE = Ref(false)          # the program's callees by name
+const SEALED_INTERPRET_COMPILED_N = Ref(0)
+const SEALED_INTERPRET_GENERICS_N = Ref(0)
 # THE FLOOR: the modules kept present with source — Base, Main and the
 # program's roots — set by the build once the program is loaded.
 const SEALED_INTERPRET_FLOOR = Ref{Vector{Module}}(Module[])

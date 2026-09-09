@@ -252,6 +252,29 @@ Symbol)` is a class of its own — Base's generic fallbacks, which compiled code
 inlines and interpreted code dispatches to — small, enumerable, and the honest
 form of a floor.
 
+### The small example decides the scope — `interpret_blowup.jl`
+
+One site over a 12×12 type product, `SPLIT-CASES 16` so it stays dynamic, and
+`argv` deciding how many combinations a run touches: the recorded run takes
+3×3, a run with `12` reaches 135 combinations nothing compiled. Every build
+under a minute, every answer checked against the source's own output.
+
+| scope | retained | binary | run with `12` |
+| --- | --- | --- | --- |
+| interpreter off | — | none | the trim refuses, 2 errors |
+| candidates of the site only | 2 | 1.8 MB | dies at `getproperty(U1, :v)` |
+| + source of every compiled method | 148 | 2.4 MB | the same one method missing |
+| + every Core-typed Base method | 8 198 | 20.4 MB | **correct** — 8 142 methods to supply one |
+| + the support set instead (`getproperty`, `setproperty!`) | 192 | **3.1 MB** | **correct**: 429 interpreted calls, 155 instances |
+| trace level, support set | — | — | `k=3` runs 0 interpreted calls; `k=12` 351, correct |
+
+So the floor is not "Base present": it is the handful of generic fallbacks
+compiled code inlines and interpreted code dispatches to, found one at a
+time by the run-time report. `SEALED_INTERPRET_SUPPORT_SET` holds them. The
+program's residual is covered by the candidates of each site plus the source
+of every compiled method — cheap, because their types are already in the
+image.
+
 ### Stage 4 — scope and size
 
 Retention scoped by the trace: the transitive closure by METHOD TABLE from

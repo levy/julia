@@ -6,6 +6,9 @@ import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, com
     SEALED_INTERPRET_SEEN, SEALED_INTERPRET_DEBUG, SEALED_INTERPRET_ANALYSED, SEALED_INTERPRET_BUDGET,
     SEALED_INTERPRET_PROVEN, SEALED_INTERPRET_OVER, SEALED_INTERPRET_FLOOR, SEALED_INTERPRET_FLOOR_DONE,
     SEALED_INTERPRET_MAX_CANDIDATES, SEALED_INTERPRET_WIDE,
+    SEALED_INTERPRET_COMPILED, SEALED_INTERPRET_GENERICS, SEALED_INTERPRET_CLOSURE,
+    SEALED_INTERPRET_COMPILED_N, SEALED_INTERPRET_GENERICS_N,
+    SEALED_INTERPRET_SUPPORT, SEALED_INTERPRET_SUPPORT_SET, SEALED_INTERPRET_SUPPORT_N, SEALED_INTERPRET_HOST,
     typeinf_code, specialize_method,
     SEALED_WORLD, SEALED_MAX_METHODS, findall, method_table, MethodMatch, isvarargtype,
     # the why-chain: this file lives in a SUBMODULE, so the parent's names are
@@ -743,6 +746,7 @@ function sealed_retain_for_interpreter!(m::Method)
     # and was still not closed, while the program is bounded by its own size.
     # A program method of a Base function (`*(::Quantity, ::Quantity)`) is a
     # program method and is kept.
+    SEALED_INTERPRET_CLOSURE[] || return true
     for stmt in src.code
         stmt isa Expr && stmt.head === :(=) && (stmt = stmt.args[2])
         (stmt isa Expr && stmt.head === :call) || continue
@@ -754,6 +758,70 @@ function sealed_retain_for_interpreter!(m::Method)
         end
     end
     return true
+end
+
+# Whether a type names nothing outside Core: `Any`, a type variable, a Core
+# datatype, a union or vararg of these. A method whose signature is Core-typed
+# drags no new type into the image when retained.
+function sealed_core_typed(@nospecialize(t))
+    t === Any && return true
+    t isa TypeVar && return true
+    t isa Core.TypeofVararg && return !isdefined(t, :T) || sealed_core_typed(t.T)
+    t isa UnionAll && return sealed_core_typed(Base.unwrap_unionall(t))
+    if t isa Union
+        return sealed_core_typed(t.a) && sealed_core_typed(t.b)
+    end
+    if t isa DataType
+        t.name.module === Core || return false
+        for p in t.parameters
+            p isa Type && !sealed_core_typed(p) && return false
+        end
+        return true
+    end
+    return false
+end
+
+# THE SCOPE FROM THE BUILD (see SEALED_INTERPRET_COMPILED / _GENERICS): once,
+# on the final pass, with the compiled set known.
+function sealed_retain_scope!(caches::IdDict{MethodInstance,CodeInstance})
+    if SEALED_INTERPRET_COMPILED[]
+        for mi in Base.keys(caches)
+            local d = mi.def
+            d isa Method || continue
+            sealed_retain_for_interpreter!(d) && (SEALED_INTERPRET_COMPILED_N[] += 1)
+        end
+    end
+    if SEALED_INTERPRET_GENERICS[]
+        local ms = Method[]
+        Base.visit(Core.methodtable) do m
+            m isa Method || return
+            Base.moduleroot(m.module) === Base || return
+            local sig = Base.unwrap_unionall(m.sig)
+            sig isa DataType || return
+            local ps = sig.parameters
+            for k = 2:length(ps)
+                sealed_core_typed(ps[k]) || return
+            end
+            Base.push!(ms, m)
+        end
+        for m in ms
+            sealed_retain_for_interpreter!(m) && (SEALED_INTERPRET_GENERICS_N[] += 1)
+        end
+    end
+    if SEALED_INTERPRET_SUPPORT[]
+        for (name, argt) in SEALED_INTERPRET_SUPPORT_SET
+            isdefined(Base, name::Symbol) || continue
+            local f = Core.getglobal(Base, name::Symbol)
+            local sig = Tuple{typeof(f), (argt::DataType).parameters...}
+            local ms = findall(sig, method_table(NativeInterpreter(get_world_counter())); limit = 64)
+            (ms === nothing || ms === false) && continue
+            for j = 1:length(ms.matches)
+                sealed_retain_for_interpreter!((ms.matches[j]::MethodMatch).method) &&
+                    (SEALED_INTERPRET_SUPPORT_N[] += 1)
+            end
+        end
+    end
+    nothing
 end
 
 # THE BUILD-TIME ORACLE. A method behind a dynamic site is inferred at its OWN
@@ -899,6 +967,11 @@ function sealed_floor!()
 end
 
 function get_verify_typeinf_trim(codeinfos::Vector{Any})
+    if SEALED_INTERPRET[] && !SEALED_INTERPRET_HOST[]
+        Core.println("SEALED-INTERPRET the host's libjulia has no retention entry points: ",
+                     "SEALED_INTERPRET needs the fork built as SEALED_HOST_JULIA; off for this build")
+        SEALED_INTERPRET[] = false
+    end
     SEALED_INTERPRET[] && sealed_floor!()
     Core.println("SEALED-VERIFY-BEGIN codeinfos=", length(codeinfos))
     this_world = get_world_counter()
@@ -919,6 +992,7 @@ function get_verify_typeinf_trim(codeinfos::Vector{Any})
             end
         end
     end
+    SEALED_INTERPRET[] && SEALED_REPAIR[] === nothing && sealed_retain_scope!(caches)
     for i = 1:length(codeinfos)
         item = codeinfos[i]
         if item isa CodeInstance
@@ -1018,6 +1092,9 @@ function verify_typeinf_trim(io::IO, codeinfos::Vector{Any}, onlywarn::Bool)
                      " refused=", SEALED_INTERPRET_REFUSED[],
                      " bindings=", ccall(:jl_sealed_retained_binding_count, Csize_t, ()),
                      " wide=", SEALED_INTERPRET_WIDE[],
+                     " compiled-src=", SEALED_INTERPRET_COMPILED_N[],
+                     " generics=", SEALED_INTERPRET_GENERICS_N[],
+                     " support=", SEALED_INTERPRET_SUPPORT_N[],
                      " analysed=", length(SEALED_INTERPRET_ANALYSED),
                      " proven=", SEALED_INTERPRET_PROVEN[],
                      " over-budget=", SEALED_INTERPRET_OVER[])

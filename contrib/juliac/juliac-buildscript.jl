@@ -139,10 +139,18 @@ Compiler.SEALED_GENERIC_POLICY[] = Base.get(Base.ENV, "SEALED_GENERIC", "") != "
 # ran past the build's ten-minute limit (inference at abstract signatures is
 # the cost); at 5 000 it fits.
 Compiler.SEALED_INTERPRET[] = _SEALED_INTERPRET
+Compiler.SEALED_INTERPRET_HOST[] = _SEALED_HOST_COUNTS   # the same symbol test as the counter
 Compiler.SEALED_INTERPRET_BUDGET[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_INTERPRET_BUDGET", "5000"))
 Compiler.SEALED_INTERPRET_MAX_CANDIDATES[] =
     Base.parse(Int, Base.get(Base.ENV, "SEALED_INTERPRET_MAX_CANDIDATES", "32"))
+# The retention scope: source for every compiled method, Base's Core-typed
+# generics, and — off by default, measured at 94 MB on the flagship — the
+# program's callees by name.
+Compiler.SEALED_INTERPRET_COMPILED[] = Base.get(Base.ENV, "SEALED_INTERPRET_COMPILED", "1") != "0"
+Compiler.SEALED_INTERPRET_GENERICS[] = Base.get(Base.ENV, "SEALED_INTERPRET_GENERICS", "") != ""
+Compiler.SEALED_INTERPRET_SUPPORT[] = Base.get(Base.ENV, "SEALED_INTERPRET_SUPPORT", "1") != "0"
+Compiler.SEALED_INTERPRET_CLOSURE[] = Base.get(Base.ENV, "SEALED_INTERPRET_CLOSURE", "") != ""
 Compiler.SEALED_INTERPRET_DEBUG[] = Base.get(Base.ENV, "SEALED_DEBUG_RETAIN", "") != ""
 let v = Base.get(Base.ENV, "SEALED_SPLIT_LIMIT", "")
     v == "" || (Compiler.SEALED_SPLIT_LIMIT[] = Base.parse(Base.Int, v))
