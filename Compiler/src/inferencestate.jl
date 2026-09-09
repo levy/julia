@@ -1160,6 +1160,8 @@ const SEALED_INTERPRET_SUPPORT = Ref(true)
 const SEALED_INTERPRET_SUPPORT_SET = Any[
     (:getproperty, Tuple{Any, Symbol}),
     (:setproperty!, Tuple{Any, Symbol, Any}),
+    (:getindex, Tuple{Base.RefValue}),            # the flagship's 11th hop: `ref[]`
+    (:setindex!, Tuple{Base.RefValue, Any}),
 ]
 const SEALED_INTERPRET_SUPPORT_N = Ref(0)
 # A closure stored in a field is a VALUE the image keeps, but its call method

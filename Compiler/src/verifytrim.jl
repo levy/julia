@@ -830,13 +830,18 @@ function sealed_retain_scope!(caches::IdDict{MethodInstance,CodeInstance})
                 (root === Base || root === Core) && return
                 local sig = Base.unwrap_unionall(m.sig)
                 sig isa DataType || return
-                local ft = sig.parameters[1]
+                # the function type sits inside the tuple as a UnionAll when a
+                # capture has a parametric type: `var"#14#15"{T} where T`
+                local ft = Base.unwrap_unionall(sig.parameters[1])
                 ft isa DataType || return
                 local nm = Base.String(ft.name.name)
                 (length(nm) > 1 && nm[1] == '#') || return
                 # a CAPTURING closure has fields; a keyword sorter or an inner
                 # helper is a singleton, and there are 25 931 of those (measured)
-                (isdefined(ft, :types) && !isempty(ft.types)) || return
+                # field NAMES sit on the TypeName and exist for a type with a
+                # free parameter too; `types` does not (only 10 of the
+                # flagship's closures had it — `var"#14#15"{PlcaState}` did not)
+                isempty(ft.name.names) && return
                 Base.push!(cs, m)
             catch
             end

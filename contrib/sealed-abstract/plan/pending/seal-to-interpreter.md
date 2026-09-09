@@ -289,6 +289,31 @@ because the trimmed error printer itself fails and hid them):
 - `findall` over every package's `getproperty` methods exceeds any limit and
   answers nothing, so the support set names THE generic method with `which`.
 
+### The flagship under the scope the example chose
+
+Each row one build (all inside ten minutes) and one run with the report.
+
+| scope | retained | binary | the run |
+| --- | --- | --- | --- |
+| candidates + compiled source + support set | 5 551 | 33.6 MB | 3 instances, then `_apply_pair(Char, Int64, Int64)`: a program function one hop below an interpreted body |
+| + the program's own functions by name | 12 101 | 44 MB | 9 instances, then `var"#14#15"{PlcaState}` with `(Fsm, Int32, Int32, Int32)`: the `Fsm.on_transition` hook, a closure in a `::Any` field |
+| + every capturing closure the program owns (818) | 16 095 | **92.5 MB** | **11 instances**, then `getindex(RefValue{Any})` — a Base generic, the support-set class |
+
+So the mechanism converges the way the design says: each run names one
+more thing, and it is always one of three kinds — a program function (the
+own-function closure now covers it), a closure in a field (covered), or a
+Base generic that compiled code inlines (one support-set entry each). What
+does not converge is the SIZE: every program method retained drags the types
+its signature names, and 16 095 of them are 92 MB. The floor for a large
+program is the program.
+
+**What to decide next.** Either (a) accept that a fully interpretable
+program costs its own presence — tens of MB — and keep iterating the support
+set until `Benchmark` runs with the counter at zero; or (b) make retention
+cheaper in the serializer: a retained method needs its source and its table
+entry, not the instantiated types of every signature the trim would
+otherwise drop. (b) is C work in `staticdata.c` and is where the size goes.
+
 ### Stage 4 — scope and size
 
 Retention scoped by the trace: the transitive closure by METHOD TABLE from
