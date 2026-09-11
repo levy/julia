@@ -48,7 +48,11 @@ reactive dependency. They are the mature part of the whole campaign.
    build directory that a failure drops.
 4. Measure again on a clean checkout, with the numbers that go into the pull
    request body: the build before, the build after, the machine.
-5. Send two pull requests, in order. The second stands on the first.
+5. Give the keyword that keeps the object archive one name. The lower branch
+   added `sysimage_object_path`, and the reactive branch renamed it to
+   `keep_object_archive`. A pull request shows the final name, never a name and
+   a rename.
+6. Send two pull requests, in order. The second stands on the first.
 
 ## A2 — the two micro-fixes to Julia
 
@@ -102,12 +106,45 @@ with a fault handler, and an ELF writer. Make every other platform a clean
 refusal at the flag, not a build error. Say in the note that the design is not
 bound to Linux, and name what a second platform would take.
 
-## A7 — the driver leaves the PackageCompiler fork
+## A7 — the driver stays in PackageCompiler
 
-`src/reactive.jl`, `src/reactive_cli.jl` and `src/trimmed_wrapper.c` load their
-harness by UUID, so they do nothing on a stock Julia. Move them into a package
-of their own. Then A1's two branches carry no reactive code at all, and the fork
-of PackageCompiler can go.
+An earlier form of this item moved the driver into a package of its own. That
+was wrong twice. A1 does not need it, because the two pull requests are cut from
+the branches below `reactive` and carry no reactive commit. And a package
+outside PackageCompiler costs more than the fork it would replace.
+
+The driver is not a peer of PackageCompiler. It calls `create_sysimage` with
+`keep_object_archive`, `extra_object_files`, `reactive_image` and `link`, and it
+uses the app layout, the launcher, the bundle of the libraries and
+`trimmed_wrapper.c`. The gates call private functions such as
+`_reactive_overlay_link` and `_reactive_chain_update`. None of that is public
+API. A package outside PackageCompiler would first need an upstream pull request
+that makes those internals public, and then a promise to keep them public.
+
+The intrusion is small. `src/reactive.jl`, `src/reactive_cli.jl` and
+`src/trimmed_wrapper.c` are new files. `src/PackageCompiler.jl` changes in 17
+hunks, and most of them are two `include` lines, one `reactive_image` keyword
+threaded to the build command, and a guard that refuses several CPU targets and
+a host that is not Linux. A rebase onto a new release is cheap.
+
+One argument against the upstream version stands, and it is not about structure:
+PackageCompiler's CI can not run one line of the driver on a stock Julia. A
+maintainer would take 1600 lines that no test of theirs can reach. That
+objection becomes live at the merge alone, and the merge follows the answer to
+A3.
+
+| the answer to A3 | where the driver lives |
+| --- | --- |
+| Julia accepts an incremental image path | PackageCompiler upstream, behind a check of the runtime; the separate package never exists |
+| Julia refuses | the fork, at 17 hunks; a separate package only if the rebase becomes expensive, and only after the internals are public |
+
+The work now holds both futures open:
+
+1. Keep the reactive code in its own files.
+2. Keep the hooks in `src/PackageCompiler.jl` few, and enter through one
+   keyword.
+3. Refuse at that keyword when the runtime has no reactive compiler, and give
+   the reason.
 
 # Track B — a result that a reviewer can check
 
@@ -257,7 +294,8 @@ it helps the user of a store as much as it helps a reviewer.
 8. A4, the in-tree test; A5, the regression measurement; A6, the platform.
 9. B4, the machine code; B5, the population of edits.
 10. B6, the isomorphism, if the answer to A3 was not "no".
-11. A7, the driver leaves the fork.
+A7 is not a step. It is a rule that every change of the driver follows: the
+hooks stay few, and the home waits for A3.
 
 ## What this plan does not do
 
