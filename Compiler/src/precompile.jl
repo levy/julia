@@ -341,6 +341,24 @@ function enqueue_specialization!(all::Bool, worklist, mi::MethodInstance)
     return true
 end
 
+# A sort key that no address reaches: the file, the line and the name of the
+# definition. This code runs in a world with no `string` for a module or a type
+# and no `String` for a symbol, so the key holds numbers alone. The identity of
+# a symbol is the hash of its text and is equal in every process. A collision
+# costs nothing: the place in the list breaks the tie.
+symbol_order(s::Symbol) = ccall(:jl_object_id, UInt, (Any,), s)
+
+function compilation_order_key(@nospecialize item)
+    if isa(item, Core.MethodInstance)
+        def = item.def
+        if isa(def, Method)
+            return (0, symbol_order(def.file), Int(def.line), symbol_order(def.name))
+        end
+        return (1, UInt(0), 0, UInt(0))
+    end
+    return (2, UInt(0), 0, UInt(0))
+end
+
 # Main unified compilation and emission function
 function compile_and_emit_native(worlds::Vector{UInt},
                                  trim_mode::UInt8,
@@ -428,6 +446,18 @@ function compile_and_emit_native(worlds::Vector{UInt},
                 push!(tocompile, mi.def.ccallable)
             end
         end
+    end
+
+    # The order of the work decides the order of the emission, and with it the
+    # ids of the generated names and the place of each function in its
+    # partition. A list that comes out of a hash table carries the addresses of
+    # its keys into that order, so two builds of the same sources lay their
+    # functions out differently. Sort by the text of the definition instead.
+    if trim_mode == TRIM_NO
+        order = Tuple{Tuple{Int, UInt, Int, UInt}, Int}[
+            (compilation_order_key(tocompile[i]), i) for i in 1:length(tocompile)]
+        sort!(order)
+        tocompile = Any[tocompile[pair[2]] for pair in order]
     end
 
     # Step 4: Perform type inference on tocompile to create codeinfos
