@@ -2492,9 +2492,27 @@ void LateLowerGCFrame::PlaceRootsAndUpdateCalls(ArrayRef<int> Colors, int PreAss
             AI->eraseFromParent();
             AI = NULL;
         };
-        for (auto AI : S.ArrayAllocas) {
-            replace_alloca(AI.first);
-            AllocaSlot += AI.second;
+        // Assign the slots of the frame in the order of the allocas in the
+        // function, not in the order of a `DenseMap` keyed by their addresses.
+        // That map follows the hash of the pointer, so two builds laid the same
+        // frame out differently and every instruction naming a slot differed.
+        SmallVector<std::pair<AllocaInst *, unsigned>, 0> OrderedAllocas;
+        OrderedAllocas.reserve(S.ArrayAllocas.size());
+        for (BasicBlock &BB : *F) {
+            for (Instruction &I : BB) {
+                AllocaInst *AI = dyn_cast<AllocaInst>(&I);
+                if (!AI)
+                    continue;
+                auto it = S.ArrayAllocas.find(AI);
+                if (it != S.ArrayAllocas.end())
+                    OrderedAllocas.push_back(std::make_pair(AI, it->second));
+            }
+        }
+        assert(OrderedAllocas.size() == S.ArrayAllocas.size());
+        for (auto &Entry : OrderedAllocas) {
+            AllocaInst *AI = Entry.first;
+            replace_alloca(AI);
+            AllocaSlot += Entry.second;
         }
         for (auto Store : S.TrackedStores) {
             auto SI = Store.first;
