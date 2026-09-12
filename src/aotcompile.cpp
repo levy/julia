@@ -990,7 +990,18 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
     data->jl_value_to_llvm.reserve(out.global_targets.size());
     data->jl_sysimg_gvars.reserve(out.global_targets.size() + out.external_fns.size());
 
-    for (auto &[val, gv] : out.global_targets) {
+    // Number the global slots by the name that codegen gave them.
+    // `global_targets` is a `std::map` keyed by the address of the object a
+    // slot names, so two builds of the same code numbered the slots
+    // differently and the relocations of the table came out in another order.
+    SmallVector<std::pair<void *, GlobalVariable *>, 0> ordered_globals(
+        out.global_targets.begin(), out.global_targets.end());
+    std::sort(ordered_globals.begin(), ordered_globals.end(),
+              [](const std::pair<void *, GlobalVariable *> &a,
+                 const std::pair<void *, GlobalVariable *> &b) {
+                  return a.second->getName() < b.second->getName();
+              });
+    for (auto &[val, gv] : ordered_globals) {
         data->jl_value_to_llvm.push_back(val);
         data->jl_sysimg_gvars.push_back(gv);
     }
