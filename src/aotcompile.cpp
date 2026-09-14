@@ -1010,9 +1010,9 @@ static jl_code_instance_t *jl_get_ci_equiv_range(jl_code_instance_t *ci JL_PROPA
 
 
 // The place of each global value of `M`, which is the order of emission. The
-// link of the calls and the tables of an image take this order, and not the
-// order of the addresses of the code instances and of the objects: so two
-// writes of the same code give the same image.
+// link of the calls and the table of the functions of an image take this order,
+// and not the order of the addresses of the code instances: so two writes of the
+// same code give the same image.
 static DenseMap<const GlobalValue *, size_t> get_module_order(const Module &M) JL_NOTSAFEPOINT
 {
     DenseMap<const GlobalValue *, size_t> order;
@@ -1201,15 +1201,20 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
     data->jl_value_to_llvm.reserve(out.global_targets.size());
     data->jl_sysimg_gvars.reserve(out.global_targets.size() + out.external_fns.size());
 
-    // The tables of slots and of functions take the order of the module.
+    // The table of the functions takes the order of the module (below).
     Module &M = out.get_module();
     auto order = get_module_order(M);
     auto place = [&order](const GlobalValue *G) JL_NOTSAFEPOINT { return module_place(order, G); };
-    SmallVector<std::pair<void *, GlobalVariable *>, 0> targets(out.global_targets.begin(), out.global_targets.end());
-    llvm::stable_sort(targets, [&place](const auto &a, const auto &b) JL_NOTSAFEPOINT {
-        return place(a.second) < place(b.second);
-    });
-    for (auto &[val, gv] : targets) {
+    // sort by name: global_targets is keyed by the address of the object a slot
+    // names, so the slot numbering would differ between builds
+    SmallVector<std::pair<void *, GlobalVariable *>, 0> ordered_globals(
+        out.global_targets.begin(), out.global_targets.end());
+    std::sort(ordered_globals.begin(), ordered_globals.end(),
+              [](const std::pair<void *, GlobalVariable *> &a,
+                 const std::pair<void *, GlobalVariable *> &b) {
+                  return a.second->getName() < b.second->getName();
+              });
+    for (auto &[val, gv] : ordered_globals) {
         data->jl_value_to_llvm.push_back(val);
         data->jl_sysimg_gvars.push_back(gv);
     }
