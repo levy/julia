@@ -30,8 +30,8 @@ hardware, a control loop, a frame, a request with a latency budget.
 What it does **not** do: it does not make a program faster in general, it
 does not replace the collector, and it does not remove your duty to know what
 your program allocates. Where the discarded allocation per unit of work is
-small, the region model loses on wall time. The measurements show that
-crossover, not only the wins.
+small, the region model loses on wall time. The evidence branch named at
+the end shows that crossover, not only the wins.
 
 ## The model, for a program
 
@@ -41,7 +41,7 @@ Five ideas, and nothing else:
 | --- | --- |
 | **Region** | A number from 1 to 63. Region 0 is the ordinary heap. A region is a set of pool pages, not a type and not a container. |
 | **Window** | A scope. While a window on region `n` is open, everything the **calling task** allocates lands in region `n`. |
-| **Reset** | Frees every object of a region at once. It first checks that nothing on any stack points into the region, and refuses if something does. A second entry, `unsafe_region_reset`, skips that check and its stop-the-world pause: it is 30 ns against 27 µs, and a reference left behind dangles. Take it only for a loop that has shown it leaves none. |
+| **Reset** | Frees every object of a region at once. It first checks that nothing on any stack points into the region, and refuses if something does. A second entry, `unsafe_region_reset`, skips that check and its stop-the-world pause: it costs what a few pointer swaps cost, and a reference left behind dangles. Take it only for a loop that has shown it leaves none. |
 | **The one rule** | An object in a region may reference objects of its **own region or an older one**. Region 0 is the oldest. A store that breaks the rule is caught. |
 | **Lifetime tree** | The default order is `0 <- 1 <- 2 <- ...`: region 1 outlives region 2. Declare another tree, and two leaves become isolated from each other. |
 
@@ -210,116 +210,22 @@ region_reset(SEARCH)
 
 ## How it works, in outline
 
-| Mechanism | What it does | What it costs |
-| --- | --- | --- |
-| **The page tag** | Every pool page carries the region that claimed it. A region owns its pages, and the stock sweep skips them. | One byte in the page metadata. |
-| **The window** | A window switches one pointer in the thread heap, so the allocation fast path addresses another set of pool cursors. No copying, and no parked state that can go stale. | One dependent load on every pool allocation. |
-| **The barrier** | Every managed pointer store loads one flag. Before the first window, that is all it does. Armed, it compares the page tags of the parent and the child, and quarantines the child's region when the store breaks the rule. | One predicted branch per store; one page-map walk per store while a region is in use. |
-| **The reset** | Runs the region's finalizers, then parks the whole page chain on the region's free list. No object is touched and nothing is traced. The checked entry adds one act before the free: it stops the world and scans the execution roots of every thread, and refuses when one points into the region. | The free is constant per page: **30 ns** for a small region through `unsafe_region_reset`. The check is what costs: **27 µs** with no other thread and **107 µs** with 31 workers, because a stop of the world grows with the threads that must reach a safepoint. |
-| **The census** | Marks from the execution roots with a filter that claims only objects of the region, then sweeps only that region's pages. | Proportional to the live set of the region, not of the heap. |
-| **The tree** | Each region carries a bitset of its ancestors, so the barrier's test is one shift and one bit test. | Nothing per object. |
+| Mechanism | What it does |
+| --- | --- |
+| **The page tag** | Every pool page carries the region that claimed it. A region owns its pages, and the stock sweep skips them. |
+| **The window** | A window switches one pointer in the thread heap, so the allocation fast path addresses another set of pool cursors. No copying, and no parked state that can go stale. |
+| **The barrier** | Every managed pointer store loads one flag. Before the first window, that is all it does. Armed, it compares the page tags of the parent and the child, and quarantines the child's region when the store breaks the rule. |
+| **The reset** | Runs the region's finalizers, then parks the whole page chain on the region's free list. No object is touched and nothing is traced. The checked entry adds one act before the free: it stops the world and scans the execution roots of every thread, and refuses when one points into the region. |
+| **The census** | Marks from the execution roots with a filter that claims only objects of the region, then sweeps only that region's pages. |
+| **The tree** | Each region carries a bitset of its ancestors, so the barrier's test is one shift and one bit test. |
 
 The stock collector does what it did: it traces its own heap, it walks the
 region objects it meets and leaves them where they are, and it frees the
 stock objects a region references when nothing else holds them.
 
-## What it buys, and what it costs
+## Where the evidence lives
 
-Short form. Every number has a table in [`MEASUREMENTS.md`](MEASUREMENTS.md),
-and every cost is broken down in [`COST.md`](COST.md).
-
-**Buys**
-
-| Claim | Number |
-| --- | --- |
-| The collector's tail leaves a paced loop | At one event per 100 µs slot the regions run misses no slot in a million; the stock run misses at every collection (M6). |
-| A long pause becomes a short one | On a 5-million-event loop with 1.7 KB of garbage per event: 3.96 ms longest pause under the stock collector, 14 µs with regions and no census, 53 µs with one (M4). |
-| Wholesale death is free | A structure that dies at once frees with zero collections; the linked-list showcase runs 3.8x faster (M8). |
-| Where the garbage per unit of work is large, wall time wins too | Up to 2x on the demonstrators — and the same demonstrators lose at 0.44x when the unit of work is small (M10). |
-
-**Costs, for a program that never opens a window**
-
-| Cost | Number |
-| --- | --- |
-| A pointer store | +0.085 ns [0.084, 0.086] |
-| A pool allocation | +0.283 ns [0.277, 0.291] |
-| A serial stock mark | +1.7 % |
-| A full collection on 32 threads | +7 % [3 %, 8 %] |
-| The GCBenchmarks suite | Six of nine benchmarks within noise of vanilla, one 2 % slower, two faster (M1) |
-| The system image | +3.4 % of its text |
-
-The last cost is the largest and the least attributable. Six probe builds
-show it is not the store barrier, not the region allocator and not the census
-filter, but the collector's own region checks, each too small to separate.
-[`COST.md`](COST.md) carries the attribution and the four candidate fixes
-that were built and rejected.
-
-The two sides of one claim in one plot: demonstrator C, a speculative tree
-whose aborted transactions die in a leaf. With little work per transaction
-the region model loses; as the garbage per unit of work grows, the stock
-collector's count of collections grows and the region model wins.
-
-![Demonstrator C: wall time under the stock collector against wall time under regions, at four amounts of work per transaction](results/plots/demo_c.svg)
-
-## Where things are
-
-| Document | Holds |
-| --- | --- |
-| [`doc/src/devdocs/gc-regions.md`](../../doc/src/devdocs/gc-regions.md) | The design: the model, the six rules, the barrier, the API with its return codes, the tree, the census, the limits. |
-| [`MEASUREMENTS.md`](MEASUREMENTS.md) | Every measurement: the claim, the script, the data, the plot, the numbers. Fourteen rows, M1 to M14. |
-| [`COST.md`](COST.md) | What a program that opens no window pays, in absolute and relative numbers, with a judgment of each row. |
-| [`HISTORY.md`](HISTORY.md) | How it came to be: the plans, the ideas that were dropped, the bugs and their tests, what the measurements changed. |
-
-| Path | Content |
-| --- | --- |
-| [`regions.jl`](regions.jl) | The Julia face. Every benchmark and demonstrator includes it. |
-| [`bench/`](bench) | The benchmarks. [`bench/README.md`](bench/README.md) lists each program and its command. |
-| [`demo/`](demo) | Four algorithms run twice, under regions and under the stock collector, and three showcases of wholesale death. |
-| [`tools/`](tools) | The discipline checker, which finds rule-breaking stores before a program runs under regions; the core isolation of the paced rows. |
-| [`results/`](results) | `run_all.sh` runs every measurement; `tables.py` and `plot.py` write the tables and the plots from the data files alone. |
-
-The tests are not here. They are the eleven scripts `test/gc/regions_*.jl`,
-run by [`test/gc.jl`](../../test/gc.jl) as part of the `gc` test set, one
-process each.
-
-## Build, test, measure
-
-The runtime is part of the julia build:
-
-```
-make -j8
-```
-
-Two defines turn parts of it off, for a build that measures what each part
-costs. Pass them through `CPPFLAGS` in `Make.user`, and run `make -C src
-clean` first, because a change of `CPPFLAGS` alone does not recompile the
-objects that exist.
-
-| Define | Effect |
-| --- | --- |
-| `JL_NO_REGION_ALLOC` | The small allocator takes the stock pool directly, a window refuses, and the census filter folds out of the mark loops. |
-| `JL_NO_REGION_STORE_BARRIER` | The escape barrier leaves the write barrier and the two C hooks. |
-
-The region tests fail on both builds by design.
-
-Run one test script, or the whole set:
-
-```
-usr/bin/julia test/gc/regions_window.jl
-make test-gc                       # every script at 1, 2 and 4 threads
-```
-
-Run every measurement, with a vanilla julia built at the base commit and a
-checkout of GCBenchmarks:
-
-```
-VANILLA=/path/to/vanilla/usr/bin/julia GCBENCHMARKS=/path/to/GCBenchmarks \
-    contrib/memory-regions/results/run_all.sh
-python3 contrib/memory-regions/results/tables.py
-python3 contrib/memory-regions/results/plot.py
-```
-
-A full run is a night. `ROUNDS` sets the paired rounds of the cost rows
-(default 10), `CORE` the isolated core of the one-thread rows, and `MTCORES`
-the range of the multi-thread rows. Every row and its exit code go to
-[`results/log/status.tsv`](results/log/status.tsv).
+The measurements, the benchmarks, the demonstrators, the cost study and the
+history of this work are not part of this tree. They live on the branch
+`gc-regions-wip` of `levy/julia`, under `contrib/memory-regions`, with the
+scripts that made every number and the data they made.
