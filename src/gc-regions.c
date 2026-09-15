@@ -8,15 +8,12 @@
 // A thread allocates into region n while a window on n is open, and a reset
 // frees the whole region without a trace. The stock collector marks region
 // objects like any other and never sweeps a region page; the census below
-// collects one region alone. The rules an application must keep, and why
-// they make the entries below sound, are in doc/src/devdocs/gc-regions.md.
-//
-// The state lives in three places: the per-heap region table in
-// jl_thread_heap_t (gc-tls-stock.h), the page tag region_n in
-// jl_gc_pagemeta_t (gc-stock.h), and the process-wide tree and masks in
-// this file. The hooks in the allocator, the mark loop, the sweep and the
-// finalizer path are in gc-stock.c and gc-common.c; each one calls into this
-// file through gc-regions.h.
+// collects one region alone. The rules a program must keep, and why they
+// make the entries below sound, are in doc/src/devdocs/gc-regions.md. The
+// state is the per-heap region table (gc-tls-stock.h), the page tag
+// (gc-stock.h) and the process-wide tree and masks below; the hooks of the
+// allocator, the mark, the sweep and the finalizer path (gc-stock.c,
+// gc-common.c) call in through gc-regions.h.
 
 #include "gc-common.h"
 #include "gc-stock.h"
@@ -90,18 +87,13 @@ STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
 }
 
 // --- the region tree ------------------------------------------------------------
-// The regions form a declared tree of lifetimes. region_parent[r] names the
-// parent of r (0 = a child of the root region 0); region_uptree[r] is the
-// bitset of r itself, its ancestors, and 0 -- exactly the regions a store
-// from an object of region r may legally target (its own region or an older
-// one on its branch). A store of a child of region cr into a parent of
-// region pr is legal iff cr is in region_uptree[pr]: the same region, or an
-// ancestor.
-//
-// The default is the chain 0 <- 1 <- 2 <- ..., a total order:
-// region_uptree[r] = {0,1,...,r}, so cr in uptree[pr] is exactly cr <= pr.
-// The first declaration replaces the chain by the all-root tree and then
-// applies the declared edge.
+// The regions form a declared tree of lifetimes: region_parent[r] names the
+// parent of r (0 = a child of region 0), and region_uptree[r] is the bitset
+// of r, its ancestors and 0, exactly the regions a store from an object of
+// region r may target. A store of a child of region cr into a parent of
+// region pr is legal iff cr is in region_uptree[pr]. The default is the chain
+// 0 <- 1 <- 2 <- ..., where cr in uptree[pr] is cr <= pr; the first
+// declaration replaces the chain by the all-root tree, then applies the edge.
 static uint8_t region_parent[JL_GC_MAX_REGIONS];
 static _Atomic(uint64_t) region_uptree[JL_GC_MAX_REGIONS];
 static int region_tree_declared = 0;
@@ -374,20 +366,16 @@ static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_N
 }
 
 // --- the brackets around a stock collection ----------------------------------------
-// A stock collection coexists with live regions by two brackets around it
-// and a clear after every pass. Before: every thread's window is parked and
-// region 0 installed, so the sweep prologue's cursor sync sees norm_pools
-// everywhere. After each pass: every region page the mark touched
-// (has_marked is the card) gets its cells' low header bits cleared - the
-// mark walked region objects normally, which keeps liveness exact through
-// them, and the clear keeps the bits clean for the census; a freelist link
-// survives the blind clear because an aligned pointer carries zero low bits.
-// Region pages are never swept and region objects never grow old, so they
-// never enter a remembered set. The clear runs after every pass, not once
-// per collection: a forced full collection runs a second, young pass, and a
-// region object still marked from the first pass would not be traversed
-// again, so its region-0 children would be swept from under it. After the
-// last pass: the parked windows are installed again.
+// Before a stock collection every window is parked and region 0 installed,
+// so the sweep prologue's cursor sync sees norm_pools everywhere; after the
+// last pass the windows are installed again. After every pass, the cells of
+// every region page the mark touched (has_marked is the card) get their low
+// header bits cleared: the mark walks region objects normally, which keeps
+// liveness exact through them, and the clear keeps the bits clean for the
+// census; a freelist link survives the blind clear, because an aligned
+// pointer has zero low bits. The clear runs per pass, because a forced full
+// collection runs a second pass that would not traverse a region object
+// still marked from the first, and would sweep its region-0 children.
 
 void jl_gc_region_prepare_stock_collection(void) JL_NOTSAFEPOINT
 {
@@ -650,23 +638,13 @@ void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n);
 static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 
-// The per-heap reset body, shared by the single-heap reset and the global
-// reset. The caller owns the preconditions. Everything in the region dies:
-// its finalizers run first, on whole objects (the single-heap reset only;
-// the global reset refuses a region with pending finalizers, because it
-// holds the world stopped); then the malloc'd data of its memories is
-// freed; the headers die with the pages. The reset walks nothing: every
-// page hangs on one chain with a tail, and a fresh page's metadata is
-// allowed to be stale because gc_add_page resets a page when it claims it.
-// So the pool cursors are cleared, the chain is parked on the fresh list in
-// O(1), and the page count comes from the counters the claim path keeps.
-// The finalizer phase of a reset, on its own because it runs Julia code: a
-// finalizer allocates, stores, and can quarantine the region it belongs to.
-// It runs before the free, and never with the world stopped. A finalizer can
-// register a finalizer on another object of the region, so the phase takes
-// the list again until it stays empty; the bound turns a finalizer that
-// registers one every round into a refusal instead of a hang. Returns 0
-// with the list empty, EFINALIZERS otherwise.
+// The finalizer phase of a reset, on its own because it runs Julia code:
+// a finalizer allocates, stores, and can quarantine the region it belongs
+// to. It runs before the free and never with the world stopped. A finalizer
+// can register a finalizer on another object of the region, so the phase
+// takes the list again until it stays empty; the bound turns a finalizer
+// that registers one every round into a refusal instead of a hang. Returns
+// 0 with the list empty, EFINALIZERS otherwise.
 #define REGION_FINALIZER_ROUNDS 64
 static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 {
@@ -683,7 +661,11 @@ static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 }
 
 // The free. The caller drained the finalizer list, or refused: no Julia code
-// runs here, so the caller may hold the world stopped through it.
+// runs here, so the caller may hold the world stopped through it. The reset
+// walks nothing: the malloc'd data of the memories is freed, the pool
+// cursors are cleared, and the page chain is parked on the fresh list in
+// O(1); a fresh page's metadata may be stale, because gc_add_page resets a
+// page when it claims it.
 static uint64_t region_reset_heap(jl_thread_heap_t *heap, int n)
 {
     jl_gc_region_state_t *rs = heap->regions[n];
@@ -1083,23 +1065,16 @@ static void region_split_dead_finalizers(arraylist_t *lst, arraylist_t *dead) JL
     lst->len = j;
 }
 
-// The mark of a census, from the execution roots of the threads the
-// caller names. The census filter is set by the caller. The scanned-byte
-// counters of the marking thread are restored, so a census does not enter
-// the stock collector's estimate of the live heap.
-//
-// The remset of the marking thread is restored as well. The stock task scan
-// (the Task branch of gc_mark_outrefs) ends in gc_mark_push_remset, which
-// adds an old task to the remset of the marking thread. The census scans
-// every task, so every old task lands in the remset, but the census sets no
-// mark bit on a task. The next stock collection would then find the task in
-// the remset first and scan it as a remset object, which sets no page
-// metadata; the later claim from the thread-local roots fails because the
-// task is already marked; the page of the task keeps has_marked == 0 and the
-// sweep frees the page with the live task in it. The census pushes nothing
-// else to the remset: a region cell is never old, and the filter drops an
-// out-of-region cell that is not a task. Truncation to the entry length
-// removes exactly the pushes of the census.
+// The mark of a census, from the execution roots of the threads the caller
+// names, with the filter the caller set. The scanned-byte counters and the
+// remset of the marking thread are restored afterwards: the census scans
+// every task, and the stock task scan pushes an old task to the remset of
+// the marking thread, while the census sets no mark bit on a task; a stock
+// collection that met the task in the remset first would scan it there,
+// which sets no page metadata, so the page of the task would be swept with
+// the live task in it. Truncation to the entry length removes exactly the
+// pushes of the census: a region cell is never old, and the filter drops an
+// out-of-region cell that is not a task.
 static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthreads,
                                jl_thread_heap_t *heap, int n, arraylist_t *dead)
 {
