@@ -13,7 +13,9 @@ region_reset(1)             # every object of that unit is gone, at once
 
 The stock collector still runs, still owns everything outside a region, and
 never traces a region's pages. A program that opens no window pays one
-predicted branch per pointer store.
+predicted branch per pointer store. The regions exist in a julia built with
+`make WITH_GC_REGIONS=1`; `Base.GC_REGIONS` says whether a build has them,
+and a build without the flag is the stock runtime, object for object.
 
 ## Why you might want it
 
