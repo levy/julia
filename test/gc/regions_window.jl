@@ -351,6 +351,36 @@ function first_throw_stays_in_region_0()
     check("the region resets after the first throw inside it", !refused(region_reset(SIM)))
 end
 
+# The reserve claims page blocks up front so a later allocation inside a
+# region never first-touch-faults; a second call must be a no-op, not an
+# error, and a window can still allocate normally afterward.
+@noinline function fill_with_refs(n)
+    region_set(RESERVE)
+    v = Vector{Any}(undef, n)
+    for i in 1:n
+        v[i] = Ref(i)
+    end
+    region_set(0)
+    return v
+end
+
+# The vector and its refs stay in this frame, which has returned before the
+# reset runs: the reset checks the execution roots, and a local that still
+# names a region object refuses it.
+@noinline function every_ref_is_in_the_region(n)
+    v = fill_with_refs(n)
+    return all(x -> region_of(x) == RESERVE, v)
+end
+
+function heap_reserve_then_window()
+    r1 = heap_reserve(64 << 20)
+    check("the reserve returns a byte count, not a refusal", !refused(r1))
+    r2 = heap_reserve(64 << 20)
+    check("a second reserve call also returns without error", !refused(r2))
+    check("every ref landed in the window's region", every_ref_is_in_the_region(10_000))
+    check("the window resets without a refusal", !refused(reset_via_call(RESERVE)))
+end
+
 bad_region_numbers()
 current_region_refusals()
 no_window_defaults()
@@ -364,5 +394,6 @@ first_time_code_stays_in_region_0()
 lazy_state_stays_in_region_0()
 runtime_binding_stays_in_region_0()
 first_throw_stays_in_region_0()
+heap_reserve_then_window()
 
 finish("regions_window")
