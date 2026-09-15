@@ -932,6 +932,19 @@ else ifneq (${USE_THIRD_PARTY_GC},0)
 $(error "Unsupported third-party GC: $(WITH_THIRD_PARTY_GC). Supported option(s): mmtk")
 endif
 
+# GC memory regions (src/gc-regions.c), off by default. A build with the
+# flag defines WITH_GC_REGIONS for every island in the runtime and the
+# compiler and compiles gc-regions.c; a build without it is the stock
+# collector alone, object for object.
+WITH_GC_REGIONS ?= 0
+ifeq ($(WITH_GC_REGIONS),1)
+ifeq (${USE_THIRD_PARTY_GC},mmtk)
+$(error "WITH_GC_REGIONS=1 needs the stock collector, not a third-party GC")
+endif
+JCXXFLAGS += -DWITH_GC_REGIONS
+JCFLAGS += -DWITH_GC_REGIONS
+endif
+
 ifeq ($(WITH_DTRACE), 1)
 JCXXFLAGS += -DUSE_DTRACE
 JCFLAGS += -DUSE_DTRACE

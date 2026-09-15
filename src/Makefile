@@ -58,7 +58,10 @@ GC_SRCS := gc-common gc-stacks gc-alloc-profiler gc-heap-snapshot
 ifeq (${USE_THIRD_PARTY_GC},mmtk)
 GC_SRCS += gc-mmtk
 else
-GC_SRCS += gc-stock gc-regions gc-debug gc-pages gc-page-profiler
+GC_SRCS += gc-stock gc-debug gc-pages gc-page-profiler
+ifeq ($(WITH_GC_REGIONS),1)
+GC_SRCS += gc-regions
+endif
 endif
 
 SRCS := \
