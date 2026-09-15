@@ -131,15 +131,14 @@ const SCRATCH = 1
 
 @noinline function step!(state)          # a frame, an event, a request
     @with_region SCRATCH begin
-        work = [transform(x) for x in state.input]
-        state.answer = reduce(merge, work)
+        work = [transform(x) for x in state.input]   # the temporaries of this step
+        state.total += sum(work)                     # a number: no reference into the region
     end
 end
 
 for _ in 1:1_000_000
     step!(state)
-    copy_out!(state)                     # take what must survive, then
-    region_reset(SCRATCH)                # free the round in one act
+    region_reset(SCRATCH)                # frees the temporaries of the step in one act
 end
 ```
 
