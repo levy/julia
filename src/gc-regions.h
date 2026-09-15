@@ -120,12 +120,12 @@ JL_DLLEXPORT int jl_gc_region_parent_of(int child);
 JL_DLLEXPORT int64_t jl_gc_region_collect(int n);
 JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n);
 JL_DLLEXPORT void jl_gc_region_census_threshold(int pages);
-// Queries: the region of an object, the page count of a region on this
-// heap, whether an escape quarantined a region, the phase times and counts
-// of the last census (see jl_gc_region_stat).
+// The region of an object.
 JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v);
+// The pages of a region on this heap; whether an escape quarantined a region.
 JL_DLLEXPORT int jl_gc_region_pages(int n);
 JL_DLLEXPORT int jl_gc_region_quarantined(int n);
+// A phase time or a count of the last census.
 JL_DLLEXPORT uint64_t jl_gc_region_stat(int i);
 // Debug: with checks on, a reset refuses while an execution root references
 // into the region; jl_gc_region_check runs that check alone and returns the
