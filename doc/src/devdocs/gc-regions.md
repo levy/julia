@@ -325,7 +325,6 @@ to the program. The entries are `ccall` targets; there is no `Base` API.
 | `jl_gc_region_set_debug(on)` | With reporting on, the reset's root check names the objects it found. The check itself always runs. |
 | `jl_gc_region_check(n)` | Run that check alone; returns the count of references, or a refusal code. |
 | `jl_gc_region_verify(n)` | Walk the page chains of region `n` for consistency; returns the error count. |
-| `jl_gc_heap_reserve(bytes)` | Prefault `bytes` of pool heap so a later allocation never faults. Returns the bytes mapped. |
 
 The refusal codes are negative integers. An entry that returns a count
 returns the code cast to its unsigned type: `(uint64_t)-2` stands for `-2`.
@@ -455,15 +454,6 @@ the census, and the page claim goes on.
 The threshold is process-wide. The reset stays the common path: a program
 whose garbage dies at the boundary never triggers the census.
 
-## The heap reserve
-
-`jl_gc_heap_reserve(bytes)` claims `bytes` of page blocks now, populated, into
-the clean pool, and prefaults every block the runtime maps from then on.
-`jl_gc_alloc_page` serves the clean pool before it maps anything, so a loop
-whose heap fits the reserve maps nothing and faults nothing while it runs. The
-call is for a program that measures its pauses in microseconds; a program that
-does not can leave it out.
-
 ## Finalizers and malloc'd data
 
 A finalizer registered on a region object goes to the list of the region
@@ -575,8 +565,6 @@ the program's own to keep.
   of a region on a heap, about 1.5 KB, is made at the first window onto the
   region on that heap and lives until the process ends. The page metadata
   carries two region fields whether or not a program ever opens a window.
-- The heap reserve prefaults at most `GC_MAX_BLOCKS` blocks (about 64 GB);
-  blocks past that are mapped lazily.
 - `jl_gc_region_collect` returns `EINVAL` for a valid region that no window
   used on the heap; `jl_gc_region_reset` returns 0 for it.
 - A build with a third-party heap (`WITH_THIRD_PARTY_HEAP`) has no regions:
@@ -630,7 +618,6 @@ one and no escape ever seen on the other.
 | `src/gc-tls-stock.h` | The per-heap region table, a pointer per region, and `jl_gc_region_state_t`, the state of one region on one heap: pools, page chains, finalizer list, malloc'd list. The live and child masks. |
 | `src/gc-stock.c` | The region page tag, the allocation into the active pools, the census filter in the mark loops, the sweep that skips region pages, the `WeakRef` refusal. |
 | `src/gc-common.c` | Finalizer lists and malloc'd data of a region; the suspend and resume of a window around the runtime's own allocation. |
-| `src/gc-pages.c` | The heap reserve. |
 | `src/gc-wb-stock.h`, `src/cgutils.cpp`, `src/llvm-late-gc-lowering.cpp` | The escape barrier in the runtime and in the compiler. `src/codegen.cpp` declares `julia.region_write_barrier`, the guard alone for the stores into a fresh object and for the pointer fields that a fresh object copies (`src/intrinsics.cpp` uses it at the box of a `pointerref`); `src/datatype.c`, `src/genericmemory.c`, `src/runtime_intrinsics.c`, `src/builtins.c`, `src/jltypes.c` and `src/method.c` annotate the fresh-object copies and the raw stores of the runtime; `src/llvm-alloc-opt.cpp`, `src/llvm-alloc-helpers.cpp` and `src/llvm-julia-licm.cpp` treat it as they treat `julia.write_barrier`. |
 | `src/task.c` | The window follows the task. |
 | `src/gf.c` | Inference, compilation, and the cache-miss path of a dynamic dispatch run in region 0. |

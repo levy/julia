@@ -103,7 +103,6 @@ The face is [`regions.jl`](regions.jl), a thin `ccall` wrapper. There is no
 | Call | Does |
 | --- | --- |
 | `region_parent!(child, parent)`, `region_tree!(parents)`, `region_parent_of(child)` | Declare and read the lifetime tree, before any of the regions is used. |
-| `region_reserve(bytes)` | Claims and prefaults heap before a loop starts, so the loop takes no page fault. |
 | `region_check(n)`, `region_debug(on)` | The reset's root check as a query, and extra reporting. |
 
 A refusal is a negative return code, not an exception:

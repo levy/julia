@@ -5,7 +5,7 @@
 
 module Regions
 
-export region_set, region_reset, unsafe_region_reset, region_reserve, @with_region, @in_region_of,
+export region_set, region_reset, unsafe_region_reset, @with_region, @in_region_of,
        region_current, region_of,
        region_collect, region_collect_coop, region_check, region_debug,
        region_quarantined, region_parent!, region_tree!, region_parent_of, region_reset_global,
@@ -48,11 +48,6 @@ region_debug(on::Int)  = ccall(:jl_gc_region_set_debug, Cvoid, (Cint,), on)
 # value; this asks the question directly, which is what a program wants
 # before it opens a window or after it caught a refusal.
 region_quarantined(n::Int) = ccall(:jl_gc_region_quarantined, Cint, (Cint,), n) != 0
-# Claim and prefault `bytes` of heap before the loop starts: the runtime
-# maps whole blocks, populated by the kernel at the claim, into its clean
-# pool, and prefaults every later block too. A loop whose heap fits the
-# reserve takes no page fault while it runs. Returns the bytes mapped.
-region_reserve(bytes::Integer) = UInt64(ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes))
 
 # A window and a borrow are two policies over one act of the runtime: make
 # region `n` the allocation target of this thread. The task owns a window: it

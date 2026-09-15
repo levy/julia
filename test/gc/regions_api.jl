@@ -38,7 +38,6 @@ region_stat(i)             = ccall(:jl_gc_region_stat, UInt64, (Cint,), i)
 region_debug!(on)          = ccall(:jl_gc_region_set_debug, Cvoid, (Cint,), on)
 region_check(n)            = Int(ccall(:jl_gc_region_check, Int64, (Cint,), n))
 region_verify(n)           = Int(ccall(:jl_gc_region_verify, Cint, (Cint,), n))
-heap_reserve(bytes)        = ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes)
 
 # The region count of gc-tls-stock.h: region 0 and MAX_REGIONS - 1 regions
 # a program can open.
