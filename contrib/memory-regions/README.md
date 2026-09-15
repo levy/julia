@@ -229,6 +229,9 @@ objects that only region objects referenced.
 ## Where the evidence lives
 
 The measurements, the benchmarks, the demonstrators, the cost study and the
-history of this work are not part of this tree. They live on the branch
-`gc-regions-wip` of `levy/julia`, under `contrib/memory-regions`, with the
-scripts that made every number and the data they made.
+history of this work are not part of this tree. They are on the branch
+[`gc-regions-master-evidence`](https://github.com/levy/julia/tree/gc-regions-master-evidence/contrib/memory-regions)
+of the fork: this tree plus `bench/`, `demo/`, `tools/`, `results/`,
+`MEASUREMENTS.md`, `COST.md` and `HISTORY.md` in this directory, with the
+scripts that made every number and the data they made. The first line of the
+work, on release-1.13, is the branch `gc-regions-wip` of the same fork.

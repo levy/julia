@@ -213,9 +213,11 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
   window costs its compile in the stock heap. A borrow is thread state: after
   a yield inside one, the task keeps the borrowed region until the borrow ends.
 - `WITH_GC_REGIONS=1` and a third-party GC exclude each other; Linux x86-64 is the platform
-  the design was exercised on. The measurements, the demonstrators and the
-  history of the design live on the branch `gc-regions-wip` of
-  `github.com/levy/julia`, outside this tree.
+  the design was exercised on. The demonstrators, the benchmarks, the
+  measurements and the history of the design are outside this tree, on the
+  branch [`gc-regions-master-evidence`](https://github.com/levy/julia/tree/gc-regions-master-evidence/contrib/memory-regions)
+  of the fork: this tree plus `bench/`, `demo/`, `tools/`, `results/`,
+  `MEASUREMENTS.md`, `COST.md` and `HISTORY.md` under `contrib/memory-regions`.
 
 ## Files
 
