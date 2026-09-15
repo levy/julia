@@ -310,9 +310,9 @@ STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o,
 #endif
 }
 
+#ifdef WITH_GC_REGIONS
 // A pool object without page metadata is a corpse: an object of a GC region
-// that a reset freed while a reference to it lived on (gc-regions.h). The
-// mark would fault on it; name it instead, then abort.
+// that a reset freed while a reference lived on. Name it, then abort.
 static NOINLINE void gc_region_corpse_report(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
 {
     char *data = gc_page_data(o);
@@ -332,14 +332,19 @@ static NOINLINE void gc_region_corpse_report(jl_taggedvalue_t *o) JL_NOTSAFEPOIN
         jl_safe_printf("CORPSE type=%s\n", jl_symbol_name(vt->name->name));
     abort();
 }
+#endif
 
 STATIC_INLINE void gc_setmark_pool(jl_ptls_t ptls, jl_taggedvalue_t *o,
                                    uint8_t mark_mode) JL_NOTSAFEPOINT
 {
+#ifdef WITH_GC_REGIONS
     jl_gc_pagemeta_t *meta = page_metadata((char*)o);
     if (__unlikely(meta == NULL))
         gc_region_corpse_report(o);
     gc_setmark_pool_(ptls, o, mark_mode, meta);
+#else
+    gc_setmark_pool_(ptls, o, mark_mode, page_metadata((char*)o));
+#endif
 }
 
 STATIC_INLINE void gc_setmark(jl_ptls_t ptls, jl_taggedvalue_t *o,
@@ -375,10 +380,12 @@ STATIC_INLINE void gc_setmark_buf(jl_ptls_t ptls, void *o, uint8_t mark_mode, si
 
 STATIC_INLINE void maybe_collect(jl_ptls_t ptls) JL_CANSAFEPOINT
 {
-    // A window on a region past its census threshold gets a census of the
-    // open region instead of a stock collection (gc-regions.h).
+#ifdef WITH_GC_REGIONS
+    // A window on a region past its census threshold gets a census of that
+    // region instead of a stock collection (gc-regions.h).
     if (__unlikely(ptls->gc_tls.heap.current_region != 0) && jl_gc_region_maybe_census(ptls))
         return;
+#endif
     if (jl_atomic_load_relaxed(&gc_heap_stats.heap_size) >= jl_atomic_load_relaxed(&gc_heap_stats.heap_target) || jl_gc_debug_check_other()) {
         jl_gc_collect(JL_GC_AUTO);
     }
@@ -391,17 +398,16 @@ STATIC_INLINE void maybe_collect(jl_ptls_t ptls) JL_CANSAFEPOINT
 
 JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *value)
 {
-    // A weak reference to a region object has no defined clearing: the
-    // weak_refs list is the common one, so a region reset frees the target
-    // without nulling the weakref, and the target is never swept - the
-    // weakref would dangle. Refuse it. The check runs only while a region
-    // is in use (the barrier arms at the first window).
+#ifdef WITH_GC_REGIONS
+    // A region reset frees its objects without a look at the weak_refs
+    // list, so a weak reference to a region object would dangle: refuse it.
     if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) {
         jl_gc_pagemeta_t *m = page_metadata((char*)jl_astaggedvalue(value));
         if (m != NULL && m->region_n != 0)
             jl_error("cannot make a WeakRef to a GC region object: "
                      "its region reset would leave the reference dangling");
     }
+#endif
     jl_weakref_t *wr = (jl_weakref_t*)jl_gc_alloc(ptls, sizeof(void*),
                                                   jl_weakref_type);
     wr->value = value;  // NOTE: wb not needed here
@@ -775,7 +781,7 @@ void jl_gc_reset_alloc_count(void)
     reset_thread_gc_counts();
 }
 
-void jl_gc_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
+static void jl_gc_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
 {
     assert(jl_is_genericmemory(m));
     assert(jl_genericmemory_how(m) == JL_GENERICMEMORY_GCMANAGED);
@@ -791,6 +797,15 @@ void jl_gc_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
     gc_num.freed += freed_bytes;
     gc_num.freecall++;
 }
+
+#ifdef WITH_GC_REGIONS
+// The reset and the census of a region free the malloc'd data of a memory
+// through this entry (gc-regions.c).
+void gc_region_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT
+{
+    jl_gc_free_memory(m, isaligned);
+}
+#endif
 
 static void sweep_malloced_memory(void) JL_NOTSAFEPOINT
 {
@@ -827,7 +842,11 @@ STATIC_INLINE jl_taggedvalue_t *gc_reset_page(jl_ptls_t ptls2, const jl_gc_pool_
 {
     assert(GC_PAGE_OFFSET >= sizeof(void*));
     pg->nfree = (GC_PAGE_SZ - GC_PAGE_OFFSET) / p->osize;
+#ifdef WITH_GC_REGIONS
     pg->pool_n = p - ptls2->gc_tls.heap.active_pools;
+#else
+    pg->pool_n = p - ptls2->gc_tls.heap.norm_pools;
+#endif
     jl_taggedvalue_t *beg = (jl_taggedvalue_t*)(pg->data + GC_PAGE_OFFSET);
     pg->has_young = 0;
     pg->has_marked = 0;
@@ -850,10 +869,9 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     // Do not pass in `ptls` as argument. This slows down the fast path
     // in small_alloc significantly
     jl_ptls_t ptls = jl_current_task->ptls;
-    // A region reuses its own wholly-dead pages (parked by a reset or a
-    // census sweep) before claiming new ones; the page is already mapped,
-    // tagged, and in the allocd stack. The open window made the region's
-    // state on this heap, so `rs` is never NULL here.
+#ifdef WITH_GC_REGIONS
+    // A region reuses its own wholly dead pages, parked by a reset or a
+    // census, before it claims a new one (gc-regions.h).
     int cr = ptls->gc_tls.heap.current_region;
     jl_gc_region_state_t *rs = cr != 0 ? ptls->gc_tls.heap.regions[cr] : NULL;
     if (rs != NULL) {
@@ -873,11 +891,13 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
             return fl;
         }
     }
+#endif
     jl_gc_pagemeta_t *pg = jl_gc_alloc_page();
     pg->osize = p->osize;
     pg->thread_n = ptls->tid;
-    // The page carries the region that claimed it; a region chains its
-    // pages so a reset frees them without a walk of the heap.
+#ifdef WITH_GC_REGIONS
+    // The page carries the region that claimed it, and the region chains
+    // its pages, so a reset frees them without a walk of the heap.
     pg->region_n = cr;
     pg->region_next = NULL;
     if (rs != NULL) {
@@ -887,6 +907,7 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
             rs->pages_tail = pg;
         rs->n_pages++;
     }
+#endif
     set_page_metadata(pg);
     push_lf_back(&ptls->gc_tls.page_metadata_allocd, pg);
     jl_taggedvalue_t *fl = gc_reset_page(ptls, p, pg);
@@ -902,15 +923,13 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // Use the pool offset instead of the pool address as the argument
     // to workaround a llvm bug.
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
-#ifdef JL_NO_REGION_ALLOC
-    // The stock-only build: the pool address computes exactly as vanilla,
-    // and jl_gc_region_set refuses, because regions cannot allocate here.
-    jl_gc_pool_t *p = (jl_gc_pool_t*)((char*)ptls + offset);
-#else
-    // `offset` is the stable norm_pools-relative encoding the JIT bakes in;
-    // decode it to a pool index and address the CURRENT region's array.
+#ifdef WITH_GC_REGIONS
+    // `offset` names a pool of norm_pools; the same pool of the current
+    // region's array is the one that allocates (gc-regions.h).
     size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
     jl_gc_pool_t *p = ptls->gc_tls.heap.active_pools + pool_idx;
+#else
+    jl_gc_pool_t *p = (jl_gc_pool_t*)((char*)ptls + offset);
 #endif
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == 0);
 #ifdef MEMDEBUG
@@ -1237,13 +1256,14 @@ done:
 // the actual sweeping over all allocated pages in a memory pool
 STATIC_INLINE void gc_sweep_pool_page(gc_page_profiler_serializer_t *s, jl_gc_page_stack_t *allocd, jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
-    // A region's pages are not swept: a reset or a census of the region
-    // frees their cells. A sweep would link the cells into norm_pools while
-    // the region owns them through its own cursors.
+#ifdef WITH_GC_REGIONS
+    // A region's pages are not swept: the region's reset or census frees
+    // their cells (gc-regions.h).
     if (pg->region_n != 0) {
         push_lf_back(allocd, pg);
         return;
     }
+#endif
     int p_n = pg->pool_n;
     int t_n = pg->thread_n;
     jl_ptls_t ptls2 = gc_all_tls_states[t_n];
@@ -1896,10 +1916,8 @@ STATIC_INLINE void gc_mark_push_remset(jl_ptls_t ptls, jl_value_t *obj,
     }
 }
 
-// Push a work item to the queue. Forced inline: the mark drain inlines a
-// large body, and the inline budget would otherwise leave this a real
-// call on the per-object hot path.
-FORCE_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
+// Push a work item to the queue
+JL_GC_QUEUE_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_NOTSAFEPOINT
 {
 #ifdef JL_DEBUG_BUILD
     if (obj == gc_findval)
@@ -1911,8 +1929,8 @@ FORCE_INLINE void gc_ptr_queue_push(jl_gc_markqueue_t *mq, jl_value_t *obj) JL_N
         arraylist_push(&mq->reclaim_set, old_a);
 }
 
-// Pop from the mark queue. Forced inline for the same reason as the push.
-FORCE_INLINE jl_value_t *gc_ptr_queue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
+// Pop from the mark queue
+JL_GC_QUEUE_INLINE jl_value_t *gc_ptr_queue_pop(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     jl_value_t *v = NULL;
     ws_queue_pop(&mq->ptr_queue, &v, sizeof(jl_value_t*));
@@ -1975,10 +1993,9 @@ STATIC_INLINE jl_gc_chunk_t gc_chunkqueue_steal_from(jl_gc_markqueue_t *mq2) JL_
     return c;
 }
 
-// A census runs on one thread with every other thread parked GC-safe, so
-// the census filter's marking needs no atomic exchange: a load, a test,
-// and a store claim the object race-free. The exchange in
-// gc_try_setmark_tag exists for racing markers.
+#ifdef WITH_GC_REGIONS
+// A census marks on one thread with every other thread parked, so its
+// claim needs no atomic exchange.
 STATIC_INLINE int gc_scoped_setmark(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
 {
     uintptr_t tag = o->header;
@@ -1988,35 +2005,25 @@ STATIC_INLINE int gc_scoped_setmark(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
     return 1;
 }
 
-// The census claim, outlined and NOINLINE. The filter runs only during a
-// census of one region (gc-regions.h), but inline it would sit in every
-// mark-loop call site of the claim and bloat the drain loop that every
-// stock collection runs. A census pays one call per object, cheap relative
-// to the filter work itself.
+// The claim of a census (gc-regions.h), out of line so that the stock
+// mark loops stay small: an object outside the region is live and is not
+// walked, except a task, whose stack the census scans; a leaf object of the
+// region needs only its mark bit; the rest is queued.
 static NOINLINE void gc_scoped_claim(jl_gc_markqueue_t *mq, jl_value_t *obj,
                            jl_taggedvalue_t *o, int scoped) JL_NOTSAFEPOINT
 {
     jl_gc_pagemeta_t *meta = page_metadata((char*)o);
     int in_region = (meta != NULL && meta->region_n == scoped);
     if (!in_region) {
-        // An object outside the region is live for the census and is not
-        // walked: a region object is reachable only through a region-0
-        // object's stack or through the region itself (the region rule).
-        // A task is the exception, for its stack. The census claims it
-        // without a mark bit: a stock collection leaves a task OLD-MARKED,
-        // and a mark-based claim would skip its stack. The census keeps
-        // its own set of the claimed tasks, and the task is pushed with
-        // the remset tag so the mark neither sets its bits nor counts it
-        // in the page's old-object census (gc_mark_outrefs).
+        // A task is claimed without a mark bit, because a stock collection
+        // leaves a task old-marked; it is pushed with the remset tag so the
+        // mark neither sets its bits nor counts it (gc_mark_outrefs).
         if (jl_typeof(obj) != (jl_value_t*)jl_task_type)
             return;
         if (jl_gc_region_census_claim_task(obj))
             gc_ptr_queue_push(mq, (jl_value_t*)((uintptr_t)obj | GC_REMSET_PTR_TAG));
         return;
     }
-    // A LEAF object -- no pointer fields -- needs only its mark bit and
-    // the page metadata; the queue round trip buys nothing. This is
-    // most of a record-heavy region's live set.
     jl_datatype_t *vt = (jl_datatype_t*)jl_typeof(obj);
     const jl_datatype_layout_t *layout = vt->layout;
     if (layout != NULL && layout->npointers == 0) {
@@ -2027,36 +2034,42 @@ static NOINLINE void gc_scoped_claim(jl_gc_markqueue_t *mq, jl_value_t *obj,
     if (gc_scoped_setmark(o))
         gc_ptr_queue_push(mq, obj);
 }
+#endif
 
-// Enqueue an unmarked obj. last bit of `nptr` is set if `_obj` is young.
-// The claim, with the census filter as a parameter: the hot mark loops load
-// the filter once per object or per array and pass it down (the array loop
-// passes a literal 0 on its stock path), so a stock mark's per-slot cost is
-// a register compare. The filter lives in gc_scoped_claim, outlined, so this
-// function stays small in every call site. The wrapper below keeps the old
-// name and behavior for every other caller.
+// Enqueue an unmarked obj. last bit of `nptr` is set if `_obj` is young
+#ifdef WITH_GC_REGIONS
+// `scoped` is the census filter (gc-regions.h): the array loop hoists it,
+// every other caller reads it through gc_try_claim_and_push below.
 STATIC_INLINE void gc_try_claim_and_push_(jl_gc_markqueue_t *mq, void *_obj,
                            uintptr_t *nptr, int scoped) JL_NOTSAFEPOINT
+#else
+STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
+                           uintptr_t *nptr) JL_NOTSAFEPOINT
+#endif
 {
     if (_obj == NULL)
         return;
     jl_value_t *obj = (jl_value_t *)jl_assume(_obj);
     jl_taggedvalue_t *o = jl_astaggedvalue(obj);
+#ifdef WITH_GC_REGIONS
     if (__unlikely(scoped != 0)) {
         gc_scoped_claim(mq, obj, o, scoped);
         return;
     }
+#endif
     if (!gc_old(o->header) && nptr)
         *nptr |= 1;
     if (gc_try_setmark_tag(o, GC_MARKED))
         gc_ptr_queue_push(mq, obj);
 }
 
+#ifdef WITH_GC_REGIONS
 STATIC_INLINE void gc_try_claim_and_push(jl_gc_markqueue_t *mq, void *_obj,
                            uintptr_t *nptr) JL_NOTSAFEPOINT
 {
     gc_try_claim_and_push_(mq, _obj, nptr, jl_gc_region_census_filter());
 }
+#endif
 
 // Mark object with 8bit field descriptors
 STATIC_INLINE jl_value_t *gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_t *obj8_begin,
@@ -2066,9 +2079,6 @@ STATIC_INLINE jl_value_t *gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     jl_value_t **slot = NULL;
     jl_value_t *new_obj = NULL;
-    // The census filter (gc-regions.h) is invariant over one object: one
-    // load here, then a register compare per field.
-    int scoped = jl_gc_region_census_filter();
     for (; obj8_begin < obj8_end; obj8_begin++) {
         slot = &((jl_value_t**)obj8_parent)[*obj8_begin];
         new_obj = *slot;
@@ -2077,20 +2087,21 @@ STATIC_INLINE jl_value_t *gc_mark_obj8(jl_ptls_t ptls, char *obj8_parent, uint8_
                             gc_slot_to_fieldidx(obj8_parent, slot, (jl_datatype_t*)jl_typeof(obj8_parent)));
             gc_assert_parent_validity((jl_value_t *)obj8_parent, new_obj);
             if (obj8_begin + 1 != obj8_end) {
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
             }
-            else if (__likely(scoped == 0)) {
+#ifdef WITH_GC_REGIONS
+            else if (__unlikely(jl_gc_region_census_filter() != 0)) {
+                // A census claims the last field through the filter too
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+                new_obj = NULL;
+            }
+#endif
+            else {
                 // Unroll marking of last item to avoid pushing
                 // and popping it right away
                 jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
                 nptr |= !gc_old(o->header);
                 if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
-            }
-            else {
-                // A census claims the last field through the filter too,
-                // so an object outside the region keeps its mark bits.
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
-                new_obj = NULL;
             }
             gc_heap_snapshot_record_object_edge((jl_value_t*)obj8_parent, slot);
         }
@@ -2107,9 +2118,6 @@ STATIC_INLINE jl_value_t *gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     jl_value_t **slot = NULL;
     jl_value_t *new_obj = NULL;
-    // The census filter (gc-regions.h) is invariant over one object: one
-    // load here, then a register compare per field.
-    int scoped = jl_gc_region_census_filter();
     for (; obj16_begin < obj16_end; obj16_begin++) {
         slot = &((jl_value_t **)obj16_parent)[*obj16_begin];
         new_obj = *slot;
@@ -2118,20 +2126,21 @@ STATIC_INLINE jl_value_t *gc_mark_obj16(jl_ptls_t ptls, char *obj16_parent, uint
                             gc_slot_to_fieldidx(obj16_parent, slot, (jl_datatype_t*)jl_typeof(obj16_parent)));
             gc_assert_parent_validity((jl_value_t *)obj16_parent, new_obj);
             if (obj16_begin + 1 != obj16_end) {
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
             }
-            else if (__likely(scoped == 0)) {
+#ifdef WITH_GC_REGIONS
+            else if (__unlikely(jl_gc_region_census_filter() != 0)) {
+                // A census claims the last field through the filter too
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+                new_obj = NULL;
+            }
+#endif
+            else {
                 // Unroll marking of last item to avoid pushing
                 // and popping it right away
                 jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
                 nptr |= !gc_old(o->header);
                 if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
-            }
-            else {
-                // A census claims the last field through the filter too,
-                // so an object outside the region keeps its mark bits.
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
-                new_obj = NULL;
             }
             gc_heap_snapshot_record_object_edge((jl_value_t*)obj16_parent, slot);
         }
@@ -2148,9 +2157,6 @@ STATIC_INLINE jl_value_t *gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint
     jl_gc_markqueue_t *mq = &ptls->gc_tls.mark_queue;
     jl_value_t **slot = NULL;
     jl_value_t *new_obj = NULL;
-    // The census filter (gc-regions.h) is invariant over one object: one
-    // load here, then a register compare per field.
-    int scoped = jl_gc_region_census_filter();
     for (; obj32_begin < obj32_end; obj32_begin++) {
         slot = &((jl_value_t **)obj32_parent)[*obj32_begin];
         new_obj = *slot;
@@ -2159,20 +2165,21 @@ STATIC_INLINE jl_value_t *gc_mark_obj32(jl_ptls_t ptls, char *obj32_parent, uint
                             gc_slot_to_fieldidx(obj32_parent, slot, (jl_datatype_t*)jl_typeof(obj32_parent)));
             gc_assert_parent_validity((jl_value_t *)obj32_parent, new_obj);
             if (obj32_begin + 1 != obj32_end) {
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
+                gc_try_claim_and_push(mq, new_obj, &nptr);
             }
-            else if (__likely(scoped == 0)) {
+#ifdef WITH_GC_REGIONS
+            else if (__unlikely(jl_gc_region_census_filter() != 0)) {
+                // A census claims the last field through the filter too
+                gc_try_claim_and_push(mq, new_obj, &nptr);
+                new_obj = NULL;
+            }
+#endif
+            else {
                 // Unroll marking of last item to avoid pushing
                 // and popping it right away
                 jl_taggedvalue_t *o = jl_astaggedvalue(new_obj);
                 nptr |= !gc_old(o->header);
                 if (!gc_try_setmark_tag(o, GC_MARKED)) new_obj = NULL;
-            }
-            else {
-                // A census claims the last field through the filter too,
-                // so an object outside the region keeps its mark bits.
-                gc_try_claim_and_push_(mq, new_obj, &nptr, scoped);
-                new_obj = NULL;
             }
             gc_heap_snapshot_record_object_edge((jl_value_t*)obj32_parent, slot);
         }
@@ -2226,9 +2233,9 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
             pushed_chunk = 1;
         }
     }
-    // The census filter is loop-invariant; hoist it and let the stock
-    // variant's filter fold away (a literal 0 through the force-inlined
-    // claim), so a stock mark walks slots at vanilla cost.
+#ifdef WITH_GC_REGIONS
+    // The census filter is loop-invariant: the stock loop passes a literal
+    // 0 to the claim, and walks the slots at stock cost.
     int scoped = jl_gc_region_census_filter();
     if (__likely(scoped == 0)) {
         for (; obj_begin < scan_end; obj_begin += step) {
@@ -2256,6 +2263,19 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
             }
         }
     }
+#else
+    for (; obj_begin < scan_end; obj_begin += step) {
+        jl_value_t **slot = obj_begin;
+        new_obj = *obj_begin;
+        if (new_obj != NULL) {
+            verify_parent2("obj array", obj_parent, obj_begin, "elem(%d)",
+                        gc_slot_to_arrayidx(obj_parent, obj_begin));
+            gc_assert_parent_validity(obj_parent, new_obj);
+            gc_try_claim_and_push(mq, new_obj, &nptr);
+            gc_heap_snapshot_record_array_edge(obj_parent, slot);
+        }
+    }
+#endif
     if (too_big) {
         if (!pushed_chunk) {
             jl_gc_chunk_t c = {GC_objary_chunk, obj_parent, scan_end, obj_end, NULL, NULL, step, nptr};
@@ -3077,6 +3097,7 @@ static void gc_mark_and_steal(jl_ptls_t ptls) JL_NOTSAFEPOINT
     }
 }
 
+#ifdef WITH_GC_REGIONS
 // A serial drain of the calling thread's own queues, for the census of one
 // region (gc-regions.c): no other thread marks then, so nothing is stolen.
 void gc_mark_loop_serial(jl_ptls_t ptls) JL_NOTSAFEPOINT
@@ -3094,6 +3115,7 @@ void gc_mark_loop_serial(jl_ptls_t ptls) JL_NOTSAFEPOINT
         gc_mark_chunk(ptls, mq, &c);
     }
 }
+#endif
 
 static size_t gc_count_work_in_queue(jl_ptls_t ptls) JL_NOTSAFEPOINT
 {
@@ -3297,11 +3319,10 @@ static void gc_queue_remset(jl_gc_markqueue_t *mq, jl_ptls_t ptls2) JL_NOTSAFEPO
     ptls2->gc_tls.heap.remset_nptr = 0;
 }
 
+#ifdef WITH_GC_REGIONS
 // The execution roots of one thread, for a census of one region
 // (gc-regions.c): the thread-local roots, the backtrace buffer, and every
-// parked task of the thread. A parked task holds region references on its
-// stack with its window closed, so it is queued through the census claim
-// like the running task, and its stack is scanned.
+// parked task of the thread, whose stack the census scans.
 void gc_queue_execution_roots(jl_gc_markqueue_t *mq, jl_ptls_t ptls2) JL_NOTSAFEPOINT
 {
     gc_queue_thread_local(mq, ptls2);
@@ -3310,6 +3331,7 @@ void gc_queue_execution_roots(jl_gc_markqueue_t *mq, jl_ptls_t ptls2) JL_NOTSAFE
     for (size_t i = 0; i < lt->len; i++)
         gc_try_claim_and_push(mq, (jl_value_t*)lt->items[i], NULL);
 }
+#endif
 
 static void gc_queue_image_remset(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
@@ -3633,8 +3655,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
             if (ptls2 != NULL)
                 gc_mark_finlist(mq, &ptls2->finalizers, 0);
         }
-        // A region's finalizer list is a root too: the reset runs it, so its
-        // objects and functions must survive every collection until then.
+        // The finalizer lists of the regions are roots too (gc-regions.h).
         jl_gc_region_mark_finalizer_lists(mq);
         gc_mark_finlist(mq, &finalizer_list_marked, orig_marked_len);
         // "Flush" the mark stack before flipping the reset_age bit
@@ -3725,8 +3746,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         gc_verify_tags();
         gc_sweep_pool();
         sweep_weak_processing();
-        // Region pages are not swept: clear the marks this pass left on
-        // them, so the next pass traverses the region objects again.
+        // Region pages are not swept: clear the marks this pass left on them.
         jl_gc_region_clear_stock_marks();
     }
 
@@ -4080,8 +4100,7 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 
     if (!jl_atomic_load_acquire(&jl_gc_disable_counter)) {
         JL_LOCK_NOGC(&finalizers_lock); // all the other threads are stopped, so this does not make sense, right? otherwise, failing that, this seems like plausibly a deadlock
-        // Every thread runs the collection with region 0 installed; the
-        // open windows are parked here and installed again after.
+        // Every thread runs the collection with region 0 installed (gc-regions.h).
         jl_gc_region_prepare_stock_collection();
         if (_jl_gc_collect(ptls, collection)) {
             // recollect

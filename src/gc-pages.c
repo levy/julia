@@ -51,8 +51,8 @@ static char *jl_gc_try_alloc_pages_(int pg_cnt) JL_NOTSAFEPOINT
 #else
     if (GC_PAGE_SZ > jl_page_size)
         pages_sz += GC_PAGE_SZ;
-    int flags = MAP_NORESERVE | MAP_PRIVATE | MAP_ANONYMOUS;
-    char *mem = (char*)mmap(0, pages_sz, PROT_READ | PROT_WRITE, flags, -1, 0);
+    char *mem = (char*)mmap(0, pages_sz, PROT_READ | PROT_WRITE,
+                            MAP_NORESERVE | MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (mem == MAP_FAILED)
         return NULL;
 #endif
@@ -181,17 +181,15 @@ exit:
 NOINLINE void jl_gc_free_page(jl_gc_pagemeta_t *pg) JL_NOTSAFEPOINT
 {
     void *p = pg->data;
-    // A region owns its pages: a reset parks them on the region's own fresh
-    // list and only a reset or a census gives a cell back. Nothing should
-    // reach this entry with a tagged page. If something does, keep the page
-    // instead of freeing it: the objects on it are reachable, and returning
-    // it to the allocator would hand live memory to the next claim. The
-    // page leaks, and the line below says so.
+#ifdef WITH_GC_REGIONS
+    // A region owns its pages and only its reset or census frees them; a
+    // tagged page that reaches this entry is kept, and the line says so.
     if (pg->region_n != 0) {
         jl_safe_printf("FREEPAGE-TAGGED page %p region %d - a tagged page must never free; "
                        "the page is kept\n", p, (int)pg->region_n);
         return;
     }
+#endif
     gc_alloc_map_set((char*)p, GC_PAGE_FREED);
     // tell the OS we don't need these pages right now
     size_t decommit_size = GC_PAGE_SZ;

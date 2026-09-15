@@ -11,13 +11,15 @@
 // are in doc/src/devdocs/gc-regions.md. Every entry point takes region
 // numbers; the numbering and its meaning belong to the application.
 //
-// The stock collector implements the regions (src/gc-regions.c); a build
-// with a third-party heap gets the stubs at the end of this file, so the
-// callers in task.c, gc-common.c, gf.c, jltypes.c and staticdata.c compile
-// unchanged.
+// The stock collector implements the regions (src/gc-regions.c), and only
+// a build with WITH_GC_REGIONS has them. The rest of the runtime reaches the
+// regions through the hooks at the end of this file; without the flag every
+// hook is nothing, and a changed line that a hook cannot express sits
+// inside an island of the flag.
 
 #ifndef JL_GC_REGIONS_H
 #define JL_GC_REGIONS_H
+#ifdef WITH_GC_REGIONS
 
 #include "julia.h"
 #include "julia_internal.h"
@@ -45,6 +47,23 @@ enum {
                                     // that references the region
 };
 
+// The state of one region on one heap, made on the first use of the region
+// there and never freed: a reset parks the pages for the next window. The
+// heap holds it in `regions[n]` (gc-tls-stock.h); region 0 has none, its
+// pools are norm_pools. The allocation paths address the pools of the
+// current region through `active_pools`, so a window switch is one pointer
+// store.
+typedef struct _jl_gc_region_state_t {
+    jl_gc_pool_t pools[JL_GC_N_MAX_POOLS];
+    struct _jl_gc_pagemeta_t *pages;       // chained through region_next
+    struct _jl_gc_pagemeta_t *fresh_pages; // wholly dead pages, reused before new ones
+    struct _jl_gc_pagemeta_t *pages_tail;  // the last link of `pages`
+    uint32_t n_pages;                      // pages on `pages`
+    uint32_t n_fresh;                      // pages on `fresh_pages`
+    arraylist_t finalizers;                // (tagged object, function) pairs of the region
+    small_arraylist_t mallocarrays;        // memories with malloc'd data of the region
+} jl_gc_region_state_t;
+
 // --- the runtime's own allocations ------------------------------------------
 // The runtime allocates on behalf of the task that runs it, and what it
 // allocates outlives any window that task holds: it belongs to region 0.
@@ -68,8 +87,12 @@ JL_DLLEXPORT void jl_gc_region_resume(int parked);
 // buffer is allocated in the region of the buffer it replaces this way.
 JL_DLLEXPORT int jl_gc_region_borrow(int n);
 JL_DLLEXPORT void jl_gc_region_unborrow(int lent);
-
-#ifndef WITH_THIRD_PARTY_HEAP
+// A region-0 zone around the runtime's own work: inference, compilation,
+// type instantiation and the dispatch cache (gf.c, jltypes.c). `enter`
+// closes the window and returns the region it held, `leave` opens it again.
+// The task may switch inside the zone, which a borrow does not allow.
+JL_DLLEXPORT int jl_gc_region_zone_enter(void);
+JL_DLLEXPORT void jl_gc_region_zone_leave(int saved);
 
 // --- the exported API ------------------------------------------------------
 // Open a window on region n (n = 0 closes it). Returns the region that was
@@ -117,17 +140,9 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
 // The census filter: the region whose census runs now, 0 otherwise. The mark
 // loops read it once per object array and pass it down as a parameter.
 extern _Atomic(int) jl_gc_region_census_target;
-// The filter as the mark loops read it. The stock-only build
-// (JL_NO_REGION_ALLOC) opens no window, so no region initializes and no
-// census runs: the filter is the constant 0, and the compiler folds the
-// census branches out of the mark loops.
 STATIC_INLINE int jl_gc_region_census_filter(void) JL_NOTSAFEPOINT
 {
-#ifdef JL_NO_REGION_ALLOC
-    return 0;
-#else
     return jl_atomic_load_relaxed(&jl_gc_region_census_target);
-#endif
 }
 // The claim of a task the census meets outside the region. Returns 1 the
 // first time a task is met in this census, 0 afterwards.
@@ -205,23 +220,36 @@ STATIC_INLINE int jl_gc_region_maybe_census(jl_ptls_t ptls)
     return jl_gc_region_census_open(ptls);
 }
 
-#else // WITH_THIRD_PARTY_HEAP
-
-// A third-party heap has no regions: every window is refused, every hook
-// declines, and the task switch carries nothing.
-STATIC_INLINE int jl_gc_region_set(int n) { (void)n; return JL_GC_REGION_EINVAL; }
-STATIC_INLINE int jl_gc_region_current(void) { return 0; }
-STATIC_INLINE int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f) { (void)ptls; (void)v; (void)f; return 0; }
-STATIC_INLINE int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned) { (void)ptls; (void)m; (void)isaligned; return 0; }
-STATIC_INLINE void jl_gc_region_task_switch(jl_ptls_t ptls, jl_task_t *lastt, jl_task_t *t) { (void)ptls; (void)lastt; (void)t; }
-STATIC_INLINE void jl_gc_region_close_window(jl_task_t *ct) { (void)ct; }
-STATIC_INLINE int jl_gc_region_finalizers_begin(jl_ptls_t ptls) { (void)ptls; return 0; }
-STATIC_INLINE void jl_gc_region_finalizers_end(jl_ptls_t ptls, int parked) { (void)ptls; (void)parked; }
-
-#endif // WITH_THIRD_PARTY_HEAP
 
 #ifdef __cplusplus
 }
 #endif
 
+#else // WITH_GC_REGIONS
+
+// Without the regions every hook is nothing, and the runtime that calls
+// them is the stock runtime, byte for byte.
+#define jl_gc_region_borrow(n) 0
+#define jl_gc_region_unborrow(lent) ((void)(lent))
+#define jl_gc_region_of(v) 0
+#define jl_gc_region_suspend() 0
+#define jl_gc_region_resume(parked) ((void)(parked))
+#define jl_gc_region_zone_enter() 0
+#define jl_gc_region_zone_leave(saved) ((void)(saved))
+#define jl_gc_region_current() 0
+#define jl_gc_region_close_window(ct) ((void)(ct))
+#define jl_gc_region_task_switch(ptls, lastt, t) ((void)0)
+#define jl_gc_region_finalizers_begin(ptls) 0
+#define jl_gc_region_finalizers_end(ptls, parked) ((void)(parked))
+#define jl_gc_region_add_finalizer(ptls, v, f) 0
+#define jl_gc_region_track_malloced(ptls, m, isaligned) 0
+#define jl_gc_region_census_filter() 0
+#define jl_gc_region_mark_finalizer_lists(mq) ((void)(mq))
+#define jl_gc_region_clear_stock_marks() ((void)0)
+#define jl_gc_region_prepare_stock_collection() ((void)0)
+#define jl_gc_region_finish_stock_collection() ((void)0)
+#define jl_gc_region_init() ((void)0)
+#define jl_gc_region_init_heap(heap) ((void)(heap))
+
+#endif // WITH_GC_REGIONS
 #endif // JL_GC_REGIONS_H

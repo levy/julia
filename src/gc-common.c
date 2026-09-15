@@ -266,8 +266,7 @@ static void jl_gc_run_finalizers_in_list(jl_task_t *ct, arraylist_t *list) JL_NO
     jl_value_t *bound_token = jl_atomic_load_relaxed(&ct->bound_cancel_token);
     uint8_t bound_default = ct->bound_cancel_default;
     JL_GC_PUSH1(&bound_token);
-    // A finalizer runs in region 0: the window of the thread is parked
-    // until the list is done (gc-regions.h).
+    // A finalizer runs in region 0: the window is parked until the list is done.
     int parked_region = jl_gc_region_finalizers_begin(ct->ptls);
     // empty out the first two entries for the GC frame
     arraylist_push(list, list->items[0]);
@@ -289,56 +288,6 @@ static void jl_gc_run_finalizers_in_list(jl_task_t *ct, arraylist_t *list) JL_NO
     ct->bound_cancel_default = bound_default;
     jl_gc_wb_current_task(ct, bound_token);
     JL_GC_POP(); // matches the JL_GC_PUSH1 above
-}
-
-// Borrow region `n` for the next allocations of this thread and give back
-// the region that was current. The window is untouched: the count of open
-// windows, the task's own region and the stickiness all stay as they were,
-// because a borrow is not a window. It is the way a replacement buffer is
-// allocated where the buffer it replaces lives, rather than where the open
-// window happens to be.
-//
-// A borrow is short: it brackets one allocation. Do not yield inside one,
-// because a task switch would save the borrowed region as the task's window.
-// Always give it back with a `finally`. A stock collection inside a borrow
-// is safe: its bracket saves and restores whatever region is current.
-JL_DLLEXPORT int jl_gc_region_borrow(int n)
-{
-#ifdef WITH_THIRD_PARTY_HEAP
-    (void)n;
-    return 0;
-#else
-    if (n < 0 || n >= JL_GC_MAX_REGIONS)
-        return JL_GC_REGION_EINVAL;
-    jl_ptls_t ptls = jl_current_task->ptls;
-    int lent = ptls->gc_tls.heap.current_region;
-    if (lent != n)
-        jl_gc_region_install_borrow(ptls, n);
-    return lent;
-#endif
-}
-
-JL_DLLEXPORT void jl_gc_region_unborrow(int lent)
-{
-#ifdef WITH_THIRD_PARTY_HEAP
-    (void)lent;
-#else
-    if (lent >= 0 && lent != jl_current_task->ptls->gc_tls.heap.current_region)
-        jl_gc_region_install_task(jl_current_task->ptls, lent);
-#endif
-}
-
-// The bracket around the runtime's own allocations on behalf of a task
-// that holds a window (gc-regions.h): region 0 is installed between the
-// two calls, the window stays open. It is the borrow of region 0.
-JL_DLLEXPORT int jl_gc_region_suspend(void)
-{
-    return jl_gc_region_borrow(0);
-}
-
-JL_DLLEXPORT void jl_gc_region_resume(int parked)
-{
-    jl_gc_region_unborrow(parked);
 }
 
 static uint64_t finalizer_rngState[JL_RNG_SIZE];
@@ -394,11 +343,10 @@ void run_finalizers(jl_task_t *ct, int finalizers_thread)
     errno = last_errno;
 }
 
+#ifdef WITH_GC_REGIONS
 // Run the (tagged object, function) pairs of `list` the way run_finalizers
-// runs the pending list: the same rng split, in_finalizer set, the list as
-// the GC frame. The list must not be one the collector or finalize_object
-// reads: the caller hands over a list it took. A region reset and a region
-// census run the finalizers of a region through this entry.
+// runs the pending list; the caller hands over a list that nothing else
+// reads. The reset and the census of a region run its finalizers here.
 void jl_gc_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
 {
     if (list->len == 0)
@@ -416,6 +364,7 @@ void jl_gc_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
 
     memcpy(&ct->rngState[0], &save_rngState[0], sizeof(save_rngState));
 }
+#endif
 
 JL_DLLEXPORT void jl_gc_run_pending_finalizers(jl_task_t *ct)
 {
@@ -520,10 +469,7 @@ void jl_gc_run_all_finalizers(jl_task_t *ct)
 
 void jl_gc_add_finalizer_(jl_ptls_t ptls, void *v, void *f) JL_NOTSAFEPOINT
 {
-    // Every registration path lands here (Base and the Core.finalizer
-    // builtin included). A region object's finalizer goes to its region's
-    // own list (gc-regions.c): the reset runs them all, the census runs
-    // the dead. A cross-thread registration on a region object throws.
+    // The finalizer of a region object goes to the list of its region (gc-regions.h).
     if (jl_gc_region_add_finalizer(ptls, v, f))
         return;
     assert(jl_atomic_load_relaxed(&ptls->gc_state) == JL_GC_STATE_UNSAFE);
@@ -823,9 +769,7 @@ size_t jl_genericmemory_nbytes(jl_genericmemory_t *m) JL_NOTSAFEPOINT
 
 // tracking Memorys with malloc'd storage
 void jl_gc_track_malloced_genericmemory(jl_ptls_t ptls, jl_genericmemory_t *m, int isaligned){
-    // A memory allocated inside a region belongs to the region's own list
-    // (gc-regions.c): its header dies with the region's pages, so the
-    // common list must never hold it.
+    // A memory allocated in a region goes to the list of its region (gc-regions.h).
     if (jl_gc_region_track_malloced(ptls, m, isaligned))
         return;
     // This is **NOT** a GC safe point.

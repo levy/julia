@@ -366,7 +366,7 @@ static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_N
             continue;
         }
         int isaligned = (uintptr_t)items[n] & 1;
-        jl_gc_free_memory(m, isaligned);
+        gc_region_free_memory(m, isaligned);
         l--;
         items[n] = items[l];
     }
@@ -511,12 +511,6 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 // EINVAL for a bad region number, EBUSY while finalizers run on this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
-#ifdef JL_NO_REGION_ALLOC
-    // The stock-only build allocates through norm_pools only; a window
-    // would allocate into the wrong pools, so the entry refuses.
-    (void)n;
-    return JL_GC_REGION_EINVAL;
-#else
     jl_task_t *ct = jl_current_task;
     jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
     int old = heap->current_region;
@@ -551,7 +545,6 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
     heap->current_region = (uint8_t)n;
     return old;
-#endif
 }
 
 // The region of the open window on the calling thread, 0 when none is open.
@@ -585,6 +578,52 @@ void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     region_mark_live(heap, n);
     heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
     heap->current_region = (uint8_t)n;
+}
+
+// A borrow brackets one allocation: the region of the buffer that a new
+// buffer replaces is installed for it, and the window is untouched. A task
+// must not switch inside a borrow, because a switch parks the installed
+// region as the task's window.
+JL_DLLEXPORT int jl_gc_region_borrow(int n)
+{
+    if (n < 0 || n >= JL_GC_MAX_REGIONS)
+        return JL_GC_REGION_EINVAL;
+    jl_ptls_t ptls = jl_current_task->ptls;
+    int lent = ptls->gc_tls.heap.current_region;
+    if (lent != n)
+        jl_gc_region_install_borrow(ptls, n);
+    return lent;
+}
+
+JL_DLLEXPORT void jl_gc_region_unborrow(int lent)
+{
+    if (lent >= 0 && lent != jl_current_task->ptls->gc_tls.heap.current_region)
+        jl_gc_region_install_task(jl_current_task->ptls, lent);
+}
+
+// The borrow of region 0, for the runtime's own allocations on behalf of a
+// task that holds a window.
+JL_DLLEXPORT int jl_gc_region_suspend(void)
+{
+    return jl_gc_region_borrow(0);
+}
+
+JL_DLLEXPORT void jl_gc_region_resume(int parked)
+{
+    jl_gc_region_unborrow(parked);
+}
+
+// A region-0 zone closes the window and opens it again after, so the task
+// may switch inside; a refusal of the reopen leaves the window closed.
+JL_DLLEXPORT int jl_gc_region_zone_enter(void)
+{
+    return jl_gc_region_set(0);
+}
+
+JL_DLLEXPORT void jl_gc_region_zone_leave(int saved)
+{
+    if (saved > 0)
+        jl_gc_region_set(saved);
 }
 
 // Close the window of a task that reaches its end, whether it returns or

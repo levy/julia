@@ -549,14 +549,13 @@ typedef struct _jl_task_t {
     _Atomic(int16_t) tid;
     // threadpool id
     int8_t threadpoolid;
-    // The region this task's open window holds current (0 = none): parked
-    // here across task switches, so a window follows its task, not its
-    // thread. Written only by ctx_switch and task creation.
+#ifdef WITH_GC_REGIONS
+    // The GC region of this task's open window (0 = none), parked across
+    // task switches so that a window follows its task (gc-regions.h), and
+    // the stickiness to restore when the window closes.
     uint8_t region;
-    // The stickiness to restore when this task's window closes: an open
-    // window pins the task to its thread, because a region's pages live
-    // in the thread heap.
     uint8_t sticky_before_region;
+#endif
     // Reentrancy bits
     // Bit 0: 1 if we are currently running inference/codegen
     // Bit 1-2: 0-3 counter of how many times we've reentered inference

@@ -19,14 +19,8 @@ JL_DLLEXPORT jl_genericmemory_t *jl_idtable_rehash(jl_genericmemory_t *a, size_t
     // keep the original memory in the original slot since we need `ol`
     // to be valid in the loop below.
     JL_GC_PUSH2(&newa, &a);
-    // The new table replaces `a`, so it takes the region of `a`, not the
-    // region of whatever window is open (gc-regions.h). Without the borrow,
-    // a rehash inside a window makes the table a younger object of an older
-    // dictionary, and the barrier quarantines the region for an ordinary
-    // insert. The old table is the key, not the dictionary, because this
-    // function does not see the dictionary; that is safe only because an
-    // IdDict never holds the shared empty memory: it starts with a table of
-    // 32 and `empty!` makes a fresh one in the region of the dictionary.
+    // The new table replaces `a`, so it is allocated in the GC region of `a`
+    // (gc-regions.h); an IdDict never holds the shared empty memory.
     int lent = jl_gc_region_borrow(jl_gc_region_of((jl_value_t*)a));
     newa = jl_alloc_memory_any(newsz);
     jl_gc_region_unborrow(lent);

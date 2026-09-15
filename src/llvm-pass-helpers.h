@@ -61,12 +61,14 @@ struct JuliaPassContext {
     llvm::Function *typeof_func;
     llvm::Function *blackbox_func;
     llvm::Function *write_barrier_func;
-    llvm::Function *region_write_barrier_func;
     llvm::Function *pop_handler_noexcept_func;
     llvm::Function *call_func;
     llvm::Function *call2_func;
     llvm::Function *call3_func;
     llvm::Function *cancel_point_func;
+#ifdef WITH_GC_REGIONS
+    llvm::Function *region_write_barrier_func = nullptr; // the escape barrier of the GC regions (codegen.cpp)
+#endif
 
     // Creates a pass context. Type and function pointers
     // are set to `nullptr`. Metadata nodes are initialized.

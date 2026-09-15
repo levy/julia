@@ -326,11 +326,7 @@ void JL_NORETURN jl_finish_task(jl_task_t *ct)
     // ensure that state is cleared
     ct->ptls->in_finalizer = 0;
     ct->ptls->in_pure_callback = 0;
-    // A window belongs to its task. A task that reaches its end inside one,
-    // through a return or a throw, closes it here: the count of open windows
-    // is process-wide, and a task that died holding one would refuse every
-    // census and every global reset for the life of the process
-    // (gc-regions.c).
+    // A task that ends inside a GC region window closes it (gc-regions.h).
     jl_gc_region_close_window(ct);
     ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
     // let the runtime know this task is dead and find a new task to run
@@ -1133,8 +1129,10 @@ JL_DLLEXPORT jl_task_t *jl_new_task(jl_value_t *start, jl_value_t *completion_fu
     // there is no active exception handler available on this stack yet
     t->eh = NULL;
     t->sticky = 1;
+#ifdef WITH_GC_REGIONS
     t->region = 0;
     t->sticky_before_region = 0;
+#endif
     t->gcstack = NULL;
     t->excstack = NULL;
     t->ctx.started = 0;
@@ -1613,8 +1611,10 @@ jl_task_t *jl_init_root_task(jl_ptls_t ptls, void *stack_lo, void *stack_hi)
     jl_atomic_store_relaxed(&ct->tid, ptls->tid);
     ct->threadpoolid = jl_threadpoolid(ptls->tid);
     ct->sticky = 1;
+#ifdef WITH_GC_REGIONS
     ct->region = 0;
     ct->sticky_before_region = 0;
+#endif
     ct->ptls = ptls;
     ct->world_age = 1; // OK to run Julia code on this task
     ct->reentrant_timing = 0;
@@ -2087,8 +2087,8 @@ JL_DLLEXPORT jl_value_t *jl_new_wait_entry(jl_value_t *task, size_t nslots)
     if (nslots > UINT32_MAX ||
         nslots > (SIZE_MAX - sizeof(jl_wait_entry_t)) / sizeof(jl_wait_slot_t))
         jl_error("WaitEntryN: too many slots");
-    // A wait entry is linked from the task, a region-0 object, so it is
-    // allocated in region 0 whatever window the task holds (gc-regions.h).
+    // A wait entry is linked from the task, a region-0 object: it is made in
+    // region 0 whatever GC region window the task holds (gc-regions.h).
     int parked_region = jl_gc_region_suspend();
     jl_wait_entry_t *w = (jl_wait_entry_t*)jl_gc_alloc(
         ct->ptls, sizeof(jl_wait_entry_t) + nslots * sizeof(jl_wait_slot_t),

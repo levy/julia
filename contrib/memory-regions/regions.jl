@@ -1,9 +1,11 @@
 # The Julia face of the runtime regions (src/gc-regions.h; the design and
 # the rules are in doc/src/devdocs/gc-regions.md). It needs a julia built
-# from this branch. Every entry takes region numbers; the meaning of a
-# number belongs to the caller.
+# with WITH_GC_REGIONS=1. Every entry takes region numbers; the meaning of
+# a number belongs to the caller.
 
 module Regions
+
+Base.GC_REGIONS || error("this julia was built without the GC regions (WITH_GC_REGIONS=0)")
 
 export region_set, region_reset, unsafe_region_reset, @with_region, @in_region_of,
        region_current, region_of,

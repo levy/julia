@@ -12,6 +12,15 @@
 extern "C" {
 #endif
 
+// With the GC regions the census filter threads through the mark loops
+// (gc-stock.c), and a mark body past the inline budget would keep the queue
+// operations as calls, at a memcpy per element: they inline by force.
+#ifdef WITH_GC_REGIONS
+#define JL_GC_QUEUE_INLINE static inline __attribute__((always_inline))
+#else
+#define JL_GC_QUEUE_INLINE static inline
+#endif
+
 // =======
 // Chase and Lev's work-stealing queue, optimized for
 // weak memory models by Le et al.
@@ -49,12 +58,7 @@ typedef struct {
     alignas(JL_CACHE_BYTE_ALIGNMENT) _Atomic(ws_array_t *) array;
 } ws_queue_t;
 
-// The queue operations must inline into their callers: `eltsz` is a
-// constant there, and the element memcpy folds to a register move. Left
-// to the inline budget, a caller that also inlines a large mark body
-// keeps these as real calls, and the memcpy costs nanoseconds per
-// element on the mark's hot path.
-FORCE_INLINE ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz) JL_NOTSAFEPOINT
+JL_GC_QUEUE_INLINE ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz) JL_NOTSAFEPOINT
 {
     int64_t b = jl_atomic_load_relaxed(&q->bottom);
     int64_t t = jl_atomic_load_acquire(&q->top);
@@ -75,7 +79,7 @@ FORCE_INLINE ws_array_t *ws_queue_push(ws_queue_t *q, void *elt, int32_t eltsz) 
     return old_ary;
 }
 
-FORCE_INLINE void ws_queue_pop(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOTSAFEPOINT
+JL_GC_QUEUE_INLINE void ws_queue_pop(ws_queue_t *q, void *dest, int32_t eltsz) JL_NOTSAFEPOINT
 {
     int64_t b = jl_atomic_load_relaxed(&q->bottom) - 1;
     ws_array_t *ary = jl_atomic_load_relaxed(&q->array);

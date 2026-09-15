@@ -2288,8 +2288,10 @@ inline jl_value_t *replace_bits(jl_value_t *ty, char *p, uint8_t *psel, jl_value
         }
         unlock(p, parent, needlock, isatomic);
     }
+#ifdef WITH_GC_REGIONS
     if (hasptr)
         jl_gc_multi_wb_fresh(r, r, (jl_datatype_t*)ty); // the old value is field 0 of r, at offset 0
+#endif
     if (!isunion) {
         r = undefref_check((jl_datatype_t*)rty, r);
         if (__unlikely(r == NULL))
