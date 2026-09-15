@@ -3,11 +3,12 @@
 include(joinpath(@__DIR__, "regions_api.jl"))
 using Serialization
 
-# A quarantine is permanent, and a quarantined region stays live, which
-# blocks its parent's reset. The clean cases use regions 1 to 3 first and
-# reset them; the quarantine cases then burn one region each, from 7 down
-# to 2, and the fresh-copy cases burn regions 8 to 11. The mask check at
-# the end fixes the outcome of every case.
+# A quarantine lasts until the next stock collection, and a quarantined
+# region stays live, which blocks its parent's reset. The clean cases use
+# regions 1 to 3 first and reset them; the quarantine cases then burn one
+# region each, from 7 down to 2, and the fresh-copy cases burn regions 8 to
+# 11. The mask check fixes the outcome of every case, and the last case
+# runs the collection that hands every burned region over.
 
 const SIM = 1
 const EVENT = 2
@@ -293,13 +294,52 @@ function spawn_quarantines_region2()
     check("the quarantined reset refuses", code(region_reset(2)) == EQUARANTINED)
 end
 
+# The clean regions stay clean whatever happened in between. A burned region
+# is quarantined until a stock collection, and a collection can have run
+# during the cases above, so each case checks its own quarantine right after
+# the escape, and the hand-over case below checks the end state.
 function quarantine_mask_is_as_expected()
     check("region 1 is not quarantined", quarantined(1) == 0)
     # Region 6 held the Dict rehash, which is no longer an escape.
     check("region 6 is not quarantined", quarantined(6) == 0)
-    for n in (2, 3, 4, 5, 7, 8, 9, 10, 11)
-        check("region $n is quarantined", quarantined(n) == 1)
+end
+
+# The next stock collection hands every quarantined region to the stock
+# collector: the quarantine clears, the pages are gone, an escaped object
+# lives on as an ordinary object, and a window on the region opens again.
+const KEPT = Ref{Any}(nothing)
+@noinline function escape_into_global(n)
+    region_set(n)
+    o = Ref(42)
+    region_set(0)
+    KEPT[] = o                          # a region-n child into a region-0 parent
+    return nothing
+end
+@noinline function fill_region(n)
+    region_set(n)
+    for i in 1:100
+        escape(Ref(i))
     end
+    region_set(0)
+    return nothing
+end
+function handover_after_a_collection()
+    escape_into_global(12)
+    check("the store into a global quarantines region 12", quarantined(12) == 1)
+    check("region 12 holds pages before the collection", region_pages(12) > 0)
+    GC.gc()
+    for n in (2, 3, 4, 5, 7, 8, 9, 10, 11, 12)
+        check("region $n is handed over after the collection", quarantined(n) == 0)
+        check("region $n holds no page after the hand-over", region_pages(n) == 0)
+    end
+    check("the escaped object reads after the hand-over", KEPT[][] == 42)
+    check("the escaped object is a stock object now", region_of(KEPT[]) == 0)
+    GC.gc()
+    check("the escaped object reads after a second collection", KEPT[][] == 42)
+    fill_region(12)
+    check("a window on the handed-over region opens and fills it", region_pages(12) > 0)
+    check("the reset of the reused region succeeds", !refused(reset_via_call(12)))
+    check("the reset freed it", region_pages(12) == 0)
 end
 
 clean_window()
@@ -321,5 +361,6 @@ iddict_key_quarantines_region4()
 serialize_quarantines_region3()
 spawn_quarantines_region2()
 quarantine_mask_is_as_expected()
+handover_after_a_collection()
 
 finish("regions_escape")

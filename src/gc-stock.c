@@ -4099,7 +4099,8 @@ JL_DLLEXPORT void jl_gc_collect(jl_gc_collection_t collection)
 
     if (!jl_atomic_load_acquire(&jl_gc_disable_counter)) {
         JL_LOCK_NOGC(&finalizers_lock); // all the other threads are stopped, so this does not make sense, right? otherwise, failing that, this seems like plausibly a deadlock
-        // Every thread runs the collection with region 0 installed (gc-regions.h).
+        // Every thread runs the collection with region 0 installed, and a
+        // quarantined region becomes stock pages (gc-regions.h).
         jl_gc_region_prepare_stock_collection();
         if (_jl_gc_collect(ptls, collection)) {
             // recollect

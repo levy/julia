@@ -34,7 +34,7 @@ The rules the runtime keeps: every pool allocation goes into the region of the
 open window of the thread, the compiler's own allocations included, except a
 buffer that replaces the buffer of an object that exists; every managed pointer
 store checks the one rule while a region is in use, and a store that breaks it
-quarantines the region of the child, process-wide and permanently; a region is
+quarantines the region of the child until the next stock collection; a region is
 reset only when no execution root references into it and no live child region
 exists; a collection of one region takes its roots from the execution roots of
 every task and from the younger regions, nothing else. The store check is what
@@ -65,8 +65,11 @@ check for the runtime's stores. Armed, the store calls
 `jl_gc_region_wb(parent, child)`, which reads the region of the child from its
 page tag; a child of region `cr` under a parent of region `pr` is legal when
 `cr` is `pr` or an ancestor of it. An illegal store is reported in one
-`REGION-ESCAPE` line and quarantines `cr`: the store stays, the memory of the
-region is retained, and nothing is freed under the reference.
+`REGION-ESCAPE` line and quarantines `cr`: the store stays, a reset and a
+census of `cr` return `EQUARANTINED`, and the next stock collection hands the
+pages of `cr` to the stock collector, where the escaped object and the other
+objects of the region live and die as ordinary objects. The region is usable
+again after that collection.
 
 A bulk copy (`copyto!` and `copy` of a `Memory` with references,
 `jl_svec_copy`, the store of an inline immutable with pointer fields) checks
@@ -207,8 +210,8 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
   object to C and let it keep the pointer.
 - A region's pages belong to one thread heap and never return to the operating
   system or to the stock pool, so `gc_heap_stats.heap_size` counts them, parked
-  or in use. A quarantine is permanent, and the memory of a quarantined region
-  is retained for the life of the process.
+  or in use. A quarantine lasts until the next stock collection, which hands
+  the pages of the region to the stock collector; nothing is retained.
 - Compilation runs in region 0: a method compiled for the first time inside a
   window costs its compile in the stock heap. A borrow is thread state: after
   a yield inside one, the task keeps the borrowed region until the borrow ends.

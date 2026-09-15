@@ -36,8 +36,8 @@ enum {
     JL_GC_REGION_ERACE = -3,        // lost the race for the safepoint; retry
     JL_GC_REGION_EUNSAFE = -4,      // another thread runs managed code
                                     // (cooperative census only)
-    JL_GC_REGION_EQUARANTINED = -5, // an escape quarantined the region; its
-                                    // memory is retained
+    JL_GC_REGION_EQUARANTINED = -5, // an escape quarantined the region, until
+                                    // the next stock collection
     JL_GC_REGION_EFINALIZERS = -6,  // finalizers are pending; a cooperative
                                     // census runs them first
     JL_GC_REGION_ECHILD = -7,       // the region has a live child region
@@ -138,9 +138,10 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT;
 // Install a borrowed region on a thread (jl_gc_region_borrow); the region
 // becomes live on this heap.
 void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT;
-// The brackets of a stock collection: park every open window before it and
-// install the windows again after it; after each pass, clear the marks the
-// pass left on region pages.
+// The brackets of a stock collection: park every open window before it,
+// hand every quarantined region to the stock collector, and install the
+// windows again after it; after each pass, clear the marks the pass left on
+// region pages.
 void jl_gc_region_prepare_stock_collection(void) JL_NOTSAFEPOINT;
 void jl_gc_region_clear_stock_marks(void) JL_NOTSAFEPOINT;
 void jl_gc_region_finish_stock_collection(void) JL_NOTSAFEPOINT;

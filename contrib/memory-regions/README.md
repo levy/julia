@@ -49,9 +49,10 @@ Five ideas, and nothing else:
 
 **What happens if you break the rule.** The write barrier reports the store
 in one line that names both objects and **quarantines** the region: its
-reset and its censuses return `EQUARANTINED` from then on, and its memory is
-retained until the process ends. You lose the memory of that region, never
-memory safety.
+reset and its censuses return `EQUARANTINED` until the next stock collection,
+which hands the region's pages to the stock collector, where its objects live
+and die like any other. You lose the region until that collection, never
+memory safety and never memory.
 
 **What you must not do.** The five that catch people:
 
@@ -152,7 +153,7 @@ the objects in a function and reset after it returns.
 r = reinterpret(Int64, region_reset(SCRATCH))
 if r < 0
     r == -8 && @warn "something still points into the region"
-    r == -5 && @error "an escape quarantined it; the memory is retained"
+    r == -5 && @error "an escape quarantined it; the next collection takes it over"
 else
     @info "freed" pages=r
 end

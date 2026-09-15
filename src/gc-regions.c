@@ -173,7 +173,7 @@ JL_DLLEXPORT int jl_gc_region_pages(int n)
 }
 
 // 1 when an escape quarantined region n; the quarantine is process-wide
-// and permanent.
+// and lasts until the next stock collection.
 JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 {
     if (!region_valid(n))
@@ -214,8 +214,8 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
     uint64_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
     if (!(seen & bit))
         jl_safe_printf("REGION-ESCAPE: a %s of region %d was stored into a %s "
-                       "of region %d; region %d is quarantined - its reset and "
-                       "census now refuse, and its memory is retained\n",
+                       "of region %d; region %d is quarantined until the next "
+                       "collection hands its pages to the stock collector\n",
                        jl_typeof_str((jl_value_t*)child), cr,
                        jl_typeof_str((jl_value_t*)parent), pr, cr);
     // With debug on, the first escape of a region prints a backtrace.
@@ -331,6 +331,53 @@ static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_N
 // objects like any other, the clear keeps the bits clean for the census,
 // and a second pass of a full collection must traverse them again.
 
+// The hand-over of a quarantined region to the stock collector, on one heap,
+// with the world stopped: the pages lose their tag, and the sweep of this
+// collection treats them like any other page. The cells past a bump cursor
+// and the wholly dead fresh pages get zero headers, so that the sweep reads
+// them as free. The finalizers and the malloc'd memories go to the lists of
+// the thread. The region state stays allocated and empty, so a window still
+// open on the region allocates into new pages.
+static void region_handover_heap(jl_ptls_t ptls2, int n) JL_NOTSAFEPOINT
+{
+    jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
+    jl_gc_region_state_t *rs = heap->regions[n];
+    if (rs == NULL)
+        return;
+    for (int i = 0; i < JL_GC_N_MAX_POOLS; i++) {
+        char *bump = (char*)rs->pools[i].newpages;
+        if (bump != NULL) {
+            jl_gc_pagemeta_t *pg = page_metadata(gc_page_data(bump - 1));
+            size_t osize = pg->osize;
+            char *end = pg->data + GC_PAGE_OFFSET + ((GC_PAGE_SZ - GC_PAGE_OFFSET) / osize) * osize;
+            for (char *c = bump; c < end; c += osize)
+                ((jl_taggedvalue_t*)c)->header = 0;
+        }
+        rs->pools[i].freelist = NULL;
+        rs->pools[i].newpages = NULL;
+    }
+    for (size_t k = 0; k < rs->finalizers.len; k++)
+        arraylist_push(&ptls2->finalizers, rs->finalizers.items[k]);
+    rs->finalizers.len = 0;
+    for (size_t k = 0; k < rs->mallocarrays.len; k++)
+        small_arraylist_push(&ptls2->gc_tls_common.heap.mallocarrays, rs->mallocarrays.items[k]);
+    rs->mallocarrays.len = 0;
+    jl_gc_pagemeta_t *next;
+    for (jl_gc_pagemeta_t *pg = rs->pages; pg != NULL; pg = next) {
+        next = pg->region_next;
+        pg->region_next = NULL;
+        pg->region_n = 0;
+    }
+    for (jl_gc_pagemeta_t *pg = rs->fresh_pages; pg != NULL; pg = next) {
+        next = pg->region_next;
+        pg->region_next = NULL;
+        pg->region_n = 0;
+        memset(pg->data + GC_PAGE_OFFSET, 0, GC_PAGE_SZ - GC_PAGE_OFFSET);
+    }
+    rs->pages = rs->pages_tail = rs->fresh_pages = NULL;
+    rs->n_pages = rs->n_fresh = 0;
+}
+
 void jl_gc_region_prepare_stock_collection(void) JL_NOTSAFEPOINT
 {
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
@@ -341,6 +388,18 @@ void jl_gc_region_prepare_stock_collection(void) JL_NOTSAFEPOINT
         heap->saved_region = heap->current_region;
         if (heap->current_region != 0)
             jl_gc_region_install_task(ptls2, 0);
+    }
+    uint64_t q = jl_atomic_load_relaxed(&region_quarantined_mask);
+    if (__unlikely(q != 0)) {
+        for (int n = 1; n < JL_GC_MAX_REGIONS; n++) {
+            if (!((q >> n) & 1))
+                continue;
+            for (int t_i = 0; t_i < gc_n_threads; t_i++) {
+                if (gc_all_tls_states[t_i] != NULL)
+                    region_handover_heap(gc_all_tls_states[t_i], n);
+            }
+        }
+        jl_atomic_fetch_and_relaxed(&region_quarantined_mask, ~q);
     }
 }
 

@@ -80,6 +80,11 @@ function the_reset_refuses_after_its_finalizer_escaped()
     check("the finalizer ran and published the object", length(SINK) == 1)
     check("the published object still reads", SINK[1][] == 7)
     check("the region is quarantined", quarantined(FINAL) == 1)
+    GC.gc()
+    check("the collection hands the region over", quarantined(FINAL) == 0)
+    check("the published object reads after the hand-over", SINK[1][] == 7)
+    check("the published object is a stock object now", region_of(SINK[1]) == 0)
+    check("the reset of the handed-over region succeeds", !refused(reset_via_call(FINAL)))
 end
 
 # A task that opens a window and dies inside it must not hold the window

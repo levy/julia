@@ -340,6 +340,22 @@ tree_sibling_isolation()
 tree_lock_discipline()
 tree_redeclared_ancestor()
 
+# The next stock collection hands the quarantined leaves to the stock
+# collector; a reset then ends the life of each leaf, and the trunk resets
+# after its last child.
+function tree_handover()
+    GC.gc()
+    for r in (2, 3, 4, 5)
+        check("region $r is handed over after the collection", quarantined(r) == 0)
+        check("region $r holds no page after the hand-over", region_pages(r) == 0)
+    end
+    for r in (5, 4, 3, 2)
+        check("the reset of the handed-over region $r succeeds", !refused(reset_via_call(r)))
+    end
+    check("the trunk resets after its last child", !refused(reset_via_call(TREE_TRUNK)))
+end
+
 tree_final_quarantine_mask()
+tree_handover()
 
 finish("regions_tree")
