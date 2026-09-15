@@ -344,9 +344,8 @@ void run_finalizers(jl_task_t *ct, int finalizers_thread)
 }
 
 #ifdef WITH_GC_REGIONS
-// Run the (tagged object, function) pairs of `list` the way run_finalizers
-// runs the pending list; the caller hands over a list that nothing else
-// reads. The reset and the census of a region run its finalizers here.
+// Run the pairs of `list` as run_finalizers runs the pending list; the
+// reset and the census of a region call it with a list nothing else reads.
 void jl_gc_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
 {
     if (list->len == 0)

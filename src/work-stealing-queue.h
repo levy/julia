@@ -12,8 +12,8 @@
 extern "C" {
 #endif
 
-// With the GC regions the mark loops grow past the inline budget, and the
-// queue operations would stay calls, at a memcpy per element: forced inline.
+// With the GC regions the mark loops grow past the inline budget; without
+// the forced inline the queue operations become calls, at a memcpy per element.
 #ifdef WITH_GC_REGIONS
 #define JL_GC_QUEUE_INLINE static inline __attribute__((always_inline))
 #else

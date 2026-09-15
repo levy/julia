@@ -326,7 +326,7 @@ void JL_NORETURN jl_finish_task(jl_task_t *ct)
     // ensure that state is cleared
     ct->ptls->in_finalizer = 0;
     ct->ptls->in_pure_callback = 0;
-    // A task that ends inside a GC region window closes it (gc-regions.h).
+    // The window of a task that ends is closed here (gc-regions.h).
     jl_gc_region_close_window(ct);
     ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
     // let the runtime know this task is dead and find a new task to run

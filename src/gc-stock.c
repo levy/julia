@@ -312,7 +312,7 @@ STATIC_INLINE void gc_setmark_pool_(jl_ptls_t ptls, jl_taggedvalue_t *o,
 
 #ifdef WITH_GC_REGIONS
 // A pool object without page metadata is a corpse: an object of a GC region
-// that a reset freed while a reference lived on. Name it, then abort.
+// that a reset freed while a reference lived on. Report it, then abort.
 static NOINLINE void gc_region_corpse_report(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
 {
     char *data = gc_page_data(o);
@@ -381,8 +381,8 @@ STATIC_INLINE void gc_setmark_buf(jl_ptls_t ptls, void *o, uint8_t mark_mode, si
 STATIC_INLINE void maybe_collect(jl_ptls_t ptls) JL_CANSAFEPOINT
 {
 #ifdef WITH_GC_REGIONS
-    // A window on a region past its census threshold gets a census of that
-    // region instead of a stock collection (gc-regions.h).
+    // Past the census threshold, a census of the open region instead of a
+    // stock collection (gc-regions.h).
     if (__unlikely(ptls->gc_tls.heap.current_region != 0) && jl_gc_region_maybe_census(ptls))
         return;
 #endif
@@ -399,8 +399,8 @@ STATIC_INLINE void maybe_collect(jl_ptls_t ptls) JL_CANSAFEPOINT
 JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *value)
 {
 #ifdef WITH_GC_REGIONS
-    // A region reset frees its objects without a look at the weak_refs
-    // list, so a weak reference to a region object would dangle: refuse it.
+    // A reset does not clear weak references, so a WeakRef to a region
+    // object would dangle.
     if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) {
         jl_gc_pagemeta_t *m = page_metadata((char*)jl_astaggedvalue(value));
         if (m != NULL && m->region_n != 0)
@@ -870,8 +870,8 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     // in small_alloc significantly
     jl_ptls_t ptls = jl_current_task->ptls;
 #ifdef WITH_GC_REGIONS
-    // A region reuses its own wholly dead pages, parked by a reset or a
-    // census, before it claims a new one (gc-regions.h).
+    // The wholly dead pages of the region, parked by a reset or a census,
+    // are reused before a new page is claimed (gc-regions.h).
     int cr = ptls->gc_tls.heap.current_region;
     jl_gc_region_state_t *rs = cr != 0 ? ptls->gc_tls.heap.regions[cr] : NULL;
     if (rs != NULL) {
@@ -896,8 +896,8 @@ static NOINLINE jl_taggedvalue_t *gc_add_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
     pg->osize = p->osize;
     pg->thread_n = ptls->tid;
 #ifdef WITH_GC_REGIONS
-    // The page carries the region that claimed it, and the region chains
-    // its pages, so a reset frees them without a walk of the heap.
+    // The page carries its region and is on the region's chain, so a reset
+    // finds the pages without a walk of the heap.
     pg->region_n = cr;
     pg->region_next = NULL;
     if (rs != NULL) {
@@ -924,8 +924,8 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // to workaround a llvm bug.
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
 #ifdef WITH_GC_REGIONS
-    // `offset` names a pool of norm_pools; the same pool of the current
-    // region's array is the one that allocates (gc-regions.h).
+    // `offset` selects a pool of norm_pools; the same pool of the current
+    // region's array is used (gc-regions.h).
     size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
     jl_gc_pool_t *p = ptls->gc_tls.heap.active_pools + pool_idx;
 #else
@@ -2233,8 +2233,8 @@ STATIC_INLINE void gc_mark_objarray(jl_ptls_t ptls, jl_value_t *obj_parent, jl_v
         }
     }
 #ifdef WITH_GC_REGIONS
-    // The census filter is loop-invariant: the stock loop passes a literal
-    // 0 to the claim, and walks the slots at stock cost.
+    // The census filter is loop-invariant; the stock loop passes a literal
+    // 0 to the claim.
     int scoped = jl_gc_region_census_filter();
     if (__likely(scoped == 0)) {
         for (; obj_begin < scan_end; obj_begin += step) {

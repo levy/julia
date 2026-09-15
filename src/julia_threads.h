@@ -551,7 +551,8 @@ typedef struct _jl_task_t {
     int8_t threadpoolid;
 #ifdef WITH_GC_REGIONS
     // The GC region of this task's open window (0 = none) and the stickiness
-    // to restore when it closes: a window follows its task (gc-regions.h).
+    // to restore when it closes; the window is saved and restored with the
+    // task (gc-regions.h).
     uint8_t region;
     uint8_t sticky_before_region;
 #endif

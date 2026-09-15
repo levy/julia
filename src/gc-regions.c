@@ -5,15 +5,11 @@
 // ========================================================================= //
 //
 // A region is a numbered set of pool pages with its own allocation cursors.
-// A thread allocates into region n while a window on n is open, and a reset
-// frees the whole region without a trace. The stock collector marks region
-// objects like any other and never sweeps a region page; the census below
-// collects one region alone. The rules a program must keep, and why they
-// make the entries below sound, are in doc/src/devdocs/gc-regions.md. The
-// state is the per-heap region table (gc-tls-stock.h), the page tag
-// (gc-stock.h) and the process-wide tree and masks below; the hooks of the
-// allocator, the mark, the sweep and the finalizer path (gc-stock.c,
-// gc-common.c) call in through gc-regions.h.
+// While a window on region n is open, the thread allocates into region n; a
+// reset frees the whole region without a trace. The stock collector marks
+// region objects like any other and never sweeps a region page; a census
+// collects one region alone. doc/src/devdocs/gc-regions.md states the rules
+// a program must keep and why they make the entries below sound.
 
 #include "gc-common.h"
 #include "gc-stock.h"
@@ -25,36 +21,28 @@ extern "C" {
 
 // --- process-wide state ------------------------------------------------------
 
-// How many windows are open across every thread. A parked task keeps its
-// window, so the count is the number of tasks in a window. The stop-the-world
-// census, the global reset and the debug check refuse while any window is
-// open; the stock collection parks every open window instead (see the
-// brackets below).
+// The number of tasks that hold an open window, across every thread. A
+// stop-the-world census, a global reset and the debug check return EBUSY
+// while it is not zero; a stock collection parks the windows instead.
 static _Atomic(int) region_windows_open = 0;
 
-// The escape barrier. Armed at the first window; disarmed it costs every
-// pointer store one well-predicted load-and-branch. Armed, the lowered write
-// barrier calls jl_gc_region_wb, which compares the two page tags: a store
-// whose child is younger than its parent breaks the reference rule, and the
-// child's region is quarantined - its reset and census refuse from then on,
-// so an escape costs memory, never a dangling pointer.
+// The escape barrier is armed at the first window and stays armed. Armed,
+// every write barrier compares the page tags of parent and child, and a
+// store of a younger child into an older parent quarantines the child's
+// region: an escape costs memory, never a dangling pointer.
 JL_DLLEXPORT _Atomic(uint8_t) jl_gc_region_barrier_on = 0;
 static _Atomic(uint64_t) region_quarantined_mask = 0;
 
-// The census filter: the region whose census runs now, 0 otherwise. The mark
-// loop reads it once per object array and passes it down, so a stock mark
-// pays nothing per slot.
+// The census filter: the region of the census that runs now, 0 otherwise.
 _Atomic(int) jl_gc_region_census_target = 0;
 
-// The tasks the census met outside the region. Their stacks are execution
-// roots, so each one is scanned once; the table is the dedup, because a
-// task's mark bits are left untouched (a stock collection leaves tasks
-// old-marked, and a mark-based claim would never fire).
+// The tasks a census reached outside the region, each scanned once. A stock
+// collection leaves a task old-marked, so the mark bit cannot record the
+// visit; this table does.
 static htable_t region_census_tasks;
 static size_t region_census_task_count = 0;
 
-// The debug mode: a reset refuses while an execution root references into
-// the region (jl_gc_region_set_debug).
+// With debug on, a refused reset reports the roots it found (jl_gc_region_set_debug).
 static int region_debug_checks = 0;
 
 // The phase breakdown of the last census: 0 total ns, 1 stop-the-world ns,
@@ -62,20 +50,17 @@ static int region_debug_checks = 0;
 // 7 pages freed wholesale.
 static _Atomic(uint64_t) region_collect_stats[8];
 
-// Read one field of the breakdown; 0 for an index out of range. The fields
-// are those of the last census any thread ran: read them on the thread that
-// ran the census, right after it returned.
+// A field of the last census, 0 for an index out of range.
 JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 {
     return (i >= 0 && i < 8) ? jl_atomic_load_relaxed(&region_collect_stats[i]) : 0;
 }
 
-// The page count that triggers a census on the open region from the
-// allocator (jl_gc_region_maybe_census in gc-regions.h). 0 = never.
+// The page count of the open region past which the page claim runs a
+// census; 0 = never.
 _Atomic(int) jl_gc_region_census_page_threshold = 0;
 
-// Set the threshold, process-wide. It takes effect at the next page a window
-// claims on any thread.
+// Set the threshold, process-wide; the next page claim of a window reads it.
 JL_DLLEXPORT void jl_gc_region_census_threshold(int pages)
 {
     jl_atomic_store_relaxed(&jl_gc_region_census_page_threshold, pages);
@@ -87,20 +72,17 @@ STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
 }
 
 // --- the region tree ------------------------------------------------------------
-// The regions form a declared tree of lifetimes: region_parent[r] names the
-// parent of r (0 = a child of region 0), and region_uptree[r] is the bitset
-// of r, its ancestors and 0, exactly the regions a store from an object of
-// region r may target. A store of a child of region cr into a parent of
-// region pr is legal iff cr is in region_uptree[pr]. The default is the chain
-// 0 <- 1 <- 2 <- ..., where cr in uptree[pr] is cr <= pr; the first
-// declaration replaces the chain by the all-root tree, then applies the edge.
+// region_parent[r] is the declared parent of r (0: a child of region 0);
+// region_uptree[r] is the bitset of r, its ancestors and 0: the regions a
+// store from an object of region r may target. The default is the chain
+// 0 <- 1 <- 2 <- ..., where the test is cr <= pr; the first declaration
+// replaces it by the all-root tree and applies the edge.
 static uint8_t region_parent[JL_GC_MAX_REGIONS];
 static _Atomic(uint64_t) region_uptree[JL_GC_MAX_REGIONS];
 static int region_tree_declared = 0;
 
-// Rebuild every uptree from region_parent[]. A parent has a lower number
-// than its child, so one pass in index order reads each parent's final
-// uptree.
+// Rebuild every uptree from region_parent[]; a parent has a lower number
+// than its child, so one pass in index order suffices.
 static void region_tree_rebuild(void)
 {
     for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {
@@ -111,10 +93,9 @@ static void region_tree_rebuild(void)
     }
 }
 
-// Declare the parent of `child`. parent < child keeps the numbers a
-// topological order. The tree is declared before the regions are used: the
-// call refuses while any region is live on any heap (the live-child counts
-// are kept per edge) or while any window is open.
+// Declare the parent of `child` (parent < child). Returns EBUSY while any
+// region is live on any heap or any window is open: the tree is declared
+// before the regions are used.
 JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
 {
     jl_task_t *ct = jl_current_task;
@@ -124,11 +105,8 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
     if (jl_atomic_load_relaxed(&region_windows_open) != 0)
         return JL_GC_REGION_EBUSY;
 
-    // The world stops for the test and the rebuild together. The uptree
-    // words change one at a time, so a thread that opened a window
-    // between a test and a rebuild done apart could read a half-built tree
-    // and judge a store against it. A declaration is a startup act and runs
-    // a handful of times, so the pause costs nothing that matters.
+    // The test and the rebuild run in one stop-the-world pause: the uptree
+    // words change one at a time.
     uint32_t saved_disable;
     int8_t old_state;
     int attempt = 0;
@@ -176,8 +154,7 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
     return result;
 }
 
-// The declared parent of `child`: 0 for a child of the root, and 0 for a
-// bad region number.
+// The declared parent of `child`; 0 for a child of the root or a bad number.
 JL_DLLEXPORT int jl_gc_region_parent_of(int child)
 {
     if (!region_valid(child))
@@ -185,8 +162,7 @@ JL_DLLEXPORT int jl_gc_region_parent_of(int child)
     return region_parent[child];
 }
 
-// The page count of a region on the calling heap: the observable a census
-// bounds.
+// The pages of region n on the calling heap.
 JL_DLLEXPORT int jl_gc_region_pages(int n)
 {
     if (!region_valid(n))
@@ -196,8 +172,8 @@ JL_DLLEXPORT int jl_gc_region_pages(int n)
     return rs == NULL ? 0 : (int)rs->n_pages;
 }
 
-// 1 when an escape quarantined region n, 0 otherwise (a bad region number
-// included). The quarantine is process-wide and permanent.
+// 1 when an escape quarantined region n; the quarantine is process-wide
+// and permanent.
 JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 {
     if (!region_valid(n))
@@ -207,28 +183,22 @@ JL_DLLEXPORT int jl_gc_region_quarantined(int n)
 
 // --- the escape barrier ----------------------------------------------------------
 
-// The test of the barrier: 1 when a store of `child` into `parent` breaks
-// the reference rule, with the two regions in `cr` and `pr` for the report.
+// 1 when a store of `child` into `parent` breaks the reference rule; `cr`
+// and `pr` receive the two regions.
 STATIC_INLINE int region_store_escapes(const void *parent, const void *child, int *cr, int *pr) JL_NOTSAFEPOINT
 {
-    // Child first: a region-0 child is legal under any parent, and almost
-    // every store in ordinary code has one, so the common case pays one
-    // page-map walk, not two.
+    // Child first: a region-0 child is legal under any parent, the common case.
     jl_gc_pagemeta_t *cm = page_metadata((char*)child);
     *cr = cm ? cm->region_n : 0;
     if (__likely(*cr == 0))
         return 0;
     jl_gc_pagemeta_t *pm = page_metadata((char*)parent);
     *pr = pm ? pm->region_n : 0;
-    // Legal iff the child's region is the parent's own or one of its
-    // ancestors -- a store toward the root of the branch. In the default
-    // chain this is exactly cr <= pr; in a tree it forbids a sibling and a
-    // descendant in both directions, which the total order could not.
+    // Legal when the child's region is the parent's or an ancestor of it.
     return !((jl_atomic_load_relaxed(&region_uptree[*pr]) >> *cr) & 1);
 }
 
-// The test alone, with no quarantine. The bulk barriers of gc-wb-stock.h ask
-// it about a whole container before they look at the elements one by one.
+// The test without the quarantine, for the pair check of a bulk copy.
 JL_DLLEXPORT int jl_gc_region_would_escape(const void *parent, const void *child) JL_NOTSAFEPOINT
 {
     int cr = 0, pr = 0;
@@ -248,18 +218,14 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
                        "census now refuse, and its memory is retained\n",
                        jl_typeof_str((jl_value_t*)child), cr,
                        jl_typeof_str((jl_value_t*)parent), pr, cr);
-    // With the debug checks on, the first escape of a region shows where it
-    // happened.
+    // With debug on, the first escape of a region prints a backtrace.
     if (!(seen & bit) && region_debug_checks)
         jl_print_backtrace();
 }
 
-// The elements of a bulk copy, one by one, when the pair check of the
-// containers fails. The source container is a proxy for its elements: a
-// young container of old elements -- the result of a filter or a copy made
-// inside a window, appended to an old vector after the window closed --
-// fails the pair check and is legal. Only a real escape quarantines here.
-// `n` boxed elements from `src`:
+// The elements of a bulk copy, one by one, after the pair check of the
+// containers failed: a young container of old elements is legal, so only a
+// real escape quarantines. `n` boxed elements from `src`:
 JL_DLLEXPORT void jl_gc_region_wb_boxed(const void *parent, _Atomic(void*) *src, size_t n) JL_NOTSAFEPOINT
 {
     for (size_t i = 0; i < n; i++) {
@@ -270,8 +236,7 @@ JL_DLLEXPORT void jl_gc_region_wb_boxed(const void *parent, _Atomic(void*) *src,
 }
 
 // `n` inline elements of type `et`, `elsz` bytes apart, from `src`: every
-// pointer field of every element. One immutable object stored inline is the
-// case n = 1 (jl_gc_multi_wb).
+// pointer field of every element (n = 1 for one immutable, jl_gc_multi_wb).
 JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, size_t n,
                                          size_t elsz, jl_datatype_t *et) JL_NOTSAFEPOINT
 {
@@ -298,14 +263,9 @@ int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isali
     return 1;
 }
 
-// A finalizer on a region object goes to the region's list, never to the
-// thread list the stock collector sweeps: the region's pages are not swept,
-// so the stock collector could never schedule it. The list holds the same
-// (tagged object, function) pairs as the thread list; a quiescent entry
-// (tag 2) names no object and stays on the thread list. A cross-thread
-// registration on a region object is an error of the program, not a
-// runtime condition: it throws here, before the caller takes the finalizer
-// lock and before any list changes.
+// A finalizer of a region object goes to the list of its region, which the
+// reset and the census run; the stock sweep never reaches a region page. A
+// registration from another thread throws, before any list changes.
 int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
 {
     if ((uintptr_t)v & 2)
@@ -325,8 +285,8 @@ int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
     return 1;
 }
 
-// Move a whole list into a fresh one, so a finalizer that registers a new
-// finalizer sees a consistent region list while the old entries run.
+// Move a list into a fresh one, so that a finalizer that registers a
+// finalizer finds a consistent list.
 static void region_take_list(arraylist_t *dst, arraylist_t *src) JL_NOTSAFEPOINT
 {
     memcpy(dst, src, sizeof(arraylist_t));
@@ -335,9 +295,8 @@ static void region_take_list(arraylist_t *dst, arraylist_t *src) JL_NOTSAFEPOINT
     arraylist_new(src, 0);
 }
 
-// Run the pairs of a taken list and free it. The finalizer runner parks the
-// window and raises finalizer_depth (gc-common.c), so the finalizers
-// allocate in region 0 and no region entry runs until they return.
+// Run a taken list and free it; gc-common.c parks the window and raises
+// finalizer_depth for the run.
 static void region_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
 {
     if (list->len != 0)
@@ -366,16 +325,11 @@ static void region_free_malloced(small_arraylist_t *lst, int only_unmarked) JL_N
 }
 
 // --- the brackets around a stock collection ----------------------------------------
-// Before a stock collection every window is parked and region 0 installed,
-// so the sweep prologue's cursor sync sees norm_pools everywhere; after the
-// last pass the windows are installed again. After every pass, the cells of
-// every region page the mark touched (has_marked is the card) get their low
-// header bits cleared: the mark walks region objects normally, which keeps
-// liveness exact through them, and the clear keeps the bits clean for the
-// census; a freelist link survives the blind clear, because an aligned
-// pointer has zero low bits. The clear runs per pass, because a forced full
-// collection runs a second pass that would not traverse a region object
-// still marked from the first, and would sweep its region-0 children.
+// A stock collection runs with region 0 installed on every thread: the
+// brackets park the windows and install them again. After each pass the
+// marks the pass left on region pages are cleared: the mark walks region
+// objects like any other, the clear keeps the bits clean for the census,
+// and a second pass of a full collection must traverse them again.
 
 void jl_gc_region_prepare_stock_collection(void) JL_NOTSAFEPOINT
 {
@@ -430,9 +384,7 @@ void jl_gc_region_finish_stock_collection(void) JL_NOTSAFEPOINT
 }
 
 // The region finalizer lists are roots of the stock mark, like the thread
-// lists: a finalizer function that only the list references must survive
-// until the reset or the census runs it. Called in the finalizer phase of
-// the stock mark, before the queue drains.
+// lists.
 void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 {
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
@@ -448,12 +400,9 @@ void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 
 // --- windows -----------------------------------------------------------------------
 
-// The state of a region on a heap is made on the heap's first use of the
-// region: a window, a task switch that installs one, or a borrow. Zeroed
-// memory is the empty state of everything but the pool sizes and the two
-// lists. calloc_s aborts when memory runs out, as the runtime does for its
-// own metadata. The state is never freed: a reset parks the pages for the
-// next window on the region, and the chains live here.
+// The state of a region on a heap, allocated at the first use of the region
+// on that heap and never freed; zeroed memory is the empty state of all but
+// the pool sizes and the two lists.
 static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 {
     if (n == 0 || heap->regions[n] != NULL)
@@ -466,8 +415,8 @@ static void region_lazy_init(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
     heap->regions[n] = rs;
 }
 
-// A region becomes live at the first window onto it after a reset (or
-// ever); its parent gains a live child. Idempotent through region_live_mask.
+// A region is live from its first window after a reset; its parent gains a
+// live child.
 static void region_mark_live(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 {
     if (n == 0 || (heap->region_live_mask & ((uint64_t)1 << n)))
@@ -478,9 +427,7 @@ static void region_mark_live(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
         heap->region_haschild_mask |= (uint64_t)1 << p;
 }
 
-// A region becomes empty at its reset; its parent loses a live child, and
-// when the last one goes the parent's haschild bit clears -- the parent is
-// resettable again.
+// A reset ends the life of a region; its parent loses a live child.
 static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 {
     if (n == 0 || !(heap->region_live_mask & ((uint64_t)1 << n)))
@@ -491,12 +438,10 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
         heap->region_haschild_mask &= ~((uint64_t)1 << p);
 }
 
-// Open a window on region n, or close it (n = 0). Every region's cursors
-// live in its own array, so the switch is one pointer store; the inlined
-// allocation fast path is untouched. The window belongs to the calling
-// task: it follows the task across a task switch, and the task stays on its
-// thread while the window is open. Returns the region that was current;
-// EINVAL for a bad region number, EBUSY while finalizers run on this thread.
+// Open a window on region n, or close it (n = 0): the switch is one pointer
+// store, and the inlined allocation path is untouched. Returns the region
+// that was current; EINVAL for a bad number, EBUSY while finalizers run on
+// this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -508,19 +453,16 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
         return old;
     if (n != 0 && heap->finalizer_depth != 0)
         return JL_GC_REGION_EBUSY;
-    // A quarantined region frees nothing ever again: its reset and its
-    // census refuse, and the stock collector never sweeps a region page. A
-    // window on it would fill memory that nothing can reclaim, so the
-    // program stops here instead of at its memory limit.
+    // A quarantined region frees nothing again; a window on it would fill
+    // memory that nothing reclaims.
     if (__unlikely(n != 0 && jl_gc_region_quarantined(n)))
         return JL_GC_REGION_EQUARANTINED;
     if (__unlikely(!jl_atomic_load_relaxed(&jl_gc_region_barrier_on)))
         jl_atomic_store_release(&jl_gc_region_barrier_on, 1);
     region_lazy_init(heap, n);
     region_mark_live(heap, n);
-    // An open window pins the task: a region's pages live in the thread
-    // heap, so a task holding a window must not migrate. The stickiness
-    // it had is restored when the window closes.
+    // An open window pins the task to the thread that holds the region's
+    // pages; the close restores the stickiness.
     if (old == 0 && n != 0) {
         jl_atomic_fetch_add_relaxed(&region_windows_open, 1);
         ct->sticky_before_region = ct->sticky;
@@ -541,9 +483,8 @@ JL_DLLEXPORT int jl_gc_region_current(void)
     return jl_current_task->ptls->gc_tls.heap.current_region;
 }
 
-// Install a task's parked region on this thread at a task switch. The
-// window count is untouched: the window belongs to the task and stays
-// open while the task is parked.
+// Install the parked region of a task at a task switch; the window count
+// is untouched.
 void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
@@ -552,13 +493,9 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     heap->current_region = (uint8_t)n;
 }
 
-// Install a borrowed region on this thread (jl_gc_region_borrow in
-// gc-common.c). A task switch installs a region the task opened a window
-// on, so the region is live on this heap already. A borrow can bring a
-// region number to a heap that never opened a window on it: the borrow of a
-// container that another thread made. The region becomes live on this heap
-// here, so its parent refuses a reset while the borrowed buffer lives, and
-// a tree declaration refuses while it holds pages.
+// Install a borrowed region on this thread. A borrow can bring a region to
+// a heap that never opened a window on it; the region becomes live there,
+// so its parent cannot be reset while the borrowed buffer lives.
 void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
@@ -568,10 +505,8 @@ void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     heap->current_region = (uint8_t)n;
 }
 
-// A borrow brackets one allocation: the region of the buffer that a new
-// buffer replaces is installed for it, and the window is untouched. A task
-// must not switch inside a borrow, because a switch parks the installed
-// region as the task's window.
+// A borrow brackets one allocation and changes no window state; a task must
+// not switch inside one.
 JL_DLLEXPORT int jl_gc_region_borrow(int n)
 {
     if (n < 0 || n >= JL_GC_MAX_REGIONS)
@@ -614,11 +549,8 @@ JL_DLLEXPORT void jl_gc_region_zone_leave(int saved)
         jl_gc_region_set(saved);
 }
 
-// Close the window of a task that reaches its end, whether it returns or
-// throws (jl_finish_task in task.c). The count of open windows is
-// process-wide and only a close lowers it, so a task that died holding one
-// would refuse every census, every global reset and every declaration for
-// the life of the process.
+// Close the window of a task that ends (jl_finish_task); only a close lowers
+// the process-wide count of open windows.
 void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 {
     jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
@@ -632,19 +564,15 @@ void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 
 // --- reset ---------------------------------------------------------------------------
 
-// The root scans of the checked reset, the global reset and
-// jl_gc_region_check, defined with the debug entries below. The caller has
-// stopped the world and set gc_n_threads and gc_all_tls_states.
+// The root scan shared with the debug entries below; the caller stopped the
+// world.
 static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n);
 static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 
-// The finalizer phase of a reset, on its own because it runs Julia code:
-// a finalizer allocates, stores, and can quarantine the region it belongs
-// to. It runs before the free and never with the world stopped. A finalizer
-// can register a finalizer on another object of the region, so the phase
-// takes the list again until it stays empty; the bound turns a finalizer
-// that registers one every round into a refusal instead of a hang. Returns
-// 0 with the list empty, EFINALIZERS otherwise.
+// The finalizer phase of a reset runs Julia code, before the free and never
+// with the world stopped. A finalizer can register a finalizer on another
+// object of the region, so the phase repeats until the list stays empty;
+// the bound turns an endless registration into EFINALIZERS.
 #define REGION_FINALIZER_ROUNDS 64
 static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
 {
@@ -660,12 +588,9 @@ static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
     return heap->regions[n]->finalizers.len == 0 ? 0 : JL_GC_REGION_EFINALIZERS;
 }
 
-// The free. The caller drained the finalizer list, or refused: no Julia code
-// runs here, so the caller may hold the world stopped through it. The reset
-// walks nothing: the malloc'd data of the memories is freed, the pool
-// cursors are cleared, and the page chain is parked on the fresh list in
-// O(1); a fresh page's metadata may be stale, because gc_add_page resets a
-// page when it claims it.
+// The free: no Julia code runs here, so the caller may hold the world
+// stopped through it. The malloc'd data is freed, the cursors are cleared,
+// and the page chain is parked on the fresh list in O(1).
 static uint64_t region_reset_heap(jl_thread_heap_t *heap, int n)
 {
     jl_gc_region_state_t *rs = heap->regions[n];
@@ -717,8 +642,7 @@ static uint64_t region_reset_body(int n, int checked)
         return 0;
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)JL_GC_REGION_EQUARANTINED;
-    // A region with a live child must not reset: a descendant may hold a
-    // legal reference into it (leaf -> trunk), which the reset would dangle.
+    // A live descendant may hold a legal reference into this region.
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return (uint64_t)JL_GC_REGION_ECHILD;
 
@@ -731,10 +655,8 @@ static uint64_t region_reset_body(int n, int checked)
     if (!checked)
         return region_reset_heap(heap, n);
 
-    // Several threads reset their own leaves at once in the tree model, so a
-    // lost safepoint is the common case, not an error. The loser waits for
-    // the winner and tries again: it has work to do that nobody else does.
-    // The bound keeps a pathological contention from hanging the caller.
+    // Several threads reset their own leaves at once, so a lost safepoint is
+    // common: wait for the winner and try again, up to a bound.
     uint32_t saved_disable;
     int8_t old_state;
     int attempt = 0;
@@ -763,8 +685,7 @@ static uint64_t region_reset_body(int n, int checked)
         result = (uint64_t)JL_GC_REGION_EROOT;
     }
     else {
-        // No finalizer is left to run, so the free needs no Julia code and
-        // the pause holds through it.
+        // No finalizer is left, so the pause holds through the free.
         result = region_reset_heap(heap, n);
     }
 
@@ -778,41 +699,28 @@ static uint64_t region_reset_body(int n, int checked)
 }
 
 // Reset region n on the calling thread's heap: run its finalizers, check
-// that no execution root references into it, free the malloc'd data of its
-// memories, and park its pages for reuse. A region another thread filled is
-// reset on that thread, or by the global reset.
-//
-// Returns the pages the region held (fresh pages included), 0 for a region
-// never used, or a refusal code cast to uint64_t: EINVAL for a bad number,
-// EBUSY while the region is current or finalizers run on this thread,
-// EQUARANTINED after an escape, ECHILD while a child region is live, ERACE
-// when another thread won the safepoint, EROOT when an execution root
-// references into the region.
+// that no execution root references into it, free the malloc'd data, park
+// the pages. Returns the pages the region held, 0 for a region never used,
+// or a refusal code cast to uint64_t (EINVAL, EBUSY, EQUARANTINED, ECHILD,
+// ERACE, EROOT).
 JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 {
     return region_reset_body(n, 1);
 }
 
-// The reset without the root check. It frees whatever the region holds, and
-// a reference from a stack slot, a register or a parked task's stack is left
-// pointing into freed memory: the next collection reports CORPSE and aborts.
-// Use it where a measurement needs the pause of the checked entry gone and
-// the program can show that no root survives its window.
+// The reset without the root check: a reference from a stack slot, a
+// register or a parked task then points into freed memory, and the next
+// collection reports CORPSE and aborts.
 JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n)
 {
     return region_reset_body(n, 0);
 }
 
-// Reset a region that several threads share: a trunk. Each thread filled
-// its own heap instance, and trunk objects on different heaps may
-// reference each other (the same region, a legal edge), so one instance
-// must not free while another lives - the reset is one act across every
-// heap, with the world stopped. The world stays stopped, so no finalizer
-// can run: a trunk with pending finalizers is refused; a cooperative
-// census on each heap runs them first. The root check of the per-heap
-// reset runs here too, once for every instance: a parked task's frame that
-// references a trunk object refuses the reset with EROOT. Returns the pages
-// reclaimed, or a refusal code cast to uint64_t.
+// Reset a region several threads filled, a trunk, as one act on every heap
+// with the world stopped: trunk objects on different heaps may reference
+// each other. Pending finalizers return EFINALIZERS, because nothing can run
+// them with the world stopped; the root check runs on every instance.
+// Returns the pages reclaimed, or a refusal code cast to uint64_t.
 JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -839,8 +747,8 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
     gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
     jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
 
-    // The world is stopped. First the preconditions on every heap, so the
-    // reset frees nothing when one heap refuses.
+    // The preconditions on every heap first, so that nothing is freed when
+    // one heap refuses.
     uint64_t result = 0;
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
         jl_ptls_t ptls2 = gc_all_tls_states[t_i];
@@ -861,8 +769,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
         }
     }
     if (result == 0) {
-        // The root check, as the per-heap reset runs it: an execution root
-        // of any thread that references any heap's instance refuses.
+        // The root check over every instance.
         int64_t roots = region_root_scan_global(ptls, n);
         if (roots != 0) {
             jl_safe_printf("REGION-RESET refused: %lld live references into region %d\n",
@@ -888,14 +795,11 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
 }
 
 // --- the census ------------------------------------------------------------------------
-// A census collects one region alone: it marks from the execution roots
-// with the census filter (gc_try_claim_and_push in gc-stock.c pushes only
-// objects whose page carries the region tag, plus every task it meets, for
-// the task's stack), then sweeps only the region's pages. Globals, the
-// remembered sets and every other region are never walked: the reference
-// rule says they cannot reference into the region. The census is sound only
-// under that rule; a violating edge from outside means the object it names
-// is freed here, which is what the escape barrier's quarantine prevents.
+// A census collects one region alone: a mark from the execution roots with
+// the census filter set, which claims only objects of the region and the
+// tasks, then a sweep of the region's pages. Globals, the remembered sets
+// and the other regions are not walked: under the reference rule they hold
+// no reference into the region, and the quarantine keeps the rule.
 
 // The claim of a task outside the region, called by gc_scoped_claim.
 int jl_gc_region_census_claim_task(jl_value_t *task) JL_NOTSAFEPOINT
@@ -919,15 +823,11 @@ static void region_census_end(void) JL_NOTSAFEPOINT
     jl_atomic_store_relaxed(&jl_gc_region_census_target, 0);
 }
 
-// The scoped sweep shared by both census entries. A page the mark never
-// touched (has_marked == 0) holds no live cell: it is reset wholesale in
-// O(1) and parked on the region's fresh-page list, which gc_add_page reuses
-// before claiming new pages. Only pages with survivors get the cell walk.
-// The pool freelists are rebuilt from scratch, so wholesale pages cannot
-// leave stale entries. Cells at or past a pool's bump cursor stay owned by
-// the cursor, and the cursor page is kept, so a census of the open region
-// leaves allocation to continue from the rebuilt freelist. Fills stats
-// slots 4..7.
+// The scoped sweep of both census entries. A page without a mark is parked
+// wholesale on the fresh list of the region, in O(1); the pool freelists
+// are rebuilt from the other pages, and the cursor page stays with its
+// cursor, so allocation continues after a census of the open region. Fills
+// stats slots 4..7.
 static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
 {
     int64_t freed = 0;
@@ -940,8 +840,7 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
         pools[i].freelist = NULL;
         fl_tail[i] = &pools[i].freelist;
     }
-    // The marks are still set here: free the malloc'd data of the dead
-    // memories before the page walk clears the bits.
+    // The marks are still set: free the malloc'd data of the dead memories first.
     region_free_malloced(&heap->regions[n]->mallocarrays, 1);
     jl_gc_pagemeta_t *kept = NULL;
     jl_gc_pagemeta_t *kept_tail = NULL;
@@ -1000,12 +899,10 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
     return freed;
 }
 
-// The mark of a census walks the execution roots of every thread, so it sets
-// mark bits on objects of the region that live on other heaps as well. The
-// sweep walks the calling heap alone, so those bits would stay set: the next
-// census on that heap would read a dead cell as live and keep it, and only a
-// stock collection would clear them. A program that runs no stock collection
-// is the point of the model, so the census clears what it set elsewhere.
+// The mark of a census runs from the execution roots of every thread, so it
+// sets mark bits on the region's objects of other heaps too; the sweep runs
+// on the calling heap alone. Clear those bits, or the next census on that
+// heap reads a dead cell as live.
 static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_NOTSAFEPOINT
 {
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
@@ -1028,8 +925,8 @@ static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_
     }
 }
 
-// Whether a child of region n is live on any heap. The caller stopped the
-// other threads or knows them parked: the masks are read without a fence.
+// Whether a child of region n is live on any heap; the other threads are
+// stopped or parked, so the masks are read without a fence.
 static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL_NOTSAFEPOINT
 {
     for (int t_i = 0; t_i < nthreads; t_i++) {
@@ -1040,11 +937,8 @@ static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL
     return 0;
 }
 
-// Split the region's finalizer list: the entries whose object the mark did
-// not reach move to `dead`. The finalizer phase of the census then marks
-// both lists (the survivors' functions, and the dead pairs for one more
-// cycle, the way the stock collector keeps a finalizable object alive until
-// its finalizer ran).
+// Move the entries whose object the mark did not reach to `dead`; both
+// lists are then marked, so a dead object lives until its finalizer ran.
 static void region_split_dead_finalizers(arraylist_t *lst, arraylist_t *dead) JL_NOTSAFEPOINT
 {
     arraylist_new(dead, 0);
@@ -1065,16 +959,13 @@ static void region_split_dead_finalizers(arraylist_t *lst, arraylist_t *dead) JL
     lst->len = j;
 }
 
-// The mark of a census, from the execution roots of the threads the caller
-// names, with the filter the caller set. The scanned-byte counters and the
-// remset of the marking thread are restored afterwards: the census scans
-// every task, and the stock task scan pushes an old task to the remset of
-// the marking thread, while the census sets no mark bit on a task; a stock
-// collection that met the task in the remset first would scan it there,
-// which sets no page metadata, so the page of the task would be swept with
-// the live task in it. Truncation to the entry length removes exactly the
-// pushes of the census: a region cell is never old, and the filter drops an
-// out-of-region cell that is not a task.
+// The mark of a census from the execution roots of the given threads, with
+// the filter set by the caller. The scanned-byte counters and the remset of
+// the marking thread are restored afterwards: the task scan of the stock
+// mark pushes an old task to the remset, and a stock collection that finds
+// a task there first sets no page metadata for it, so the page would be
+// swept with the live task in it. The truncation removes exactly the pushes
+// of the census.
 static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthreads,
                                jl_thread_heap_t *heap, int n, arraylist_t *dead)
 {
@@ -1102,16 +993,12 @@ static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthrea
     ptls->gc_tls.heap.remset_nptr = remset_nptr;
 }
 
-// The stop-the-world census on region n, from the execution roots of every
-// thread. The caller owns the preconditions. Two callers: jl_gc_region_collect
-// (the region is not current) and jl_gc_region_census_open (the region is
-// current, mid-window). Returns the number of freed cells, or ERACE.
+// The stop-the-world census of region n; the caller checked the
+// preconditions. Returns the freed cells, or ERACE.
 static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
 {
-    // Stop the world the way jl_gc_collect does. jl_safepoint_start_gc
-    // refuses while the disable counter is set (the census is meant to run
-    // with the stock collector disabled), so the counter is cleared for the
-    // stop and restored after.
+    // Stop the world as jl_gc_collect does; the disable counter is cleared
+    // for the stop and restored after.
     uint64_t t0 = jl_hrtime();
     uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
     int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
@@ -1128,9 +1015,8 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
     jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
     uint64_t t_stw = jl_hrtime();
 
-    // A child of the region live on another heap holds legal references
-    // into this heap's instance of the region as well (a trunk). The
-    // caller checked its own heap; the other heaps are readable only now.
+    // A child live on another heap holds legal references into this
+    // instance too; the other heaps are readable only now.
     int64_t freed = region_child_live_on_any_heap(gc_all_tls_states, gc_n_threads, n)
                     ? (int64_t)JL_GC_REGION_ECHILD : 0;
     uint64_t t_mark = t_stw, t_sweep = t_stw;
@@ -1158,17 +1044,10 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
 }
 
 // The stop-the-world census of region n on the calling thread's heap: free
-// the dead objects, keep the live ones. Pending finalizers refuse it: the
-// world stays stopped, so nothing could run them. Returns the cells freed,
-// or a refusal code: EINVAL for a bad number or a region never used,
-// EQUARANTINED after an escape, EFINALIZERS with pending finalizers, ECHILD
-// while a child region is live, EBUSY while a window is open on any thread
-// or finalizers run on this one.
-//
-// A live child refuses the census as it refuses the reset. A child holds
-// legal references into its parent, and the census filter drops the child's
-// objects at the claim: a parent object that only the child references
-// would never be marked, and the sweep would free it under the child.
+// the dead objects, keep the live ones. Returns the cells freed, or a
+// refusal code: EINVAL, EQUARANTINED, EFINALIZERS (nothing can run them
+// with the world stopped), ECHILD (the filter drops the child's objects, so
+// a parent object that only the child references would be freed), EBUSY.
 JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -1188,19 +1067,12 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
     return region_census_core(ct, ptls, heap, n);
 }
 
-// The cooperative census: jl_gc_region_collect without the stop-the-world.
-// The caller is the only thread that references the region, so only the
-// caller's execution roots are scanned. Every other thread must sit in a
-// GC-safe state (parked in C): a thread that runs managed code refuses the
-// cooperative path, and the caller falls back to the stop-the-world entry.
-// No safepoint is reached while the filter is set, so no other thread can
-// start a collection in between; a thread that wants one waits for the
-// census at its safepoint. The dead objects' finalizers run after the sweep,
-// with the filter off: the census keeps them for one more cycle, so a
-// finalizer that allocates and triggers a stock collection sees a whole heap.
-// Returns the cells freed, or a refusal code: EINVAL, EQUARANTINED, ECHILD
-// and EBUSY as the stop-the-world census, EUNSAFE while another thread runs
-// managed code.
+// The cooperative census: no stop-the-world, only the caller's execution
+// roots, and every other thread parked GC-safe (EUNSAFE otherwise). No
+// safepoint is reached while the filter is set, so no other collection
+// starts in between. The finalizers of the dead objects run after the
+// sweep, with the filter off; the census keeps the objects for one more
+// cycle. Returns the cells freed, or a refusal code.
 JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -1216,11 +1088,8 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
         return JL_GC_REGION_EBUSY;
 
     uint64_t t0 = jl_hrtime();
-    // The count excludes the stop-the-world entries for the duration, and
-    // it excludes a second cooperative census: the two share one process-wide
-    // filter and one task table, so a pair that both passed a read of the
-    // count would mark with each other's filter and free live objects. The
-    // claim is the test and the increment in one act.
+    // One cooperative census at a time: the filter and the task table are
+    // process-wide. The claim is the test and the increment in one act.
     int zero = 0;
     if (!jl_atomic_cmpswap(&region_windows_open, &zero, 1))
         return JL_GC_REGION_EBUSY;
@@ -1259,12 +1128,10 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
     return freed;
 }
 
-// The census of the open region, from the allocator when the region passed
-// the page threshold: a computation whose garbage dies inside the window,
-// not at its boundary, keeps its live state and gets its dead cells back
-// without the region growing without bound. Pending finalizers, a
-// quarantine and a live child region fall through to the ordinary path.
-// Returns 1 when a census ran.
+// The census of the open region, from the page claim past the threshold:
+// the live state stays, the dead cells return. Pending finalizers, a
+// quarantine and a live child fall through to the ordinary claim. Returns 1
+// when a census ran.
 int jl_gc_region_census_open(jl_ptls_t ptls)
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
@@ -1277,18 +1144,15 @@ int jl_gc_region_census_open(jl_ptls_t ptls)
 
 // --- debug ------------------------------------------------------------------------------
 
-// Turn the extra reporting of the reset's root check on or off,
-// process-wide. The check itself always runs in jl_gc_region_reset; this
-// names the objects it finds.
+// Turn the report of the root check on or off, process-wide; the check
+// itself always runs.
 JL_DLLEXPORT void jl_gc_region_set_debug(int on)
 {
     region_debug_checks = on;
 }
 
-// The walk of one heap's pages of region n after a census mark: every
-// marked cell is an object an execution root still references, which a free
-// would dangle. The marks are cleared as they are counted, so the walk leaves
-// clean state. The pages are walked up to the bump cursor of their pool.
+// Count the marked cells of region n on one heap after a census mark, each
+// an object an execution root still references, and clear the marks.
 static int64_t region_count_marked(jl_thread_heap_t *heap, int n)
 {
     int64_t violations = 0;
@@ -1324,16 +1188,10 @@ static int64_t region_count_marked(jl_thread_heap_t *heap, int n)
     return violations;
 }
 
-// The root scan the checked reset and jl_gc_region_check share. The caller
-// stopped the world and set gc_n_threads and gc_all_tls_states.
-//
-// Mark from the execution roots of every thread with the region filter, then
-// count and clear the marks on this heap's pages of the region. The mark ran
-// from the roots of every thread, so it marked the other heaps' objects of
-// region n too; those marks are cleared as well. A mark left there would
-// make the next checked reset of that heap refuse falsely, and would stop
-// the next census of that heap at the marked object, which then frees the
-// object's children under a live parent. Returns the count.
+// The root scan of the checked reset and of jl_gc_region_check: a census
+// mark from the execution roots of every thread, then the count and the
+// clear of the marks on this heap, and the clear on the other heaps, where
+// a stale mark would make the next check refuse. Returns the count.
 static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
 {
     region_census_begin(n);
@@ -1360,12 +1218,9 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n)
     return violations;
 }
 
-// The debug check behind the refused reset: a region may reset only when no
-// execution root references into it. The check is a census mark that must
-// find nothing: stop the world, mark from the execution roots with the
-// filter, then walk the region's pages -- every marked cell is a violation.
-// The marks are cleared again, so the check is repeatable and leaves clean
-// state. Returns the count, or a refusal code.
+// The root check alone: stop the world, mark from the execution roots with
+// the filter, count the marked cells of the region and clear them. Returns
+// the count, or a refusal code.
 JL_DLLEXPORT int64_t jl_gc_region_check(int n)
 {
     jl_task_t *ct = jl_current_task;
@@ -1402,10 +1257,10 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n)
     return violations;
 }
 
-// The consistency walk of a region's page chains: every chained page
-// carries tag n and an intact page-map entry; the pool cursors point into
-// tagged pages; and the allocated-page stack sees the same tagged pages as
-// the chains. Returns the error count, or EINVAL.
+// Check the page chains of region n: every chained page carries tag n and
+// a page-map entry, the cursors point into tagged pages, and the
+// allocated-page stack agrees with the chains. Returns the error count, or
+// EINVAL.
 JL_DLLEXPORT int jl_gc_region_verify(int n)
 {
     jl_ptls_t ptls = jl_current_task->ptls;
@@ -1486,9 +1341,8 @@ JL_DLLEXPORT int jl_gc_region_verify(int n)
     return errors;
 }
 
-// The region of an object, read from its page tag in constant time. NULL
-// metadata means the object is not a pool object (big, malloc'd, permanent,
-// or foreign); those all belong to region 0.
+// The region of an object, from its page tag; an object without page
+// metadata (big, malloc'd, permanent, foreign) belongs to region 0.
 JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
 {
     jl_gc_pagemeta_t *meta = page_metadata((char*)jl_astaggedvalue(v));

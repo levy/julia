@@ -4,10 +4,10 @@ A region is a numbered set of pool pages with its own allocation cursors. A
 thread allocates into region `n` while a window on `n` is open, and frees every
 object of the region at once with a reset, without a trace. The stock collector
 implements the regions (`src/gc-regions.c`, `src/gc-regions.h`) in a build with
-`make WITH_GC_REGIONS=1`. A build without the flag has none of this: every
-change to an existing file sits in an island of the flag or calls a hook that is
-nothing without it, and the runtime compiles to the same code, object for
-object. A program that opens no window runs on the stock collector unchanged.
+`make WITH_GC_REGIONS=1`. Without the flag, every change to an existing file is
+inside an `#ifdef` of the flag or is a hook that expands to no code, and the
+runtime compiles to the same code, object for object. A program that opens no
+window runs on the stock collector unchanged.
 
 The design is for a program that repeats one unit of work many times, whose
 garbage dies at the end of each unit, and which cannot afford a tracing
@@ -46,9 +46,9 @@ region 0**: inference, compilation, a dispatch cache miss and a type
 instantiation run in a region-0 zone (`gf.c`, `jltypes.c`); a binding and its
 partition are made under a borrow of region 0 (`module.c`), the exception stack
 of a task under a borrow of the task's region (`rtutils.c`), a wait entry in
-region 0 (`task.c`, `base/cancellation.jl`). **The barrier sees a managed store
-and nothing else**: a store from C, an `unsafe_store!` and a pointer a foreign
-library keeps are invisible, and such a region object dangles at the reset.
+region 0 (`task.c`, `base/cancellation.jl`). **The barrier check runs at managed
+stores only**: a store from C, an `unsafe_store!` and a pointer kept by a
+foreign library are not checked, and such a region object dangles at the reset.
 
 ## The barrier
 
@@ -59,40 +59,40 @@ child, before the generational write barrier
 the flag, and it stays armed. At the fields of a fresh object, where no
 generational barrier is needed, codegen emits `julia.region_write_barrier`, the
 guard alone, once for every boxed child and for the pointer fields of every
-inline field; its parent is `nocapture`, so that alloc-opt still elides what it
-elides without the regions. `jl_gc_wb` in `src/gc-wb-stock.h` runs the same
+inline field; its parent is `nocapture`, so that alloc-opt can still elide the
+object. `jl_gc_wb` in `src/gc-wb-stock.h` runs the same
 check for the runtime's stores. Armed, the store calls
 `jl_gc_region_wb(parent, child)`, which reads the region of the child from its
 page tag; a child of region `cr` under a parent of region `pr` is legal when
-`cr` is `pr` or an ancestor of it. An illegal store prints one `REGION-ESCAPE`
-line, quarantines `cr`, and keeps the memory of the region: the store stays,
-and the region never frees under the reference.
+`cr` is `pr` or an ancestor of it. An illegal store is reported in one
+`REGION-ESCAPE` line and quarantines `cr`: the store stays, the memory of the
+region is retained, and nothing is freed under the reference.
 
 A bulk copy (`copyto!` and `copy` of a `Memory` with references,
 `jl_svec_copy`, the store of an inline immutable with pointer fields) checks
 the pair (destination, source) first: every element of a legal source is legal,
-so the copy pays one check; a failed pair decides nothing, and the elements are
+so the copy costs one check; when the pair check fails, the elements are
 checked one by one. A copy of an inline value whose bytes are not a heap object
 checks its pointer fields through `jl_gc_multi_wb_fresh` (`src/gc-interface.h`),
 the fourth barrier annotation; the three that exist carry the region check too.
 
 ## A window, a borrow, a replacement buffer
 
-A window (`jl_gc_region_set`) belongs to the calling task: it is saved and
-restored at a task switch, it counts itself, it pins the task to its thread
-because a region's pages live in the thread heap, and it refuses a bad number,
-a quarantined region and a thread that runs finalizers. It is the lifetime
-scope of a unit of work. A borrow (`jl_gc_region_borrow`) installs a region for
+A window (`jl_gc_region_set`) belongs to the calling task: the runtime saves
+and restores it at a task switch, counts it, and pins the task to its thread,
+because a region's pages live in the thread heap; a bad number, a quarantined
+region and a thread that runs finalizers get a refusal code. A window is the
+lifetime scope of a unit of work. A borrow (`jl_gc_region_borrow`) installs a region for
 the next allocations of the thread and nothing else, for one allocation that
 must land where another object lives: keep it short, do not yield inside one,
 give it back in a `finally`. `jl_gc_region_suspend` is the borrow of region 0.
 
 A container that grows replaces the buffer behind an object that exists, and
 the new buffer takes the region of that object, whatever window is open;
-otherwise a `push!` to a long-lived vector inside a window would hand an older
-array a younger buffer, and the barrier would quarantine the region. The region
+otherwise a `push!` to a long-lived vector inside a window would store a
+younger buffer into an older array, an escape that quarantines the region. The region
 comes from the container, never from the old buffer, because an empty container
-shares one permanent empty `Memory` of region 0. Base keeps the rule in
+shares one permanent empty `Memory` of region 0. Base applies the rule in
 `base/gcregions.jl` (`with_region_of`, `memory_for`) at every array growth,
 `rehash!` of a `Dict`, `empty!` of an `IdDict`, `push!` of an `IdSet` and the
 growth of an `IOBuffer`; the runtime in `jl_array_grow_end` and
@@ -107,12 +107,12 @@ window on it, no finalizer run on this thread, no quarantine, no live child);
 the finalizers of the region, in rounds until the list is empty; the quarantine
 read again, because a finalizer can escape; the root check and the free in one
 stop-the-world pause. The root check marks from the execution roots of every
-thread with the region filter and refuses with `EROOT` when it finds a
-reference into the region: the barrier sees the heap, this check sees the
-stacks. A Julia frame roots a local until the frame ends, so build and use the
-region's objects in one function and reset after it returned. A reset that
-loses the safepoint race to another thread retries, and `ERACE` comes back
-after many lost attempts. `jl_gc_region_reset_global` runs the same check over
+thread with the region filter and returns `EROOT` when a reference into the
+region exists: the barrier covers the heap, the root check covers the stacks.
+A Julia frame roots a local until the frame ends, so build and use the region's
+objects in one function and reset after it returned. When several threads
+reset at once, a reset retries the safepoint and returns `ERACE` after many
+lost attempts. `jl_gc_region_reset_global` runs the same check over
 every heap's instance of the region in its own pause. `jl_gc_region_unsafe_reset`
 frees with no pause and no scan; a reference from a stack slot or a parked task
 then dangles, and the next collection reports `CORPSE` and aborts.
@@ -121,7 +121,7 @@ then dangles, and the next collection reports `CORPSE` and aborts.
 
 The entries are `ccall` targets that take region numbers, whose meaning belongs
 to the program; `contrib/memory-regions/regions.jl` wraps them, and
-`Base.GC_REGIONS` says whether the build has them.
+`Base.GC_REGIONS` is true in a build with them.
 
 | Entry | Returns |
 |:--|:--|
@@ -147,14 +147,15 @@ region, `EROOT` (-8) an execution root references the region.
 
 ## The window, the tree, the census
 
-A window follows its task across a task switch (`src/task.c`); a task that
-ends inside one closes it; a new task starts with none. A stock collection
-parks every open window and runs with region 0 on every thread. A finalizer
-list runs with region 0 installed, and no window opens on the thread until it
-returns. The runtime's own work runs in region 0: inference and compilation,
-the cache-miss path of a dynamic dispatch and of a type instantiation close the
-window around their work and open it again (`jl_gc_region_zone_enter`,
-`jl_gc_region_zone_leave`); a cache hit pays nothing. The lazily initialized
+The runtime saves a window with its task and restores it at the switch
+(`src/task.c`), closes it when the task ends, and starts a new task without
+one. A stock collection runs with region 0 installed on every thread, the open
+windows parked; so does a finalizer list, and no window opens on the thread
+until it returns. The runtime's own work runs in region 0: inference and
+compilation, the cache-miss path of a dynamic dispatch and of a type
+instantiation run with the window closed and reopened
+(`jl_gc_region_zone_enter`, `jl_gc_region_zone_leave`); a cache hit costs
+nothing. The lazily initialized
 state of Base (`OncePerProcess`, `OncePerThread`) is made with the window
 suspended, so the task stays pinned while it may park on a lock.
 
@@ -162,14 +163,14 @@ A program declares another tree with `jl_gc_region_declare_parent` before the
 regions are used: a parent's number is smaller than its child's. Two leaves
 over a shared trunk are isolated from each other; a trunk two threads share is
 reset with the global reset. A region is live between a window on it and its
-reset; a reset or a census of a region with a live child refuses (`ECHILD`).
+reset; a reset or a census of a region with a live child returns `ECHILD`.
 
-A census is a tracing collection of one region: its roots are the execution
-roots of every task, the mark loops drop an out-of-region object at the claim
-through the census filter, and only the pages of the region are swept. The
-stop-the-world census refuses with pending region finalizers; the cooperative
-census runs them after its sweep and needs every other thread parked GC-safe.
-Both refuse while a window is open. `jl_gc_region_census_threshold` makes the
+A census is a tracing collection of one region: the mark runs from the
+execution roots of every task with the census filter set, which claims only
+objects of the region, and the sweep covers only the pages of the region. The
+stop-the-world census returns `EFINALIZERS` with pending region finalizers;
+the cooperative census runs them after its sweep and needs every other thread
+parked GC-safe. Both return `EBUSY` while a window is open. `jl_gc_region_census_threshold` makes the
 page claim of a window run a census of the open region past that many pages,
 which bounds a window whose garbage dies inside the window. A finalizer
 registered on a region object goes to the list of the region: the reset runs
@@ -195,23 +196,23 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
   covers the next top-level statement, and a definition there stores a region
   object into a binding of region 0, an escape; the line numbers of the next
   statement escape the same way.
-- Do not block inside a window: a task that waits keeps the region live and,
-  through the stickiness, keeps its thread. The wait entry is a region-0 object
-  linked from the task, and the object waited on must be a region-0 object too.
+- Do not block inside a window: a waiting task keeps the region live and stays
+  pinned to its thread. The wait entry is a region-0 object linked from the
+  task, and the object waited on must be a region-0 object too.
 - Make tasks outside the window and open a window inside them; do not capture
   a region object in a task closure (hand it over as a raw pointer under
   `GC.@preserve`).
-- `WeakRef` on a region object throws; the image writer refuses inside a
+- `WeakRef` on a region object throws, and so does an image write inside a
   window; `finalize(o)` on a region object does nothing; do not hand a region
   object to C and let it keep the pointer.
 - A region's pages belong to one thread heap and never return to the operating
   system or to the stock pool, so `gc_heap_stats.heap_size` counts them, parked
   or in use. A quarantine is permanent, and the memory of a quarantined region
   is retained for the life of the process.
-- A window does not compile: a method that compiles for the first time inside
-  a window pays its compile in the stock heap. A borrow belongs to the thread:
-  a yield inside one makes the task keep the borrowed region until the borrow ends.
-- `WITH_GC_REGIONS=1` refuses a third-party GC; Linux x86-64 is the platform
+- Compilation runs in region 0: a method compiled for the first time inside a
+  window costs its compile in the stock heap. A borrow is thread state: after
+  a yield inside one, the task keeps the borrowed region until the borrow ends.
+- `WITH_GC_REGIONS=1` and a third-party GC exclude each other; Linux x86-64 is the platform
   the design was exercised on. The measurements, the demonstrators and the
   history of the design live on the branch `gc-regions-wip` of
   `github.com/levy/julia`, outside this tree.
@@ -220,10 +221,10 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
 
 | File | Content |
 |:--|:--|
-| `src/gc-regions.h`, `src/gc-regions.c` | The API, the refusal codes, the hooks the runtime calls (nothing without the flag), the window, the reset, the tree, the census, the barrier. |
+| `src/gc-regions.h`, `src/gc-regions.c` | The API, the refusal codes, the hooks the runtime calls (no code without the flag), the window, the reset, the tree, the census, the barrier. |
 | `src/gc-tls-stock.h`, `src/gc-stock.h`, `src/julia_threads.h` | The per-heap region table and masks, the page tag, the task's window. |
 | `src/gc-stock.c`, `src/gc-common.c`, `src/gc-pages.c` | The allocation into the active pools, the census filter in the mark, the sweep that skips region pages, the finalizer and malloc'd lists, the collection brackets. |
 | `src/gc-interface.h`, `src/gc-wb-stock.h`, `src/codegen.cpp`, `src/cgutils.cpp`, `src/intrinsics.cpp`, `src/llvm-final-gc-lowering-stock.cpp`, the LLVM passes | The escape barrier in the runtime and in the compiler. |
-| `src/gf.c`, `src/jltypes.c`, `src/module.c`, `src/rtutils.c`, `src/task.c`, `src/array.c`, `src/builtins.c`, `src/staticdata.c` | The region-0 zones and borrows of the runtime, the window of a task, the image writer's refusal. |
+| `src/gf.c`, `src/jltypes.c`, `src/module.c`, `src/rtutils.c`, `src/task.c`, `src/array.c`, `src/builtins.c`, `src/staticdata.c` | The region-0 zones and borrows of the runtime, the window of a task, the refusal of an image write. |
 | `base/gcregions.jl` | `Base.GC_REGIONS` and every hook of Base; each the plain call without the flag. |
 | `contrib/memory-regions/`, `test/gc/regions_*.jl` | The Julia face and its README; the tests, run by `test/gc.jl` when `Base.GC_REGIONS`. |
