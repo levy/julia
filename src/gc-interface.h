@@ -317,8 +317,8 @@ JL_DLLEXPORT void jl_gc_queue_multiroot(const struct _jl_value_t *root, const vo
                                         struct _jl_datatype_t *dt) JL_NOTSAFEPOINT;
 #ifdef WITH_GC_REGIONS
 // The escape barrier of the GC regions (gc-regions.h): armed at the first
-// window, it compares the page tags of parent and child; disarmed, it is one
-// load and one branch per store. `ptr` may be NULL: nothing escapes then.
+// window, a comparison of the page tags of parent and child; disarmed, one
+// load and one branch per store. `ptr` may be NULL.
 extern JL_DLLIMPORT _Atomic(uint8_t) jl_gc_region_barrier_on;
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *ptr) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_gc_region_would_escape(const void *parent, const void *ptr) JL_NOTSAFEPOINT;
@@ -329,9 +329,9 @@ JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, si
         if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on)) && (ptr) != NULL) \
             jl_gc_region_wb((parent), (ptr));                           \
     } while (0)
-// A bulk copy pays one check of the pair (parent, source): when it passes
+// A bulk copy costs one check of the pair (parent, source): when it passes,
 // every element is legal, because the elements of a legal source are legal;
-// when it fails the elements decide one by one (gc-regions.c).
+// when it fails, the elements are checked one by one (gc-regions.c).
 #define jl_gc_region_wb_copy_boxed_check(parent, src, src_p, n) do {     \
         if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on)) && \
             __unlikely(jl_gc_region_would_escape((parent), (src))))     \

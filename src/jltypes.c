@@ -2600,7 +2600,7 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
 
 #ifdef WITH_GC_REGIONS
     // Past the caches this call makes a new type and stores it into the type
-    // cache: a region-0 zone (gc-regions.h); a cache hit pays nothing for it.
+    // cache: a region-0 zone (gc-regions.h); a cache hit costs nothing.
     int saved_region = jl_gc_region_zone_enter();
     jl_value_t *ndt = inst_datatype_new(dt, p, iparams, ntp, stack, env, check, nothrow,
                                         dcache, tn, istuple, isnamedtuple, cacheable);

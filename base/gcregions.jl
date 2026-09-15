@@ -1,18 +1,16 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 # The hooks of Base into the GC regions (src/gc-regions.h). A runtime built
-# with WITH_GC_REGIONS defines Core.GC_REGIONS; without it every hook below
-# is the plain call, and Base is the stock Base.
+# with WITH_GC_REGIONS defines Core.GC_REGIONS; without it each hook below
+# is the plain call.
 const GC_REGIONS = Core.isdefinedglobal(Core, :GC_REGIONS)
 
 if GC_REGIONS
     # A buffer that replaces another takes the lifetime of the one it
-    # replaces, so it is allocated in the GC region of the container that
-    # holds it, not in the region of an open window: a younger buffer held
-    # by an older container would be an escape, and the region would be
-    # quarantined for an ordinary `push!` or rehash. The borrow installs the
-    # region of `like` for the allocations of `f`; it is not a window, and a
-    # task must not yield inside one.
+    # replaces, so it is allocated in the GC region of its container, not in
+    # the region of an open window; otherwise an ordinary `push!` or rehash
+    # would be an escape. The borrow installs the region of `like` for `f`;
+    # it is not a window, and a task must not yield inside one.
     function with_region_of(f::F, like, args...) where {F}
         lent = ccall(:jl_gc_region_borrow, Cint, (Cint,), ccall(:jl_gc_region_of, Cint, (Any,), like))
         try

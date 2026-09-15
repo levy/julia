@@ -12,7 +12,7 @@ region_reset(1)             # every object of that unit is gone, at once
 ```
 
 The stock collector still runs, still owns everything outside a region, and
-never traces a region's pages. A program that opens no window pays one
+never traces a region's pages. A program that opens no window costs one
 predicted branch per pointer store. The regions exist in a julia built with
 `make WITH_GC_REGIONS=1`; `Base.GC_REGIONS` says whether a build has them,
 and a build without the flag is the stock runtime, object for object.
@@ -43,29 +43,30 @@ Five ideas, and nothing else:
 | --- | --- |
 | **Region** | A number from 1 to 63. Region 0 is the ordinary heap. A region is a set of pool pages, not a type and not a container. |
 | **Window** | A scope. While a window on region `n` is open, everything the **calling task** allocates lands in region `n`. |
-| **Reset** | Frees every object of a region at once. It first checks that nothing on any stack points into the region, and refuses if something does. A second entry, `unsafe_region_reset`, skips that check and its stop-the-world pause: it costs what a few pointer swaps cost, and a reference left behind dangles. Take it only for a loop that has shown it leaves none. |
+| **Reset** | Frees every object of a region at once, after a check that no stack references into the region; a reference found returns `EROOT`. `unsafe_region_reset` skips the check and its stop-the-world pause, at the cost of a few pointer swaps; a reference left behind dangles. |
 | **The one rule** | An object in a region may reference objects of its **own region or an older one**. Region 0 is the oldest. A store that breaks the rule is caught. |
 | **Lifetime tree** | The default order is `0 <- 1 <- 2 <- ...`: region 1 outlives region 2. Declare another tree, and two leaves become isolated from each other. |
 
-**What happens if you break the rule.** The write barrier sees the store,
-prints one line that names both objects, and **quarantines** the region: from
-then on its reset and its censuses refuse, and its memory is retained until
-the process ends. You lose the memory of that region. You never lose memory
-safety, and you never get a dangling pointer.
+**What happens if you break the rule.** The write barrier reports the store
+in one line that names both objects and **quarantines** the region: its
+reset and its censuses return `EQUARANTINED` from then on, and its memory is
+retained until the process ends. You lose the memory of that region, never
+memory safety.
 
 **What you must not do.** The five that catch people:
 
 - Do not keep a reference to a region object past the reset. The reset checks
-  the stacks and refuses, so this is a refusal and not a crash.
+  the stacks and returns `EROOT`, not a crash.
 - Do not open a window at top level. A definition inside a window makes its
   method, type or binding in the region, and the store into region 0 is an
   escape.
-- Do not capture a region object in a task closure. The closure belongs to
-  the scheduler, which is region 0. Pass a raw pointer or an index.
-- Do not block inside a window. The window keeps the region live and pins the
-  task to its thread.
+- Do not capture a region object in a task closure. The closure is stored
+  into the queues of the scheduler, region-0 objects. Pass a raw pointer or
+  an index.
+- Do not block inside a window. An open window keeps the region live and the
+  task on its thread.
 - Do not hand a region object to C and let it keep the pointer. The barrier
-  sees managed stores and nothing else.
+  check runs at managed stores only.
 
 ## The Julia API
 
@@ -97,7 +98,7 @@ The face is [`regions.jl`](regions.jl), a thin `ccall` wrapper. There is no
 | --- | --- |
 | `region_collect(n)` | A census: frees the dead cells of one region and keeps the live ones. Stops the world. |
 | `region_collect_coop(n)` | The same, with no stop, when every other thread is parked. |
-| `region_census_threshold!(pages)` | Arms the census of the open region: past `pages`, the region censuses itself. |
+| `region_census_threshold!(pages)` | Past `pages`, the page claim of a window runs a census of the open region. |
 | `region_pages(n)` | The pages the region holds on this heap. |
 
 **Shape and machine**
@@ -203,7 +204,7 @@ garbage inside itself. A census reclaims the dead cells without closing the
 window:
 
 ```julia
-region_census_threshold!(256)   # past 256 pages the open region censuses itself
+region_census_threshold!(256)   # past 256 pages, a census of the open region
 @with_region SEARCH begin
     explore(tree)               # allocates and discards inside the window
 end
@@ -214,16 +215,16 @@ region_reset(SEARCH)
 
 | Mechanism | What it does |
 | --- | --- |
-| **The page tag** | Every pool page carries the region that claimed it. A region owns its pages, and the stock sweep skips them. |
-| **The window** | A window switches one pointer in the thread heap, so the allocation fast path addresses another set of pool cursors. No copying, and no parked state that can go stale. |
-| **The barrier** | Every managed pointer store loads one flag. Before the first window, that is all it does. Armed, it compares the page tags of the parent and the child, and quarantines the child's region when the store breaks the rule. |
-| **The reset** | Runs the region's finalizers, then parks the whole page chain on the region's free list. No object is touched and nothing is traced. The checked entry adds one act before the free: it stops the world and scans the execution roots of every thread, and refuses when one points into the region. |
-| **The census** | Marks from the execution roots with a filter that claims only objects of the region, then sweeps only that region's pages. |
-| **The tree** | Each region carries a bitset of its ancestors, so the barrier's test is one shift and one bit test. |
+| **The page tag** | Every pool page carries the region that claimed it; the stock sweep skips a tagged page. |
+| **The window** | One pointer switch in the thread heap: the allocation fast path addresses another set of pool cursors. |
+| **The barrier** | Every managed pointer store loads one flag. Armed, the barrier compares the page tags of the parent and the child, and quarantines the child's region when the store breaks the rule. |
+| **The reset** | Runs the region's finalizers, then parks the page chain on the free list of the region; no object is touched. The checked entry stops the world and scans the execution roots of every thread first, and returns `EROOT` when one references into the region. |
+| **The census** | A mark from the execution roots with a filter that claims only objects of the region, then a sweep of that region's pages. |
+| **The tree** | Each region carries a bitset of its ancestors; the barrier test is one shift and one bit test. |
 
-The stock collector does what it did: it traces its own heap, it walks the
-region objects it meets and leaves them where they are, and it frees the
-stock objects a region references when nothing else holds them.
+The stock collector is unchanged: it traces its heap, marks the region
+objects it reaches without moving or freeing them, and frees the stock
+objects that only region objects referenced.
 
 ## Where the evidence lives
 

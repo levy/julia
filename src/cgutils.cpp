@@ -4893,7 +4893,7 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             emit_setfield(ctx, sty, strctinfo, i, rhs, jl_cgval_t(), need_wb, AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic, nullptr, StoreKind::Set, nullptr, "new");
 #ifdef WITH_GC_REGIONS
             // A boxed child, and the pointers of an inline field, are stored
-            // with no barrier: the region check collects them.
+            // with no barrier: the region check covers them.
             if (jl_field_isptr(sty, i)) {
                 if (rhs.isboxed)
                     region_children.push_back(boxed(ctx, rhs));
