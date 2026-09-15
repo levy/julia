@@ -3963,7 +3963,28 @@ static jl_value_t *normalize_to_cacheable_sig(jl_method_instance_t *mi JL_PROPAG
     return mi2->specTypes;
 }
 
+// The runtime's own allocations belong to region 0, whatever window the
+// caller holds: the compilation of a method, its normalized signature and the
+// types that signature instantiates would otherwise land in the region, and
+// the next reset would free them. Every entry into compilation passes here.
+// An exception past the restore leaves region 0 current, which is the safe
+// direction.
+static jl_code_instance_t *jl_compile_method_very_internal_impl(jl_method_instance_t *mi JL_PROPAGATES_ROOT, size_t world,
+    jl_value_t *F, jl_value_t **args, uint32_t nargs,
+    enum internal_compilation_triggers cause) JL_CANSAFEPOINT;
+
 static jl_code_instance_t *jl_compile_method_very_internal(jl_method_instance_t *mi JL_PROPAGATES_ROOT, size_t world,
+    jl_value_t *F, jl_value_t **args, uint32_t nargs,
+    enum internal_compilation_triggers cause) JL_CANSAFEPOINT
+{
+    int saved = jl_gc_region_set(0);
+    jl_code_instance_t *ci = jl_compile_method_very_internal_impl(mi, world, F, args, nargs, cause);
+    if (saved > 0)
+        jl_gc_region_set(saved);
+    return ci;
+}
+
+static jl_code_instance_t *jl_compile_method_very_internal_impl(jl_method_instance_t *mi JL_PROPAGATES_ROOT, size_t world,
     jl_value_t *F, jl_value_t **args, uint32_t nargs,
     enum internal_compilation_triggers cause) JL_CANSAFEPOINT
 {
@@ -4172,18 +4193,9 @@ static jl_code_instance_t *jl_compile_method_very_internal(jl_method_instance_t 
     return codeinst;
 }
 
-// The runtime's own allocations belong to region 0, whatever window the
-// caller holds: inference and compilation triggered inside a window would
-// otherwise allocate compiler state into the region, and the next reset
-// would free it. An exception past the restore leaves region 0 current,
-// which is the safe direction.
 jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t world)
 {
-    int saved = jl_gc_region_set(0);
-    jl_code_instance_t *ci = jl_compile_method_very_internal(mi, world, NULL, NULL, 0, TRIGGER_FOREIGN);
-    if (saved > 0)
-        jl_gc_region_set(saved);
-    return ci;
+    return jl_compile_method_very_internal(mi, world, NULL, NULL, 0, TRIGGER_FOREIGN);
 }
 
 jl_value_t *jl_fptr_const_return(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_code_instance_t *m)
@@ -5874,7 +5886,7 @@ JL_DLLEXPORT void jl_drop_all_caches(void)
 }
 #endif
 
-// The same zone around inference (see jl_compile_method_internal).
+// The same zone around inference (see jl_compile_method_very_internal).
 jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
 {
     int saved = jl_gc_region_set(0);

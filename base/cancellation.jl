@@ -239,7 +239,15 @@ typegroup
         @atomic owner1::Any
         next1::Union{WaitEntry1, WaitEntry2, Core.WaitEntryN, Nothing}
         aux1::UInt64
-        WaitEntry1(task::Union{Task, Nothing}) = new(task, nothing, nothing, 0x0)
+        # A wait entry is linked from the task, a region-0 object, so it is
+        # allocated in region 0 whatever window the task holds
+        # (src/gc-regions.h).
+        function WaitEntry1(task::Union{Task, Nothing})
+            parked = ccall(:jl_gc_region_suspend, Cint, ())
+            w = new(task, nothing, nothing, 0x0)
+            ccall(:jl_gc_region_resume, Cvoid, (Cint,), parked)
+            return w
+        end
     end
     mutable struct WaitEntry2
         @atomic task::Union{Task, Nothing}
@@ -249,8 +257,12 @@ typegroup
         @atomic owner2::Any
         next2::Union{WaitEntry1, WaitEntry2, Core.WaitEntryN, Nothing}
         aux2::UInt64
-        WaitEntry2(task::Union{Task, Nothing}) =
-            new(task, nothing, nothing, 0x0, nothing, nothing, 0x0)
+        function WaitEntry2(task::Union{Task, Nothing})
+            parked = ccall(:jl_gc_region_suspend, Cint, ())
+            w = new(task, nothing, nothing, 0x0, nothing, nothing, 0x0)
+            ccall(:jl_gc_region_resume, Cvoid, (Cint,), parked)
+            return w
+        end
     end
 end
 const WaitEntryN = Core.WaitEntryN
