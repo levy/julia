@@ -592,8 +592,7 @@ void gc_mark_queue_all_roots(jl_ptls_t ptls, jl_gc_markqueue_t *mq);
 void jl_gc_debug_init(void) JL_NOTSAFEPOINT;
 #ifdef WITH_GC_REGIONS
 // What the census and the reset of a region use of the collector
-// (gc-regions.c): a serial mark loop, the execution roots of one thread,
-// and the free of a memory's malloc'd data.
+// (gc-regions.c).
 void gc_mark_loop_serial(jl_ptls_t ptls) JL_NOTSAFEPOINT;
 void gc_queue_execution_roots(jl_gc_markqueue_t *mq, jl_ptls_t ptls2) JL_NOTSAFEPOINT;
 void gc_region_free_memory(jl_genericmemory_t *m, int isaligned) JL_NOTSAFEPOINT;

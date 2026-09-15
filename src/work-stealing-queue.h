@@ -12,9 +12,8 @@
 extern "C" {
 #endif
 
-// With the GC regions the census filter threads through the mark loops
-// (gc-stock.c), and a mark body past the inline budget would keep the queue
-// operations as calls, at a memcpy per element: they inline by force.
+// With the GC regions the mark loops grow past the inline budget, and the
+// queue operations would stay calls, at a memcpy per element: forced inline.
 #ifdef WITH_GC_REGIONS
 #define JL_GC_QUEUE_INLINE static inline __attribute__((always_inline))
 #else

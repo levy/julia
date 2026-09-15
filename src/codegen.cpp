@@ -1275,9 +1275,7 @@ static const auto jl_cancellation_point_func = new JuliaFunction<>{
 #ifdef WITH_GC_REGIONS
 // The escape barrier of the GC regions alone (gc-regions.h), for the stores
 // into a fresh object: the parent, then the children, like julia.write_barrier.
-// The parent is `nocapture`: the barrier reads only its page tag, and a
-// captured parent would keep alloc-opt from eliding an object that the
-// stock build elides.
+// The parent is `nocapture`, or alloc-opt could not elide the object.
 static const auto jl_region_write_barrier_func = new JuliaFunction<>{
     "julia.region_write_barrier",
     [](LLVMContext &C) { return FunctionType::get(getVoidTy(C),

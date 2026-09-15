@@ -2005,10 +2005,9 @@ STATIC_INLINE int gc_scoped_setmark(jl_taggedvalue_t *o) JL_NOTSAFEPOINT
     return 1;
 }
 
-// The claim of a census (gc-regions.h), out of line so that the stock
-// mark loops stay small: an object outside the region is live and is not
-// walked, except a task, whose stack the census scans; a leaf object of the
-// region needs only its mark bit; the rest is queued.
+// The claim of a census (gc-regions.h), out of line so that the stock mark
+// loops stay small: an object outside the region is live and not walked,
+// except a task, whose stack the census scans; a leaf needs only its mark bit.
 static NOINLINE void gc_scoped_claim(jl_gc_markqueue_t *mq, jl_value_t *obj,
                            jl_taggedvalue_t *o, int scoped) JL_NOTSAFEPOINT
 {
