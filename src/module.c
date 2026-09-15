@@ -7,7 +7,7 @@
 #include "julia.h"
 #include "julia_internal.h"
 #include "julia_assert.h"
-#include "gc-regions.h"   // a binding and its partitions are made in region 0
+#include "gc-regions.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -18,10 +18,8 @@ extern "C" {
 // that link it ahead of another partition overwrite this.
 static jl_binding_partition_t *new_binding_partition(jl_binding_t *b) JL_CANSAFEPOINT
 {
-    // A partition is stored into its binding, a region-0 object. A lookup
-    // inside a window makes one lazily, so it is made in region 0 whatever
-    // window the caller holds (gc-regions.h); otherwise the store is an
-    // escape and quarantines the window's region.
+    // A partition is stored into its binding, a region-0 object: it is made
+    // in region 0 whatever GC region window the caller holds (gc-regions.h).
     int lent = jl_gc_region_borrow(0);
     jl_binding_partition_t *bpart = (jl_binding_partition_t*)jl_gc_alloc(jl_current_task->ptls, sizeof(jl_binding_partition_t), jl_binding_partition_type);
     jl_gc_region_unborrow(lent);
@@ -1800,12 +1798,8 @@ JL_DLLEXPORT jl_binding_t *jl_get_module_binding(jl_module_t *m, jl_sym_t *var, 
             JL_LOCK(&m->lock);
         }
         else {
-            // The binding, its globalref, the grown binding vector and the
-            // key set are stored into the module's tables, region-0 objects.
-            // They are made in region 0 whatever window the caller holds
-            // (gc-regions.h): a lookup of a new name inside a window would
-            // otherwise store a region object into a stock table, which the
-            // barrier reports as an escape.
+            // The binding and the tables that hold it are region-0 objects:
+            // made in region 0 whatever window the caller holds (gc-regions.h).
             int lent = jl_gc_region_borrow(0);
             size_t i, cl = jl_svec_len(bindings);
             for (i = cl; i > 0; i--) {

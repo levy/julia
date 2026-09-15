@@ -2425,9 +2425,11 @@ static Value *emit_bounds_check(jl_codectx_t &ctx, const jl_cgval_t &ainfo, jl_v
 
 static void emit_write_barrier(jl_codectx_t&, Value*, ArrayRef<Value*>);
 static void emit_write_barrier(jl_codectx_t&, Value*, Value*);
+#ifdef WITH_GC_REGIONS
 static void emit_region_write_barrier(jl_codectx_t&, Value*, ArrayRef<Value*>);
 static SmallVector<Value*,0> tracked_values_of(jl_codectx_t&, const jl_cgval_t&, jl_value_t*);
 static void emit_region_write_barrier_fields(jl_codectx_t&, Value*, jl_datatype_t*);
+#endif
 static void emit_write_multibarrier(jl_codectx_t&, Value*, Value*, jl_value_t*) JL_CANSAFEPOINT;
 static void emit_write_multibarrier(jl_codectx_t &ctx, Value *parent, const jl_cgval_t &x) JL_CANSAFEPOINT;
 
@@ -4289,9 +4291,10 @@ static Value *boxed(jl_codectx_t &ctx, const jl_cgval_t &vinfo, bool is_promotab
                 box = emit_allocobj(ctx, (jl_datatype_t*)jt, true);
                 setName(ctx.emission_context, box, arg_typename);
                 init_bits_cgval(ctx, box, vinfo);
-                // The copy into the fresh box stores the pointer fields of
-                // the value with no barrier: the region check, for them.
+#ifdef WITH_GC_REGIONS
+                // The copy stores the pointer fields of the value into the fresh box: the region check
                 emit_region_write_barrier(ctx, box, tracked_values_of(ctx, vinfo, jt));
+#endif
             }
         }
     }
@@ -4496,15 +4499,13 @@ static void emit_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*
     ctx.builder.CreateCall(prepare_call(jl_write_barrier_func), decay_ptrs);
 }
 
-// The escape barrier of the GC regions alone, for stores into a fresh
-// object: the parent is young, so the generational barrier has nothing to
-// do, but a child may belong to a younger region (gc-regions.h). One call
-// covers every boxed child of the object, so the object pays one guard. A
-// build with JL_NO_REGION_STORE_BARRIER emits nothing, as it emits no region
-// guard in the write barrier.
+#ifdef WITH_GC_REGIONS
+// The escape barrier of the GC regions alone (gc-regions.h), for stores into
+// a fresh object: the parent is young, so the generational barrier has
+// nothing to do, but a child may belong to a younger region. One call covers
+// every child of the object.
 static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*> ptrs)
 {
-#ifndef JL_NO_REGION_STORE_BARRIER
     if (ptrs.empty())
         return;
     SmallVector<Value*, 8> decay_ptrs;
@@ -4513,13 +4514,11 @@ static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef
         decay_ptrs.push_back(maybe_decay_untracked(ctx, ptr));
     }
     ctx.builder.CreateCall(prepare_call(jl_region_write_barrier_func), decay_ptrs);
-#endif
 }
 
 // The tracked pointers that a copy of the unboxed value `x` of the concrete
-// immutable type `jt` into a fresh object stores: the children of the region
-// barrier at that copy. A constant is a region-0 object and stores none; a
-// boxed `x` is read back through its box, as the copy reads it.
+// immutable type `jt` into a fresh object stores: a constant stores none,
+// and a boxed `x` is read back through its box, as the copy reads it.
 static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval_t &x, jl_value_t *jt)
 {
     if (x.constant || x.isghost || !jl_is_concrete_immutable(jt) || jl_is_pointerfree(jt))
@@ -4535,13 +4534,11 @@ static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval
     return ExtractTrackedValues(ctx, agg);
 }
 
-// The region barrier for a fresh object of type `jt` that a copy filled
-// without the pointers in hand -- a memcpy from a raw pointer: the children
-// are the pointer fields of the object, read back from it under the alias
-// tag of the copy, so the loads stay after it.
+// The region barrier for a fresh object of type `jt` that a memcpy from a
+// raw pointer filled: the children are its pointer fields, read back under
+// the alias tag of the copy, so the loads stay after it.
 static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, jl_datatype_t *jt)
 {
-#ifndef JL_NO_REGION_STORE_BARRIER
     if (!jt->layout || jt->layout->npointers == 0)
         return;
     Value *derived = decay_derived(ctx, parent);
@@ -4554,8 +4551,8 @@ static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, j
         ptrs.push_back(load);
     }
     emit_region_write_barrier(ctx, parent, ptrs);
-#endif
 }
+#endif
 
 static void emit_write_multibarrier(jl_codectx_t &ctx, Value *parent, Value *agg,
                                     jl_value_t *jltype)
@@ -4880,7 +4877,9 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             }
         }
         // TODO: verify that nargs <= nf (currently handled by front-end)
+#ifdef WITH_GC_REGIONS
         SmallVector<Value*, 8> region_children;
+#endif
         for (size_t i = 0; i < nargs; i++) {
             jl_cgval_t rhs = argv[i];
             bool need_wb; // set to true if the store might cause the allocation of a box newer than the struct
@@ -4894,27 +4893,24 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             if (rhs.typ == jl_bottom_type)
                 return jl_cgval_t();
             emit_setfield(ctx, sty, strctinfo, i, rhs, jl_cgval_t(), need_wb, AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic, nullptr, StoreKind::Set, nullptr, "new");
+#ifdef WITH_GC_REGIONS
+            // A boxed child, and the pointers of an inline field, are stored
+            // with no barrier: the region check collects them.
             if (jl_field_isptr(sty, i)) {
                 if (rhs.isboxed)
                     region_children.push_back(boxed(ctx, rhs));
             }
             else {
-                // An inline field with pointers: the copy stores them without
-                // a box and without a barrier.
                 auto ptrs = tracked_values_of(ctx, rhs, ft);
                 region_children.append(ptrs.begin(), ptrs.end());
             }
+#endif
         }
-        // The region escape barrier is orthogonal to generational age. The
-        // fresh young parent needs no generational barrier for an
-        // already-boxed child, but that child may belong to a younger
-        // region -- an escape that a reset would later dangle. The
-        // region-only barrier checks that without the generational part,
-        // once for all the boxed children and the pointers of the inline
-        // fields; its armed-flag guard keeps it free when no region is in
-        // use. An unboxed child of a pointer field gets the region check
-        // inside the write barrier that its boxing needs anyway.
+#ifdef WITH_GC_REGIONS
+        // The fresh parent needs no generational barrier, but a child may
+        // belong to a younger region: the region barrier alone, once.
         emit_region_write_barrier(ctx, boxed(ctx, strctinfo), region_children);
+#endif
         return strctinfo;
     }
     else {

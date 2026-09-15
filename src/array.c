@@ -11,7 +11,7 @@
 #include "julia.h"
 #include "julia_internal.h"
 #include "julia_assert.h"
-#include "gc-regions.h"   // a grown buffer takes the region of its array
+#include "gc-regions.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -193,11 +193,8 @@ JL_DLLEXPORT void jl_array_grow_end(jl_array_t *a, size_t inc)
     jl_value_t *mtype = (jl_value_t*)jl_typetagof(a->ref.mem);
     int isbitsunion = jl_genericmemory_isbitsunion(a->ref.mem);
     size_t newnrows = n + inc;
-    // The new memory replaces the memory the array holds, so it takes the
-    // region of the array, not the region of an open window (gc-regions.h).
-    // The runtime grows its own region-0 arrays through this entry while a
-    // task holds a window; without the borrow the buffer would be a younger
-    // object of an older array, and the barrier would quarantine the region.
+    // The new memory replaces the memory of the array, so it is allocated in
+    // the GC region of the array, not in the region of an open window.
     if (!isbitsunion && elsz == 0) {
         int lent = jl_gc_region_borrow(jl_gc_region_of((jl_value_t*)a));
         jl_genericmemory_t *newmem = jl_alloc_genericmemory(mtype, MAXINTVAL - 2);

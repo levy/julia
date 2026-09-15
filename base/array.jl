@@ -1134,32 +1134,9 @@ end
 
 array_new_memory(mem::Memory, newlen::Int) = typeof(mem)(undef, newlen) # when implemented, this should attempt to first expand mem
 
-# Every array growth passes through here: `_growbeg!`, `_growend!`,
-# `_growat!` and `sizehint!` replace the backing memory of an array through
-# this function, so `push!`, `pushfirst!`, `append!`, `insert!` and
-# `resize!` do too.
-#
-# The new memory replaces the one `a` holds, so it takes the lifetime of the
-# array and it must take the array's GC region as well. Allocated in the
-# region of an open window instead, it would be a younger object held by an
-# older array: an escape, and the region would be quarantined for a `push!`
-# the program has every right to make.
-#
-# The region comes from the array and not from the old memory, because an
-# empty array shares one permanent empty `Memory` that belongs to region 0.
-# An array made inside a window starts with that shared memory, and its
-# first growth must land in the window's region, where the array lives.
-# The borrow is two field writes and no window, and the `finally` gives the
-# region back however the allocation leaves.
-# (doc/src/devdocs/gc-regions.md, "A replacement buffer".)
-function array_new_memory_for(a::Array, mem::Memory, newlen::Int)
-    lent = _region_borrow(a)
-    try
-        return array_new_memory(mem, newlen)
-    finally
-        _region_unborrow(lent)
-    end
-end
+# The new memory replaces the memory of the array, so it is allocated in the
+# GC region of the array, not in the region of an open window (gcregions.jl).
+array_new_memory_for(a::Array, mem::Memory, newlen::Int) = with_region_of(array_new_memory, a, mem, newlen)
 
 function _growbeg_internal!(a::Vector, delta::Int, len::Int)
     @_terminates_locally_meta

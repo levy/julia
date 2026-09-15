@@ -34,9 +34,7 @@ STATIC_INLINE void jl_gc_wb_finalizer_queue(arraylist_t *queue JL_UNUSED) JL_NOT
 
 STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_NOTSAFEPOINT
 {
-    // ptr is an immutable object; its pointer fields are what the store puts
-    // into parent, so they decide when the pair check fails (see the bulk
-    // copy below).
+    // ptr is an immutable object
     jl_gc_region_wb_copy_inline_check(parent, (const void*)ptr, (const char*)ptr, 1, 0,
                                       (jl_datatype_t*)jl_typeof(ptr));
     if (__likely(jl_astaggedvalue(parent)->bits.gc != 3 /* GC_OLD_MARKED */))
@@ -54,8 +52,6 @@ STATIC_INLINE void jl_gc_multi_wb(const void *parent, const jl_value_t *ptr) JL_
         jl_gc_queue_multiroot((jl_value_t*)parent, ptr, dt);
 }
 
-// The region check of a bulk copy is the pair check above, then the
-// elements when the pair fails.
 STATIC_INLINE void jl_gc_wb_genericmemory_copy_boxed(const jl_value_t *dest_owner, _Atomic(void*) ** dest_pp,
                                           jl_genericmemory_t *src, _Atomic(void*) ** src_pp,
                                           size_t* n) JL_NOTSAFEPOINT
@@ -106,7 +102,6 @@ STATIC_INLINE void jl_gc_wb_genericmemory_copy_boxed(const jl_value_t *dest_owne
     }
 }
 
-// The same for inline elements with pointer fields; `dt` is the memory type.
 STATIC_INLINE void jl_gc_wb_genericmemory_copy_ptr(const jl_value_t *owner, jl_genericmemory_t *src, char* src_p,
                                           size_t n, jl_datatype_t *dt) JL_NOTSAFEPOINT
 {

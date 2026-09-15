@@ -1521,10 +1521,12 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
 static jl_value_t *instantiate_unionall_(jl_unionall_t *u, jl_value_t *p, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
 static jl_value_t *jl_apply_tuple_type_v_(jl_value_t **p, size_t np, jl_svec_t *params, int check, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
 static jl_svec_t *compute_fieldtypes_(jl_datatype_t *st JL_PROPAGATES_ROOT, void *stack, int cacheable, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
+#ifdef WITH_GC_REGIONS
 static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                      jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
                                      jl_deferred_typecache_t *dcache,
                                      jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable);
+#endif
 
 // Build an environment mapping a TypeName's parameters to parameter values.
 // This is the environment needed for instantiating a type's supertype and field types.
@@ -2503,6 +2505,9 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
                                        jl_deferred_typecache_t *dcache)
 {
+#ifndef WITH_GC_REGIONS
+    jl_typestack_t top;
+#endif
     jl_typename_t *tn = dt->name;
     int istuple = (tn == jl_tuple_typename);
     int isnamedtuple = (tn == jl_namedtuple_typename);
@@ -2593,14 +2598,13 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
     if (stack_lkup)
         return stack_lkup;
 
+#ifdef WITH_GC_REGIONS
     // Past the caches this call makes a new type and stores it into the type
-    // cache. That state belongs to region 0, whatever window the caller holds
-    // (see jl_type_infer in gf.c); a cache hit above pays nothing for it.
-    int saved_region = jl_gc_region_set(0);
+    // cache: a region-0 zone (gc-regions.h); a cache hit pays nothing for it.
+    int saved_region = jl_gc_region_zone_enter();
     jl_value_t *ndt = inst_datatype_new(dt, p, iparams, ntp, stack, env, check, nothrow,
                                         dcache, tn, istuple, isnamedtuple, cacheable);
-    if (saved_region > 0)
-        jl_gc_region_set(saved_region);
+    jl_gc_region_zone_leave(saved_region);
     return ndt;
 }
 
@@ -2611,6 +2615,7 @@ static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t
                                      jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable)
 {
     jl_typestack_t top;
+#endif
     // check parameters against bounds in type definition
     // for whether this is even valid
     if (check && !istuple) {

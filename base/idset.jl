@@ -50,11 +50,9 @@ function push!(s::IdSet, @nospecialize(x))
     if idx >= 0
         s.list[idx + 1] = x
     else
-        # A grown key list and a rehashed index table replace the ones the
-        # set holds, so they take the region of the set, not the region of
-        # an open window (genericmemory.jl, `_region_borrow`).
-        lent = _region_borrow(s)
-        try
+        # The grown key list and the rehashed index table replace the ones
+        # of the set: they are allocated where the set lives (gcregions.jl).
+        with_region_of(s) do
             if s.max < length(s.list)
                 idx = s.max
                 @assert !isassigned(s.list, idx + 1) "bucket is already occupied"
@@ -68,8 +66,6 @@ function push!(s::IdSet, @nospecialize(x))
             end
             @assert s.list[s.max] === x "unexpected object in bucket"
             setfield!(s, :idxs, ccall(:jl_idset_put_idx, Any, (Any, Any, Int), s.list, s.idxs, idx))
-        finally
-            _region_unborrow(lent)
         end
         s.count += 1
     end

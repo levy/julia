@@ -5,6 +5,11 @@
 # scripts run under test/gc.jl's run_gctest, one process each, and exit 1
 # at the first failed check.
 
+if !Base.GC_REGIONS
+    println(stderr, "GC regions: not built (WITH_GC_REGIONS=0), nothing to test")
+    exit(0)
+end
+
 region_set(n)              = Int(ccall(:jl_gc_region_set, Cint, (Cint,), n))
 region_current()           = Int(ccall(:jl_gc_region_current, Cint, ()))
 region_reset(n)            = ccall(:jl_gc_region_reset, UInt64, (Cint,), n)

@@ -3477,9 +3477,7 @@ JL_DLLEXPORT uint32_t jl_create_system_image(void **_native_data, jl_array_t *wo
                                              int64_t *srctextpos,
                                              jl_array_t *module_init_order)
 {
-    // A window open during image output would write region-tagged pages
-    // and region cursors into the image, where they have no meaning on
-    // load; refuse, rather than emit a corrupt image.
+    // An open GC region window would put region pages into the image (gc-regions.h).
     if (jl_gc_region_current() != 0)
         jl_error("cannot write a system image while a GC region window is open");
     JL_TIMING(SYSIMG_DUMP, SYSIMG_DUMP);

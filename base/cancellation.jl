@@ -239,13 +239,12 @@ typegroup
         @atomic owner1::Any
         next1::Union{WaitEntry1, WaitEntry2, Core.WaitEntryN, Nothing}
         aux1::UInt64
-        # A wait entry is linked from the task, a region-0 object, so it is
-        # allocated in region 0 whatever window the task holds
-        # (src/gc-regions.h).
+        # A wait entry is linked from the task, a region-0 object: it is made
+        # in region 0 whatever GC region window the task holds (gcregions.jl).
         function WaitEntry1(task::Union{Task, Nothing})
-            parked = ccall(:jl_gc_region_suspend, Cint, ())
+            parked = _region_window_suspend()
             w = new(task, nothing, nothing, 0x0)
-            ccall(:jl_gc_region_resume, Cvoid, (Cint,), parked)
+            _region_window_resume(parked)
             return w
         end
     end
@@ -258,9 +257,9 @@ typegroup
         next2::Union{WaitEntry1, WaitEntry2, Core.WaitEntryN, Nothing}
         aux2::UInt64
         function WaitEntry2(task::Union{Task, Nothing})
-            parked = ccall(:jl_gc_region_suspend, Cint, ())
+            parked = _region_window_suspend()
             w = new(task, nothing, nothing, 0x0, nothing, nothing, 0x0)
-            ccall(:jl_gc_region_resume, Cvoid, (Cint,), parked)
+            _region_window_resume(parked)
             return w
         end
     end

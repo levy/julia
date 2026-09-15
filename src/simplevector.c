@@ -108,8 +108,6 @@ JL_DLLEXPORT jl_svec_t *jl_svec_copy(jl_svec_t *a)
 {
     size_t n = jl_svec_len(a);
     jl_svec_t *c = jl_alloc_svec_uninit(n);
-    // The pair check covers every element when it passes; when it fails the
-    // elements decide, one by one (gc-wb-stock.h, the bulk copy).
     jl_gc_region_wb_copy_boxed_check(c, a, (_Atomic(void*)*)jl_svec_data(a), n);
     memmove_refs((_Atomic(void*)*)jl_svec_data(c), (_Atomic(void*)*)jl_svec_data(a), n);
     return c;
