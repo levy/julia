@@ -256,6 +256,10 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
                        "census now refuse, and its memory is retained\n",
                        jl_typeof_str((jl_value_t*)child), cr,
                        jl_typeof_str((jl_value_t*)parent), pr, cr);
+    // With the debug checks on, the first escape of a region shows where it
+    // happened.
+    if (!(seen & bit) && region_debug_checks)
+        jl_print_backtrace();
 }
 
 // The elements of a bulk copy, one by one, when the pair check of the
