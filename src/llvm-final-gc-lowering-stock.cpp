@@ -72,6 +72,36 @@ void FinalLowerGC::lowerWriteBarrier(CallInst *target, Function &F) {
         return;
     IRBuilder<> builder(target);
     builder.SetCurrentDebugLocation(target->getDebugLoc());
+    // The escape barrier of the GC regions (gc-regions.h): one load-and-branch
+    // on a runtime flag, and a cold call into jl_gc_region_wb per child when
+    // the flag is armed. It stands before the generational check, because a
+    // region lifetime and a generational age are orthogonal.
+    // julia.region_write_barrier is this guard alone: codegen emits it for a
+    // store into a fresh object, whose parent is young and needs no
+    // generational barrier. Its lowering ends here.
+#ifndef JL_NO_REGION_STORE_BARRIER
+    {
+        auto M = F.getParent();
+        auto flagTy = Type::getInt8Ty(F.getContext());
+        auto flag = M->getOrInsertGlobal("jl_gc_region_barrier_on", flagTy);
+        auto flagVal = builder.CreateLoad(flagTy, flag, "region_barrier_on");
+        auto flagOn = builder.CreateICmpNE(flagVal, ConstantInt::get(flagTy, 0), "region_barrier_armed");
+        MDBuilder MDBR(F.getContext());
+        SmallVector<uint32_t, 2> WR{1, 999};
+        auto regionTerm = SplitBlockAndInsertIfThen(flagOn, target, false, MDBR.createBranchWeights(WR));
+        regionTerm->getParent()->setName("region_wb");
+        IRBuilder<> rb(regionTerm);
+        rb.SetCurrentDebugLocation(target->getDebugLoc());
+        auto rwb = M->getOrInsertFunction("jl_gc_region_wb",
+            FunctionType::get(Type::getVoidTy(F.getContext()),
+                              {parent->getType(), parent->getType()}, false));
+        for (Value *child : children)
+            rb.CreateCall(rwb, {parent, child});
+        builder.SetInsertPoint(target);
+    }
+#endif
+    if (target->getCalledOperand() == region_write_barrier_func)
+        return;
     auto parTag = EmitLoadTag(builder, T_size, parent, tbaa_tag);
     auto parBits = builder.CreateAnd(parTag, GC_OLD_MARKED, "parent_bits");
     auto parOldMarked = builder.CreateICmpEQ(parBits, ConstantInt::get(T_size, GC_OLD_MARKED), "parent_old_marked");

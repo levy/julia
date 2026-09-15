@@ -12,6 +12,7 @@
 #include <string.h>
 #include "julia.h"
 #include "julia_internal.h"
+#include "gc-regions.h"
 #ifndef _OS_WINDOWS_
 #include <unistd.h>
 #endif
@@ -423,7 +424,7 @@ static jl_code_instance_t *jl_method_inferred_with_abi(jl_method_instance_t *mi 
 // returns the inferred source, and may cache the result in mi
 // if successful, also updates the mi argument to describe the validity of this src
 // if inference doesn't occur (or can't finish), returns NULL instead
-jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
+static jl_code_instance_t *jl_type_infer_impl(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
 {
     if (jl_typeinf_func == NULL)
         return NULL;
@@ -3478,6 +3479,10 @@ static void JL_NORETURN jl_method_error_bare(jl_value_t *f, jl_value_t *args, si
         } *pe = (struct jl_method_error*)e,
            ee = {f, args, world};
         *pe = ee;
+        // The two children are the caller's own function and arguments, so
+        // the region check runs although the parent is fresh.
+        jl_gc_wb_fresh(e, f);
+        jl_gc_wb_fresh(e, args);
         jl_throw(e);
     }
     else {
@@ -4167,9 +4172,18 @@ static jl_code_instance_t *jl_compile_method_very_internal(jl_method_instance_t 
     return codeinst;
 }
 
+// The runtime's own allocations belong to region 0, whatever window the
+// caller holds: inference and compilation triggered inside a window would
+// otherwise allocate compiler state into the region, and the next reset
+// would free it. An exception past the restore leaves region 0 current,
+// which is the safe direction.
 jl_code_instance_t *jl_compile_method_internal(jl_method_instance_t *mi, size_t world)
 {
-    return jl_compile_method_very_internal(mi, world, NULL, NULL, 0, TRIGGER_FOREIGN);
+    int saved = jl_gc_region_set(0);
+    jl_code_instance_t *ci = jl_compile_method_very_internal(mi, world, NULL, NULL, 0, TRIGGER_FOREIGN);
+    if (saved > 0)
+        jl_gc_region_set(saved);
+    return ci;
 }
 
 jl_value_t *jl_fptr_const_return(jl_value_t *f, jl_value_t **args, uint32_t nargs, jl_code_instance_t *m)
@@ -4720,6 +4734,7 @@ STATIC_INLINE jl_method_instance_t *jl_lookup_generic_(jl_value_t *F, jl_value_t
     int i;
     jl_tupletype_t *tt = NULL;
     int64_t last_alloc = 0;
+    int saved_region = 0;
     // check each cache entry to see if it matches
     //#pragma unroll
     //for (i = 0; i < 4; i++) {
@@ -4741,6 +4756,12 @@ STATIC_INLINE jl_method_instance_t *jl_lookup_generic_(jl_value_t *F, jl_value_t
 #undef LOOP_BODY
     i = 4;
     if (i == 4) {
+        // The lookup past the associative cache allocates runtime state: the
+        // argument tuple type and its type-cache entry, a specialization, a
+        // method instance. That state belongs to region 0, whatever window
+        // the caller holds (see jl_type_infer below); the associative-cache
+        // hit above pays nothing for it.
+        saved_region = jl_gc_region_set(0);
         // if no method was found in the associative cache, check the full cache
         JL_TIMING(METHOD_LOOKUP_FAST, METHOD_LOOKUP_FAST);
         jl_methcache_t *mc = jl_method_table->cache;
@@ -4811,6 +4832,8 @@ have_entry:
             record_dispatch_statement_on_first_dispatch(mfunc);
         }
     }
+    if (saved_region > 0)
+        jl_gc_region_set(saved_region);
 
 #ifdef JL_TRACE
     if (traceen && for_call)
@@ -5850,3 +5873,13 @@ JL_DLLEXPORT void jl_drop_all_caches(void)
 #ifdef __cplusplus
 }
 #endif
+
+// The same zone around inference (see jl_compile_method_internal).
+jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
+{
+    int saved = jl_gc_region_set(0);
+    jl_code_instance_t *ci = jl_type_infer_impl(mi, world, source_mode, trim_mode);
+    if (saved > 0)
+        jl_gc_region_set(saved);
+    return ci;
+}
