@@ -12,6 +12,7 @@
 #endif
 #include "julia.h"
 #include "julia_internal.h"
+#include "gc-regions.h"
 #include "builtin_proto.h"
 #include "julia_assert.h"
 
@@ -1520,6 +1521,10 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
 static jl_value_t *instantiate_unionall_(jl_unionall_t *u, jl_value_t *p, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
 static jl_value_t *jl_apply_tuple_type_v_(jl_value_t **p, size_t np, jl_svec_t *params, int check, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
 static jl_svec_t *compute_fieldtypes_(jl_datatype_t *st JL_PROPAGATES_ROOT, void *stack, int cacheable, jl_deferred_typecache_t *dcache) JL_CANSAFEPOINT;
+static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                     jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
+                                     jl_deferred_typecache_t *dcache,
+                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable);
 
 // Build an environment mapping a TypeName's parameters to parameter values.
 // This is the environment needed for instantiating a type's supertype and field types.
@@ -1881,6 +1886,8 @@ jl_value_t *jl_substitute_datatype(jl_value_t *t, jl_datatype_t * x, jl_datatype
                 jl_set_typetagof((jl_vararg_t *)t, jl_vararg_tag, 0);
                 ((jl_vararg_t *)t)->T = rT;
                 ((jl_vararg_t *)t)->N = vt->N;
+                jl_gc_wb_fresh(t, rT);
+                jl_gc_wb_fresh(t, vt->N);
             }
             JL_GC_POP();
         }
@@ -2496,7 +2503,6 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
                                        jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
                                        jl_deferred_typecache_t *dcache)
 {
-    jl_typestack_t top;
     jl_typename_t *tn = dt->name;
     int istuple = (tn == jl_tuple_typename);
     int isnamedtuple = (tn == jl_namedtuple_typename);
@@ -2587,6 +2593,24 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
     if (stack_lkup)
         return stack_lkup;
 
+    // Past the caches this call makes a new type and stores it into the type
+    // cache. That state belongs to region 0, whatever window the caller holds
+    // (see jl_type_infer in gf.c); a cache hit above pays nothing for it.
+    int saved_region = jl_gc_region_set(0);
+    jl_value_t *ndt = inst_datatype_new(dt, p, iparams, ntp, stack, env, check, nothrow,
+                                        dcache, tn, istuple, isnamedtuple, cacheable);
+    if (saved_region > 0)
+        jl_gc_region_set(saved_region);
+    return ndt;
+}
+
+// The cache-miss path of inst_datatype_inner: make the type, then cache it.
+static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
+                                     jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
+                                     jl_deferred_typecache_t *dcache,
+                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable)
+{
+    jl_typestack_t top;
     // check parameters against bounds in type definition
     // for whether this is even valid
     if (check && !istuple) {
@@ -3381,6 +3405,8 @@ jl_vararg_t *jl_wrap_vararg(jl_value_t *t, jl_value_t *n, int check, int nothrow
         jl_set_typetagof(vm, jl_vararg_tag, 0);
         vm->T = t;
         vm->N = n;
+        jl_gc_wb_fresh(vm, t);
+        jl_gc_wb_fresh(vm, n);
     }
     JL_GC_POP();
     return vm;

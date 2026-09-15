@@ -107,6 +107,7 @@ Glossary
 
 #include "julia.h"
 #include "julia_internal.h"
+#include "gc-regions.h"
 #include "julia_gcext.h"
 #include "builtin_proto.h"
 #include "processor.h"
@@ -3476,6 +3477,11 @@ JL_DLLEXPORT uint32_t jl_create_system_image(void **_native_data, jl_array_t *wo
                                              int64_t *srctextpos,
                                              jl_array_t *module_init_order)
 {
+    // A window open during image output would write region-tagged pages
+    // and region cursors into the image, where they have no meaning on
+    // load; refuse, rather than emit a corrupt image.
+    if (jl_gc_region_current() != 0)
+        jl_error("cannot write a system image while a GC region window is open");
     JL_TIMING(SYSIMG_DUMP, SYSIMG_DUMP);
 
     jl_task_t *ct = jl_current_task;
