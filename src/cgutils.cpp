@@ -4500,10 +4500,8 @@ static void emit_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*
 }
 
 #ifdef WITH_GC_REGIONS
-// The escape barrier of the GC regions alone (gc-regions.h), for stores into
-// a fresh object: the parent is young, so the generational barrier has
-// nothing to do, but a child may belong to a younger region. One call covers
-// every child of the object.
+// The escape barrier of the GC regions alone (gc-regions.h), for the stores
+// into a fresh object: one call covers every child of the object.
 static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*> ptrs)
 {
     if (ptrs.empty())

@@ -3967,9 +3967,8 @@ static jl_value_t *normalize_to_cacheable_sig(jl_method_instance_t *mi JL_PROPAG
 }
 
 #ifdef WITH_GC_REGIONS
-// The compilation of a method allocates runtime state that outlives any GC
-// region window the caller holds: its body runs in a region-0 zone
-// (gc-regions.h). Every entry into compilation passes here.
+// Compilation allocates runtime state that outlives any GC region window
+// of the caller: the body runs in a region-0 zone (gc-regions.h).
 static jl_code_instance_t *jl_compile_method_very_internal_impl(jl_method_instance_t *mi JL_PROPAGATES_ROOT, size_t world,
     jl_value_t *F, jl_value_t **args, uint32_t nargs,
     enum internal_compilation_triggers cause) JL_CANSAFEPOINT;
