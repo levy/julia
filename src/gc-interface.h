@@ -325,6 +325,8 @@ JL_DLLEXPORT int jl_gc_region_would_escape(const void *parent, const void *ptr) 
 JL_DLLEXPORT void jl_gc_region_wb_boxed(const void *parent, _Atomic(void*) *src, size_t n) JL_NOTSAFEPOINT;
 JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, size_t n,
                                          size_t elsz, struct _jl_datatype_t *et) JL_NOTSAFEPOINT;
+// JL_NO_REGION_STORE_BARRIER leaves the escape barrier out of every store, a probe of its cost.
+#ifndef JL_NO_REGION_STORE_BARRIER
 #define jl_gc_region_wb_check(parent, ptr) do {                         \
         if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on)) && (ptr) != NULL) \
             jl_gc_region_wb((parent), (ptr));                           \
@@ -348,6 +350,12 @@ JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, si
         if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) \
             jl_gc_region_wb_inline((parent), (const char*)(src_p), 1, 0, (et)); \
     } while (0)
+#else
+#define jl_gc_region_wb_check(parent, ptr) do { } while (0)
+#define jl_gc_region_wb_copy_boxed_check(parent, src, src_p, n) do { } while (0)
+#define jl_gc_region_wb_copy_inline_check(parent, src, src_p, n, elsz, et) do { } while (0)
+#define jl_gc_region_wb_inline_check(parent, src_p, et) do { } while (0)
+#endif
 #else
 #define jl_gc_region_wb_check(parent, ptr) do { } while (0)
 #define jl_gc_region_wb_copy_boxed_check(parent, src, src_p, n) do { } while (0)

@@ -4504,6 +4504,7 @@ static void emit_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*
 // into a fresh object: one call covers every child of the object.
 static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*> ptrs)
 {
+#ifndef JL_NO_REGION_STORE_BARRIER
     if (ptrs.empty())
         return;
     SmallVector<Value*, 8> decay_ptrs;
@@ -4512,6 +4513,7 @@ static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef
         decay_ptrs.push_back(maybe_decay_untracked(ctx, ptr));
     }
     ctx.builder.CreateCall(prepare_call(jl_region_write_barrier_func), decay_ptrs);
+#endif
 }
 
 // The tracked pointers that a copy of the unboxed value `x` of the concrete
@@ -4537,6 +4539,7 @@ static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval
 // the alias tag of the copy, so the loads stay after it.
 static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, jl_datatype_t *jt)
 {
+#ifndef JL_NO_REGION_STORE_BARRIER
     if (!jt->layout || jt->layout->npointers == 0)
         return;
     Value *derived = decay_derived(ctx, parent);
@@ -4549,6 +4552,7 @@ static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, j
         ptrs.push_back(load);
     }
     emit_region_write_barrier(ctx, parent, ptrs);
+#endif
 }
 #endif
 

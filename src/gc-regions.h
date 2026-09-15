@@ -122,9 +122,15 @@ JL_DLLEXPORT uint64_t jl_gc_heap_reserve(uint64_t bytes) JL_NOTSAFEPOINT;
 // --- the hooks the rest of the runtime calls --------------------------------
 // The census filter: the region of the census that runs now, 0 otherwise.
 extern _Atomic(int) jl_gc_region_census_target;
+// JL_NO_REGION_ALLOC keeps the allocator on norm_pools and refuses every
+// window, a probe of the cost of the region allocator and the census filter.
 STATIC_INLINE int jl_gc_region_census_filter(void) JL_NOTSAFEPOINT
 {
+#ifdef JL_NO_REGION_ALLOC
+    return 0;
+#else
     return jl_atomic_load_relaxed(&jl_gc_region_census_target);
+#endif
 }
 // Records a task the census reached outside the region; returns 1 the first
 // time, 0 afterwards.

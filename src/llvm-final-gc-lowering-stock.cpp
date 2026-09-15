@@ -76,6 +76,7 @@ void FinalLowerGC::lowerWriteBarrier(CallInst *target, Function &F) {
     // The escape barrier of the GC regions (gc-regions.h) stands before the
     // generational check: a load-and-branch on the armed flag, then a call
     // per child. julia.region_write_barrier is this guard alone.
+#ifndef JL_NO_REGION_STORE_BARRIER
     {
         auto M = F.getParent();
         auto flagTy = Type::getInt8Ty(F.getContext());
@@ -95,6 +96,7 @@ void FinalLowerGC::lowerWriteBarrier(CallInst *target, Function &F) {
             rb.CreateCall(rwb, {parent, child});
         builder.SetInsertPoint(target);
     }
+#endif
     if (target->getCalledOperand() == region_write_barrier_func)
         return;
 #endif

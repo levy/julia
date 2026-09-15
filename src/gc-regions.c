@@ -503,6 +503,10 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 // this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n)
 {
+#ifdef JL_NO_REGION_ALLOC
+    (void)n;
+    return JL_GC_REGION_EINVAL;
+#endif
     jl_task_t *ct = jl_current_task;
     jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
     int old = heap->current_region;

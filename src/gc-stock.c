@@ -923,7 +923,7 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // Use the pool offset instead of the pool address as the argument
     // to workaround a llvm bug.
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
-#ifdef WITH_GC_REGIONS
+#if defined(WITH_GC_REGIONS) && !defined(JL_NO_REGION_ALLOC)
     // `offset` selects a pool of norm_pools; the same pool of the current
     // region's array is used (gc-regions.h).
     size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
