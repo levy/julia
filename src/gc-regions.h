@@ -124,7 +124,11 @@ JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTS
 extern _Atomic(int) jl_gc_region_census_target;
 STATIC_INLINE int jl_gc_region_census_filter(void) JL_NOTSAFEPOINT
 {
+#ifdef JL_NO_REGION_ALLOC
+    return 0; // the probe build: no region can allocate, so no census runs
+#else
     return jl_atomic_load_relaxed(&jl_gc_region_census_target);
+#endif
 }
 // Records a task the census reached outside the region; returns 1 the first
 // time, 0 afterwards.

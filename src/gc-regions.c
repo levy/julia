@@ -528,6 +528,13 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 // this thread.
 JL_DLLEXPORT int jl_gc_region_set(int n) JL_NOTSAFEPOINT
 {
+#ifdef JL_NO_REGION_ALLOC
+    // The probe build (-DJL_NO_REGION_ALLOC): the allocator stays on
+    // norm_pools and no window opens, so the cost of the allocator path and
+    // of the census filter can be measured against a build that has them.
+    (void)n;
+    return JL_GC_REGION_EINVAL;
+#endif
     jl_task_t *ct = jl_current_task;
     jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
     int old = heap->current_region;
