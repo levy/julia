@@ -26,11 +26,13 @@ extern "C" {
 // while it is not zero; a stock collection parks the windows instead.
 static _Atomic(int) region_windows_open = 0;
 
+#ifdef WITH_GC_REGION_BARRIER
 // The escape barrier is armed at the first window and stays armed. Armed,
 // every write barrier compares the page tags of parent and child, and a
 // store of a younger child into an older parent quarantines the child's
 // region: an escape costs memory, never a dangling pointer.
 JL_DLLEXPORT _Atomic(uint8_t) jl_gc_region_barrier_on = 0;
+#endif
 static _Atomic(uint64_t) region_quarantined_mask = 0;
 
 // The census filter: the region of the census that runs now, 0 otherwise.
@@ -181,6 +183,7 @@ JL_DLLEXPORT int jl_gc_region_quarantined(int n)
     return (jl_atomic_load_relaxed(&region_quarantined_mask) >> n) & 1;
 }
 
+#ifdef WITH_GC_REGION_BARRIER
 // --- the escape barrier ----------------------------------------------------------
 
 // 1 when a store of `child` into `parent` breaks the reference rule; `cr`
@@ -250,6 +253,8 @@ JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, si
         }
     }
 }
+
+#endif // WITH_GC_REGION_BARRIER
 
 // --- the hooks of the allocator and the finalizer path -------------------------------
 
@@ -516,8 +521,10 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
     // memory that nothing reclaims.
     if (__unlikely(n != 0 && jl_gc_region_quarantined(n)))
         return JL_GC_REGION_EQUARANTINED;
+#ifdef WITH_GC_REGION_BARRIER
     if (__unlikely(!jl_atomic_load_relaxed(&jl_gc_region_barrier_on)))
         jl_atomic_store_release(&jl_gc_region_barrier_on, 1);
+#endif
     region_lazy_init(heap, n);
     region_mark_live(heap, n);
     // An open window pins the task to the thread that holds the region's

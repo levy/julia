@@ -306,8 +306,12 @@ an_iobuffer_truncates_inside_a_window()
 an_iddict_empties_inside_a_window()
 an_idset_grows_inside_a_window()
 a_c_growth_inside_a_window()
-an_element_still_quarantines()
 a_program_container_grows_inside_a_window()
-a_program_container_without_the_borrow_quarantines()
+if Base.GC_REGION_BARRIER
+    an_element_still_quarantines()
+    a_program_container_without_the_borrow_quarantines()
+else
+    println("regions_containers: the escape cases are skipped, this build has no region barrier")
+end
 
 finish("regions_containers")

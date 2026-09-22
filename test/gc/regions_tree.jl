@@ -336,6 +336,7 @@ tree_reset_order()
 tree_global_reset_root_check()
 tree_check_clean_before_escapes()
 
+if Base.GC_REGION_BARRIER
 tree_sibling_isolation()
 tree_lock_discipline()
 tree_redeclared_ancestor()
@@ -357,5 +358,8 @@ end
 
 tree_final_quarantine_mask()
 tree_handover()
+else
+    println("regions_tree: the escape cases are skipped, this build has no region barrier")
+end
 
 finish("regions_tree")

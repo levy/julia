@@ -2429,7 +2429,7 @@ static Value *emit_bounds_check(jl_codectx_t &ctx, const jl_cgval_t &ainfo, jl_v
 static void emit_write_barrier(jl_codectx_t&, Value*, Value*, Value*);
 static void emit_write_multibarrier(jl_codectx_t&, Value *parent, Value *dst, Value *agg, jl_value_t*) JL_CANSAFEPOINT;
 static void emit_write_multibarrier(jl_codectx_t&, Value *parent, Value *dst, const jl_cgval_t&) JL_CANSAFEPOINT;
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
 static void emit_region_write_barrier(jl_codectx_t&, Value*, ArrayRef<Value*>);
 static SmallVector<Value*,0> tracked_values_of(jl_codectx_t&, const jl_cgval_t&, jl_value_t*);
 static void emit_region_write_barrier_fields(jl_codectx_t&, Value*, jl_datatype_t*);
@@ -4145,6 +4145,10 @@ static Value *box_union(jl_codectx_t &ctx, const jl_cgval_t &vinfo, const SmallB
                         box = emit_allocobj(ctx, jt, true);
                         setName(ctx.emission_context, box, "unionbox");
                         init_bits_cgval(ctx, box, vinfo_r);
+#ifdef WITH_GC_REGION_BARRIER
+                        // The copy stores the pointer fields of the value into the fresh box: the region check
+                        emit_region_write_barrier(ctx, box, tracked_values_of(ctx, vinfo_r, (jl_value_t*)jt));
+#endif
                     }
                 }
                 tempBB = ctx.builder.GetInsertBlock(); // could have changed
@@ -4300,7 +4304,7 @@ static Value *boxed(jl_codectx_t &ctx, const jl_cgval_t &vinfo, bool is_promotab
                 box = emit_allocobj(ctx, (jl_datatype_t*)jt, true);
                 setName(ctx.emission_context, box, arg_typename);
                 init_bits_cgval(ctx, box, vinfo);
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
                 // The copy stores the pointer fields of the value into the fresh box: the region check
                 emit_region_write_barrier(ctx, box, tracked_values_of(ctx, vinfo, jt));
 #endif
@@ -4508,7 +4512,7 @@ static void emit_field_write_barrier(jl_codectx_t &ctx, Value *parent, Value *ds
     ctx.builder.CreateCall(prepare_call(fn), args);
 }
 
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
 // The escape barrier of the GC regions alone (gc-regions.h), for the stores
 // into a fresh object: one call covers every child of the object.
 static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef<Value*> ptrs)
@@ -4906,7 +4910,7 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             }
         }
         // TODO: verify that nargs <= nf (currently handled by front-end)
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
         SmallVector<Value*, 8> region_children;
 #endif
         for (size_t i = 0; i < nargs; i++) {
@@ -4922,7 +4926,7 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             if (rhs.typ == jl_bottom_type)
                 return jl_cgval_t();
             emit_setfield(ctx, sty, strctinfo, i, rhs, jl_cgval_t(), need_wb, AtomicOrdering::NotAtomic, AtomicOrdering::NotAtomic, nullptr, StoreKind::Set, nullptr, "new");
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
             // A boxed child, and the pointers of an inline field, are stored
             // with no barrier: the region check covers them.
             if (jl_field_isptr(sty, i)) {
@@ -4935,7 +4939,7 @@ static jl_cgval_t emit_new_struct(jl_codectx_t &ctx, jl_value_t *ty, size_t narg
             }
 #endif
         }
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
         // The fresh parent needs no generational barrier, but a child may
         // belong to a younger region: the region barrier alone, once.
         emit_region_write_barrier(ctx, boxed(ctx, strctinfo), region_children);

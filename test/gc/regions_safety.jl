@@ -115,8 +115,14 @@ end
 checked_reset_refuses_under_a_root()
 the_same_region_resets_once_the_root_is_gone()
 the_unsafe_reset_frees()
-the_reset_refuses_after_its_finalizer_escaped()
+if Base.GC_REGION_BARRIER
+    the_reset_refuses_after_its_finalizer_escaped()
+end
 a_dead_task_leaves_no_window()
-a_window_on_a_quarantined_region_is_refused()
+if Base.GC_REGION_BARRIER
+    a_window_on_a_quarantined_region_is_refused()
+else
+    println("regions_safety: the escape cases are skipped, this build has no region barrier")
+end
 
 finish("regions_safety")

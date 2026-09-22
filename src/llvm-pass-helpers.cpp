@@ -61,7 +61,7 @@ void JuliaPassContext::initFunctions(Module &M)
     field_write_barrier_p11_func = M.getFunction("julia.field_write_barrier.p11");
     field_write_barrier_p13_func = M.getFunction("julia.field_write_barrier.p13");
     object_write_barrier_func = M.getFunction("julia.object_write_barrier");
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
     region_write_barrier_func = M.getFunction("julia.region_write_barrier");
 #endif
     alloc_obj_func = M.getFunction("julia.gc_alloc_obj");

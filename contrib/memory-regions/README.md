@@ -15,7 +15,10 @@ The stock collector still runs, still owns everything outside a region, and
 never traces a region's pages. A program that opens no window costs one
 predicted branch per pointer store. The regions exist in a julia built with
 `make WITH_GC_REGIONS=1`; `Base.GC_REGIONS` says whether a build has them,
-and a build without the flag is the stock runtime, object for object.
+and a build without the flag is the stock runtime, object for object. A
+build with `WITH_GC_REGION_BARRIER=0` on top has the regions without the
+escape barrier: no store is checked, for a program validated with it on;
+`Base.GC_REGION_BARRIER` says which build this is.
 
 ## Why you might want it
 
@@ -89,7 +92,7 @@ The face is [`regions.jl`](regions.jl), a thin `ccall` wrapper. There is no
 | Call | Does |
 | --- | --- |
 | `region_reset(n) -> pages` | Runs the region's finalizers, checks the execution roots, stops the world, frees. Returns the pages freed, or a negative code. |
-| `unsafe_region_reset(n)` | The same free with no check and no pause. A reference left behind dangles. |
+| `unsafe_region_reset(n)` | The same free with no check and no pause. A reference left behind dangles. With a barrier-less build it is the fully trusted mode. |
 | `region_reset_global(n)` | Frees region `n` on every thread heap at once, with the world stopped. For a region several threads filled. |
 | `region_quarantined(n) -> Bool` | Has an escape quarantined this region? |
 

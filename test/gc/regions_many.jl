@@ -143,6 +143,10 @@ end
 every_region_opens()
 the_chain_reaches_the_top()
 a_tree_with_many_leaves()
-the_mask_has_every_bit()
+if Base.GC_REGION_BARRIER
+    the_mask_has_every_bit()
+else
+    println("regions_many: the escape case is skipped, this build has no region barrier")
+end
 
 finish("regions_many")

@@ -231,6 +231,7 @@ end
 # The GC regions (src/gc-regions.h), built with WITH_GC_REGIONS=1. Each
 # script exits 1 at its first failed check, so `success` is the assertion.
 if Base.GC_REGIONS
+    Base.GC_REGION_BARRIER || @info "GC regions: built without the escape barrier (WITH_GC_REGION_BARRIER=0), the escape cases are skipped"
     @testset "regions" begin
         run_gctest("gc/regions_window.jl")
         run_gctest("gc/regions_escape.jl")

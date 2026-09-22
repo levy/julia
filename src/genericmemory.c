@@ -290,8 +290,10 @@ JL_DLLEXPORT jl_genericmemory_t *jl_genericmemory_copy_slice(jl_genericmemory_t 
         if (data == NULL) {
             assert(len * elsz / sizeof(void*) == 0); // make static analyzer happy
         }
+#ifdef WITH_GC_REGIONS
         jl_gc_region_wb_copy_inline_check(new_mem, mem, (const char*)data, len, elsz,
                                           (jl_datatype_t*)jl_tparam1(mtype));
+#endif
         memmove_refs((_Atomic(void*)*)new_mem->ptr, (_Atomic(void*)*)data, len * elsz / sizeof(void*));
     }
     else if (data != NULL) {

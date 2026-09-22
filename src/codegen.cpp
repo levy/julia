@@ -1283,7 +1283,7 @@ static const auto jl_cancellation_point_func = new JuliaFunction<>{
             {}); }
 };
 
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
 // The escape barrier of the GC regions alone (gc-regions.h), for the stores
 // into a fresh object: the parent, then the children, like julia.write_barrier.
 // The parent is `nocapture`, or alloc-opt could not elide the object.
@@ -11325,7 +11325,7 @@ static void init_jit_functions(void)
     add_named_global(jl_typeof_func, (void*)NULL);
     add_named_global(jl_field_write_barrier_p11_func, (void*)NULL);
     add_named_global(jl_field_write_barrier_p13_func, (void*)NULL);
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
     add_named_global(jl_region_write_barrier_func, (void*)NULL);
 #endif
     add_named_global(jldlsym_func, &jl_load_and_lookup);

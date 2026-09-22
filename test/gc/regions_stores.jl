@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 include(joinpath(@__DIR__, "regions_api.jl"))
+Base.GC_REGION_BARRIER || (println("regions_stores: skipped, this build has no region barrier (WITH_GC_REGION_BARRIER=0)"); exit(0))
 
 # The stores that the escape barrier did not see. Each one puts a region
 # object into a region-0 parent through a path the write barrier of the

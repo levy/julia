@@ -114,8 +114,10 @@ JL_DLLEXPORT uint64_t jl_gc_region_stat(int i);
 JL_DLLEXPORT void jl_gc_region_set_debug(int on);
 JL_DLLEXPORT int64_t jl_gc_region_check(int n);
 JL_DLLEXPORT int jl_gc_region_verify(int n);
+#ifdef WITH_GC_REGION_BARRIER
 // The escape barrier, called by the write barrier while a region is in use.
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT;
+#endif
 
 // --- the hooks the rest of the runtime calls --------------------------------
 // The census filter: the region of the census that runs now, 0 otherwise.

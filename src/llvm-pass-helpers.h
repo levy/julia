@@ -69,7 +69,7 @@ struct JuliaPassContext {
     llvm::Function *call2_func;
     llvm::Function *call3_func;
     llvm::Function *cancel_point_func;
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
     llvm::Function *region_write_barrier_func = nullptr; // the escape barrier of the GC regions (codegen.cpp)
 #endif
 
@@ -85,7 +85,7 @@ struct JuliaPassContext {
 
     // Whether `callee` is one of the write barrier intrinsics above.
     bool isWriteBarrierFunc(const llvm::Value *callee) const {
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
         if (callee && callee == region_write_barrier_func)
             return true;
 #endif

@@ -401,9 +401,9 @@ JL_DLLEXPORT jl_weakref_t *jl_gc_new_weakref_th(jl_ptls_t ptls, jl_value_t *valu
 #ifdef WITH_GC_REGIONS
     // A reset does not clear weak references, so a WeakRef to a region
     // object would dangle.
-    if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) {
+    {
         jl_gc_pagemeta_t *m = page_metadata((char*)jl_astaggedvalue(value));
-        if (m != NULL && m->region_n != 0)
+        if (__unlikely(m != NULL && m->region_n != 0))
             jl_error("cannot make a WeakRef to a GC region object: "
                      "its region reset would leave the reference dangling");
     }

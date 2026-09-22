@@ -79,6 +79,12 @@ checked one by one. A copy of an inline value whose bytes are not a heap object
 checks its pointer fields through `jl_gc_multi_wb_fresh` (`src/gc-interface.h`),
 the fourth barrier annotation; the three that exist carry the region check too.
 
+`make WITH_GC_REGIONS=1 WITH_GC_REGION_BARRIER=0` builds the regions without
+the barrier: no guard is emitted at any store, no store is checked, no escape
+is reported, and `Base.GC_REGION_BARRIER` is false. It is the build for a
+program that was validated with the barrier on and trusts itself in
+production; the unchecked reset is the same trust at the other end.
+
 ## A window, a borrow, a replacement buffer
 
 A window (`jl_gc_region_set`) belongs to the calling task: the runtime saves
@@ -189,9 +195,14 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
 | A build without `WITH_GC_REGIONS` | Nothing: the same code, object for object. |
 | A build with the flag, a program that opens no window | The flag load and branch at a managed pointer store; the census filter read at a claim of the mark; a region tag per page; a pointer per thread heap per region. |
 | A program that opens windows | The rules below, the barrier call at a store while the flag is armed, and the reset's root check. |
+| A build with `WITH_GC_REGION_BARRIER=0` | No guard at any store and no check; an escape is silent, and a reset or a census after one frees an object that an older object references. |
 
 ## Discipline and limits
 
+- Two things stand between a program and a dangling reference: the barrier
+  watches the heap, the checked reset watches the stacks. A program is fully
+  checked with both, fully trusted with `WITH_GC_REGION_BARRIER=0` and
+  `jl_gc_region_unsafe_reset`, and the mixed pairs are legal.
 - Reset from a frame that names none of the region's objects, and close every
   window on the region first. Catch an exception inside the window; one that
   leaves it is a root into the region at the reset.

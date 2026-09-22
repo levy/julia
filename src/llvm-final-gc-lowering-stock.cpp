@@ -71,7 +71,7 @@ void FinalLowerGC::lowerWriteBarrier(CallInst *target, Function &F) {
         return;
     IRBuilder<> builder(target);
     builder.SetCurrentDebugLocation(target->getDebugLoc());
-#ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
     // The escape barrier of the GC regions (gc-regions.h) stands before the
     // generational check: a load-and-branch on the armed flag, then a call
     // per child. julia.region_write_barrier is this guard alone.

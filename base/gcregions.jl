@@ -4,6 +4,9 @@
 # with WITH_GC_REGIONS defines Core.GC_REGIONS; without it each hook below
 # is the plain call.
 const GC_REGIONS = Core.isdefinedglobal(Core, :GC_REGIONS)
+# False in a build with WITH_GC_REGION_BARRIER=0: the regions without their
+# escape barrier, for a program that was validated with the barrier on.
+const GC_REGION_BARRIER = Core.isdefinedglobal(Core, :GC_REGION_BARRIER)
 
 if GC_REGIONS
     # A buffer that replaces another takes the lifetime of the one it

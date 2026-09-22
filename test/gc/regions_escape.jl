@@ -1,6 +1,7 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
 include(joinpath(@__DIR__, "regions_api.jl"))
+Base.GC_REGION_BARRIER || (println("regions_escape: skipped, this build has no region barrier (WITH_GC_REGION_BARRIER=0)"); exit(0))
 using Serialization
 
 # A quarantine lasts until the next stock collection, and a quarantined

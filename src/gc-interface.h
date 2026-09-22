@@ -327,6 +327,7 @@ JL_DLLEXPORT void jl_gc_wb_cold(const void *parent, void *slot, const void *ptr)
 JL_DLLEXPORT void jl_gc_queue_multiroot(const struct _jl_value_t *root, void *dest, const void *stored,
                                         struct _jl_datatype_t *dt) JL_NOTSAFEPOINT;
 #ifdef WITH_GC_REGIONS
+#ifdef WITH_GC_REGION_BARRIER
 // The escape barrier of the GC regions (gc-regions.h): armed at the first
 // window, a comparison of the page tags of parent and child; disarmed, one
 // load and one branch per store. `ptr` may be NULL.
@@ -360,10 +361,12 @@ JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, si
             jl_gc_region_wb_inline((parent), (const char*)(src_p), 1, 0, (et)); \
     } while (0)
 #else
+// The regions without their barrier (WITH_GC_REGION_BARRIER=0): no store is checked.
 #define jl_gc_region_wb_check(parent, ptr) do { } while (0)
 #define jl_gc_region_wb_copy_boxed_check(parent, src, src_p, n) do { } while (0)
 #define jl_gc_region_wb_copy_inline_check(parent, src, src_p, n, elsz, et) do { } while (0)
 #define jl_gc_region_wb_inline_check(parent, src_p, et) do { } while (0)
+#endif
 #endif
 
 // If a generational collector is used, checks whether the function argument points to an

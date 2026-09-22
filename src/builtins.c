@@ -3004,6 +3004,9 @@ void jl_init_primitives(void) JL_GC_DISABLED
 #ifdef WITH_GC_REGIONS
     add_builtin("GC_REGIONS", (jl_value_t*)jl_true); // Base gates its region hooks on it (gcregions.jl)
 #endif
+#ifdef WITH_GC_REGION_BARRIER
+    add_builtin("GC_REGION_BARRIER", (jl_value_t*)jl_true); // the escape barrier is built (gcregions.jl)
+#endif
     add_builtin("TypeName", (jl_value_t*)jl_typename_type);
     add_builtin("DataType", (jl_value_t*)jl_datatype_type);
     add_builtin("TypeVar", (jl_value_t*)jl_tvar_type);
