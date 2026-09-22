@@ -1,5 +1,12 @@
 # The cost of regions that a program does not use
 
+> **Numbers of the release-1.13 line.** Every number below was measured on the first
+> line of this work, `gc-regions-wip` of levy/julia (a build of `v1.13.0-rc4`), and is
+> being measured again on this branch; the plan `region-gc-controls-and-evidence` lists
+> the runs. Where the text names the build define `JL_NO_REGION_STORE_BARRIER`, the
+> master line has the make option `WITH_GC_REGION_BARRIER=0`; `JL_NO_REGION_ALLOC` is
+> still a define, added by this branch on top of the pull request.
+
 A julia with the region runtime, on a program that never opens a window,
 runs the stock collector unchanged. It is not free. This document says what
 such a program pays, in memory and in time, in absolute and in relative
