@@ -23,7 +23,7 @@ Every managed object belongs to exactly one region for its whole lifetime.
 Region 0 is the stock heap; regions 1 to `JL_GC_MAX_REGIONS - 1` are the regions
 a program can open. There is no promotion and no migration. The regions form a
 tree of lifetimes: the parent of a region lives at least as long as the region,
-and the default tree is the chain `0 <- 1 <- 2 <- ...` ([The tree](@ref gc-regions-tree)).
+and the default tree is the chain `0 <- 1 <- 2 <- ...` ([the tree](@ref gc-regions-tree)).
 **The one rule:** a managed reference `a -> b` is legal when the region of `b`
 is the region of `a` or one of its ancestors; a reference from an older region
 into a younger one is an escape. So no object outside a region references into
@@ -154,7 +154,7 @@ thread runs managed code (cooperative census), `EQUARANTINED` (-5), `EFINALIZERS
 (-6) finalizers are pending (cooperative census), `ECHILD` (-7) a live child
 region, `EROOT` (-8) an execution root references the region.
 
-## The window, the tree, the census
+## [The window, the tree, the census](@id gc-regions-tree)
 
 The runtime saves a window with its task and restores it at the switch
 (`src/task.c`), closes it when the task ends, and starts a new task without
