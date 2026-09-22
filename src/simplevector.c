@@ -13,8 +13,10 @@ JL_DLLEXPORT jl_svec_t *(ijl_svec)(size_t n, ...) JL_ROOTED_VARARGS
     if (n == 0) return jl_emptysvec;
     va_start(args, n);
     jl_svec_t *jv = jl_alloc_svec_uninit(n);
-    for (size_t i = 0; i < n; i++)
-        jl_svecset(jv, i, va_arg(args, jl_value_t*));
+    for (size_t i = 0; i < n; i++) {
+        jl_value_t *v = va_arg(args, jl_value_t*);
+        jl_gc_write_fresh(jv, jl_svec_data(jv)[i], jl_value_t, v);
+    }
     va_end(args);
     return jv;
 }
@@ -42,8 +44,8 @@ JL_DLLEXPORT jl_svec_t *jl_svec1(
                                            jl_simplevector_type);
     jl_set_typetagof(v, jl_simplevector_tag, 0);
     jl_svec_set_len_unsafe(v, 1);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[0], a);
     jl_svec_data(v)[0] = (jl_value_t*)a;
-    jl_gc_wb_fresh(v, a);
     return v;
 }
 
@@ -56,10 +58,10 @@ JL_DLLEXPORT jl_svec_t *jl_svec2(
                                            jl_simplevector_type);
     jl_set_typetagof(v, jl_simplevector_tag, 0);
     jl_svec_set_len_unsafe(v, 2);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[0], a);
     jl_svec_data(v)[0] = (jl_value_t*)a;
-    jl_gc_wb_fresh(v, a);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[1], b);
     jl_svec_data(v)[1] = (jl_value_t*)b;
-    jl_gc_wb_fresh(v, b);
     return v;
 }
 
@@ -73,12 +75,12 @@ JL_DLLEXPORT jl_svec_t *jl_svec3(
                                            jl_simplevector_type);
     jl_set_typetagof(v, jl_simplevector_tag, 0);
     jl_svec_set_len_unsafe(v, 3);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[0], a);
     jl_svec_data(v)[0] = (jl_value_t*)a;
-    jl_gc_wb_fresh(v, a);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[1], b);
     jl_svec_data(v)[1] = (jl_value_t*)b;
-    jl_gc_wb_fresh(v, b);
+    jl_gc_wb_fresh(v, &jl_svec_data(v)[2], c);
     jl_svec_data(v)[2] = (jl_value_t*)c;
-    jl_gc_wb_fresh(v, c);
     return v;
 }
 
@@ -117,9 +119,9 @@ JL_DLLEXPORT jl_svec_t *jl_svec_fill(size_t n, jl_value_t *x)
 {
     if (n == 0) return jl_emptysvec;
     jl_svec_t *v = jl_alloc_svec_uninit(n);
+    jl_gc_wb_fresh(v, jl_svec_data(v), x); // one child, stored n times
     for (size_t i = 0; i < n; i++)
         jl_svec_data(v)[i] = x;
-    jl_gc_wb_fresh(v, x);
     return v;
 }
 

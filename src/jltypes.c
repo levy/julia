@@ -1266,7 +1266,7 @@ static int cache_insert_type_set_(jl_svec_t *a, jl_datatype_t *val, uint_t hv, i
     do {
         jl_value_t *tab_i = jl_atomic_load_relaxed(&tab[index]);
         if (tab_i == jl_nothing) {
-            jl_gc_wb(a, (jl_value_t*)val);
+            jl_gc_wb(a, (void*)&tab[index], (jl_value_t*)val);
             if (atomic)
                 jl_atomic_store_release(&tab[index], (jl_value_t*)val);
             else
@@ -1886,10 +1886,10 @@ jl_value_t *jl_substitute_datatype(jl_value_t *t, jl_datatype_t * x, jl_datatype
                 jl_task_t *ct = jl_current_task;
                 t = jl_gc_alloc(ct->ptls, sizeof(jl_vararg_t), jl_vararg_type);
                 jl_set_typetagof((jl_vararg_t *)t, jl_vararg_tag, 0);
+                jl_gc_wb_fresh(t, &((jl_vararg_t *)t)->T, rT);
                 ((jl_vararg_t *)t)->T = rT;
+                jl_gc_wb_fresh(t, &((jl_vararg_t *)t)->N, vt->N);
                 ((jl_vararg_t *)t)->N = vt->N;
-                jl_gc_wb_fresh(t, rT);
-                jl_gc_wb_fresh(t, vt->N);
             }
             JL_GC_POP();
         }
@@ -2671,8 +2671,9 @@ static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t
         // complain, but this is used as rooting storage for normalized types
         // below so it must be rooted properly by the GC
         p = jl_alloc_svec_uninit(ntp);
-        for (size_t i = 0; i < ntp; i++)
-            jl_svecset(p, i, iparams[i]);
+        for (size_t i = 0; i < ntp; i++) {
+            jl_gc_write_fresh(p, jl_svec_data(p)[i], jl_value_t, iparams[i]);
+        }
         iparams = jl_svec_data(p);
     }
     assert(jl_is_svec(p) && iparams == jl_svec_data(p));
@@ -2774,7 +2775,7 @@ static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t
     ndt->types = NULL; // to be filled in below
     int invalid = 0;
     if (istuple) {
-        ndt->types = p; // TODO: this may need to filter out certain types
+        jl_gc_write(ndt, ndt->types, jl_svec_t, p); // TODO: this may need to filter out certain types
     }
     else if (isnamedtuple) {
         jl_value_t *names_tup = jl_svecref(p, 0);
@@ -3408,10 +3409,10 @@ jl_vararg_t *jl_wrap_vararg(jl_value_t *t, jl_value_t *n, int check, int nothrow
     if (valid) {
         vm = (jl_vararg_t *)jl_gc_alloc(ct->ptls, sizeof(jl_vararg_t), jl_vararg_type);
         jl_set_typetagof(vm, jl_vararg_tag, 0);
+        jl_gc_wb_fresh(vm, &vm->T, t);
         vm->T = t;
+        jl_gc_wb_fresh(vm, &vm->N, n);
         vm->N = n;
-        jl_gc_wb_fresh(vm, t);
-        jl_gc_wb_fresh(vm, n);
     }
     JL_GC_POP();
     return vm;
@@ -3482,8 +3483,8 @@ JL_DLLEXPORT jl_datatype_t *jl_datatype_compute_super(jl_datatype_t *ndt JL_PROP
     // concurrent first queries compute equal values; the compare-and-swap
     // keeps a single winner
     super = NULL;
+    jl_gc_wb(ndt, (void*)superp, s);
     if (jl_atomic_cmpswap(superp, &super, (jl_datatype_t*)s)) {
-        jl_gc_wb(ndt, s);
         super = (jl_datatype_t*)s;
     }
     return super;

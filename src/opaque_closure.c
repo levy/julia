@@ -130,10 +130,10 @@ static jl_opaque_closure_t *new_opaque_closure(jl_tupletype_t *argt, jl_value_t 
         specptr = jl_atomic_load_relaxed(&ci->specptr.fptr);
     }
     jl_opaque_closure_t *oc = (jl_opaque_closure_t*)jl_gc_alloc(ct->ptls, sizeof(jl_opaque_closure_t), oc_type);
+    jl_gc_wb_fresh(oc, &oc->source, source);
     oc->source = source;
-    jl_gc_wb_fresh(oc, source);
+    jl_gc_wb_fresh(oc, &oc->captures, captures);
     oc->captures = captures;
-    jl_gc_wb_fresh(oc, captures);
     oc->world = world;
     oc->invoke = callptr;
     oc->specptr = specptr;
