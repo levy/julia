@@ -201,28 +201,57 @@ mark and the page test at a sweep, are the remaining 3.
 [GCBenchmarks](https://github.com/JuliaCI/GCBenchmarks), six on one thread
 and five on four, ten paired rounds, base against each region build; the
 cell is the ratio of the minima over the rounds
-([`bench/gcbench.sh`](bench/gcbench.sh)).
+([`bench/gcbench.sh`](bench/gcbench.sh)). Two of the eleven, the mutable
+binary tree and the object array, abort under the 16 GB cap on every
+binary alike and have no row. Six of the nine are within 1 % on every
+region build; `many_refs`, which allocates large arrays of references, is
+3 % slower with the allocator path and even in the probe; `pollard` is 6 to
+7 % slower on all three builds, the probe included, so that cost is in the
+region code the probe keeps, or in the code layout, not in the barrier,
+the allocator or the filter.
 
 <!-- table M1 run=checked -->
 | benchmark | threads | vanilla (s) | regions (s) | regions / vanilla [95 %] | rounds |
 | --- | --- | --- | --- | --- | --- |
-| append | 1 | 0.829 | 0.785 | 0.949 [0.899, 0.998] | 2 |
-| tree | 1 | 9.037 | 9.035 | 1 [0.987, 1.02] | 4 |
-| strings | 1 | 19.013 | 18.809 | 1 [0.961, 1.01] | 4 |
-| pollard | 1 | 0.667 | 0.698 | 1.05 [1.04, 1.06] | 4 |
-| single_ref | 1 | 0.276 | 0.275 | 0.999 [0.99, 1.01] | 4 |
-| many_refs | 1 | 1.746 | 1.796 | 1.03 [1.03, 1.03] | 4 |
-| mergesort_parallel | 4 | 1.732 | 1.710 | 0.994 [0.957, 1.01] | 4 |
-| mm_divide_and_conquer | 4 | 0.602 | 0.605 | 1.01 [1, 1.01] | 4 |
-| issue-52937 | 4 | 9.470 | 9.552 | 1.01 [1, 1.01] | 4 |
+| append | 1 | 0.786 | 0.785 | 0.998 [0.899, 1.02] | 3 |
+| tree | 1 | 8.915 | 9.009 | 1.01 [0.997, 1.02] | 10 |
+| strings | 1 | 18.760 | 18.711 | 0.998 [0.987, 1] | 10 |
+| pollard | 1 | 0.655 | 0.698 | 1.07 [1.06, 1.07] | 10 |
+| single_ref | 1 | 0.274 | 0.274 | 1 [0.994, 1.01] | 10 |
+| many_refs | 1 | 1.737 | 1.793 | 1.03 [1.03, 1.03] | 10 |
+| mergesort_parallel | 4 | 1.717 | 1.700 | 1 [0.971, 1.01] | 10 |
+| mm_divide_and_conquer | 4 | 0.602 | 0.603 | 1.01 [0.998, 1.02] | 10 |
+| issue-52937 | 4 | 9.456 | 9.540 | 1.01 [1, 1.01] | 10 |
 <!-- /table -->
 
 ![M1 on checked](results/plots/checked/gcbench.svg)
 
 <!-- table M1 run=trusted -->
+| benchmark | threads | vanilla (s) | regions (s) | regions / vanilla [95 %] | rounds |
+| --- | --- | --- | --- | --- | --- |
+| tree | 1 | 8.741 | 8.770 | 1 [0.993, 1.01] | 10 |
+| strings | 1 | 18.595 | 18.730 | 1.01 [1, 1.01] | 10 |
+| pollard | 1 | 0.654 | 0.697 | 1.06 [1.06, 1.07] | 10 |
+| single_ref | 1 | 0.273 | 0.275 | 1.01 [0.999, 1.02] | 10 |
+| many_refs | 1 | 1.734 | 1.779 | 1.03 [1.02, 1.03] | 10 |
+| mergesort_parallel | 4 | 1.691 | 1.722 | 1.02 [1.01, 1.04] | 10 |
+| mm_divide_and_conquer | 4 | 0.597 | 0.601 | 1.01 [0.983, 1.03] | 10 |
+| issue-52937 | 4 | 9.449 | 9.529 | 1.01 [1.01, 1.01] | 10 |
+| append | 1 | 0.765 | 0.782 | 1.02 [1.02, 1.02] | 2 |
 <!-- /table -->
 
 <!-- table M1 run=probe -->
+| benchmark | threads | vanilla (s) | regions (s) | regions / vanilla [95 %] | rounds |
+| --- | --- | --- | --- | --- | --- |
+| append | 1 | 0.760 | 0.776 | 1 | 1 |
+| tree | 1 | 8.719 | 8.766 | 1.01 [0.992, 1.01] | 10 |
+| strings | 1 | 18.542 | 18.548 | 0.998 [0.993, 1.01] | 10 |
+| pollard | 1 | 0.653 | 0.690 | 1.06 [1.05, 1.06] | 10 |
+| single_ref | 1 | 0.272 | 0.274 | 1.01 [1, 1.01] | 10 |
+| many_refs | 1 | 1.733 | 1.738 | 1 [1, 1.01] | 10 |
+| mergesort_parallel | 4 | 1.690 | 1.693 | 1 [0.989, 1.02] | 10 |
+| mm_divide_and_conquer | 4 | 0.597 | 0.601 | 1 [0.997, 1.01] | 10 |
+| issue-52937 | 4 | 9.485 | 9.487 | 1 [0.998, 1.01] | 10 |
 <!-- /table -->
 
 ## E3 — What a program that uses regions pays
@@ -631,7 +660,18 @@ work per transaction, 1.78 with 1,024 units of it.
 the region rule, and finds none in the clean model, without a region in
 use.
 
+On the master line the claim is not yet met by the tool: its compiler hook
+installs (the anchor of `optimize` moved and is fixed), the pass registers
+the allocation sites, but it finds no store site in master's optimized IR,
+whose stores changed shape with the field-aware barrier work, so both
+models read zero violations at zero sites. The checker needs a port of its
+store matching; it is tooling of this branch, not of the pull request.
+
 <!-- table M11 run=checked -->
+| model | events | violations (stores) | sites |
+| --- | --- | --- | --- |
+| alloc | 100,000 | 0 | 0 |
+| clean | 100,000 | 0 | 0 |
 <!-- /table -->
 
 ## Where the master line differs from the release-1.13 line

@@ -98,5 +98,5 @@
 <text x="756.3" y="417.1" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="end">max 13 µs</text>
 <text x="510.0" y="445.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">event latency</text>
 <text x="20.0" y="260.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 20 260)">fraction of events ≥ x</text>
-<text x="40.0" y="468.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 17ee4ab60a (1.14.0-DEV.3341) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · SCHED_FIFO 50 · 2026-09-23</text>
+<text x="40.0" y="468.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 5a9121d575 (1.14.0-DEV.3341) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · SCHED_FIFO 50 · 2026-09-23</text>
 </svg>
