@@ -79,6 +79,11 @@ minflt() = parse(Int, split(read("/proc/self/stat", String))[10])
 
 function main()
     faults = 0
+    # RESERVE_MB claims and prefaults the heap before the loop (jl_gc_heap_reserve), so
+    # that no event of the run takes the first-touch fault of a fresh page, which with
+    # transparent huge pages zeroes 2 MB; the faults column says whether one did.
+    reserve_mb = parse(Int, get(ENV, "RESERVE_MB", "0"))
+    reserve_mb > 0 && println("reserve           ", region_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
@@ -126,10 +131,10 @@ function main()
         gc_events = count - Base.count(iszero, view(gc_ns, 1:count))
         gc_total = sum(view(gc_ns, 1:count))
         tsv_row(("script", "variant", "events", "p50_ns", "p99_ns", "p999_ns", "p9999_ns",
-                 "max_ns", "over_100us", "gc_events", "gc_ms", "peak_rss_mb", "faults"),
+                 "max_ns", "over_100us", "gc_events", "gc_ms", "peak_rss_mb", "faults", "reserve_mb"),
                 ("tail", variant, count, percentile(lat, 0.50), percentile(lat, 0.99),
                  percentile(lat, 0.999), percentile(lat, 0.9999), lat[end], over,
-                 gc_events, gc_total / 1e6, Sys.maxrss() / 1e6, faults))
+                 gc_events, gc_total / 1e6, Sys.maxrss() / 1e6, faults, reserve_mb))
     end
 end
 
