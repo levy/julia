@@ -13,7 +13,11 @@ import math, os
 import stats
 
 D = os.path.dirname(os.path.abspath(__file__))
-DATA, PLOTS = os.path.join(D, "data"), os.path.join(D, "plots")
+# DATA and PLOTS name the run: data/<run> and plots/<run> when RUN is set (run_all.sh writes one data
+# directory per build under data/), data/ and plots/ otherwise.
+RUN = os.environ.get("RUN", "")
+DATA = os.path.join(D, "data", RUN) if RUN else os.path.join(D, "data")
+PLOTS = os.path.join(D, "plots", RUN) if RUN else os.path.join(D, "plots")
 SURFACE, GRID = "#fcfcfb", "#e8e7e4"
 INK, INK2 = "#0b0b0b", "#52514e"
 BLUE, YELLOW, ORANGE, GREEN = "#2a78d6", "#eda100", "#eb6834", "#1baf7a"

@@ -1,0 +1,51 @@
+# binary	round	cost	value	unit	samples
+vanilla	1	store_disarmed	0.3334	ns/store	0.4064,0.3334,0.3359,0.4075,0.4071,0.3349,0.3443,0.4071
+vanilla	1	construct_two	7.238	ns/object	7.25,7.445,7.269,7.431,7.239,7.378,7.286,7.238
+vanilla	1	construct_shared	3.456	ns/object	3.509,3.483,3.456,3.486,3.494,3.476,3.501,3.506
+vanilla	1	box_twin	3.777	ns/object	3.932,3.927,3.869,3.777,3.816,3.82,3.785,3.85
+vanilla	1	alloc_stock	2.017	ns/object	2.023,2.105,2.264,2.195,2.017,2.101,2.275,2.229
+vanilla	1	stock_mark	65.32	ms/collection	
+regions_stock	1	store_disarmed	0.3334	ns/store	0.4036,0.3334,0.334,0.4054,0.4069,0.3338,0.3335,0.4045
+regions_stock	1	construct_two	7.844	ns/object	7.912,8.002,7.939,8.128,7.844,7.935,7.929,7.872
+regions_stock	1	construct_shared	3.644	ns/object	3.644,4.059,4.115,4.159,4.058,4.065,4.131,4.072
+regions_stock	1	box_twin	4.373	ns/object	4.373,4.694,4.716,4.643,4.679,4.763,4.678,4.652
+regions_stock	1	alloc_stock	2.298	ns/object	2.461,2.3,2.306,2.298,2.448,2.303,2.298,2.304
+regions_stock	1	stock_mark	66.01	ms/collection	
+regions	1	store_disarmed	0.3314	ns/store	0.4033,0.3314,0.3357,0.4061,0.4059,0.3327,0.3346,0.4059
+regions	1	store_armed	0.3324	ns/store	0.3329,0.3334,0.4044,0.4078,0.3324,0.3365,0.4063,0.4062
+regions	1	store_region	0.3331	ns/store	0.3341,0.3342,0.4066,0.4064,0.3331,0.3335,0.4046,0.4048
+regions	1	window_pair	11.29	ns/pair	
+regions	1	switch_pair	6.305	ns/pair	
+regions	1	construct_two	7.703	ns/object	7.703,7.853,7.935,8.113,7.874,7.86,7.914,7.812
+regions	1	construct_shared	3.651	ns/object	3.685,3.688,3.685,3.658,3.661,3.651,3.672,3.663
+regions	1	box_twin	4.212	ns/object	4.215,4.222,4.212,4.228,4.216,4.236,4.254,4.286
+regions	1	alloc_stock	2.301	ns/object	2.422,2.321,2.301,2.305,2.423,2.327,2.317,2.311
+regions	1	alloc_region	2.383	ns/object	2.385,2.399,2.383,2.414,2.391,2.404,2.383,2.419
+regions	1	reset_slice	30.0	ns/reset	
+regions	1	reset_slice_checked	3016.0	ns/reset	
+regions	1	stock_mark	66.85	ms/collection	
+regions	2	store_disarmed	0.3309	ns/store	0.404,0.3309,0.3338,0.4062,0.406,0.333,0.334,0.4062
+regions	2	store_armed	0.3328	ns/store	0.3348,0.3328,0.4067,0.4063,0.3344,0.3343,0.4065,0.4065
+regions	2	store_region	0.3341	ns/store	0.3349,0.3341,0.3954,0.4061,0.3342,0.3341,0.4058,0.4061
+regions	2	window_pair	11.27	ns/pair	
+regions	2	switch_pair	6.283	ns/pair	
+regions	2	construct_two	7.847	ns/object	7.847,8.206,8.117,8.135,8.01,8.233,8.247,8.177
+regions	2	construct_shared	3.694	ns/object	3.74,3.735,3.767,3.777,3.714,3.694,3.75,3.812
+regions	2	box_twin	4.186	ns/object	4.347,4.2,4.454,4.431,4.351,4.331,4.377,4.186
+regions	2	alloc_stock	2.306	ns/object	2.425,2.309,2.312,2.307,4.352,2.318,2.316,2.306
+regions	2	alloc_region	2.205	ns/object	2.205,2.238,2.272,2.205,3.812,2.241,2.264,2.219
+regions	2	reset_slice	30.0	ns/reset	
+regions	2	reset_slice_checked	3136.0	ns/reset	
+regions	2	stock_mark	66.1	ms/collection	
+regions_stock	2	store_disarmed	0.3311	ns/store	0.4051,0.3311,0.3327,0.4058,0.4059,0.3327,0.3338,0.4058
+regions_stock	2	construct_two	7.893	ns/object	7.917,8.138,7.893,7.944,8.147,8.07,7.942,8.008
+regions_stock	2	construct_shared	3.609	ns/object	3.683,3.615,3.683,3.616,3.609,3.661,3.68,3.717
+regions_stock	2	box_twin	4.177	ns/object	4.325,4.177,4.333,4.222,4.252,4.197,4.199,4.191
+regions_stock	2	alloc_stock	2.286	ns/object	2.421,2.296,2.306,2.286,2.423,2.29,2.315,2.297
+regions_stock	2	stock_mark	65.29	ms/collection	
+vanilla	2	store_disarmed	0.3647	ns/store	0.4523,0.3687,0.371,0.4484,0.4456,0.3649,0.3647,0.4418
+vanilla	2	construct_two	7.218	ns/object	7.441,7.269,7.245,7.297,7.218,7.255,7.498,7.503
+vanilla	2	construct_shared	3.433	ns/object	3.512,3.479,3.536,3.433,3.491,3.52,3.482,3.549
+vanilla	2	box_twin	3.761	ns/object	3.836,3.898,3.8,3.829,3.761,3.875,3.812,3.864
+vanilla	2	alloc_stock	2.043	ns/object	2.051,2.106,2.255,2.217,2.043,2.098,2.271,2.204
+vanilla	2	stock_mark	64.93	ms/collection	
