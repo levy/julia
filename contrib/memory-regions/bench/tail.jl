@@ -76,6 +76,8 @@ end
 
 # The minor page faults of this process so far (/proc/self/stat, field 10).
 minflt() = parse(Int, split(read("/proc/self/stat", String))[10])
+# jl_gc_heap_reserve is a stock entry of this line (the second commit of the series), not part of the Julia face.
+heap_reserve(bytes) = UInt64(ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes))
 
 function main()
     faults = 0
@@ -83,7 +85,7 @@ function main()
     # that no event of the run takes the first-touch fault of a fresh page, which with
     # transparent huge pages zeroes 2 MB; the faults column says whether one did.
     reserve_mb = parse(Int, get(ENV, "RESERVE_MB", "0"))
-    reserve_mb > 0 && println("reserve           ", region_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
+    reserve_mb > 0 && println("reserve           ", heap_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
