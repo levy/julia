@@ -5,7 +5,7 @@ installs its instrumentation pass there.
     python3 hook_patch.py <workdir> [<julia-executable>]
 
 The optional second argument names the julia to take the Compiler source
-from and to instantiate with; it defaults to `julia +1.13`. Pass the
+from and to instantiate with; it defaults to `julia +1.13`; the anchor is the `optimize` of the master line of 2026-09. Pass the
 patched build's executable when the hooked compiler must run on it.
 """
 import shutil, subprocess, sys, os
@@ -24,7 +24,7 @@ shutil.copytree(os.path.join(share, "Compiler"), dst)
 
 p = os.path.join(dst, "src", "optimize.jl")
 s = open(p).read()
-old = """function optimize(interp::AbstractInterpreter, opt::OptimizationState, caller::InferenceResult)
+old = """function optimize(interp::AbstractInterpreter, opt::OptimizationState{I}, caller::InferenceResult) where {I<:AbstractInterpreter}
     @zone "CC: OPTIMIZER" ir = run_passes_ipo_safe(opt.src, opt)"""
 assert old in s, "anchor missing"
 new = """# --- region checker hook ------------------------------------------------------
@@ -33,7 +33,7 @@ new = """# --- region checker hook ---------------------------------------------
 const IR_HOOK = RefValue{Any}(nothing)
 # ------------------------------------------------------------------------------
 
-function optimize(interp::AbstractInterpreter, opt::OptimizationState, caller::InferenceResult)
+function optimize(interp::AbstractInterpreter, opt::OptimizationState{I}, caller::InferenceResult) where {I<:AbstractInterpreter}
     @zone "CC: OPTIMIZER" ir = run_passes_ipo_safe(opt.src, opt)
     let hook = IR_HOOK[]
         if hook !== nothing

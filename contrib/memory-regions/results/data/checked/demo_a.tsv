@@ -1,0 +1,7 @@
+# demo	point	threads	mode	wall_ms	collections	gc_ms	peak_rss_mb
+A	small   (1500 instances, n=30, K=3)	1	region	141.376229	0	0.0	306.62109375
+A	small   (1500 instances, n=30, K=3)	1	stock	150.306915	12	7.043218	308.16015625
+A	medium  (3000 instances, n=32, K=3)	1	region	298.118312	0	0.0	310.8125
+A	medium  (3000 instances, n=32, K=3)	1	stock	314.728404	24	13.522386	314.16015625
+A	large   (5000 instances, n=34, K=3)	1	region	531.208902	0	0.0	314.6796875
+A	large   (5000 instances, n=34, K=3)	1	stock	562.58105	42	23.685401	314.7109375
