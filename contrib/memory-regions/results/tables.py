@@ -15,7 +15,7 @@ from plot import read_tsv, num
 import stats
 
 D = os.path.dirname(os.path.abspath(__file__))
-DOC = os.path.join(D, "..", "MEASUREMENTS.md")
+DOC = os.environ.get("DOC", os.path.join(D, "..", "MEASUREMENTS.md"))   # COST.md has markers too
 DASH = "—"
 
 # ---- formats ------------------------------------------------------------------------
