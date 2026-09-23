@@ -10,6 +10,7 @@ file is missing is left as it stands, with a note.
   python3 tables.py        reads data/*.tsv, rewrites ../MEASUREMENTS.md
 """
 import os, re, statistics
+import plot
 from plot import read_tsv, num
 import stats
 
@@ -334,7 +335,110 @@ def t_scaling():
     return table(["demo", "point", "threads", "wall stock (ms)", "wall regions (ms)", "stock / regions",
                   "collections stock", "collections regions", "GC stock (ms)", "GC regions (ms)"], out)
 
-TABLES = {"M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,
+
+# ---- tables across the builds -------------------------------------------------------------
+# run_all.sh writes one data directory per build (data/e1, data/checked, data/trusted,
+# data/probe); a marker `<!-- table NAME run=checked -->` reads that run, and the
+# tables below read the runs they name.
+
+def read_run(run, name):
+    """The rows of data/<run>/<name>, or None."""
+    saved = plot.DATA
+    plot.DATA = os.path.join(D, "data", run)
+    try:
+        return read_tsv(name)
+    finally:
+        plot.DATA = saved
+
+def t_deferral():
+    """E1: the allocation rate with the collector disabled past the heap target,
+    master (vanilla) against base (julia), paired rounds."""
+    rows = read_tsv("deferral.tsv")
+    if not rows:
+        return None
+    by = {}
+    for r in rows:
+        by.setdefault(r["binary"], {})[int(r["round"])] = num(r["ns_per_alloc_second_half"])
+    v, j = by.get("vanilla", {}), by.get("julia", {})
+    out = [["ns per allocation, past the target",
+            stats.summary(list(v.values()), 3) if v else DASH,
+            stats.summary(list(j.values()), 3) if j else DASH,
+            stats.ratio_summary(v, j, 3) if v and j else DASH,
+            max(len(v), len(j))]]
+    return table(["", "master", "base (the fix)", "base / master [95 %]", "rounds"], out)
+
+def t_reserve():
+    """E1: the stock paced loop with and without the heap reserve, and on master."""
+    rows = read_tsv("reserve.tsv")
+    if not rows:
+        return None
+    labels = ["base, no reserve", "base, 512 MB reserved", "master, no reserve"]
+    out = []
+    for lab, r in zip(labels, rows):
+        out.append([lab, f0(num(r["faults"])), f0(num(r["slot_misses"])),
+                    f1(num(r["lateness_max_ns"]) / 1e6), f0(num(r["latency_max_ns"]) / 1e3)])
+    return table(["run", "page faults during the run", "slot misses", "worst lateness (ms)", "longest event (µs)"], out)
+
+def t_text():
+    """The text of the runtime library and of the system image, per build."""
+    rows = read_run("", "text.tsv")
+    if not rows:
+        return None
+    base = next((r for r in rows if r["build"] == "base"), None)
+    out = []
+    for r in rows:
+        lib, sys_ = num(r["libjulia_internal_text"]), num(r["sys_so_text"])
+        rl = DASH if base is None else f"{(lib / num(base['libjulia_internal_text']) - 1) * 100:+.2f} %"
+        rs = DASH if base is None else f"{(sys_ / num(base['sys_so_text']) - 1) * 100:+.2f} %"
+        out.append([r["build"], f0(lib), rl, f0(sys_), rs])
+    return table(["build", "libjulia-internal text (bytes)", "against base", "sys.so text (bytes)", "against base"], out)
+
+ATTRIBUTION_RUNS = (("checked", "regions built, barrier built"), ("trusted", "regions built, no barrier"),
+                    ("probe", "regions built, allocator and filter off"))
+
+def t_unit_attribution():
+    """The cost when unused, attributed: the paired difference "regions with no window
+    minus base" of the stock rows, in each of the three region builds."""
+    costs = ("store_disarmed", "alloc_stock", "construct_two", "box_twin", "stock_mark")
+    out = []
+    for cost in costs:
+        row = [cost]
+        unit = ""
+        for run, _ in ATTRIBUTION_RUNS:
+            rows = read_run(run, "unit_costs.tsv")
+            if not rows:
+                row.append(DASH); continue
+            by = {}
+            for r in rows:
+                if r["cost"] == cost:
+                    by.setdefault(r["binary"], {})[int(r["round"])] = num(r["value"]); unit = r["unit"]
+            v, g = by.get("vanilla", {}), by.get("regions_stock", {})
+            row.append(stats.delta_summary(v, g, 3) if v and g else DASH)
+        row.insert(1, unit)
+        out.append(row)
+    return table(["cost", "unit"] + [f"{lab} − base" for _, lab in ATTRIBUTION_RUNS], out)
+
+def t_parallel_attribution():
+    """The full collection against the thread count, regions / base, in each of the three
+    region builds."""
+    out = {}
+    for run, _ in ATTRIBUTION_RUNS:
+        rows = read_run(run, "parallel_gc.tsv")
+        if not rows:
+            continue
+        by = {}
+        for r in rows:
+            by.setdefault((r["binary"], int(r["threads"])), {}).setdefault(int(r["round"]), []).append(num(r["wall_ms"]))
+        for t in sorted({k[1] for k in by}):
+            v = {rd: statistics.median(x) for rd, x in by.get(("vanilla", t), {}).items()}
+            g = {rd: statistics.median(x) for rd, x in by.get(("regions", t), {}).items()}
+            out.setdefault(t, {})[run] = stats.ratio_summary(v, g, 3) if v and g else DASH
+    rows = [[t] + [out[t].get(run, DASH) for run, _ in ATTRIBUTION_RUNS] for t in sorted(out)]
+    return table(["threads"] + [f"{lab} / base [95 %]" for _, lab in ATTRIBUTION_RUNS], rows)
+
+TABLES = {"E1-deferral": t_deferral, "E1-reserve": t_reserve, "E2-text": t_text,
+          "E2-unit-attribution": t_unit_attribution, "E2-parallel-attribution": t_parallel_attribution,
+          "M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,
           "M5-pause": t_census_pause, "M5-throughput": t_census_throughput,
           "M6-paced": t_paced, "M6-endurance": t_endurance, "M7": t_native, "M8": t_showcase,
           "M9": t_census_bound, "M10": t_demos, "M11": t_checker, "M12": t_scaling,
@@ -345,17 +449,23 @@ TABLES = {"M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,
 def main():
     with open(DOC) as f:
         text = f.read()
+    default = plot.DATA
     for name, make in TABLES.items():
-        pattern = re.compile(rf"(<!-- table {re.escape(name)} -->\n)(.*?)(<!-- /table -->)", re.S)
-        if not pattern.search(text):
+        pattern = re.compile(rf"(<!-- table {re.escape(name)}(?: run=([a-z0-9_]+))? -->\n)(.*?)(<!-- /table -->)", re.S)
+        matches = list(pattern.finditer(text))
+        if not matches:
             print("no marker for", name)
             continue
-        lines = make()
-        if lines is None:
-            print("kept:", name)
-            continue
-        text = pattern.sub(lambda m: m.group(1) + "\n".join(lines) + "\n" + m.group(3), text, count=1)
-        print("wrote:", name, f"({len(lines) - 2} rows)")
+        for m in reversed(matches):     # from the end, so the offsets of the earlier ones hold
+            run = m.group(2)
+            plot.DATA = os.path.join(D, "data", run) if run else default
+            lines = make()
+            plot.DATA = default
+            if lines is None:
+                print("kept:", name, run or "")
+                continue
+            text = text[:m.start()] + m.group(1) + "\n".join(lines) + "\n" + m.group(4) + text[m.end():]
+            print("wrote:", name, run or "", f"({len(lines) - 2} rows)")
     with open(DOC, "w") as f:
         f.write(text)
 
