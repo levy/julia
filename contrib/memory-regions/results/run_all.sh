@@ -40,7 +40,8 @@ ROUNDS=${ROUNDS:-10}
 GCTHREADS=${GCTHREADS:-1 4 8 16 32}
 ALLCORES=${ALLCORES:-0-31}
 ONLY=${ONLY:-M1 M2 M3 M4 M5 M6 M7 M8 M9 M10 M11 M12 M13 M14}
-DATA=data; LOG=log
+DATA=${DATA:-data}; LOG=${LOG:-log}
+BASELINE_BIN=${BASELINE_BIN:-$JULIA}   # the binary of the baseline and stock rows of M3, M6, M7, M8
 mkdir -p "$DATA" "$LOG"
 SHA=$(git -C "$ROOT" rev-parse --short=10 HEAD)
 
@@ -102,6 +103,7 @@ run() {
 skip() { echo "[$1] skipped: $2"; printf '%s\tskipped\t-\t%s\n' "$1" "$2" >> "$STATUS"; }
 fresh() { rm -f "$DATA/$1"; }
 J="$JULIA --startup-file=no"
+JB="$BASELINE_BIN --startup-file=no"
 
 # --- M1: zero cost when unused ----------------------------------------------
 if want M1; then
@@ -111,6 +113,28 @@ if want M1; then
         REGIONS_TSV=$DATA/gcbench.tsv CORE=$CORE MTCORES=$MTCORES \
             run M1 gcbench 16G 10800 0-31 0 bash ../bench/gcbench.sh "$VANILLA" "$JULIA" "$GCBENCHMARKS" "$ROUNDS"
     fi
+fi
+
+# --- E1: the two independent commits, VANILLA (master) against JULIA (base) --
+# The deferral fix: the allocation rate with the collector disabled, paired
+# rounds; the heap reserve: the paced baseline on JULIA with and without the
+# reserve, and on VANILLA without (master has no reserve).
+if want E1; then
+    fresh deferral.tsv; fresh reserve.tsv
+    printf '# binary\tround\tblocks\tallocations\tns_per_alloc_first_half\tns_per_alloc_second_half\n' > "$DATA/deferral.tsv"
+    for r in $(seq 1 "$ROUNDS"); do
+        if [ $((r % 2)) -eq 1 ]; then order="vanilla julia"; else order="julia vanilla"; fi
+        for name in $order; do
+            if [ "$name" = vanilla ]; then bin=$VANILLA; else bin=$JULIA; fi
+            [ -n "$bin" ] || continue
+            rm -f "$LOG/def.tsv"
+            REGIONS_TSV=$LOG/def.tsv run E1 "deferral_${name}_r$r" 8G 600 "$CORE" 0 "$bin" --startup-file=no ../bench/deferral.jl 60 1000000 \
+                && grep -v '^#' "$LOG/def.tsv" | sed "s/^/$name\t$r\t/" >> "$DATA/deferral.tsv"
+        done
+    done
+    REGIONS_TSV=$DATA/reserve.tsv run E1 reserve_julia_none 8G 900 "$CORE" 1 $J --heap-size-hint=128M ../bench/paced.jl baseline 1000000
+    REGIONS_TSV=$DATA/reserve.tsv RESERVE_MB=512 run E1 reserve_julia_512 8G 900 "$CORE" 1 $J --heap-size-hint=128M ../bench/paced.jl baseline 1000000
+    [ -n "$VANILLA" ] && REGIONS_TSV=$DATA/reserve.tsv run E1 reserve_vanilla_none 8G 900 "$CORE" 1 "$VANILLA" --startup-file=no --heap-size-hint=128M ../bench/paced.jl baseline 1000000
 fi
 
 # --- M2: unit costs -----------------------------------------------------------
@@ -149,11 +173,10 @@ fi
 if want M3; then
     fresh tail.tsv
     for v in alloc pooled; do
-        REGIONS_TSV=$DATA/tail.tsv run M3 yardstick_$v 8G 900 "$CORE" 1 $J ../bench/yardstick.jl $v 20000000
+        REGIONS_TSV=$DATA/tail.tsv run M3 yardstick_$v 8G 900 "$CORE" 1 $JB ../bench/yardstick.jl $v 20000000
     done
-    for v in baseline regions; do
-        REGIONS_TSV=$DATA/tail.tsv run M3 tail_$v 8G 900 "$CORE" 1 $J ../bench/tail.jl $v 20000000
-    done
+    REGIONS_TSV=$DATA/tail.tsv run M3 tail_baseline 8G 900 "$CORE" 1 $JB ../bench/tail.jl baseline 20000000
+    REGIONS_TSV=$DATA/tail.tsv run M3 tail_regions 8G 900 "$CORE" 1 $J ../bench/tail.jl regions 20000000
 fi
 
 # --- M4: the real-world loop -----------------------------------------------
@@ -184,7 +207,7 @@ fi
 # --- M6: paced, and the endurance run ----------------------------------------
 if want M6; then
     fresh paced.tsv; fresh endurance.tsv
-    REGIONS_TSV=$DATA/paced.tsv run M6 paced_baseline 8G 900 "$CORE" 1 $J --heap-size-hint=128M ../bench/paced.jl baseline 1000000
+    REGIONS_TSV=$DATA/paced.tsv run M6 paced_baseline 8G 900 "$CORE" 1 $JB --heap-size-hint=128M ../bench/paced.jl baseline 1000000
     REGIONS_TSV=$DATA/paced.tsv run M6 paced_regions 8G 900 "$CORE" 1 $J ../bench/paced.jl regions 1000000
     REGIONS_TSV=$DATA/endurance.tsv run M6 endurance 8G 2700 "$CORE" 1 $J ../bench/endurance.jl 18000000
 fi
@@ -195,7 +218,7 @@ if want M7; then
     g++ -O2 -std=c++17 -o "$LOG/native" ../bench/native.cpp || echo "[M7] g++ failed"
     for W in 3 200; do
         REGIONS_TSV=$DATA/native.tsv run M7 native_region_W$W 8G 900 "$CORE" 0 $J ../bench/native.jl region 5000000 100000 $W
-        REGIONS_TSV=$DATA/native.tsv run M7 native_stock_W$W 8G 900 "$CORE" 0 $J ../bench/native.jl stock 5000000 100000 $W
+        REGIONS_TSV=$DATA/native.tsv run M7 native_stock_W$W 8G 900 "$CORE" 0 $JB ../bench/native.jl stock 5000000 100000 $W
         [ -x "$LOG/native" ] && REGIONS_TSV=$DATA/native.tsv run M7 native_cpp_W$W 8G 900 "$CORE" 0 "$LOG/native" 5000000 $W
     done
 fi
@@ -206,8 +229,9 @@ if want M8; then
     fresh showcase.tsv
     for r in 1 2 3; do
         for m in stock region; do
-            REGIONS_TSV=$DATA/showcase.tsv run M8 showcase_binarytree_${m}_$r 8G 900 "$CORE" 0 $J ../demo/showcase_binarytree.jl $m 18
-            REGIONS_TSV=$DATA/showcase.tsv run M8 showcase_linkedlist_${m}_$r 16G 900 "$CORE" 0 $J ../demo/showcase_linkedlist.jl $m 64
+            if [ $m = stock ]; then JM=$JB; else JM=$J; fi
+            REGIONS_TSV=$DATA/showcase.tsv run M8 showcase_binarytree_${m}_$r 8G 900 "$CORE" 0 $JM ../demo/showcase_binarytree.jl $m 18
+            REGIONS_TSV=$DATA/showcase.tsv run M8 showcase_linkedlist_${m}_$r 16G 900 "$CORE" 0 $JM ../demo/showcase_linkedlist.jl $m 64
         done
         REGIONS_TSV=$DATA/showcase.tsv run M8 showcase_tree_$r 8G 900 "$MTCORES" 0 $J -t 4 ../demo/showcase_tree.jl
     done
@@ -279,7 +303,7 @@ if want M13; then
                 [ -n "$bin" ] || continue
                 rm -f "$LOG/pgc.tsv"
                 REGIONS_TSV=$LOG/pgc.tsv \
-                    run M13 "parallel_gc_${name}_t${t}_r$r" 24G 1800 "$ALLCORES" 0 \
+                    run M13 "parallel_gc_${name}_t${t}_r$r" 16G 1800 "$ALLCORES" 0 \
                     "$bin" --startup-file=no -t "$t" --gcthreads="$g" ../bench/parallel_gc.jl 12 \
                     && grep -v '^#' "$LOG/pgc.tsv" | sed "s/^/$name\t$r\t/" >> "$DATA/parallel_gc.tsv"
             done

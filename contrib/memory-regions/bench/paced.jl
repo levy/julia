@@ -16,13 +16,20 @@
 
 include(joinpath(@__DIR__, "kernel.jl"))
 using .MiniKernel
-include(joinpath(@__DIR__, "..", "regions.jl"))
+if isdefined(Base, :GC_REGIONS) && Base.GC_REGIONS
+    include(joinpath(@__DIR__, "..", "regions.jl"))
+else
+    include(joinpath(@__DIR__, "regions_stub.jl"))   # a stock build: the face answers "no region"
+end
 using .Regions
 include(joinpath(@__DIR__, "model_alloc.jl"))
 include(joinpath(@__DIR__, "model_scratch.jl"))
 include(joinpath(@__DIR__, "report.jl"))
 
 const PERIOD_NS = 100_000
+
+# The minor page faults of this process so far (/proc/self/stat, field 10).
+minflt() = parse(Int, split(read("/proc/self/stat", String))[10])
 
 function percentile(sorted::Vector{Int64}, p::Float64)
     isempty(sorted) && return 0
@@ -92,6 +99,11 @@ function main()
     late_ns = zeros(Int64, events)
     gc_ns = zeros(Int64, events)
     deliveries = events ÷ (relays + 3) + 1
+    # RESERVE_MB claims and prefaults the heap before the loop (jl_gc_heap_reserve):
+    # the faults column then says whether the loop still faulted.
+    reserve_mb = parse(Int, get(ENV, "RESERVE_MB", "0"))
+    reserve_mb > 0 && println("reserve           ", region_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
+    faults = 0
 
     warm_n = min(10_000, events)
     warm_lat = Vector{Int64}(undef, warm_n)
@@ -101,7 +113,9 @@ function main()
         network, sink = ModelAlloc.build(relays)
         run_measured!(network, warm_lat, warm_gc)      # compile, unpaced
         GC.gc()
+        f0 = minflt()
         count = run_paced!(network, false, latencies, late_ns, gc_ns)
+        faults = minflt() - f0
     elseif variant == "regions"
         network, sink = ModelScratch.build(relays, deliveries; use_regions = true)
         warm_late = Vector{Int64}(undef, warm_n)
@@ -111,13 +125,16 @@ function main()
         # compiles here, before the measured phase.
         report("warm", warm_lat, warm_late, warm_gc, warm_n)
         GC.enable(false)
+        f0 = minflt()
         count = run_paced!(network, true, latencies, late_ns, gc_ns)
+        faults = minflt() - f0
         println("region pages      ", region_pages(1))
     else
         error("variant must be baseline or regions")
     end
     report(variant, latencies, late_ns, gc_ns, count)
     println("live heap         ", round(Base.gc_live_bytes() / 1e6; digits = 1), " MB")
+    println("page faults       ", faults, " during the run")
 
     let lat = sort!(latencies[1:count])
         late = sort!(late_ns[1:count])
@@ -125,9 +142,11 @@ function main()
         gc_events = count - Base.count(iszero, view(gc_ns, 1:count))
         gc_total = sum(view(gc_ns, 1:count))
         tsv_row(("variant", "events", "latency_p50_ns", "latency_p999_ns", "latency_max_ns",
-                 "lateness_p999_ns", "lateness_max_ns", "slot_misses", "gc_events", "gc_ms"),
+                 "lateness_p999_ns", "lateness_max_ns", "slot_misses", "gc_events", "gc_ms",
+                 "faults", "reserve_mb"),
                 (variant, count, percentile(lat, 0.50), percentile(lat, 0.999), lat[end],
-                 percentile(late, 0.999), late[end], misses, gc_events, gc_total / 1e6))
+                 percentile(late, 0.999), late[end], misses, gc_events, gc_total / 1e6,
+                 faults, reserve_mb))
     end
 end
 
