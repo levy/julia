@@ -23,6 +23,7 @@
 set -uo pipefail
 cd "$(dirname "$0")"
 JULIA="${JULIA:-$(cd ../../.. && pwd)/usr/bin/julia}"; EV="${EV:-5000000}"; K=10000
+DATA="${DATA:-data}"   # the data directory of the run (run_all.sh sets it per build)
 CORE="${CORE:-29}"; RESERVE="${RESERVE:-512}"; TRIES="${TRIES:-5}"; RTPRIO="${RTPRIO:-50}"
 # The real-time class, when the machine grants one (ulimit -r > 0): under
 # SCHED_FIFO no time-shared task preempts the loop, and the log's scheduler
@@ -32,7 +33,7 @@ if chrt -f "$RTPRIO" true 2>/dev/null; then RT="chrt -f $RTPRIO"; else
 mkdir -p log data
 # run_kept <log> <args...>: runs census.jl up to TRIES times, keeps the try
 # with the fewest involuntary context switches, and appends that try's TSV
-# row (its header only the first time) to data/realworld.tsv.
+# row (its header only the first time) to "$DATA"/realworld.tsv.
 run_kept() {
   local log=$1; shift; local best=999999; local kept_tsv=""
   for try in $(seq 1 "$TRIES"); do
@@ -42,17 +43,17 @@ run_kept() {
     [ "$sw" = "0" ] && break
   done
   if [ -n "$kept_tsv" ] && [ -f "$kept_tsv" ]; then
-    [ -f data/realworld.tsv ] || head -n1 "$kept_tsv" > data/realworld.tsv
-    grep -v '^#' "$kept_tsv" >> data/realworld.tsv
+    [ -f "$DATA"/realworld.tsv ] || head -n1 "$kept_tsv" > "$DATA"/realworld.tsv
+    grep -v '^#' "$kept_tsv" >> "$DATA"/realworld.tsv
   fi
   rm -f "$log".try*; echo "kept (switches=$best): $log"
 }
 for cfg in "200 100" "3 1000"; do
   set -- $cfg; W=$1; B=$2
-  run_kept log/realworld_auto_W${W}.log                auto $EV 100000 $K $W $B $RESERVE data/ccdf_auto_W${W}.tsv
-  run_kept log/realworld_sched_W${W}_B${B}.log         sched $EV 100000 $K $W $B $RESERVE data/ccdf_sched_W${W}.tsv
-  run_kept log/realworld_real_census_W${W}_B${B}.log   real $EV 100000 $K $W $B $RESERVE data/ccdf_census_W${W}.tsv
-  run_kept log/realworld_real_nocensus_W${W}_B${B}.log real $EV 0      $K $W $B $RESERVE data/ccdf_nocensus_W${W}.tsv
+  run_kept log/realworld_auto_W${W}.log                auto $EV 100000 $K $W $B $RESERVE "$DATA"/ccdf_auto_W${W}.tsv
+  run_kept log/realworld_sched_W${W}_B${B}.log         sched $EV 100000 $K $W $B $RESERVE "$DATA"/ccdf_sched_W${W}.tsv
+  run_kept log/realworld_real_census_W${W}_B${B}.log   real $EV 100000 $K $W $B $RESERVE "$DATA"/ccdf_census_W${W}.tsv
+  run_kept log/realworld_real_nocensus_W${W}_B${B}.log real $EV 0      $K $W $B $RESERVE "$DATA"/ccdf_nocensus_W${W}.tsv
 done
 echo "=== summary"
 for f in log/realworld_*.log; do
