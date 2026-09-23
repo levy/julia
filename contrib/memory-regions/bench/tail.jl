@@ -74,7 +74,11 @@ function report(label, latencies, gc_ns, count)
     println("gc total          ", round(gc_total / 1e6; digits = 1), " ms")
 end
 
+# The minor page faults of this process so far (/proc/self/stat, field 10).
+minflt() = parse(Int, split(read("/proc/self/stat", String))[10])
+
 function main()
+    faults = 0
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
@@ -94,7 +98,9 @@ function main()
     if variant == "baseline"
         run_measured!(network, warm_lat, warm_gc)
         GC.gc()
+        f0 = minflt()
         count = run_measured!(network, latencies, gc_ns)
+        faults = minflt() - f0
     elseif variant == "regions"
         run_regions!(network, warm_lat, warm_gc)
         unsafe_region_reset(1)
@@ -104,8 +110,11 @@ function main()
         # here so nothing compiles after the measured phase either.
         report("warm", warm_lat, warm_gc, min(10_000, events))
         GC.enable(false)
+        f0 = minflt()
         count = run_regions!(network, latencies, gc_ns)
+        faults = minflt() - f0
         println("region pages      ", region_pages(1))
+        println("page faults       ", faults, " during the run")
     else
         error("variant must be baseline or regions")
     end
@@ -117,10 +126,10 @@ function main()
         gc_events = count - Base.count(iszero, view(gc_ns, 1:count))
         gc_total = sum(view(gc_ns, 1:count))
         tsv_row(("script", "variant", "events", "p50_ns", "p99_ns", "p999_ns", "p9999_ns",
-                 "max_ns", "over_100us", "gc_events", "gc_ms", "peak_rss_mb"),
+                 "max_ns", "over_100us", "gc_events", "gc_ms", "peak_rss_mb", "faults"),
                 ("tail", variant, count, percentile(lat, 0.50), percentile(lat, 0.99),
                  percentile(lat, 0.999), percentile(lat, 0.9999), lat[end], over,
-                 gc_events, gc_total / 1e6, Sys.maxrss() / 1e6))
+                 gc_events, gc_total / 1e6, Sys.maxrss() / 1e6, faults))
     end
 end
 

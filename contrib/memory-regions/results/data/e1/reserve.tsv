@@ -1,0 +1,4 @@
+# variant	events	latency_p50_ns	latency_p999_ns	latency_max_ns	lateness_p999_ns	lateness_max_ns	slot_misses	gc_events	gc_ms	faults	reserve_mb
+baseline	1000000	70	651	4753928	929	4753986	62	1	4.705076	1736	0
+baseline	1000000	70	420	4890255	528	4890304	55	1	4.849538	1263	512
+baseline	1000000	70	411	4870798	491	4870849	57	1	4.8236	1760	0
