@@ -15,7 +15,11 @@
 
 include(joinpath(@__DIR__, "kernel.jl"))
 using .MiniKernel
-include(joinpath(@__DIR__, "..", "regions.jl"))
+if isdefined(Base, :GC_REGIONS) && Base.GC_REGIONS
+    include(joinpath(@__DIR__, "..", "regions.jl"))
+else
+    include(joinpath(@__DIR__, "regions_stub.jl"))   # a stock build: the face answers "no region"
+end
 using .Regions
 include(joinpath(@__DIR__, "model_scratch.jl"))
 include(joinpath(@__DIR__, "report.jl"))
