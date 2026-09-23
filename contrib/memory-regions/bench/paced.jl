@@ -30,6 +30,8 @@ const PERIOD_NS = 100_000
 
 # The minor page faults of this process so far (/proc/self/stat, field 10).
 minflt() = parse(Int, split(read("/proc/self/stat", String))[10])
+# jl_gc_heap_reserve is a stock entry of this line (the second commit of the series), not part of the Julia face.
+heap_reserve(bytes) = UInt64(ccall(:jl_gc_heap_reserve, UInt64, (UInt64,), bytes))
 
 function percentile(sorted::Vector{Int64}, p::Float64)
     isempty(sorted) && return 0
@@ -102,7 +104,7 @@ function main()
     # RESERVE_MB claims and prefaults the heap before the loop (jl_gc_heap_reserve):
     # the faults column then says whether the loop still faulted.
     reserve_mb = parse(Int, get(ENV, "RESERVE_MB", "0"))
-    reserve_mb > 0 && println("reserve           ", region_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
+    reserve_mb > 0 && println("reserve           ", heap_reserve(reserve_mb * 1_000_000) ÷ 1_000_000, " MB mapped")
     faults = 0
 
     warm_n = min(10_000, events)
