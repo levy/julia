@@ -1,0 +1,9 @@
+# demo	point	threads	mode	wall_ms	collections	gc_ms	peak_rss_mb
+C	work=0     (80000 keys, work=0, 4 threads)	4	region	64.217494	4	4.466325	356.6484375
+C	work=0     (80000 keys, work=0, 4 threads)	4	stock	28.919992	5	4.620856	393.6953125
+C	work=64    (80000 keys, work=64, 4 threads)	4	region	98.67435	5	5.521565	405.96875
+C	work=64    (80000 keys, work=64, 4 threads)	4	stock	80.852893	22	23.997577	405.97265625
+C	work=256   (80000 keys, work=256, 4 threads)	4	region	183.165876	0	0.0	577.87890625
+C	work=256   (80000 keys, work=256, 4 threads)	4	stock	267.19943	37	97.995277	577.875
+C	work=1024  (80000 keys, work=1024, 4 threads)	4	region	467.169184	2	3.733072	650.40234375
+C	work=1024  (80000 keys, work=1024, 4 threads)	4	stock	833.79891	131	297.902706	649.78125
