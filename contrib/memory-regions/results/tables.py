@@ -418,6 +418,41 @@ def t_unit_attribution():
         out.append(row)
     return table(["cost", "unit"] + [f"{lab} − base" for _, lab in ATTRIBUTION_RUNS], out)
 
+ARMED_RUNS = (("checked", "barrier built"), ("trusted", "no barrier"))
+
+def t_armed_process():
+    """After the first window: the paired difference "the regions binary after a window
+    once opened minus the same binary with no window", per build; the store row is the
+    armed copy loop minus the disarmed one of the child process."""
+    costs = ("alloc_stock", "construct_two", "construct_shared", "box_twin", "finalizer_register",
+             "store", "store_const")
+    out = []
+    for cost in costs:
+        row = [cost]
+        unit = ""
+        for run, _ in ARMED_RUNS:
+            rows = read_run(run, "unit_costs.tsv")
+            if not rows:
+                row.append(DASH); continue
+            by = {}
+            for r in rows:
+                by.setdefault((r["binary"], r["cost"]), {})[int(r["round"])] = num(r["value"])
+                unit_here = r["unit"]
+                if r["cost"] in (cost, "store_disarmed"):
+                    unit = unit_here
+            if cost == "store":
+                a, g = by.get(("regions", "store_disarmed"), {}), by.get(("regions", "store_armed"), {})
+            elif cost == "store_const":
+                a, g = by.get(("regions", "store_disarmed"), {}), by.get(("regions", "store_armed_const"), {})
+            else:
+                a, g = by.get(("regions_stock", cost), {}), by.get(("regions", cost), {})
+            row.append(stats.delta_summary(a, g, 3) if a and g else DASH)
+        if all(c == DASH for c in row[1:]):
+            continue
+        row.insert(1, unit)
+        out.append(row)
+    return table(["cost", "unit"] + [f"armed − no window, {lab}" for _, lab in ARMED_RUNS], out)
+
 def t_parallel_attribution():
     """The full collection against the thread count, regions / base, in each of the three
     region builds."""
@@ -438,6 +473,7 @@ def t_parallel_attribution():
 
 TABLES = {"E1-deferral": t_deferral, "E1-reserve": t_reserve, "E2-text": t_text,
           "E2-unit-attribution": t_unit_attribution, "E2-parallel-attribution": t_parallel_attribution,
+          "E2-armed": t_armed_process,
           "M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,
           "M5-pause": t_census_pause, "M5-throughput": t_census_throughput,
           "M6-paced": t_paced, "M6-endurance": t_endurance, "M7": t_native, "M8": t_showcase,

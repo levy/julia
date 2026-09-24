@@ -162,7 +162,13 @@ function _excluded(mod::Module)
     return root === Compiler || mod === RegionCheck || root === Core
 end
 
+# The optimized IR names a builtin through its binding partition on the
+# master line; a constant partition holds the value.
 function _resolve(f)
+    if f isa Core.BindingPartition
+        Base.is_some_const_binding(Base.binding_kind(f)) || return nothing
+        return Base.partition_restriction(f)
+    end
     f isa GlobalRef || return f
     isdefined(f.mod, f.name) || return nothing
     return getglobal(f.mod, f.name)

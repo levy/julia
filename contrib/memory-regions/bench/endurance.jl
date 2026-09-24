@@ -49,17 +49,9 @@ function run_paced!(network, events::Int, hist::Vector{Int64},
     latmax = Int64(0)
     latemax = Int64(0)
     t0 = time_ns() + 1_000_000
-    while !isempty(network.queue)
+    while has_event(network)
         count == events && break
-        best = 1
-        @inbounds for i in 2:length(network.queue)
-            event, top = network.queue[i], network.queue[best]
-            (event.time < top.time ||
-             (event.time == top.time && event.sequence < top.sequence)) && (best = i)
-        end
-        event = network.queue[best]
-        deleteat!(network.queue, best)
-        network.time = event.time
+        event = pop_event!(network)
         count += 1
         deadline = t0 + UInt64(count - 1) * UInt64(PERIOD_NS)
         while time_ns() < deadline; end

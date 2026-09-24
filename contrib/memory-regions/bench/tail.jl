@@ -32,17 +32,9 @@ end
 function run_regions!(network, latencies_ns::Vector{Int64}, gc_ns::Vector{Int64})
     limit = length(latencies_ns)
     count = 0
-    while !isempty(network.queue)
+    while has_event(network)
         count == limit && return count
-        best = 1
-        @inbounds for i in 2:length(network.queue)
-            event, top = network.queue[i], network.queue[best]
-            (event.time < top.time ||
-             (event.time == top.time && event.sequence < top.sequence)) && (best = i)
-        end
-        event = network.queue[best]
-        deleteat!(network.queue, best)
-        network.time = event.time
+        event = pop_event!(network)
         count += 1
         gc0 = Base.gc_num().total_time
         t0 = time_ns()
