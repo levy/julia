@@ -22,6 +22,8 @@
 # thrashes the collector, that abort hits both binaries alike.
 # CORE (default 29) pins the one-thread runs; MTCORES (default 24-27) the
 # four-thread runs. GCBENCH_SCALE passes through to the suite (1 = full).
+# GCBENCH_ONLY="pollard many_refs" keeps the benchmarks whose path holds one
+# of the words.
 set -uo pipefail
 VANILLA=$1; REGION=$2; SUITE=$3; ROUNDS=${4:-5}
 CORE=${CORE:-29}; MTCORES=${MTCORES:-24-27}
@@ -30,6 +32,10 @@ SERIAL="append/append.jl linked/tree.jl strings/strings.jl bigint/pollard.jl \
 MULTI="binary_tree/tree_mutable.jl mergesort_parallel/mergesort_parallel.jl \
        mm_divide_and_conquer/mm_divide_and_conquer.jl big_arrays/objarray.jl \
        big_arrays/issue-52937.jl"
+if [ -n "${GCBENCH_ONLY:-}" ]; then
+    only() { local b w; for b in $1; do for w in $GCBENCH_ONLY; do case $b in *"$w"*) echo "$b";; esac; done; done; }
+    SERIAL=$(only "$SERIAL"); MULTI=$(only "$MULTI")
+fi
 
 row() { [ -n "${REGIONS_TSV:-}" ] || return 0
         [ -s "$REGIONS_TSV" ] || printf '# set\tbench\tthreads\tbinary\tround\twall_ns\n' > "$REGIONS_TSV"
