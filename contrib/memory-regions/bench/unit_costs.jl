@@ -14,6 +14,7 @@
 #
 #   store_disarmed    dst[k] = src[k] over Vector{Any}, barrier disarmed     ns/store
 #   store_armed       the same copy loop, barrier armed, region-0 child      ns/store
+#   store_armed_const dst[k] = nothing, barrier armed: an image child           ns/store
 #   store_region      the copy loop over two rings made in region 1          ns/store
 #   window_pair       region_set(1); region_set(0)                           ns/pair
 #   switch_pair       region_set(2); region_set(1) inside a window           ns/pair
@@ -150,7 +151,18 @@ for c in 1:COPIES
         end
     end
 end
+# The store of a constant child, `nothing`: an image object that the escape
+# barrier need not check.
+for c in 1:COPIES
+    @eval @noinline function $(Symbol(:const_loop_, c))(dst, iters)
+        for i in 1:iters
+            @inbounds dst[(i & 1023) + 1] = nothing
+        end
+        return iters
+    end
+end
 const COPY_LOOPS      = [getfield(@__MODULE__, Symbol(:copy_loop_, c)) for c in 1:COPIES]
+const CONST_LOOPS     = [getfield(@__MODULE__, Symbol(:const_loop_, c)) for c in 1:COPIES]
 const CONSTRUCT_LOOPS = [getfield(@__MODULE__, Symbol(:construct_loop_, c)) for c in 1:COPIES]
 const CONSTRUCT_SHARED_LOOPS = [getfield(@__MODULE__, Symbol(:construct_shared_loop_, c)) for c in 1:COPIES]
 const BOX_TWIN_LOOPS  = [getfield(@__MODULE__, Symbol(:box_twin_loop_, c)) for c in 1:COPIES]
@@ -327,6 +339,7 @@ child = read(setenv(`$(Base.julia_cmd()) --startup-file=no $(@__FILE__) $N`, "UN
 # the compiler makes inside a window and caches in a region-0 table is an
 # escape.
 foreach(loop -> loop(DST, SRC, 1000), COPY_LOOPS)
+foreach(loop -> loop(DST, 1000), CONST_LOOPS)
 foreach(loop -> loop(DST, 1000), CONSTRUCT_LOOPS)
 foreach(loop -> loop(DST, SRC, 1000), CONSTRUCT_SHARED_LOOPS)
 foreach(loop -> loop(DST, SRC, 1000), BOX_TWIN_LOOPS)
@@ -346,6 +359,7 @@ let parts = split(strip(child), '\t')
 end
 if !STOCK
     rowc("store_armed", "ns/store", loop -> loop(DST, SRC, ITERS), COPY_LOOPS)
+    rowc("store_armed_const", "ns/store", loop -> loop(DST, ITERS), CONST_LOOPS)
     rowc("store_region", "ns/store", loop -> copy_region_round(loop, ITERS), COPY_LOOPS)
     row("window_pair", best(() -> window_loop(ITERS)), "ns/pair")
     row("switch_pair", best(() -> switch_loop(ITERS)), "ns/pair")
