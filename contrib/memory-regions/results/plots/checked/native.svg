@@ -31,5 +31,5 @@
 <text x="575.7" y="231.6" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">37.6 M</text>
 <text x="510.0" y="378.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">W = 200</text>
 <text x="32.0" y="230.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 230.0)">events per second</text>
-<text x="40.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 5a9121d575 (1.14.0-DEV.3341) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · time-shared · 2026-09-23</text>
+<text x="40.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 9a7d6ad837 (1.14.0-DEV.3373) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 · time-shared · 2026-09-24</text>
 </svg>

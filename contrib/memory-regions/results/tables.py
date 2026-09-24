@@ -425,7 +425,7 @@ def t_armed_process():
     once opened minus the same binary with no window", per build; the store row is the
     armed copy loop minus the disarmed one of the child process."""
     costs = ("alloc_stock", "construct_two", "construct_shared", "box_twin", "finalizer_register",
-             "store", "store_const")
+             "store")
     out = []
     for cost in costs:
         row = [cost]
@@ -442,8 +442,6 @@ def t_armed_process():
                     unit = unit_here
             if cost == "store":
                 a, g = by.get(("regions", "store_disarmed"), {}), by.get(("regions", "store_armed"), {})
-            elif cost == "store_const":
-                a, g = by.get(("regions", "store_disarmed"), {}), by.get(("regions", "store_armed_const"), {})
             else:
                 a, g = by.get(("regions_stock", cost), {}), by.get(("regions", cost), {})
             row.append(stats.delta_summary(a, g, 3) if a and g else DASH)
