@@ -273,6 +273,35 @@ points that survived the audit got one contract each in
 the flat tree; six faults of the harness and five claims fell. The findings
 are in the section "Found during the tidy" below.
 
+### 12. The low-hanging fruit (2026-09-24)
+
+Before the pull request, eight small changes that the measurements of the
+master line pointed at, four in the runtime and four in the evidence, each
+built as its own candidate and measured against the base build in the same
+session as a fresh reference of `checked`, and accepted only when its
+number moved. One runtime change survived: the allocator reaches the pool
+of the current region with one load and one add (`pool_base` in the thread
+heap) instead of a divide, and the pool allocation's cost with no window
+open falls from 0.35 ns to 0.16, a two-field constructor's from 0.72 to
+0.42, `many_refs` from 1.03 to 1.02. Two evidence changes survived: the
+discipline checker reads a builtin through its binding partition, which is
+how master's optimized IR names one, and reports the old line's numbers
+again; and `COST.md` gained the table of the armed process. The rest fell:
+an early return for a finalizer of a process that never used a region
+left `pollard` at 1.06, so its 6 % lies elsewhere (a profile needs a kernel
+setting this machine does not grant); the census filter as a parameter of
+the mark functions, which folds the stock drain's check away, cost the
+mark 15 % at one thread and 26 % at thirty through the compiler's inlining;
+a per-thread cache of the last child's page in the escape barrier cost a
+nanosecond per armed store, because the runtime reaches the thread state
+through an indirect call; the skip of a constant child in the lowering had
+nothing to skip, since codegen emits no barrier for a literal; and a heap
+event queue that never reallocates left the tail row's longest event at
+90 µs, the same as the pooled yardstick that allocates nothing, which
+named the machine's floor as the cause instead of the queue. The suite
+with a 24 GB cap did not run, under the rule that the sum of the caps
+stays under half of the memory available.
+
 ## The detours
 
 The ideas the work tried and dropped, or the faults it found on the way. The

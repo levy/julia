@@ -339,15 +339,17 @@ removed by hand. With 512 MB reserved, on the isolated core:
 
 The stock loop's longest event is 4.2 ms, a collection; the region loop's
 is 91 µs on `checked` and 90 on `trusted`, and so is the pooled yardstick's,
-which allocates nothing. That maximum is not the runtime's: a bare loop of
-ten million rounds of a window, a hundred allocations and an unchecked
-reset has a worst round of 3.5 µs on the same core, and the paced loop and
-the real-world matrix below stay under 15 µs. It is the benchmark's own
-event queue, a `Vector` popped at the front and pushed at the back, whose
-buffer moves through stock-heap pages the collector had given back before
-the run; with transparent huge pages `always`, the first touch of such a
-range zeroes 2 MB. The fault count of the row says so, 936 faults with the
-reserve and without it, the same in the stock baseline.
+which allocates nothing. That maximum is the machine's, not the runtime's:
+a bare loop of ten million rounds of a window, a hundred allocations and an
+unchecked reset has a worst round of 3.5 µs on the same core, and the paced
+loop and the real-world matrix below stay under 15 µs; a loop that never
+touches the allocator meets the same 90 µs about once in twenty million
+events, three seconds of wall time, which is a stall of the core (the
+kernel command line carries no `nohz_full`, so the isolated core still
+takes its tick and its housekeeping). A run with the event queue as a
+binary heap that never reallocates, on 2026-09-24, read the same maximum
+in every row and ten nanoseconds more per event, which put the queue out
+of the question.
 
 ### M4 — The real-world matrix
 
