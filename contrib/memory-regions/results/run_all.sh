@@ -111,7 +111,7 @@ if want M1; then
     else
         fresh gcbench.tsv
         REGIONS_TSV=$DATA/gcbench.tsv CORE=$CORE MTCORES=$MTCORES \
-            run M1 gcbench 16G 10800 0-31 0 bash ../bench/gcbench.sh "$VANILLA" "$JULIA" "$GCBENCHMARKS" "$ROUNDS"
+            run M1 gcbench "${M1_CAP:-16G}" 10800 0-31 0 bash ../bench/gcbench.sh "$VANILLA" "$JULIA" "$GCBENCHMARKS" "$ROUNDS"
     fi
 fi
 

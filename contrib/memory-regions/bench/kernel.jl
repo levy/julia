@@ -5,7 +5,7 @@
 module MiniKernel
 
 export AbstractModule, EventEnvironment, Gate, Network,
-       send!, run_measured!, handle_message!
+       send!, has_event, pop_event!, run_measured!, handle_message!
 
 abstract type AbstractModule end
 abstract type EventEnvironment end
@@ -26,17 +26,63 @@ function handle_message! end
 @inline (gate::Gate)(network, environment) =
     handle_message!(network, gate.owner::AbstractModule, environment, gate)
 
+# The queue is a binary heap in the first `pending` slots of a vector that
+# grows only while the network warms up: a run at its steady size
+# reallocates nothing, so no fresh page meets an event.
 mutable struct Network
     time::Int
     sequence::Int
     queue::Vector{Event}
+    pending::Int
 end
-Network() = Network(0, 0, sizehint!(Event[], 1024))
+Network() = Network(0, 0, Vector{Event}(undef, 1024), 0)
+
+@inline before(a::Event, b::Event) =
+    a.time < b.time || (a.time == b.time && a.sequence < b.sequence)
 
 function push_event!(network::Network, time::Int, action::Gate, environment)
     network.sequence += 1
-    push!(network.queue, Event(action, environment, time, network.sequence))
+    event = Event(action, environment, time, network.sequence)
+    queue = network.queue
+    n = network.pending + 1
+    n > length(queue) && resize!(queue, 2 * length(queue))
+    network.pending = n
+    @inbounds while n > 1
+        parent = n >> 1
+        before(event, queue[parent]) || break
+        queue[n] = queue[parent]
+        n = parent
+    end
+    @inbounds queue[n] = event
     nothing
+end
+
+has_event(network::Network) = network.pending > 0
+
+"""
+Remove the next event, the earliest time and then the lowest sequence, and
+set the network's clock to its time.
+"""
+function pop_event!(network::Network)
+    queue = network.queue
+    n = network.pending
+    @inbounds top = queue[1]
+    @inbounds last = queue[n]
+    n -= 1
+    network.pending = n
+    i = 1
+    @inbounds while true
+        child = 2 * i
+        child > n && break
+        right = child + 1
+        right <= n && before(queue[right], queue[child]) && (child = right)
+        before(queue[child], last) || break
+        queue[i] = queue[child]
+        i = child
+    end
+    @inbounds n >= 1 && (queue[i] = last)
+    network.time = top.time
+    return top
 end
 
 function send!(network::Network, gate::Gate, environment)
@@ -54,17 +100,9 @@ function run_measured!(network::Network, latencies_ns::Vector{Int64},
                        gc_ns::Vector{Int64})
     limit = length(latencies_ns)
     count = 0
-    while !isempty(network.queue)
+    while has_event(network)
         count == limit && return count
-        best = 1
-        @inbounds for i in 2:length(network.queue)
-            event, top = network.queue[i], network.queue[best]
-            (event.time < top.time ||
-             (event.time == top.time && event.sequence < top.sequence)) && (best = i)
-        end
-        event = network.queue[best]
-        deleteat!(network.queue, best)
-        network.time = event.time
+        event = pop_event!(network)
         count += 1
         gc0 = Base.gc_num().total_time
         t0 = time_ns()
