@@ -660,17 +660,18 @@ work per transaction, 1.78 with 1,024 units of it.
 the region rule, and finds none in the clean model, without a region in
 use.
 
-On the master line the claim is not yet met by the tool: its compiler hook
-installs (the anchor of `optimize` moved and is fixed), the pass registers
-the allocation sites, but it finds no store site in master's optimized IR,
-whose stores changed shape with the field-aware barrier work, so both
-models read zero violations at zero sites. The checker needs a port of its
-store matching; it is tooling of this branch, not of the pull request.
+The checker is tooling of this branch, not of the pull request. On the
+master line its compiler hook anchors on the `optimize` entry of the
+compiler, and the pass reads a builtin that the optimized IR names through
+its binding partition. The allocating model breaks the rule at two sites:
+the kernel's queue stores an event made inside a handler, on every push and
+pop of the heap, and the vector of samples grows ten times; the clean
+model breaks it nowhere.
 
 <!-- table M11 run=checked -->
 | model | events | violations (stores) | sites |
 | --- | --- | --- | --- |
-| alloc | 100,000 | 0 | 0 |
+| alloc | 100,000 | 350,006 | 2 |
 | clean | 100,000 | 0 | 0 |
 <!-- /table -->
 
