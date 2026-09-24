@@ -71,7 +71,7 @@ function build(relays::Int)
         gate = Gate(relay)
     end
     network = Network()
-    sizehint!(network.queue, 1 << 12)      # pre-size: no growth from Event
+    resize!(network.queue, 1 << 12)        # pre-size the heap: no growth from Event
     source = Source(1000, 0, nothing, nothing)
     source_gate = Gate(source)
     source.out = gate
