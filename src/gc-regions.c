@@ -464,6 +464,14 @@ void jl_gc_region_mark_finalizer_lists(jl_gc_markqueue_t *mq) JL_NOTSAFEPOINT
 
 // --- windows -----------------------------------------------------------------------
 
+// Point the allocator at a pool array. The JIT passes the offset of a pool
+// of norm_pools in the TLS; pool_base + offset is the same pool of `pools`.
+STATIC_INLINE void region_use_pools(jl_thread_heap_t *heap, jl_gc_pool_t *pools) JL_NOTSAFEPOINT
+{
+    heap->active_pools = pools;
+    heap->pool_base = (char*)pools - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools);
+}
+
 // The state of a region on a heap, allocated at the first use of the region
 // on that heap and never freed; zeroed memory is the empty state of all but
 // the pool sizes and the two lists.
@@ -538,7 +546,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
         jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
         ct->sticky = ct->sticky_before_region;
     }
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
+    region_use_pools(heap, (n == 0) ? heap->norm_pools : heap->regions[n]->pools);
     heap->current_region = (uint8_t)n;
     return old;
 }
@@ -555,7 +563,7 @@ void jl_gc_region_install_task(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     region_lazy_init(heap, n);
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
+    region_use_pools(heap, (n == 0) ? heap->norm_pools : heap->regions[n]->pools);
     heap->current_region = (uint8_t)n;
 }
 
@@ -567,7 +575,7 @@ void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     region_lazy_init(heap, n);
     region_mark_live(heap, n);
-    heap->active_pools = (n == 0) ? heap->norm_pools : heap->regions[n]->pools;
+    region_use_pools(heap, (n == 0) ? heap->norm_pools : heap->regions[n]->pools);
     heap->current_region = (uint8_t)n;
 }
 
@@ -1435,7 +1443,7 @@ void jl_gc_region_init_heap(jl_thread_heap_t *heap) JL_NOTSAFEPOINT
     heap->current_region = 0;
     heap->saved_region = 0;
     heap->finalizer_depth = 0;
-    heap->active_pools = heap->norm_pools;
+    region_use_pools(heap, heap->norm_pools);
     memset(heap->regions, 0, sizeof(heap->regions)); // no region has state yet
     heap->region_live_mask = 0;
     heap->region_haschild_mask = 0;

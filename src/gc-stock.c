@@ -930,9 +930,8 @@ STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
     // Ref https://llvm.org/bugs/show_bug.cgi?id=27190
 #ifdef WITH_GC_REGIONS
     // `offset` selects a pool of norm_pools; the same pool of the current
-    // region's array is used (gc-regions.h).
-    size_t pool_idx = ((size_t)offset - offsetof(jl_tls_states_t, gc_tls.heap.norm_pools)) / sizeof(jl_gc_pool_t);
-    jl_gc_pool_t *p = ptls->gc_tls.heap.active_pools + pool_idx;
+    // region's array is used (gc-regions.h): one load and one add.
+    jl_gc_pool_t *p = (jl_gc_pool_t*)(ptls->gc_tls.heap.pool_base + offset);
 #else
     jl_gc_pool_t *p = (jl_gc_pool_t*)((char*)ptls + offset);
 #endif

@@ -41,6 +41,8 @@ typedef struct {
     uint8_t saved_region;        // the window parked by a stock collection
     uint8_t finalizer_depth;     // > 0 while finalizers run on this thread
     jl_gc_pool_t *active_pools;  // norm_pools, or the pools of the current region
+    char *pool_base;             // active_pools less the offset of norm_pools in the
+                                 // TLS: the pool of an allocation offset is pool_base + offset
     struct _jl_gc_region_state_t *regions[JL_GC_MAX_REGIONS]; // NULL until used; NULL for region 0
     uint64_t region_live_mask;     // bit r: region r is live on this heap
     uint64_t region_haschild_mask; // bit r: region r has a live child region
