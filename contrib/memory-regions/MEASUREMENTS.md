@@ -152,6 +152,7 @@ The full table of `checked`, with the rows of a program that uses regions
 | --- | --- | --- | --- | --- | --- | --- |
 | store_disarmed | ns/store | 0.3328 [0.3319, 0.3357] | 0.378 [0.3768, 0.3882] | 0.3756 [0.3738, 0.3788] | 0.0446 [0.0407, 0.054], sign 0.002 | 10 |
 | store_armed | ns/store | — | — | 1.443 [1.443, 1.444] | — | 10 |
+| store_armed_const |  | — | — | — | — | 0 |
 | store_region | ns/store | — | — | 2.034 [2.032, 2.036] | — | 10 |
 | window_pair | ns/pair | — | — | 11.29 [11.29, 11.29] | — | 10 |
 | switch_pair | ns/pair | — | — | 6.147 [5.942, 6.337] | — | 10 |
@@ -159,6 +160,7 @@ The full table of `checked`, with the rows of a program that uses regions
 | construct_shared | ns/object | 3.469 [3.45, 3.492] | 3.792 [3.762, 3.807] | 6.204 [6.189, 6.224] | 0.306 [0.282, 0.334], sign 0.002 | 10 |
 | box_twin | ns/object | 3.785 [3.748, 3.802] | 4.447 [4.423, 4.492] | 6.129 [6.111, 6.158] | 0.672 [0.636, 0.688], sign 0.002 | 10 |
 | alloc_stock | ns/object | 2.045 [2.03, 2.055] | 2.38 [2.377, 2.393] | 3.444 [3.414, 3.459] | 0.343 [0.331, 0.353], sign 0.002 | 10 |
+| finalizer_register |  | — | — | — | — | 0 |
 | alloc_region | ns/object | — | — | 3.885 [3.878, 3.891] | — | 10 |
 | reset_slice | ns/reset | — | — | 30 [30, 30] | — | 10 |
 | stock_mark | ms/collection | 64.8 [64.19, 65.22] | 65.47 [65.15, 65.66] | 65.98 [65.26, 66.53] | 0.895 [0.325, 1.31], sign 0.021 | 10 |
@@ -663,15 +665,16 @@ use.
 The checker is tooling of this branch, not of the pull request. On the
 master line its compiler hook anchors on the `optimize` entry of the
 compiler, and the pass reads a builtin that the optimized IR names through
-its binding partition. The allocating model breaks the rule at two sites:
-the kernel's queue stores an event made inside a handler, on every push and
-pop of the heap, and the vector of samples grows ten times; the clean
-model breaks it nowhere.
+its binding partition. The allocating model breaks the rule at three
+sites: the kernel's queue stores an event made inside a handler, through
+the two store paths of `push!`, and the vector of samples grows ten times;
+the clean model breaks it nowhere. The numbers are those of the
+release-1.13 line.
 
 <!-- table M11 run=checked -->
 | model | events | violations (stores) | sites |
 | --- | --- | --- | --- |
-| alloc | 100,000 | 350,006 | 2 |
+| alloc | 100,000 | 200,018 | 3 |
 | clean | 100,000 | 0 | 0 |
 <!-- /table -->
 

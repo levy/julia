@@ -72,8 +72,8 @@ def t_gcbench():
     return table(["benchmark", "threads", "vanilla (s)", "regions (s)",
                   "regions / vanilla [95 %]", "rounds"], out)
 
-UNIT_COSTS = ["store_disarmed", "store_armed", "store_region", "window_pair", "switch_pair",
-              "construct_two", "construct_shared", "box_twin", "alloc_stock", "alloc_region", "reset_slice", "stock_mark"]
+UNIT_COSTS = ["store_disarmed", "store_armed", "store_armed_const", "store_region", "window_pair", "switch_pair",
+              "construct_two", "construct_shared", "box_twin", "alloc_stock", "finalizer_register", "alloc_region", "reset_slice", "stock_mark"]
 
 def t_unit_costs():
     """One row per cost: the median of the rounds for each of the three
