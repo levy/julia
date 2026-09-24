@@ -23,16 +23,8 @@ install_checker!()
 
 function run_regioned!(network, events::Int)
     count = 0
-    while !isempty(network.queue) && count < events
-        best = 1
-        @inbounds for i in 2:length(network.queue)
-            event, top = network.queue[i], network.queue[best]
-            (event.time < top.time ||
-             (event.time == top.time && event.sequence < top.sequence)) && (best = i)
-        end
-        event = network.queue[best]
-        deleteat!(network.queue, best)
-        network.time = event.time
+    while has_event(network) && count < events
+        event = pop_event!(network)
         count += 1
         # No closure here: a `do` block boxes the loop variable, and the
         # checker itself flagged that box. Set and restore the region inline.

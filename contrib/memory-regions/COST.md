@@ -104,6 +104,25 @@ regions have not yet reduced.
 | 30 | 1.08 [1.05, 1.11] | 1.09 [1.05, 1.11] | 1.03 [1.02, 1.06] |
 <!-- /table -->
 
+**After the first window.** The costs above are those of a process that
+never opens a window. Once a window has opened, the escape barrier is
+armed for the rest of the process: every store of a boxed child pays the
+page lookup of the child, and a constructor of boxed fields pays it per
+field. The table is the paired difference "the same binary after one
+window against the same binary with no window"; the store row is the
+armed copy loop against the disarmed one. Without the barrier there is no
+armed state, and the column shows it.
+
+<!-- table E2-armed -->
+| cost | unit | armed − no window, barrier built | armed − no window, no barrier |
+| --- | --- | --- | --- |
+| alloc_stock | ns/object | 1.05 [1.02, 1.08], sign 0.002 | 0.002 [-0.002, 0.008], sign 0.51 |
+| construct_two | ns/object | 2.3 [2.22, 2.36], sign 0.002 | -0.0065 [-0.046, 0.067], sign 0.75 |
+| construct_shared | ns/object | 2.42 [2.4, 2.43], sign 0.002 | 0.038 [0.007, 0.0535], sign 0.021 |
+| box_twin | ns/object | 1.69 [1.68, 1.71], sign 0.002 | 0.034 [-0.0105, 0.077], sign 0.18 |
+| store | ns/store | 1.07 [1.06, 1.07], sign 0.002 | 0.00075 [-0.0009, 0.00145], sign 0.75 |
+<!-- /table -->
+
 **The GC benchmark suite.** Eleven benchmarks of GCBenchmarks, six on one
 thread and five on four, ten paired rounds; the cell is the ratio of the
 minima over the rounds, region build over base. Six of the nine are
