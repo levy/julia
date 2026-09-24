@@ -26,6 +26,7 @@
 #                     pointer fields, boxed at the store; the barrier of a
 #                     fresh box, one check per pointer field of the value
 #   alloc_stock       Ref(i) into a ring in region 0, slices of 100 000       ns/object
+#   finalizer_register  Fin(i) with a finalizer, into the same ring          ns/object
 #   alloc_region      the same slices in region 1, one reset per slice        ns/object
 #   reset_slice       the unsafe reset of a region that holds 1000 Refs      ns/reset
 #   reset_slice_checked  the same reset through the checked entry              ns/reset
@@ -211,6 +212,29 @@ const SLICE = 100_000
     return iters
 end
 
+# One finalizer per stock object: the registration passes the finalizer hook
+# of the regions before it reaches the list of the thread.
+mutable struct Fin
+    x::Int
+end
+finalizer_noop(o) = nothing
+@noinline function finalizer_loop(dst, iters)
+    for i in 1:iters
+        o = Fin(i)
+        finalizer(finalizer_noop, o)
+        @inbounds dst[(i & 1023) + 1] = o
+    end
+    return iters
+end
+@noinline function finalizer_round(iters)
+    for _ in 1:(iters ÷ SLICE)
+        ring = Vector{Any}(undef, 1024)
+        fill!(ring, nothing)
+        finalizer_loop(ring, SLICE)
+    end
+    return iters
+end
+
 @noinline function alloc_region_round(alloc_loop, iters)
     for _ in 1:(iters ÷ SLICE)
         region_set(1)
@@ -307,6 +331,7 @@ foreach(loop -> loop(DST, 1000), CONSTRUCT_LOOPS)
 foreach(loop -> loop(DST, SRC, 1000), CONSTRUCT_SHARED_LOOPS)
 foreach(loop -> loop(DST, SRC, 1000), BOX_TWIN_LOOPS)
 foreach(loop -> alloc_stock_round(loop, 1000), ALLOC_LOOPS)
+finalizer_round(SLICE)
 if !STOCK
     make_ring()
     window_loop(10); unsafe_region_reset(1); switch_loop(10)
@@ -329,6 +354,7 @@ rowc("construct_two", "ns/object", loop -> loop(DST, ITERS), CONSTRUCT_LOOPS)
 rowc("construct_shared", "ns/object", loop -> loop(DST, SRC, ITERS), CONSTRUCT_SHARED_LOOPS)
 rowc("box_twin", "ns/object", loop -> loop(DST, SRC, ITERS), BOX_TWIN_LOOPS)
 rowc("alloc_stock", "ns/object", loop -> alloc_stock_round(loop, ITERS), ALLOC_LOOPS)
+row("finalizer_register", best(() -> finalizer_round(ITERS ÷ 10)), "ns/object")
 if !STOCK
     rowc("alloc_region", "ns/object", loop -> alloc_region_round(loop, ITERS), ALLOC_LOOPS)
     row("reset_slice", reset_slice(), "ns/reset")
