@@ -90,7 +90,7 @@ function build(relays::Int, capacity::Int; use_regions::Bool = false)
         gate = Gate(relay)
     end
     network = Network()
-    resize!(network.queue, 1 << 12)
+    sizehint!(network.queue, 1 << 12)
     source = Source(1000, 0, nothing, nothing, Packet(0, 0.0, 0.0, 0.0))
     source_gate = Gate(source)
     source.out = gate
