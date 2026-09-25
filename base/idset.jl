@@ -53,6 +53,7 @@ function push!(s::IdSet, @nospecialize(x))
         # The grown key list and the rehashed index table replace the ones
         # of the set: they are allocated where the set lives (gcregions.jl).
         with_region_of(s) do
+            local idx  # the block's own, so the closure captures no assigned variable
             if s.max < length(s.list)
                 idx = s.max
                 @assert !isassigned(s.list, idx + 1) "bucket is already occupied"
