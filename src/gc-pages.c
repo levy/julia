@@ -126,6 +126,23 @@ STATIC_INLINE char *jl_gc_try_alloc_pages(void) JL_NOTSAFEPOINT_LEAVE_ENTER
 
 // get a new page, either from the freemap
 // or from the kernel if none are available
+// Map a block of pages and thread all but the first into the clean pool;
+// the first is returned to the caller, who owns it. Called with
+// gc_pages_lock held, and returns with it held.
+static jl_gc_pagemeta_t *gc_map_block(void) JL_NOTSAFEPOINT_LEAVE_ENTER
+{
+    char *data = jl_gc_try_alloc_pages(); // unlocks and throws when the OS refuses
+    jl_gc_pagemeta_t *meta = (jl_gc_pagemeta_t*)malloc_s(block_pg_cnt * sizeof(jl_gc_pagemeta_t));
+    for (int i = 0; i < block_pg_cnt; i++) {
+        jl_gc_pagemeta_t *pg = &meta[i];
+        pg->data = data + GC_PAGE_SZ * i;
+        gc_alloc_map_maybe_create(pg->data);
+        if (i != 0)
+            push_lf_back(&global_page_pool_clean, pg);
+    }
+    return meta;
+}
+
 NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
 {
     int last_errno = errno;
@@ -166,23 +183,10 @@ NOINLINE jl_gc_pagemeta_t *jl_gc_alloc_page(void) JL_NOTSAFEPOINT
         gc_alloc_map_set(meta->data, GC_PAGE_ALLOCATED);
         goto exit;
     }
-    {
-        // must map a new set of pages
-        char *data = jl_gc_try_alloc_pages();
-        meta = (jl_gc_pagemeta_t*)malloc_s(block_pg_cnt * sizeof(jl_gc_pagemeta_t));
-        for (int i = 0; i < block_pg_cnt; i++) {
-            jl_gc_pagemeta_t *pg = &meta[i];
-            pg->data = data + GC_PAGE_SZ * i;
-            gc_alloc_map_maybe_create(pg->data);
-            if (i == 0) {
-                gc_alloc_map_set(pg->data, GC_PAGE_ALLOCATED);
-            }
-            else {
-                push_lf_back(&global_page_pool_clean, pg);
-            }
-        }
-        uv_mutex_unlock(&gc_pages_lock);
-    }
+    // must map a new set of pages
+    meta = gc_map_block();
+    uv_mutex_unlock(&gc_pages_lock);
+    gc_alloc_map_set(meta->data, GC_PAGE_ALLOCATED);
 exit:
 #ifdef _OS_WINDOWS_
     // The page was previously only reserved (jl_gc_try_alloc_pages_) or has been
@@ -227,17 +231,10 @@ JL_DLLEXPORT uint64_t jl_gc_heap_reserve(uint64_t bytes) JL_NOTSAFEPOINT
     uint64_t mapped = 0;
     while (mapped < bytes) {
         uv_mutex_lock(&gc_pages_lock);
-        char *data = jl_gc_try_alloc_pages(); // unlocks and throws when the OS refuses
-        int n = block_pg_cnt;
-        jl_gc_pagemeta_t *meta = (jl_gc_pagemeta_t*)malloc_s(n * sizeof(jl_gc_pagemeta_t));
-        for (int i = 0; i < n; i++) {
-            jl_gc_pagemeta_t *pg = &meta[i];
-            pg->data = data + GC_PAGE_SZ * i;
-            gc_alloc_map_maybe_create(pg->data);
-            push_lf_back(&global_page_pool_clean, pg);
-        }
+        jl_gc_pagemeta_t *first = gc_map_block();
+        push_lf_back(&global_page_pool_clean, first);
         uv_mutex_unlock(&gc_pages_lock);
-        mapped += (uint64_t)n * GC_PAGE_SZ;
+        mapped += (uint64_t)block_pg_cnt * GC_PAGE_SZ;
     }
     return mapped;
 }
