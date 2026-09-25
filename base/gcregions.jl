@@ -26,10 +26,10 @@ if GC_REGIONS
     # state that a region-0 object links, such as a task or a global.
     _region_window_suspend() = ccall(:jl_gc_region_suspend, Cint, ())
     _region_window_resume(parked::Cint) = ccall(:jl_gc_region_resume, Cvoid, (Cint,), parked)
-    function with_region_window_suspended(f::F, args...) where {F}
+    function with_region_window_suspended(f::F) where {F}
         parked = _region_window_suspend()
         try
-            return f(args...)
+            return f()
         finally
             _region_window_resume(parked)
         end
@@ -38,7 +38,7 @@ else
     with_region_of(f::F, like, args...) where {F} = f(args...)
     _region_window_suspend() = Cint(0)
     _region_window_resume(::Cint) = nothing
-    with_region_window_suspended(f::F, args...) where {F} = f(args...)
+    with_region_window_suspended(f::F) where {F} = f()
 end
 
 # A `Memory` of type `M` and length `n`, allocated where `like` lives.

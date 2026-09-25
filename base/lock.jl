@@ -817,7 +817,7 @@ OncePerProcess(initializer) = OncePerProcess{Base.promote_op(initializer), typeo
     state = (@atomic :acquire once.state)
     if state != PerStateHasrun
         # The value outlives any GC region window: made with the window suspended (gcregions.jl)
-        with_region_window_suspended((@noinline function init_perprocesss(once::OncePerProcess{T,F}, state::UInt8) where {T,F}
+        @noinline function init_perprocesss(once::OncePerProcess{T,F}, state::UInt8) where {T,F}
             state == PerStateErrored && error("OncePerProcess initializer failed previously")
             once.allow_compile_time || __precompile__(false)
             lock(once.lock)
@@ -842,7 +842,8 @@ OncePerProcess(initializer) = OncePerProcess{Base.promote_op(initializer), typeo
             state == PerStateHasrun || @atomic :release once.state = PerStateHasrun
             unlock(once.lock)
             nothing
-        end), once, state)
+        end
+        with_region_window_suspended(() -> init_perprocesss(once, state))
     end
     return once.value::T
 end
@@ -934,7 +935,7 @@ OncePerThread(initializer) = OncePerThread{Base.promote_op(initializer), typeof(
     # n.b. length(xs) >= length(ss)
     if tid <= 0 || tid > length(ss) || (@atomic :acquire ss[tid]) != PerStateHasrun
         # The tables and the value outlive any GC region window (gcregions.jl)
-        with_region_window_suspended((@noinline function init_perthread(once::OncePerThread{T,F}, tid::Int) where {T,F}
+        @noinline function init_perthread(once::OncePerThread{T,F}, tid::Int) where {T,F}
             local ss = @atomic :acquire once.ss
             local xs = @atomic :monotonic once.xs
             local len = length(ss)
@@ -1013,7 +1014,8 @@ OncePerThread(initializer) = OncePerThread{Base.promote_op(initializer), typeof(
                 unlock(PerThreadLock)
             end
             nothing
-        end), once, tid)
+        end
+        with_region_window_suspended(() -> init_perthread(once, tid))
         xs = @atomic :monotonic once.xs
     end
     return xs[tid]
