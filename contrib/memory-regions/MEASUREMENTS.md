@@ -4,7 +4,11 @@ Every number in this document was measured on the master line of this work,
 the series of the pull request on master `c941fbc399` plus the two
 independent commits under it: the cost rows E2, M1, M2, M13 and the tail
 row M3 on 2026-09-25, after the allocator's last change, and the rest on
-2026-09-23, on the same tree but for that change. The release-1.13 line had its own set of
+2026-09-23, on the same tree but for that change. The branch was then
+rebased onto master `b883b468f0` of 2026-09-24 and took the annotations
+that make the static analysis with the flag read clean; the region code
+that the rows exercise is the same, so the numbers stand on the older
+base and were not taken again. The release-1.13 line had its own set of
 numbers; they are gone from this document, and the last section says where
 the two lines differ.
 

@@ -302,6 +302,24 @@ named the machine's floor as the cause instead of the queue. The suite
 with a 24 GB cap did not run, under the rule that the sum of the caps
 stays under half of the memory available.
 
+### 13. The analysis and the rebase (2026-09-25)
+
+`make -C src analyze` with the flag, every checker on every file the series
+touches, read 22 reports in gc-regions.c and about 60 more across eight
+files. Almost all were annotations the region code had not made: the
+entries that stop the world or run finalizers say `JL_CANSAFEPOINT` now,
+the entries that only flip pointers say `JL_NOTSAFEPOINT`, the two
+functions the series splits off carry the marks of their twins, and so do
+the two codegen helpers of the fresh-object barrier. Two were design: the
+finalizer hook threw on a cross-thread registration inside a chain master
+marks as no safepoint, and now treats it as an escape, quarantine and all;
+and the reserve's block mapping, which the malloc checker read as a leak
+and which now goes through a helper both page paths share. One was a
+finding about the checker itself: a null test of the stored value at the
+store site hides its root, so the test lives inside `jl_gc_region_wb`. The
+series was then rebased onto master `b883b468f0`, one conflict in the
+barrier declarations, and NEWS.md names the option.
+
 ## The detours
 
 The ideas the work tried and dropped, or the faults it found on the way. The
