@@ -338,7 +338,7 @@ JL_DLLEXPORT void jl_gc_region_wb_boxed(const void *parent, _Atomic(void*) *src,
 JL_DLLEXPORT void jl_gc_region_wb_inline(const void *parent, const char *src, size_t n,
                                          size_t elsz, struct _jl_datatype_t *et) JL_NOTSAFEPOINT;
 #define jl_gc_region_wb_check(parent, ptr) do {                         \
-        if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on)) && (ptr) != NULL) \
+        if (__unlikely(jl_atomic_load_relaxed(&jl_gc_region_barrier_on))) \
             jl_gc_region_wb((parent), (ptr));                           \
     } while (0)
 // A bulk copy costs one check of the pair (parent, source): when it passes,

@@ -53,7 +53,7 @@ static int region_debug_checks = 0;
 static _Atomic(uint64_t) region_collect_stats[8];
 
 // A field of the last census, 0 for an index out of range.
-JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
+JL_DLLEXPORT uint64_t jl_gc_region_stat(int i) JL_NOTSAFEPOINT
 {
     return (i >= 0 && i < 8) ? jl_atomic_load_relaxed(&region_collect_stats[i]) : 0;
 }
@@ -63,7 +63,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_stat(int i)
 _Atomic(int) jl_gc_region_census_page_threshold = 0;
 
 // Set the threshold, process-wide; the next page claim of a window reads it.
-JL_DLLEXPORT void jl_gc_region_census_threshold(int pages)
+JL_DLLEXPORT void jl_gc_region_census_threshold(int pages) JL_NOTSAFEPOINT
 {
     jl_atomic_store_relaxed(&jl_gc_region_census_page_threshold, pages);
 }
@@ -98,7 +98,7 @@ static void region_tree_rebuild(void)
 // Declare the parent of `child` (parent < child). Returns EBUSY while any
 // region is live on any heap or any window is open: the tree is declared
 // before the regions are used.
-JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
+JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -157,7 +157,7 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent)
 }
 
 // The declared parent of `child`; 0 for a child of the root or a bad number.
-JL_DLLEXPORT int jl_gc_region_parent_of(int child)
+JL_DLLEXPORT int jl_gc_region_parent_of(int child) JL_NOTSAFEPOINT
 {
     if (!region_valid(child))
         return 0;
@@ -165,7 +165,7 @@ JL_DLLEXPORT int jl_gc_region_parent_of(int child)
 }
 
 // The pages of region n on the calling heap.
-JL_DLLEXPORT int jl_gc_region_pages(int n)
+JL_DLLEXPORT int jl_gc_region_pages(int n) JL_NOTSAFEPOINT
 {
     if (!region_valid(n))
         return 0;
@@ -176,7 +176,7 @@ JL_DLLEXPORT int jl_gc_region_pages(int n)
 
 // 1 when an escape quarantined region n; the quarantine is process-wide
 // and lasts until the next stock collection.
-JL_DLLEXPORT int jl_gc_region_quarantined(int n)
+JL_DLLEXPORT int jl_gc_region_quarantined(int n) JL_NOTSAFEPOINT
 {
     if (!region_valid(n))
         return 0;
@@ -211,7 +211,9 @@ JL_DLLEXPORT int jl_gc_region_would_escape(const void *parent, const void *child
 JL_DLLEXPORT void jl_gc_region_wb(const void *parent, const void *child) JL_NOTSAFEPOINT
 {
     int cr = 0, pr = 0;
-    if (__likely(!region_store_escapes(parent, child, &cr, &pr)))
+    // The null test is here and not at the call site: a comparison of the
+    // stored value in the caller hides its root from the GC checker.
+    if (child == NULL || __likely(!region_store_escapes(parent, child, &cr, &pr)))
         return;
     uint64_t bit = (uint64_t)1 << cr;
     uint64_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
@@ -270,8 +272,11 @@ int jl_gc_region_track_malloced(jl_ptls_t ptls, jl_genericmemory_t *m, int isali
 
 // A finalizer of a region object goes to the list of its region, which the
 // reset and the census run; the stock sweep never reaches a region page. A
-// registration from another thread throws, before any list changes.
-int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
+// registration from another thread is an escape of the object: the region
+// is quarantined, and the finalizer goes to the list of the registering
+// thread, which the stock collector runs once the hand-over has made the
+// object its own.
+int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f) JL_NOTSAFEPOINT
 {
     if ((uintptr_t)v & 2)
         return 0;
@@ -280,10 +285,17 @@ int jl_gc_region_add_finalizer(jl_ptls_t ptls, void *v, void *f)
     int r = pm ? pm->region_n : 0;
     if (__likely(r == 0))
         return 0;
-    if (__unlikely(pm->thread_n != ptls->tid))
-        jl_errorf("finalizer: the object lives in region %d of another "
-                  "thread; cross-thread registration on a region object "
-                  "is not supported", r);
+    if (__unlikely(pm->thread_n != ptls->tid)) {
+        uint64_t bit = (uint64_t)1 << r;
+        uint64_t seen = jl_atomic_fetch_or_relaxed(&region_quarantined_mask, bit);
+        if (!(seen & bit))
+            jl_safe_printf("REGION-ESCAPE: a finalizer of a %s of region %d of thread "
+                           "%d was registered from thread %d; region %d is quarantined "
+                           "until the next collection hands its pages to the stock "
+                           "collector\n", jl_typeof_str(obj), r, (int)pm->thread_n,
+                           (int)ptls->tid, r);
+        return 0;
+    }
     arraylist_t *lst = &ptls->gc_tls.heap.regions[r]->finalizers;
     arraylist_push(lst, v);
     arraylist_push(lst, f);
@@ -302,7 +314,7 @@ static void region_take_list(arraylist_t *dst, arraylist_t *src) JL_NOTSAFEPOINT
 
 // Run a taken list and free it; gc-common.c parks the window and raises
 // finalizer_depth for the run.
-static void region_run_finalizer_list(jl_task_t *ct, arraylist_t *list)
+static void region_run_finalizer_list(jl_task_t *ct, arraylist_t *list) JL_CANSAFEPOINT
 {
     if (list->len != 0)
         jl_gc_run_finalizer_list(ct, list);
@@ -514,7 +526,7 @@ static void region_mark_empty(jl_thread_heap_t *heap, int n) JL_NOTSAFEPOINT
 // store, and the inlined allocation path is untouched. Returns the region
 // that was current; EINVAL for a bad number, EBUSY while finalizers run on
 // this thread.
-JL_DLLEXPORT int jl_gc_region_set(int n)
+JL_DLLEXPORT int jl_gc_region_set(int n) JL_NOTSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_thread_heap_t *heap = &ct->ptls->gc_tls.heap;
@@ -552,7 +564,7 @@ JL_DLLEXPORT int jl_gc_region_set(int n)
 }
 
 // The region of the open window on the calling thread, 0 when none is open.
-JL_DLLEXPORT int jl_gc_region_current(void)
+JL_DLLEXPORT int jl_gc_region_current(void) JL_NOTSAFEPOINT
 {
     return jl_current_task->ptls->gc_tls.heap.current_region;
 }
@@ -581,7 +593,7 @@ void jl_gc_region_install_borrow(jl_ptls_t ptls, int n) JL_NOTSAFEPOINT
 
 // A borrow brackets one allocation and changes no window state; a task must
 // not switch inside one.
-JL_DLLEXPORT int jl_gc_region_borrow(int n)
+JL_DLLEXPORT int jl_gc_region_borrow(int n) JL_NOTSAFEPOINT
 {
     if (n < 0 || n >= JL_GC_MAX_REGIONS)
         return JL_GC_REGION_EINVAL;
@@ -592,7 +604,7 @@ JL_DLLEXPORT int jl_gc_region_borrow(int n)
     return lent;
 }
 
-JL_DLLEXPORT void jl_gc_region_unborrow(int lent)
+JL_DLLEXPORT void jl_gc_region_unborrow(int lent) JL_NOTSAFEPOINT
 {
     if (lent >= 0 && lent != jl_current_task->ptls->gc_tls.heap.current_region)
         jl_gc_region_install_task(jl_current_task->ptls, lent);
@@ -600,24 +612,24 @@ JL_DLLEXPORT void jl_gc_region_unborrow(int lent)
 
 // The borrow of region 0, for the runtime's own allocations on behalf of a
 // task that holds a window.
-JL_DLLEXPORT int jl_gc_region_suspend(void)
+JL_DLLEXPORT int jl_gc_region_suspend(void) JL_NOTSAFEPOINT
 {
     return jl_gc_region_borrow(0);
 }
 
-JL_DLLEXPORT void jl_gc_region_resume(int parked)
+JL_DLLEXPORT void jl_gc_region_resume(int parked) JL_NOTSAFEPOINT
 {
     jl_gc_region_unborrow(parked);
 }
 
 // A region-0 zone closes the window and opens it again after, so the task
 // may switch inside; a refusal of the reopen leaves the window closed.
-JL_DLLEXPORT int jl_gc_region_zone_enter(void)
+JL_DLLEXPORT int jl_gc_region_zone_enter(void) JL_NOTSAFEPOINT
 {
     return jl_gc_region_set(0);
 }
 
-JL_DLLEXPORT void jl_gc_region_zone_leave(int saved)
+JL_DLLEXPORT void jl_gc_region_zone_leave(int saved) JL_NOTSAFEPOINT
 {
     if (saved > 0)
         jl_gc_region_set(saved);
@@ -640,7 +652,7 @@ void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 
 // The root scan shared with the debug entries below; the caller stopped the
 // world.
-static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n);
+static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT;
 static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 
 // The finalizer phase of a reset runs Julia code, before the free and never
@@ -648,7 +660,7 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
 // object of the region, so the phase repeats until the list stays empty;
 // the bound turns an endless registration into EFINALIZERS.
 #define REGION_FINALIZER_ROUNDS 64
-static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n)
+static int region_reset_finalizers(jl_task_t *ct, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT
 {
     if (heap->regions[n] == NULL)
         return 0;
@@ -703,7 +715,7 @@ static uint64_t region_reset_heap(jl_thread_heap_t *heap, int n)
 //    sees the heap and not the stack, so this is the only thing that stands
 //    between a live local and a freed object. `checked` is 0 for the unsafe
 //    entry, which frees with no pause and no scan.
-static uint64_t region_reset_body(int n, int checked)
+static uint64_t region_reset_body(int n, int checked) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -777,7 +789,7 @@ static uint64_t region_reset_body(int n, int checked)
 // the pages. Returns the pages the region held, 0 for a region never used,
 // or a refusal code cast to uint64_t (EINVAL, EBUSY, EQUARANTINED, ECHILD,
 // ERACE, EROOT).
-JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
+JL_DLLEXPORT uint64_t jl_gc_region_reset(int n) JL_CANSAFEPOINT
 {
     return region_reset_body(n, 1);
 }
@@ -785,7 +797,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset(int n)
 // The reset without the root check: a reference from a stack slot, a
 // register or a parked task then points into freed memory, and the next
 // collection reports CORPSE and aborts.
-JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n)
+JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n) JL_CANSAFEPOINT
 {
     return region_reset_body(n, 0);
 }
@@ -795,7 +807,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_unsafe_reset(int n)
 // each other. Pending finalizers return EFINALIZERS, because nothing can run
 // them with the world stopped; the root check runs on every instance.
 // Returns the pages reclaimed, or a refusal code cast to uint64_t.
-JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n)
+JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -1069,7 +1081,7 @@ static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthrea
 
 // The stop-the-world census of region n; the caller checked the
 // preconditions. Returns the freed cells, or ERACE.
-static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
+static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT
 {
     // Stop the world as jl_gc_collect does; the disable counter is cleared
     // for the stop and restored after.
@@ -1122,7 +1134,7 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
 // refusal code: EINVAL, EQUARANTINED, EFINALIZERS (nothing can run them
 // with the world stopped), ECHILD (the filter drops the child's objects, so
 // a parent object that only the child references would be freed), EBUSY.
-JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
+JL_DLLEXPORT int64_t jl_gc_region_collect(int n) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -1147,7 +1159,7 @@ JL_DLLEXPORT int64_t jl_gc_region_collect(int n)
 // starts in between. The finalizers of the dead objects run after the
 // sweep, with the filter off; the census keeps the objects for one more
 // cycle. Returns the cells freed, or a refusal code.
-JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
+JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -1206,10 +1218,11 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n)
 // the live state stays, the dead cells return. Pending finalizers, a
 // quarantine and a live child fall through to the ordinary claim. Returns 1
 // when a census ran.
-int jl_gc_region_census_open(jl_ptls_t ptls)
+int jl_gc_region_census_open(jl_ptls_t ptls) JL_CANSAFEPOINT
 {
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
     int n = heap->current_region;
+    assert(n > 0 && n < JL_GC_MAX_REGIONS);
     if (heap->regions[n]->finalizers.len != 0 || jl_gc_region_quarantined(n) ||
         ((heap->region_haschild_mask >> n) & 1))
         return 0;
@@ -1220,7 +1233,7 @@ int jl_gc_region_census_open(jl_ptls_t ptls)
 
 // Turn the report of the root check on or off, process-wide; the check
 // itself always runs.
-JL_DLLEXPORT void jl_gc_region_set_debug(int on)
+JL_DLLEXPORT void jl_gc_region_set_debug(int on) JL_NOTSAFEPOINT
 {
     region_debug_checks = on;
 }
@@ -1266,7 +1279,7 @@ static int64_t region_count_marked(jl_thread_heap_t *heap, int n)
 // mark from the execution roots of every thread, then the count and the
 // clear of the marks on this heap, and the clear on the other heaps, where
 // a stale mark would make the next check refuse. Returns the count.
-static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n)
+static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT
 {
     region_census_begin(n);
     region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
@@ -1295,7 +1308,7 @@ static int64_t region_root_scan_global(jl_ptls_t ptls, int n)
 // The root check alone: stop the world, mark from the execution roots with
 // the filter, count the marked cells of the region and clear them. Returns
 // the count, or a refusal code.
-JL_DLLEXPORT int64_t jl_gc_region_check(int n)
+JL_DLLEXPORT int64_t jl_gc_region_check(int n) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
@@ -1335,7 +1348,7 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n)
 // a page-map entry, the cursors point into tagged pages, and the
 // allocated-page stack agrees with the chains. Returns the error count, or
 // EINVAL.
-JL_DLLEXPORT int jl_gc_region_verify(int n)
+JL_DLLEXPORT int jl_gc_region_verify(int n) JL_NOTSAFEPOINT
 {
     jl_ptls_t ptls = jl_current_task->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
@@ -1417,7 +1430,7 @@ JL_DLLEXPORT int jl_gc_region_verify(int n)
 
 // The region of an object, from its page tag; an object without page
 // metadata (big, malloc'd, permanent, foreign) belongs to region 0.
-JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
+JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v) JL_NOTSAFEPOINT
 {
     jl_gc_pagemeta_t *meta = page_metadata((char*)jl_astaggedvalue(v));
     if (meta == NULL)
@@ -1427,7 +1440,7 @@ JL_DLLEXPORT int jl_gc_region_of(jl_value_t *v)
 
 // --- initialization ----------------------------------------------------------------------
 
-void jl_gc_region_init(void)
+void jl_gc_region_init(void) JL_NOTSAFEPOINT
 {
     uint64_t up = 0;
     for (int r = 0; r < JL_GC_MAX_REGIONS; r++) {

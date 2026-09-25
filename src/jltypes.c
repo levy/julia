@@ -1525,7 +1525,7 @@ static jl_svec_t *compute_fieldtypes_(jl_datatype_t *st JL_PROPAGATES_ROOT, void
 static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                      jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
                                      jl_deferred_typecache_t *dcache,
-                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable);
+                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable) JL_CANSAFEPOINT;
 #endif
 
 // Build an environment mapping a TypeName's parameters to parameter values.
@@ -2612,7 +2612,7 @@ static jl_value_t *inst_datatype_inner(jl_datatype_t *dt, jl_svec_t *p, jl_value
 static jl_value_t *inst_datatype_new(jl_datatype_t *dt, jl_svec_t *p, jl_value_t **iparams, size_t ntp,
                                      jl_typestack_t *stack, jl_typeenv_t *env, int check, int nothrow,
                                      jl_deferred_typecache_t *dcache,
-                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable)
+                                     jl_typename_t *tn, int istuple, int isnamedtuple, int cacheable) JL_CANSAFEPOINT
 {
     jl_typestack_t top;
 #endif

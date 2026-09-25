@@ -2431,8 +2431,8 @@ static void emit_write_multibarrier(jl_codectx_t&, Value *parent, Value *dst, Va
 static void emit_write_multibarrier(jl_codectx_t&, Value *parent, Value *dst, const jl_cgval_t&) JL_CANSAFEPOINT;
 #ifdef WITH_GC_REGION_BARRIER
 static void emit_region_write_barrier(jl_codectx_t&, Value*, ArrayRef<Value*>);
-static SmallVector<Value*,0> tracked_values_of(jl_codectx_t&, const jl_cgval_t&, jl_value_t*);
-static void emit_region_write_barrier_fields(jl_codectx_t&, Value*, jl_datatype_t*);
+static SmallVector<Value*,0> tracked_values_of(jl_codectx_t&, const jl_cgval_t&, jl_value_t*) JL_CANSAFEPOINT;
+static void emit_region_write_barrier_fields(jl_codectx_t&, Value*, jl_datatype_t*) JL_CANSAFEPOINT;
 #endif
 
 SmallVector<unsigned, 0> first_ptr(Type *T)
@@ -4530,7 +4530,7 @@ static void emit_region_write_barrier(jl_codectx_t &ctx, Value *parent, ArrayRef
 // The tracked pointers that a copy of the unboxed value `x` of the concrete
 // immutable type `jt` into a fresh object stores: a constant stores none,
 // and a boxed `x` is read back through its box, as the copy reads it.
-static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval_t &x, jl_value_t *jt)
+static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval_t &x, jl_value_t *jt) JL_CANSAFEPOINT
 {
     if (x.constant || x.isghost || !jl_is_concrete_immutable(jt) || jl_is_pointerfree(jt))
         return {};
@@ -4548,7 +4548,7 @@ static SmallVector<Value*,0> tracked_values_of(jl_codectx_t &ctx, const jl_cgval
 // The region barrier for a fresh object of type `jt` that a memcpy from a
 // raw pointer filled: the children are its pointer fields, read back under
 // the alias tag of the copy, so the loads stay after it.
-static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, jl_datatype_t *jt)
+static void emit_region_write_barrier_fields(jl_codectx_t &ctx, Value *parent, jl_datatype_t *jt) JL_CANSAFEPOINT
 {
     if (!jt->layout || jt->layout->npointers == 0)
         return;

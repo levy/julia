@@ -427,7 +427,7 @@ static jl_code_instance_t *jl_method_inferred_with_abi(jl_method_instance_t *mi 
 // if inference doesn't occur (or can't finish), returns NULL instead
 #ifdef WITH_GC_REGIONS
 // The body runs in a region-0 zone (gc-regions.h): the wrapper at the end of the file.
-static jl_code_instance_t *jl_type_infer_impl(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
+static jl_code_instance_t *jl_type_infer_impl(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode) JL_CANSAFEPOINT
 #else
 jl_code_instance_t *jl_type_infer(jl_method_instance_t *mi, size_t world, uint8_t source_mode, uint8_t trim_mode)
 #endif
