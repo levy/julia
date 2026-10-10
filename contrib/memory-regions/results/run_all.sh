@@ -117,10 +117,10 @@ fi
 
 # --- E1: the two independent commits, VANILLA (master) against JULIA (base) --
 # The deferral fix: the allocation rate with the collector disabled, paired
-# rounds; the heap reserve: the paced baseline on JULIA with and without the
-# reserve, and on VANILLA without (master has no reserve).
+# rounds; the heap reserve: the faults of a growing pool heap on JULIA with
+# and without the reserve, and on VANILLA without (master has no reserve).
 if want E1; then
-    fresh deferral.tsv; fresh reserve.tsv
+    fresh deferral.tsv
     printf '# binary\tround\tblocks\tallocations\tns_per_alloc_first_half\tns_per_alloc_second_half\n' > "$DATA/deferral.tsv"
     for r in $(seq 1 "$ROUNDS"); do
         if [ $((r % 2)) -eq 1 ]; then order="vanilla julia"; else order="julia vanilla"; fi
@@ -132,9 +132,11 @@ if want E1; then
                 && grep -v '^#' "$LOG/def.tsv" | sed "s/^/$name\t$r\t/" >> "$DATA/deferral.tsv"
         done
     done
-    REGIONS_TSV=$DATA/reserve.tsv run E1 reserve_julia_none 8G 900 "$CORE" 1 $J --heap-size-hint=128M ../bench/paced.jl baseline 1000000
-    REGIONS_TSV=$DATA/reserve.tsv RESERVE_MB=512 run E1 reserve_julia_512 8G 900 "$CORE" 1 $J --heap-size-hint=128M ../bench/paced.jl baseline 1000000
-    [ -n "$VANILLA" ] && REGIONS_TSV=$DATA/reserve.tsv run E1 reserve_vanilla_none 8G 900 "$CORE" 1 "$VANILLA" --startup-file=no --heap-size-hint=128M ../bench/paced.jl baseline 1000000
+    # The reserve measured directly: the faults of a growing pool heap.
+    fresh reserve_growth.tsv
+    REGIONS_TSV=$DATA/reserve_growth.tsv run E1 reserve_growth_julia_none 8G 600 "$CORE" 0 $J ../bench/reserve_growth.jl
+    REGIONS_TSV=$DATA/reserve_growth.tsv RESERVE_MB=512 run E1 reserve_growth_julia_512 8G 600 "$CORE" 0 $J ../bench/reserve_growth.jl
+    [ -n "$VANILLA" ] && REGIONS_TSV=$DATA/reserve_growth.tsv run E1 reserve_growth_vanilla_none 8G 600 "$CORE" 0 "$VANILLA" --startup-file=no ../bench/reserve_growth.jl
 fi
 
 # --- M2: unit costs -----------------------------------------------------------

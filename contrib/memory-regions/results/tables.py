@@ -238,7 +238,7 @@ def t_endurance():
            ["RSS max (MB)", f2(max(rss))],
            ["allocated through the region, first to last sample (MB)",
             f0(num(rows[-1]["live_mb"]) - num(rows[0]["live_mb"]))],
-           ["slot misses", f0(sum(num(r["misses"]) for r in rows))]]
+           ["slot misses", f0(num(rows[-1]["misses"]))]]   # the column is cumulative
     return table(["endurance", "value"], out)
 
 def t_native():
@@ -367,17 +367,14 @@ def t_deferral():
             max(len(v), len(j))]]
     return table(["", "master", "base (the fix)", "base / master [95 %]", "rounds"], out)
 
-def t_reserve():
-    """E1: the stock paced loop with and without the heap reserve, and on master."""
-    rows = read_tsv("reserve.tsv")
+def t_reserve_growth():
+    """E1: the faults of a pool heap that grows by 110 MB, with and without the reserve, and on master."""
+    rows = read_tsv("reserve_growth.tsv")
     if not rows:
         return None
     labels = ["base, no reserve", "base, 512 MB reserved", "master, no reserve"]
-    out = []
-    for lab, r in zip(labels, rows):
-        out.append([lab, f0(num(r["faults"])), f0(num(r["slot_misses"])),
-                    f1(num(r["lateness_max_ns"]) / 1e6), f0(num(r["latency_max_ns"]) / 1e3)])
-    return table(["run", "page faults during the run", "slot misses", "worst lateness (ms)", "longest event (µs)"], out)
+    out = [[lab, f0(num(r["mapped_mb"])), f0(num(r["faults"])), f0(num(r["live_mb"]))] for lab, r in zip(labels, rows)]
+    return table(["run", "mapped by the reserve (MB)", "page faults while the heap grows", "live heap after (MB)"], out)
 
 def t_text():
     """The text of the runtime library and of the system image, per build."""
@@ -469,7 +466,7 @@ def t_parallel_attribution():
     rows = [[t] + [out[t].get(run, DASH) for run, _ in ATTRIBUTION_RUNS] for t in sorted(out)]
     return table(["threads"] + [f"{lab} / base [95 %]" for _, lab in ATTRIBUTION_RUNS], rows)
 
-TABLES = {"E1-deferral": t_deferral, "E1-reserve": t_reserve, "E2-text": t_text,
+TABLES = {"E1-deferral": t_deferral, "E1-reserve-growth": t_reserve_growth, "E2-text": t_text,
           "E2-unit-attribution": t_unit_attribution, "E2-parallel-attribution": t_parallel_attribution,
           "E2-armed": t_armed_process,
           "M1": t_gcbench, "M2": t_unit_costs, "M3": t_tail, "M4": t_realworld,

@@ -93,13 +93,15 @@ function main()
     variant = ARGS[1]
     events = parse(Int, ARGS[2])
     relays = 4
-    # zeros, not undef: the result vectors are touched here, before the
-    # loop. An untouched page faults in at its first store, and with
-    # transparent huge pages that first store zeroes 2 MB (about 200 us):
-    # the store of one event's result then delays the next slot.
-    latencies = zeros(Int64, events)
-    late_ns = zeros(Int64, events)
-    gc_ns = zeros(Int64, events)
+    # The result vectors are written once here, before the loop, so that
+    # their pages are present when the loop stores into them. `zeros` gives
+    # memory the kernel maps at the first store (calloc), and that store
+    # faults; a page that faults inside the loop delays a slot, and the
+    # faults column would then count the vectors, not the heap.
+    touched(n) = fill!(Vector{Int64}(undef, n), 0)
+    latencies = touched(events)
+    late_ns = touched(events)
+    gc_ns = touched(events)
     deliveries = events ÷ (relays + 3) + 1
     # RESERVE_MB claims and prefaults the heap before the loop (jl_gc_heap_reserve):
     # the faults column then says whether the loop still faulted.

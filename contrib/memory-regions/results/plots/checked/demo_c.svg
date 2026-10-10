@@ -12,38 +12,38 @@
 <text x="82.0" y="303.2" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">200 ms</text>
 <line x1="90" y1="248.4" x2="1010" y2="248.4" stroke="#e8e7e4" stroke-width="1"/>
 <text x="82.0" y="252.4" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">400 ms</text>
-<line x1="90" y1="197.5" x2="1010" y2="197.5" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="201.5" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">600 ms</text>
-<line x1="90" y1="146.7" x2="1010" y2="146.7" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="150.7" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">800 ms</text>
-<rect x="122.2" y="342.7" width="79.8" height="7.3" fill="#2a78d6"/>
-<text x="162.1" y="337.7" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">29 ms</text>
-<rect x="205.0" y="333.7" width="79.8" height="16.3" fill="#eb6834"/>
-<text x="244.9" y="328.7" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">64 ms</text>
+<line x1="90" y1="197.6" x2="1010" y2="197.6" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="201.6" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">600 ms</text>
+<line x1="90" y1="146.8" x2="1010" y2="146.8" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="150.8" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">800 ms</text>
+<rect x="122.2" y="342.8" width="79.8" height="7.2" fill="#2a78d6"/>
+<text x="162.1" y="337.8" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">28 ms</text>
+<rect x="205.0" y="333.8" width="79.8" height="16.2" fill="#eb6834"/>
+<text x="244.9" y="328.8" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">64 ms</text>
 <text x="205.0" y="368.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">work=0</text>
 <text x="205.0" y="383.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">(80000 keys, work=0, 4 threads)</text>
 <text x="205.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">5 → 4 collections, ×0.45</text>
-<rect x="352.2" y="329.5" width="79.8" height="20.5" fill="#2a78d6"/>
-<text x="392.1" y="324.5" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">81 ms</text>
-<rect x="435.0" y="324.9" width="79.8" height="25.1" fill="#eb6834"/>
-<text x="474.9" y="319.9" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">99 ms</text>
+<rect x="352.2" y="329.2" width="79.8" height="20.8" fill="#2a78d6"/>
+<text x="392.1" y="324.2" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">82 ms</text>
+<rect x="435.0" y="326.0" width="79.8" height="24.0" fill="#eb6834"/>
+<text x="474.9" y="321.0" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">95 ms</text>
 <text x="435.0" y="368.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">work=64</text>
 <text x="435.0" y="383.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">(80000 keys, work=64, 4 threads)</text>
-<text x="435.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">22 → 5 collections, ×0.82</text>
-<rect x="582.2" y="282.1" width="79.8" height="67.9" fill="#2a78d6"/>
-<text x="622.1" y="277.1" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">267 ms</text>
-<rect x="665.0" y="303.5" width="79.8" height="46.5" fill="#eb6834"/>
-<text x="704.9" y="298.5" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">183 ms</text>
+<text x="435.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">16 → 4 collections, ×0.86</text>
+<rect x="582.2" y="280.2" width="79.8" height="69.8" fill="#2a78d6"/>
+<text x="622.1" y="275.2" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">275 ms</text>
+<rect x="665.0" y="305.4" width="79.8" height="44.6" fill="#eb6834"/>
+<text x="704.9" y="300.4" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">175 ms</text>
 <text x="665.0" y="368.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">work=256</text>
 <text x="665.0" y="383.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">(80000 keys, work=256, 4 threads)</text>
-<text x="665.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">37 → 0 collections, ×1.46</text>
+<text x="665.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">36 → 2 collections, ×1.57</text>
 <rect x="812.2" y="138.1" width="79.8" height="211.9" fill="#2a78d6"/>
 <text x="852.1" y="133.1" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">834 ms</text>
-<rect x="895.0" y="231.3" width="79.8" height="118.7" fill="#eb6834"/>
-<text x="934.9" y="226.3" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">467 ms</text>
+<rect x="895.0" y="238.5" width="79.8" height="111.5" fill="#eb6834"/>
+<text x="934.9" y="233.5" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">439 ms</text>
 <text x="895.0" y="368.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">work=1024</text>
 <text x="895.0" y="383.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">(80000 keys, work=1024, 4 threads)</text>
-<text x="895.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">131 → 2 collections, ×1.78</text>
+<text x="895.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="middle">111 → 2 collections, ×1.90</text>
 <text x="32.0" y="225.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 225.0)">wall time</text>
-<text x="40.0" y="438.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 9a7d6ad837 (1.14.0-DEV.3373) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · cores 24-28,30,31 · time-shared · 2026-09-24</text>
+<text x="40.0" y="438.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · cores 24-28,30,31 · time-shared · 2026-10-10</text>
 </svg>

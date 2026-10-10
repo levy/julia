@@ -320,6 +320,54 @@ store site hides its root, so the test lives inside `jl_gc_region_wb`. The
 series was then rebased onto master `b883b468f0`, one conflict in the
 barrier declarations, and NEWS.md names the option.
 
+### 14. The re-measurement on the pushed tip (2026-10-10)
+
+The pull request was pushed as `f3b83d5555` on master `b883b468f0`, a test
+fix as its third independent commit, and the whole evidence was taken again
+on that tree: the five installs rebuilt (`master`, `base`, `checked`,
+`trusted`, `probe`), every row of MEASUREMENTS.md run on them, the tables
+and the plots refilled. The tip itself passed the eleven region scripts and
+the `gc`, `core`, `misc` and `threads` groups; the compile check read 35 OK
+over the 27 commits in three modes, and the text proof read 79 of 79 objects
+equal to master's without the flag.
+
+What moved. The system image grows 7.9 % with the barrier and 1.9 % without
+it, where the September tree read 9.2 and 3.0: the two CI fixes of the Julia
+wrappers took the rest out. The unit costs are a few hundredths of a
+nanosecond lower. pollard pays 4 % instead of 7, and its study reads ten
+collections on every binary now, where the September tree did eleven on the
+region builds; the gap is the collector's finalizer work and the mutator's
+instructions, not a threshold. The `append` benchmark of the suite stops in
+the suite's own memory-pressure callback on master `b883b468f0` as it does
+on every build, so eight rows remain of eleven.
+
+Three faults of the harness came out of the run. The faults column of the
+paced loop never measured the reserve: the loop's faults are of the memory
+outside the pools, and the September reading of 1,263 against 1,736 was the
+luck of one run, since one run in three lands the low count with or without
+the reserve. The reserve is measured directly now,
+`bench/reserve_growth.jl`: 19,583 faults without it and 166 with it while
+the pool heap grows 110 MB; the paced reserve rows are gone. The endurance
+table summed a cumulative column and would have shown 75,033 misses where
+the run had 1,173. And `zeros` maps its memory lazily in this Julia, so the
+result vectors of the paced, tail and yardstick loops are written once
+before the loop now.
+
+The latency rows ran outside the isolated partition this time, pinned to CPU
+28 in the normal class, because the partition needs root and was off. Their
+tails are the core's: the region loop's longest event is 170 to 175 µs where
+the partition gave 94 to 97, the paced loop's worst lateness 115 to 127 µs
+where it gave 6.2 to 6.8, and the endurance loop missed 1,173 slots of
+eighteen million where it missed none. The document says so at each row, and
+the rows run again inside the partition with one command when it is on.
+
+Two readings of the CI were measured as well. The TTFX job had read the
+Manifolds task 8.6 % slower to precompile on the branch; the CI's own method
+on this machine, master against base and master against a flag-less build of
+the tip, reads them equal at 16.4 s. And the M11 checker's compiler hook
+does not apply to this julia, so its numbers stay those of the release-1.13
+line.
+
 ## The detours
 
 The ideas the work tried and dropped, or the faults it found on the way. The

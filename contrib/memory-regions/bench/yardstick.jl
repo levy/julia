@@ -43,8 +43,11 @@ function main()
     # zeros, not undef: the result vectors are touched before the loop, so
     # no store of a result faults a page in (with transparent huge pages a
     # first store zeroes 2 MB, about 200 us).
-    latencies = zeros(Int64, events)
-    gc_ns = zeros(Int64, events)
+    # Written once here so that their pages are present during the loop:
+    # `zeros` maps lazily and the first store into a page faults.
+    touched(n) = fill!(Vector{Int64}(undef, n), 0)
+    latencies = touched(events)
+    gc_ns = touched(events)
     deliveries = events ÷ (relays + 3) + 1      # sink capacity bound
 
     if variant == "alloc"

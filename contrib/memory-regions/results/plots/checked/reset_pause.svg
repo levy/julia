@@ -20,21 +20,19 @@
 <text x="850.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="middle">30</text>
 <line x1="90" y1="410.0" x2="850" y2="410.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="82.0" y="414.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">0</text>
-<line x1="90" y1="340.9" x2="850" y2="340.9" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="344.9" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">500</text>
-<line x1="90" y1="271.9" x2="850" y2="271.9" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="275.9" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1000</text>
-<line x1="90" y1="202.8" x2="850" y2="202.8" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="206.8" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1500</text>
-<line x1="90" y1="133.8" x2="850" y2="133.8" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="137.8" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">2000</text>
-<path d="M90.0,406.3 L399.8,405.1 L554.7,403.9 L709.5,400.5 L850.0,395.5" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="850.0" cy="395.5" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M399.8,395.5 L554.7,396.0 L709.5,384.1 L850.0,155.8" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<line x1="90" y1="319.6" x2="850" y2="319.6" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="323.6" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">500</text>
+<line x1="90" y1="229.2" x2="850" y2="229.2" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="233.2" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1000</text>
+<line x1="90" y1="138.8" x2="850" y2="138.8" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="142.8" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1500</text>
+<path d="M90.0,405.1 L399.8,403.2 L554.7,402.0 L709.5,397.7 L850.0,391.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="850.0" cy="391.0" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M399.8,390.7 L554.7,390.9 L709.5,376.7 L850.0,155.8" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="850.0" cy="155.8" r="5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
 <path d="M90.0,410.0 L399.8,410.0 L554.7,410.0 L709.5,410.0 L850.0,410.0" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="850.0" cy="410.0" r="5" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
 <text x="470.0" y="448.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">threads</text>
 <text x="32.0" y="260.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 260.0)">microseconds</text>
-<text x="40.0" y="478.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 9a7d6ad837 (1.14.0-DEV.3373) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 (one thread), cores 24-28,30,31 (several) · time-shared · 2026-09-24</text>
+<text x="40.0" y="478.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 (one thread), cores 24-28,30,31 (several) · time-shared · 2026-10-10</text>
 </svg>

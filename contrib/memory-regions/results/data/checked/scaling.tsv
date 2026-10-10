@@ -1,49 +1,49 @@
 # demo	point	threads	mode	wall_ms	collections	gc_ms	peak_rss_mb
-B	small   (160x100, 8 spp, depth 8, 1 threads)	1	region	13.425945	0	0.0	282.37109375
-B	small   (160x100, 8 spp, depth 8, 1 threads)	1	stock	13.194038	0	0.0	282.37109375
-B	medium  (160x100, 24 spp, depth 8, 1 threads)	1	region	38.582478	0	0.0	285.4765625
-B	medium  (160x100, 24 spp, depth 8, 1 threads)	1	stock	38.883546	2	0.295888	285.4765625
-B	large   (160x100, 64 spp, depth 8, 1 threads)	1	region	101.831395	0	0.0	285.4765625
-B	large   (160x100, 64 spp, depth 8, 1 threads)	1	stock	102.987646	7	0.86908	285.4765625
-D	work=0     (grid 16, work=0, 1 threads)	1	region	95.031709	0	0.0	310.94140625
-D	work=0     (grid 16, work=0, 1 threads)	1	stock	97.077137	0	0.0	310.94140625
-D	work=512   (grid 16, work=512, 1 threads)	1	region	97.797085	0	0.0	318.17578125
-D	work=512   (grid 16, work=512, 1 threads)	1	stock	105.24277	2	2.312482	328.85546875
-D	work=2048  (grid 16, work=2048, 1 threads)	1	region	101.103693	0	0.0	318.17578125
-D	work=2048  (grid 16, work=2048, 1 threads)	1	stock	96.220691	14	5.482212	331.5703125
-B	small   (160x100, 8 spp, depth 8, 2 threads)	2	region	10.848904	0	0.0	287.484375
-B	small   (160x100, 8 spp, depth 8, 2 threads)	2	stock	10.860065	1	0.117732	287.484375
-B	medium  (160x100, 24 spp, depth 8, 2 threads)	2	region	30.59948	0	0.0	289.1171875
-B	medium  (160x100, 24 spp, depth 8, 2 threads)	2	stock	30.582137	3	0.318691	289.1171875
-B	large   (160x100, 64 spp, depth 8, 2 threads)	2	region	79.1017	0	0.0	289.1171875
-B	large   (160x100, 64 spp, depth 8, 2 threads)	2	stock	81.030949	8	0.786224	289.1171875
-D	work=0     (grid 16, work=0, 2 threads)	2	region	60.148097	0	0.0	287.25390625
-D	work=0     (grid 16, work=0, 2 threads)	2	stock	61.508644	0	0.0	288.26171875
-D	work=512   (grid 16, work=512, 2 threads)	2	region	61.72371	0	0.0	291.4453125
-D	work=512   (grid 16, work=512, 2 threads)	2	stock	60.030416	3	2.728297	298.81640625
-D	work=2048  (grid 16, work=2048, 2 threads)	2	region	61.404237	0	0.0	291.9453125
-D	work=2048  (grid 16, work=2048, 2 threads)	2	stock	71.370397	17	8.035284	305.03515625
-B	small   (160x100, 8 spp, depth 8, 4 threads)	4	region	6.190777	0	0.0	286.88671875
-B	small   (160x100, 8 spp, depth 8, 4 threads)	4	stock	5.713197	1	0.138691	288.98046875
-B	medium  (160x100, 24 spp, depth 8, 4 threads)	4	region	16.578683	0	0.0	290.15234375
-B	medium  (160x100, 24 spp, depth 8, 4 threads)	4	stock	16.748713	3	0.357484	290.15625
-B	large   (160x100, 64 spp, depth 8, 4 threads)	4	region	43.14266	0	0.0	290.16015625
-B	large   (160x100, 64 spp, depth 8, 4 threads)	4	stock	44.290064	8	0.873668	290.16015625
-D	work=0     (grid 16, work=0, 4 threads)	4	region	40.257008	0	0.0	290.03515625
-D	work=0     (grid 16, work=0, 4 threads)	4	stock	40.771227	0	0.0	290.03515625
-D	work=512   (grid 16, work=512, 4 threads)	4	region	40.946949	0	0.0	297.4453125
-D	work=512   (grid 16, work=512, 4 threads)	4	stock	41.946464	4	3.191089	299.59375
-D	work=2048  (grid 16, work=2048, 4 threads)	4	region	41.976721	0	0.0	299.4765625
-D	work=2048  (grid 16, work=2048, 4 threads)	4	stock	49.156665	23	8.009163	304.70703125
-B	small   (160x100, 8 spp, depth 8, 8 threads)	8	region	4.006217	0	0.0	313.25390625
-B	small   (160x100, 8 spp, depth 8, 8 threads)	8	stock	3.627552	1	0.160152	313.2578125
-B	medium  (160x100, 24 spp, depth 8, 8 threads)	8	region	10.307703	0	0.0	315.83984375
-B	medium  (160x100, 24 spp, depth 8, 8 threads)	8	stock	10.353089	3	0.435331	315.84375
-B	large   (160x100, 64 spp, depth 8, 8 threads)	8	region	26.066329	0	0.0	315.86328125
-B	large   (160x100, 64 spp, depth 8, 8 threads)	8	stock	27.104408	8	1.092991	315.8671875
-D	work=0     (grid 16, work=0, 8 threads)	8	region	25.455026	0	0.0	291.6015625
-D	work=0     (grid 16, work=0, 8 threads)	8	stock	27.856937	0	0.0	291.6015625
-D	work=512   (grid 16, work=512, 8 threads)	8	region	26.060638	0	0.0	292.28515625
-D	work=512   (grid 16, work=512, 8 threads)	8	stock	27.225075	4	2.126861	305.76953125
-D	work=2048  (grid 16, work=2048, 8 threads)	8	region	27.154071	0	0.0	305.76953125
-D	work=2048  (grid 16, work=2048, 8 threads)	8	stock	40.242239	24	8.177117	310.66015625
+B	small   (160x100, 8 spp, depth 8, 1 threads)	1	region	13.388651	0	0.0	335.91796875
+B	small   (160x100, 8 spp, depth 8, 1 threads)	1	stock	13.039092	0	0.0	335.91796875
+B	medium  (160x100, 24 spp, depth 8, 1 threads)	1	region	38.730966	0	0.0	337.84765625
+B	medium  (160x100, 24 spp, depth 8, 1 threads)	1	stock	38.991799	2	0.278796	338.99609375
+B	large   (160x100, 64 spp, depth 8, 1 threads)	1	region	102.203615	0	0.0	338.99609375
+B	large   (160x100, 64 spp, depth 8, 1 threads)	1	stock	103.314721	7	0.788739	338.99609375
+D	work=0     (grid 16, work=0, 1 threads)	1	region	91.558421	0	0.0	345.9921875
+D	work=0     (grid 16, work=0, 1 threads)	1	stock	95.88084	0	0.0	345.9921875
+D	work=512   (grid 16, work=512, 1 threads)	1	region	92.727989	0	0.0	351.81640625
+D	work=512   (grid 16, work=512, 1 threads)	1	stock	101.796236	2	2.225742	362.65234375
+D	work=2048  (grid 16, work=2048, 1 threads)	1	region	97.92046	0	0.0	350.8125
+D	work=2048  (grid 16, work=2048, 1 threads)	1	stock	95.753429	13	5.201709	364.484375
+B	small   (160x100, 8 spp, depth 8, 2 threads)	2	region	10.742857	0	0.0	339.859375
+B	small   (160x100, 8 spp, depth 8, 2 threads)	2	stock	10.657256	0	0.0	339.8515625
+B	medium  (160x100, 24 spp, depth 8, 2 threads)	2	region	30.499649	0	0.0	341.0625
+B	medium  (160x100, 24 spp, depth 8, 2 threads)	2	stock	30.699046	2	0.232619	341.1015625
+B	large   (160x100, 64 spp, depth 8, 2 threads)	2	region	79.253846	0	0.0	341.109375
+B	large   (160x100, 64 spp, depth 8, 2 threads)	2	stock	80.941861	7	0.692819	341.109375
+D	work=0     (grid 16, work=0, 2 threads)	2	region	58.875049	0	0.0	346.3125
+D	work=0     (grid 16, work=0, 2 threads)	2	stock	59.605428	0	0.0	346.3125
+D	work=512   (grid 16, work=512, 2 threads)	2	region	61.244251	0	0.0	351.27734375
+D	work=512   (grid 16, work=512, 2 threads)	2	stock	60.721765	3	2.38438	357.68359375
+D	work=2048  (grid 16, work=2048, 2 threads)	2	region	63.765431	0	0.0	352.56640625
+D	work=2048  (grid 16, work=2048, 2 threads)	2	stock	72.633088	17	8.114287	363.22265625
+B	small   (160x100, 8 spp, depth 8, 4 threads)	4	region	6.026385	0	0.0	342.40625
+B	small   (160x100, 8 spp, depth 8, 4 threads)	4	stock	5.972053	1	0.151646	342.35546875
+B	medium  (160x100, 24 spp, depth 8, 4 threads)	4	region	16.573654	0	0.0	343.6484375
+B	medium  (160x100, 24 spp, depth 8, 4 threads)	4	stock	16.991252	3	0.35489	343.6484375
+B	large   (160x100, 64 spp, depth 8, 4 threads)	4	region	43.019451	0	0.0	343.6484375
+B	large   (160x100, 64 spp, depth 8, 4 threads)	4	stock	44.31662	8	0.871775	343.6484375
+D	work=0     (grid 16, work=0, 4 threads)	4	region	37.452172	0	0.0	342.62890625
+D	work=0     (grid 16, work=0, 4 threads)	4	stock	37.868919	0	0.0	343.19921875
+D	work=512   (grid 16, work=512, 4 threads)	4	region	38.384683	0	0.0	350.0390625
+D	work=512   (grid 16, work=512, 4 threads)	4	stock	38.900516	4	2.910243	351.74609375
+D	work=2048  (grid 16, work=2048, 4 threads)	4	region	39.411	0	0.0	351.02734375
+D	work=2048  (grid 16, work=2048, 4 threads)	4	stock	47.497153	22	7.968387	356.87890625
+B	small   (160x100, 8 spp, depth 8, 8 threads)	8	region	3.847974	0	0.0	341.87890625
+B	small   (160x100, 8 spp, depth 8, 8 threads)	8	stock	3.503884	1	0.149502	341.8984375
+B	medium  (160x100, 24 spp, depth 8, 8 threads)	8	region	10.326712	0	0.0	343.3046875
+B	medium  (160x100, 24 spp, depth 8, 8 threads)	8	stock	11.018778	3	0.412218	343.31640625
+B	large   (160x100, 64 spp, depth 8, 8 threads)	8	region	26.190235	0	0.0	343.3203125
+B	large   (160x100, 64 spp, depth 8, 8 threads)	8	stock	27.198979	8	1.06478	343.3203125
+D	work=0     (grid 16, work=0, 8 threads)	8	region	25.054512	0	0.0	343.5546875
+D	work=0     (grid 16, work=0, 8 threads)	8	stock	25.376239	0	0.0	344.4296875
+D	work=512   (grid 16, work=512, 8 threads)	8	region	25.817412	0	0.0	358.65625
+D	work=512   (grid 16, work=512, 8 threads)	8	stock	28.90504	4	2.252633	359.3984375
+D	work=2048  (grid 16, work=2048, 8 threads)	8	region	31.123727	0	0.0	359.43359375
+D	work=2048  (grid 16, work=2048, 8 threads)	8	stock	38.503888	23	8.277827	360.03515625

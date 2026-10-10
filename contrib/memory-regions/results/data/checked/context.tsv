@@ -1,17 +1,17 @@
 # key	value
-date	2026-09-24
-sha	9a7d6ad837
-julia	1.14.0-DEV.3373
-vanilla	d446b71096
+date	2026-10-10
+sha	e1175e721d
+julia	1.14.0-DEV.3416
+vanilla	a1389396b1
 host	valarmorghulis
 cpu	AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
-kernel	7.0.0-34-generic
-core	29
+kernel	7.0.0-38-generic
+core	28
 mtcores	24-28,30,31
 rounds	10
-cores	1
+cores	32
 isolated	
 nohz_full	13,29
 governor	performance
 boost	1
-realtime	SCHED_FIFO 50
+realtime	none
