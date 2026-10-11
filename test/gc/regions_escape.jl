@@ -363,5 +363,32 @@ serialize_quarantines_region3()
 spawn_quarantines_region2()
 quarantine_mask_is_as_expected()
 handover_after_a_collection()
+# After a quarantine, the next collection hands the region's pages to the
+# stock collector. A quick sweep walks a page only when it holds young
+# objects, and a region page never recorded any: a handed page must carry
+# the flag, or the quick sweep skips it with the marks of that collection on
+# its live cells, and the next mark stops at them and sweeps their children.
+const HANDED = 14
+const HANDED_KEEP = Ref{Any}(nothing)   # a heap object: a local Ref may live on the stack
+@noinline function make_handed_holder()
+    region_set(HANDED)
+    p = Ref{Any}(nothing)
+    region_set(0)
+    return p
+end
+function handed_page_survives_a_quick_sweep()
+    p = make_handed_holder()
+    HANDED_KEEP[] = p                   # a region-14 child into a region-0 parent: the escape that quarantines HANDED
+    check("the holder's region is quarantined", quarantined(HANDED) == 1)
+    GC.gc(false)                        # a quick collection hands the pages over
+    check("the holder is a stock object after the hand-over", region_of(p) == 0)
+    p[] = Ref(7)                        # a young child into the handed holder
+    GC.gc(false)                        # the handed page must be swept, not skipped
+    churn()                             # reuse any cell a wrong sweep freed
+    GC.gc(false)
+    check("the child of a handed holder survives a quick sweep (value $(p[][]))", p[][] == 7)
+    check("the holder is still referenced", HANDED_KEEP[] === p)
+end
+handed_page_survives_a_quick_sweep()
 
 finish("regions_escape")

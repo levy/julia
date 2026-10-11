@@ -148,8 +148,11 @@ function task_window_cases()
     interleave()
     spawn_stress()
     check("the event region is not quarantined", quarantined(EVENT) == 0)
-    r = code(region_reset(EVENT))
-    check("the event region resets (got $r)", r >= 0)
+    # The spawned tasks opened their windows on the heaps of the default
+    # pool, not on the main thread's: the global reset empties every heap's
+    # instance, and the resets of the parent below then see no live child.
+    r = code(region_reset_global(EVENT))
+    check("the event region resets on every heap (got $r)", r >= 0)
 end
 
 @noinline work(i) = (tmp = [Float64(i), 2.0, 3.0]; w = collect(1.0:4.0); sum(tmp) + sum(w))

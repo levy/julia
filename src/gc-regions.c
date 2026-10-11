@@ -411,16 +411,22 @@ static void region_handover_heap(jl_ptls_t ptls2, int n) JL_NOTSAFEPOINT
     for (size_t k = 0; k < rs->mallocarrays.len; k++)
         small_arraylist_push(&ptls2->gc_tls_common.heap.mallocarrays, rs->mallocarrays.items[k]);
     rs->mallocarrays.len = 0;
+    // A quick sweep walks a page only when it holds young objects, and a
+    // region page never recorded any: without the flag the sweep would skip
+    // the page, its live cells would keep the marks of this collection, and
+    // the next mark would stop at them and sweep their children.
     jl_gc_pagemeta_t *next;
     for (jl_gc_pagemeta_t *pg = rs->pages; pg != NULL; pg = next) {
         next = pg->region_next;
         pg->region_next = NULL;
         pg->region_n = 0;
+        pg->has_young = 1;
     }
     for (jl_gc_pagemeta_t *pg = rs->fresh_pages; pg != NULL; pg = next) {
         next = pg->region_next;
         pg->region_next = NULL;
         pg->region_n = 0;
+        pg->has_young = 1;
         memset(pg->data + GC_PAGE_OFFSET, 0, GC_PAGE_SZ - GC_PAGE_OFFSET);
     }
     rs->pages = rs->pages_tail = rs->fresh_pages = NULL;
