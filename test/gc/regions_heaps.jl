@@ -265,6 +265,73 @@ function heaps_cross_child_round()
     check("no quarantine after the cross-child round", quarantined(CHILD) == 0 && quarantined(N) == 0)
 end
 
+# The cooperative census of A marks from A's roots alone, and its claim
+# accepts region objects of every heap: through a cross-heap reference it
+# marks B's objects too, and it sweeps only A's heap. The marks it leaves on
+# B's heap must be cleared before it returns, or B's next check counts them
+# as roots and B's next stock mark stops at them. B parks in a channel wait
+# while A runs the census, as the cooperative census asks.
+const B_PTR = Threads.Atomic{UInt}(0)
+const COOP_DONE = Channel{Int}(1)
+
+@noinline function coop_make_b()
+    region_set(N)
+    b = Int[7]
+    region_set(0)
+    return UInt(pointer_from_objref(b))
+end
+
+# A's object in N references B's object in N, on another heap; the census
+# runs in this frame, where `a` is a root, so it marks a and through a, b.
+@noinline function coop_store_and_census(ptr)
+    region_set(N)
+    a = Any[]
+    push!(a, unsafe_pointer_to_objref(Ptr{Cvoid}(ptr)))
+    region_set(0)
+    # EUNSAFE until the other thread is parked in its wait: retry, bounded.
+    deadline = time_ns() + 20_000_000_000
+    freed = region_collect_coop(N)
+    while freed == EUNSAFE && time_ns() < deadline
+        GC.safepoint()
+        ccall(:jl_cpu_pause, Cvoid, ())
+        freed = region_collect_coop(N)
+    end
+    return (freed, (a[1]::Vector{Int})[1])
+end
+
+@noinline function coop_warm()
+    dummy = Int[0]
+    freed, v = coop_store_and_census(UInt(pointer_from_objref(dummy)))
+    return freed >= 0 && v == 0
+end
+
+# The main thread is the one that idles in the event loop, and it idles in
+# the unsafe state, so a cooperative census from a worker never sees it
+# parked: the census runs on the main task, and B is a task of the default
+# pool, parked in a channel wait while the census runs.
+function heaps_coop_round()
+    B_PTR[] = 0
+    check("the warm-up of the cooperative round ran", coop_warm())
+    r = reset_via_call(N)
+    check("the reset after the warm-up succeeds (code $(code(r)))", !refused(r))
+    b_task = Threads.@spawn begin
+        B_PTR[] = coop_make_b()
+        take!(COOP_DONE)                  # parked: the census of A runs now
+        c = region_check(N)
+        check("B's check finds no root into N after A's census (count $c)", c == 0)
+    end
+    spin_until(B_PTR)
+    freed, v = coop_store_and_census(B_PTR[])
+    check("A's cooperative census ran with B parked (code $freed)", freed >= 0)
+    check("A reads B's object through its own (value $v)", v == 7)
+    # The frame of coop_store_and_census is gone: nothing roots a or b.
+    put!(COOP_DONE, 1)
+    wait(b_task)
+    check("no quarantine after the cooperative round", quarantined(N) == 0)
+    r = region_reset_global(N)
+    check("the global reset after the cooperative round succeeds (code $(code(r)))", !refused(r))
+end
+
 if Threads.nthreads() < 2
     println("regions_heaps: skipped, needs two threads")
 else
@@ -272,5 +339,6 @@ else
     heaps_round(:census)
     heaps_borrow_round()
     heaps_cross_child_round()
+    heaps_coop_round()
     finish("regions_heaps")
 end

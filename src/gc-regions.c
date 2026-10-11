@@ -1000,14 +1000,17 @@ static int64_t region_scoped_sweep(jl_thread_heap_t *heap, int n)
     return freed;
 }
 
-// The mark of a census runs from the execution roots of every thread, so it
-// sets mark bits on the region's objects of other heaps too; the sweep runs
-// on the calling heap alone. Clear those bits, or the next census on that
-// heap reads a dead cell as live.
-static void region_clear_marks_on_other_heaps(jl_thread_heap_t *mine, int n) JL_NOTSAFEPOINT
+// The claim of a census accepts the region's objects on every heap, so the
+// mark sets bits on other heaps too; the sweep runs on the calling heap
+// alone. Clear those bits, or the next census on that heap reads a dead cell
+// as live, and the next stock mark stops at a live one. `all` and `nthreads`
+// are the thread table the caller holds: gc_all_tls_states inside a pause,
+// the table read under the claim in the cooperative census, whose other
+// threads are parked and can not open a window while the claim stands.
+static void region_clear_marks_on_other_heaps(jl_ptls_t *all, int nthreads, jl_thread_heap_t *mine, int n) JL_NOTSAFEPOINT
 {
-    for (int t_i = 0; t_i < gc_n_threads; t_i++) {
-        jl_ptls_t ptls2 = gc_all_tls_states[t_i];
+    for (int t_i = 0; t_i < nthreads; t_i++) {
+        jl_ptls_t ptls2 = all[t_i];
         if (ptls2 == NULL)
             continue;
         jl_thread_heap_t *heap = &ptls2->gc_tls.heap;
@@ -1115,7 +1118,7 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
         region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
         t_mark = jl_hrtime();
         freed = region_scoped_sweep(heap, n);
-        region_clear_marks_on_other_heaps(heap, n);
+        region_clear_marks_on_other_heaps(gc_all_tls_states, gc_n_threads, heap, n);
         t_sweep = jl_hrtime();
         region_census_end();
     }
@@ -1201,6 +1204,12 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n) JL_CANSAFEPOINT
     region_census_mark(ptls, &ptls, 1, heap, n, &dead);
     uint64_t t_mark = jl_hrtime();
     int64_t freed = region_scoped_sweep(heap, n);
+    // The claim marks region objects on every heap that this heap's roots
+    // reach; the sweep covers this heap alone, so the marks on the other
+    // heaps are cleared here, as the stop-the-world census clears them. A
+    // mark that stayed would stop the next stock mark at that object, and
+    // its young children would be swept under it.
+    region_clear_marks_on_other_heaps(all, nthreads, heap, n);
     uint64_t t_sweep = jl_hrtime();
     region_census_end();
     jl_atomic_fetch_add_relaxed(&region_windows_open, -1);
@@ -1283,7 +1292,7 @@ static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n) J
     region_census_begin(n);
     region_census_mark(ptls, gc_all_tls_states, gc_n_threads, heap, n, NULL);
     int64_t violations = region_count_marked(heap, n);
-    region_clear_marks_on_other_heaps(heap, n);
+    region_clear_marks_on_other_heaps(gc_all_tls_states, gc_n_threads, heap, n);
     region_census_end();
     return violations;
 }

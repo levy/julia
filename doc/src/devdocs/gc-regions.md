@@ -179,7 +179,12 @@ execution roots of every task with the census filter set, which claims only
 objects of the region, and the sweep covers only the pages of the region. The
 stop-the-world census returns `EFINALIZERS` with pending region finalizers;
 the cooperative census runs them after its sweep and needs every other thread
-parked GC-safe. Both return `EBUSY` while a window is open. `jl_gc_region_census_threshold` makes the
+parked GC-safe, which a thread that idles in the event loop is not: the main
+thread idles there, so a cooperative census from a worker thread reads
+`EUNSAFE` while the main thread waits, and runs when the main thread calls
+it with the workers parked. Its mark reaches the region's objects on every
+heap through cross-heap references and it clears the marks it leaves on the
+other heaps. Both return `EBUSY` while a window is open. `jl_gc_region_census_threshold` makes the
 page claim of a window run a census of the open region past that many pages,
 which bounds a window whose garbage dies inside the window. A finalizer
 registered on a region object goes to the list of the region: the reset runs
