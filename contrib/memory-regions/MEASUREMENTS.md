@@ -3,7 +3,11 @@
 Every number in this document was measured on 2026-10-10 on the master
 line of this work: the tree of the pull request's tip `f3b83d5555`, the
 series on master `b883b468f0` of 2026-09-24 plus the three independent
-commits under it, the deferral fix, the heap reserve and a test fix. The release-1.13 line had its own set of
+commits under it, the deferral fix, the heap reserve and a test fix. The fix
+round of 2026-10-11 that followed (series tip `d55f5be316`) changed the
+refusal paths of the reset and of the census, the hand-over of a quarantined
+region and the clear after a cooperative census, none of them on a measured
+path, so the numbers stand on that tree. The release-1.13 line had its own set of
 numbers; they are gone from this document, and the last section says where
 the two lines differ.
 

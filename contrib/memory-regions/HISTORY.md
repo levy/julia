@@ -368,6 +368,52 @@ the tip, reads them equal at 16.4 s. And the M11 checker's compiler hook
 does not apply to this julia, so its numbers stay those of the release-1.13
 line.
 
+### 15. The review before "ready for review" (2026-10-11)
+
+A fresh read of the whole diff, each finding then checked by hand in the
+code, before the draft was offered for review. Six defects were confirmed
+and fixed on the tree (series tip `d55f5be316`), with a test for each; the
+other findings wait for the reviewers and are listed in the plan of the
+tooling repository.
+
+The five entries that stop the world exchanged the GC disable counter for
+zero and stored the saved value back, since `jl_safepoint_start_gc` refuses
+the claim while the collector is disabled and the loops of a region program
+run that way; a `GC.enable` of another thread in between was lost. One
+helper now takes and gives back the world for all five and adds the saved
+count back by addition, before the world resumes; the adopted-thread case it
+does not cover is written down. The checked reset tested the child mask of
+its own heap only, where a child live on another heap may hold legal
+references into this heap's instance of the parent; the test runs over every
+heap inside the pause now, as the census does, and the quarantine is read
+once more there. The cooperative census marked the region's objects on every
+heap through cross-heap references and cleared only its own heap; it clears
+the others too, with the thread table it holds, since `gc_all_tls_states` is
+set only inside a pause. The pages a quarantined region hands to the stock
+collector carried no young flag, so the quick sweep of that collection
+skipped them with the marks of its mark phase on their live cells; the hand-
+over sets the flag. A reset or a cooperative census ran region finalizers
+under a lock the caller held; both refuse there now, as the stock collector
+defers finalizers in that state. And the in-tree documents linked this fork;
+they name the branch and leave the link to the pull request.
+
+Three facts of the runtime came out of the tests, and stand documented. A
+first call compiled inside a window allocates on paths the zones do not
+cover, an escape (the zone question stays open). The main thread idles in
+the event loop in the unsafe state, so a cooperative census from a worker
+thread reads `EUNSAFE` while the main thread waits; it runs from the main
+thread with the workers parked. And a reset of a parent refuses while a
+child instance lives on any heap, so a program with per-thread children
+resets them on every thread first; the window test had left one live on the
+default pool's heap for weeks without noticing. Three traps of the compiler
+shaped the tests: a `Ref` whose only uses are `pointer_from_objref` and a
+read stays on the stack, an effect-free finalizer is removed, and the
+finalizer of an object whose allocation the compiler sees is inlined and the
+object elided.
+
+None of the fixes touches a measured path, so the measurements of entry 14
+stand on `f3b83d5555` as the documents say.
+
 ## The detours
 
 The ideas the work tried and dropped, or the faults it found on the way. The
