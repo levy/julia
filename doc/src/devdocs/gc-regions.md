@@ -203,6 +203,14 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
   watches the heap, the checked reset watches the stacks. A program is fully
   checked with both, fully trusted with `WITH_GC_REGION_BARRIER=0` and
   `jl_gc_region_unsafe_reset`, and the mixed pairs are legal.
+- A census, a checked reset, a declaration and the check stop the world,
+  and they do so while the program holds the collector disabled: a loop that
+  runs with `GC.enable(false)` can still census and reset its regions. For
+  the pause they put the disable counter at zero and add the saved count back
+  before the world resumes. The one case this does not cover is a thread
+  adopted into the runtime during such a pause, which holds the counter to
+  keep a collection away from its own initialization: the stock collector
+  refuses in that state, a region entry does not.
 - Reset from a frame that names none of the region's objects, and close every
   window on the region first. Catch an exception inside the window; one that
   leaves it is a root into the region at the reset.

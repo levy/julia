@@ -73,6 +73,58 @@ STATIC_INLINE int region_valid(int n) JL_NOTSAFEPOINT
     return n > 0 && n < JL_GC_MAX_REGIONS;
 }
 
+// The stop-the-world of a region entry, taken as jl_gc_collect takes it: the
+// thread's state goes to WAITING and the safepoint is claimed; a lost claim
+// (another thread stopped the world first) waits for that thread and tries
+// again, up to `attempts`. Returns 0 with the world stopped and
+// gc_all_tls_states filled, or ERACE.
+//
+// The entries run while a program holds the collector disabled: the loops
+// of a region program do that, and so does the census bench. But
+// jl_safepoint_start_gc refuses the claim while jl_gc_disable_counter is
+// not zero, so the counter is exchanged for zero around the claim and the
+// pause, and the saved count is added back, not stored: a GC.enable of
+// another thread that lands in between keeps its effect. The count goes
+// back before the world resumes, so no other thread runs with the counter
+// at zero after the pause. Not covered: a thread adopted (jl_adopt_thread)
+// during the pause, which holds the counter to keep a collection away from
+// its own initialization; the stock collector refuses in that state, a
+// region entry does not (gc-regions.md, "Discipline and limits").
+static int region_stop_the_world(jl_task_t *ct, jl_ptls_t ptls, int attempts,
+                                 int8_t *old_state, uint32_t *saved_disable) JL_CANSAFEPOINT
+{
+    for (int attempt = 1; ; attempt++) {
+        *saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
+        *old_state = jl_atomic_load_relaxed(&ptls->gc_state);
+        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
+        if (jl_safepoint_start_gc(ct))
+            break;
+        jl_atomic_fetch_add_relaxed(&jl_gc_disable_counter, *saved_disable);
+        jl_gc_state_set(ptls, *old_state, JL_GC_STATE_WAITING);
+        jl_safepoint_wait_thread_resume(ct);
+        if (attempt >= attempts)
+            return JL_GC_REGION_ERACE;
+    }
+    jl_fence();
+    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
+    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
+    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+    return 0;
+}
+
+// The resume after region_stop_the_world; the counter goes back first,
+// while every other thread still waits.
+static void region_resume_the_world(jl_task_t *ct, jl_ptls_t ptls, int8_t old_state,
+                                    uint32_t saved_disable) JL_CANSAFEPOINT
+{
+    gc_n_threads = 0;
+    gc_all_tls_states = NULL;
+    jl_atomic_fetch_add_relaxed(&jl_gc_disable_counter, saved_disable);
+    jl_safepoint_end_gc();
+    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
+    jl_safepoint_wait_thread_resume(ct);
+}
+
 // --- the region tree ------------------------------------------------------------
 // region_parent[r] is the declared parent of r (0: a child of region 0);
 // region_uptree[r] is the bitset of r, its ancestors and 0: the regions a
@@ -109,25 +161,10 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent) JL_CANSAFEPO
 
     // The test and the rebuild run in one stop-the-world pause: the uptree
     // words change one at a time.
-    uint32_t saved_disable;
     int8_t old_state;
-    int attempt = 0;
-    for (;;) {
-        saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-        old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-        if (jl_safepoint_start_gc(ct))
-            break;
-        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        jl_safepoint_wait_thread_resume(ct);
-        if (++attempt >= 1024)
-            return JL_GC_REGION_ERACE;
-    }
-    jl_fence();
-    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
-    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
-    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+    uint32_t saved_disable;
+    if (region_stop_the_world(ct, ptls, 1024, &old_state, &saved_disable) != 0)
+        return JL_GC_REGION_ERACE;
 
     int result = 0;
     for (int t_i = 0; t_i < gc_n_threads; t_i++) {
@@ -147,12 +184,7 @@ JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent) JL_CANSAFEPO
         region_tree_rebuild();
     }
 
-    gc_n_threads = 0;
-    gc_all_tls_states = NULL;
-    jl_safepoint_end_gc();
-    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-    jl_safepoint_wait_thread_resume(ct);
+    region_resume_the_world(ct, ptls, old_state, saved_disable);
     return result;
 }
 
@@ -743,25 +775,10 @@ static uint64_t region_reset_body(int n, int checked) JL_CANSAFEPOINT
 
     // Several threads reset their own leaves at once, so a lost safepoint is
     // common: wait for the winner and try again, up to a bound.
-    uint32_t saved_disable;
     int8_t old_state;
-    int attempt = 0;
-    for (;;) {
-        saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-        old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-        jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-        if (jl_safepoint_start_gc(ct))
-            break;
-        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        jl_safepoint_wait_thread_resume(ct);
-        if (++attempt >= 1024)
-            return (uint64_t)JL_GC_REGION_ERACE;
-    }
-    jl_fence();
-    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
-    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
-    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
+    uint32_t saved_disable;
+    if (region_stop_the_world(ct, ptls, 1024, &old_state, &saved_disable) != 0)
+        return (uint64_t)JL_GC_REGION_ERACE;
 
     int64_t roots = region_root_scan(ptls, heap, n);
     uint64_t result;
@@ -775,12 +792,7 @@ static uint64_t region_reset_body(int n, int checked) JL_CANSAFEPOINT
         result = region_reset_heap(heap, n);
     }
 
-    gc_n_threads = 0;
-    gc_all_tls_states = NULL;
-    jl_safepoint_end_gc();
-    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-    jl_safepoint_wait_thread_resume(ct);
+    region_resume_the_world(ct, ptls, old_state, saved_disable);
     return result;
 }
 
@@ -819,19 +831,10 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n) JL_CANSAFEPOINT
     if (__unlikely(jl_gc_region_quarantined(n)))
         return (uint64_t)JL_GC_REGION_EQUARANTINED;
 
-    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-    if (!jl_safepoint_start_gc(ct)) {
-        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        jl_safepoint_wait_thread_resume(ct);
+    int8_t old_state;
+    uint32_t saved_disable;
+    if (region_stop_the_world(ct, ptls, 1, &old_state, &saved_disable) != 0)
         return (uint64_t)JL_GC_REGION_ERACE;
-    }
-    jl_fence();
-    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
-    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
-    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
 
     // The preconditions on every heap first, so that nothing is freed when
     // one heap refuses.
@@ -871,12 +874,7 @@ JL_DLLEXPORT uint64_t jl_gc_region_reset_global(int n) JL_CANSAFEPOINT
         }
     }
 
-    gc_n_threads = 0;
-    gc_all_tls_states = NULL;
-    jl_safepoint_end_gc();
-    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-    jl_safepoint_wait_thread_resume(ct);
+    region_resume_the_world(ct, ptls, old_state, saved_disable);
     return result;
 }
 
@@ -1083,22 +1081,11 @@ static void region_census_mark(jl_ptls_t ptls, jl_ptls_t *tls_states, int nthrea
 // preconditions. Returns the freed cells, or ERACE.
 static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT
 {
-    // Stop the world as jl_gc_collect does; the disable counter is cleared
-    // for the stop and restored after.
     uint64_t t0 = jl_hrtime();
-    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-    if (!jl_safepoint_start_gc(ct)) {
-        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        jl_safepoint_wait_thread_resume(ct);
+    int8_t old_state;
+    uint32_t saved_disable;
+    if (region_stop_the_world(ct, ptls, 1, &old_state, &saved_disable) != 0)
         return JL_GC_REGION_ERACE;
-    }
-    jl_fence();
-    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
-    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
-    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
     uint64_t t_stw = jl_hrtime();
 
     // A child live on another heap holds legal references into this
@@ -1116,12 +1103,7 @@ static int64_t region_census_core(jl_task_t *ct, jl_ptls_t ptls, jl_thread_heap_
         region_census_end();
     }
 
-    gc_n_threads = 0;
-    gc_all_tls_states = NULL;
-    jl_safepoint_end_gc();
-    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-    jl_safepoint_wait_thread_resume(ct);
+    region_resume_the_world(ct, ptls, old_state, saved_disable);
     jl_atomic_store_relaxed(&region_collect_stats[0], t_sweep - t0);
     jl_atomic_store_relaxed(&region_collect_stats[1], t_stw - t0);
     jl_atomic_store_relaxed(&region_collect_stats[2], t_mark - t_stw);
@@ -1319,28 +1301,14 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n) JL_CANSAFEPOINT
         jl_atomic_load_relaxed(&region_windows_open) != 0)
         return JL_GC_REGION_EBUSY;
 
-    uint32_t saved_disable = jl_atomic_exchange(&jl_gc_disable_counter, 0);
-    int8_t old_state = jl_atomic_load_relaxed(&ptls->gc_state);
-    jl_atomic_store_release(&ptls->gc_state, JL_GC_STATE_WAITING);
-    if (!jl_safepoint_start_gc(ct)) {
-        jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-        jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-        jl_safepoint_wait_thread_resume(ct);
+    int8_t old_state;
+    uint32_t saved_disable;
+    if (region_stop_the_world(ct, ptls, 1, &old_state, &saved_disable) != 0)
         return JL_GC_REGION_ERACE;
-    }
-    jl_fence();
-    gc_n_threads = jl_atomic_load_acquire(&jl_n_threads);
-    gc_all_tls_states = jl_atomic_load_relaxed(&jl_all_tls_states);
-    jl_gc_wait_for_the_world(gc_all_tls_states, gc_n_threads);
 
     int64_t violations = region_root_scan(ptls, heap, n);
 
-    gc_n_threads = 0;
-    gc_all_tls_states = NULL;
-    jl_safepoint_end_gc();
-    jl_atomic_store_release(&jl_gc_disable_counter, saved_disable);
-    jl_gc_state_set(ptls, old_state, JL_GC_STATE_WAITING);
-    jl_safepoint_wait_thread_resume(ct);
+    region_resume_the_world(ct, ptls, old_state, saved_disable);
     return violations;
 }
 

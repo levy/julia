@@ -18,6 +18,7 @@ const ROOTED = 1
 const FINAL = 2
 const DEAD = 3
 const BURNED = 4
+const PAUSED = 5          # the stop-the-world entries with the collector disabled
 
 # The reset must run as a real call with the reference live across it, or
 # the compiler keeps the reference in a register the precise scan cannot
@@ -112,7 +113,40 @@ function a_window_on_a_quarantined_region_is_refused()
     check("no window opened", region_current() == 0)
 end
 
+# The stop-the-world entries (census, checked reset, declare, check) run
+# with the collector disabled, as the loops of a region program do, and
+# they leave the disable counter as they found it. (They add the saved
+# count back rather than store it, so a GC.enable of another thread in
+# between keeps its effect; that race can not be forced here.)
+@noinline function paused_fill()
+    region_set(PAUSED)
+    objs = [Ref(i) for i in 1:2000]
+    s = sum(r[] for r in objs)
+    region_set(0)
+    return s
+end
+function the_entries_run_with_the_collector_disabled()
+    GC.enable(false)
+    paused_fill()
+    check("a census runs with the collector disabled", region_collect(PAUSED) >= 0)
+    check("the collector stays disabled after the census", GC.enable(true) == false)
+    GC.enable(false)
+    check("a check runs with the collector disabled", region_check(PAUSED) == 0)
+    check("the collector stays disabled after the check", GC.enable(true) == false)
+    GC.enable(false)
+    check("a checked reset runs with the collector disabled", reset_via_call(PAUSED) < 2^62)
+    check("the collector stays disabled after the reset", GC.enable(true) == false)
+    GC.enable(false)
+    # Other regions of this script hold live objects, so the declare refuses
+    # with ECHILD; that test runs inside the pause, so the pause took place.
+    code = declare_parent(PAUSED + 1, PAUSED)
+    check("a declare runs its pause with the collector disabled (code $code)", code == 0 || code == ECHILD)
+    check("the collector stays disabled after the declare", GC.enable(true) == false)
+    GC.enable(true)
+end
+
 checked_reset_refuses_under_a_root()
+the_entries_run_with_the_collector_disabled()
 the_same_region_resets_once_the_root_is_gone()
 the_unsafe_reset_frees()
 if Base.GC_REGION_BARRIER
