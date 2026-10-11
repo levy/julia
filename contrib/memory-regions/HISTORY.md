@@ -353,13 +353,13 @@ the run had 1,173. And `zeros` maps its memory lazily in this Julia, so the
 result vectors of the paced, tail and yardstick loops are written once
 before the loop now.
 
-The latency rows ran outside the isolated partition this time, pinned to CPU
-28 in the normal class, because the partition needs root and was off. Their
-tails are the core's: the region loop's longest event is 170 to 175 µs where
-the partition gave 94 to 97, the paced loop's worst lateness 115 to 127 µs
-where it gave 6.2 to 6.8, and the endurance loop missed 1,173 slots of
-eighteen million where it missed none. The document says so at each row, and
-the rows run again inside the partition with one command when it is on.
+The latency rows ran outside the isolated partition first, pinned to CPU 28
+in the normal class, because the partition needs root and was off that day,
+and their tails were the core's: the region loop's longest event 170 to 175
+µs, the paced loop's worst lateness 115 to 127 µs, 1,173 slots missed in the
+endurance run. With the partition on, on 2026-10-11, the same rows ran again
+inside it and read 91 to 92 µs, 23 to 25 µs and no miss; the document holds
+the readings from inside.
 
 Two readings of the CI were measured as well. The TTFX job had read the
 Manifolds task 8.6 % slower to precompile on the branch; the CI's own method

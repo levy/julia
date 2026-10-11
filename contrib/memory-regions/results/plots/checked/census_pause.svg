@@ -29,12 +29,12 @@
 <text x="82.0" y="170.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
 <line x1="90" y1="110.0" x2="450" y2="110.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="82.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 ms</text>
-<path d="M147.3,344.5 L210.0,340.0 L267.3,326.2 L330.0,304.4 L387.3,280.4 L450.0,253.1" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="253.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M147.3,367.6 L210.0,352.9 L267.3,334.4 L330.0,308.3 L387.3,279.3 L450.0,253.4" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="253.4" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M147.3,203.6 L210.0,203.9 L267.3,204.1 L330.0,200.7 L387.3,194.9 L450.0,181.3" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="181.3" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M147.3,344.6 L210.0,336.8 L267.3,326.0 L330.0,304.1 L387.3,279.8 L450.0,252.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="252.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M147.3,364.7 L210.0,352.4 L267.3,333.2 L330.0,306.3 L387.3,282.2 L450.0,251.5" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="251.5" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M147.3,204.5 L210.0,204.1 L267.3,203.2 L330.0,200.8 L387.3,194.3 L450.0,181.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="181.0" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text x="270.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">K, live cells</text>
 <text x="560.0" y="96.0" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#0b0b0b" text-anchor="start" font-weight="bold">longest pause</text>
 <line x1="560.0" y1="110" x2="560.0" y2="390" stroke="#e8e7e4" stroke-width="1"/>
@@ -57,13 +57,13 @@
 <text x="552.0" y="170.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
 <line x1="560" y1="110.0" x2="920" y2="110.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="552.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 ms</text>
-<path d="M617.3,295.8 L680.0,293.9 L737.3,293.2 L800.0,283.4 L857.3,267.3 L920.0,242.8" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="242.8" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M617.3,317.4 L680.0,313.1 L737.3,308.1 L800.0,294.8 L857.3,270.5 L920.0,242.8" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="242.8" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M617.3,176.7 L680.0,176.1 L737.3,175.8 L800.0,174.9 L857.3,171.1 L920.0,164.8" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="164.8" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M617.3,296.0 L680.0,293.9 L737.3,293.4 L800.0,285.7 L857.3,271.2 L920.0,241.1" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="241.1" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M617.3,319.1 L680.0,316.7 L737.3,308.5 L800.0,295.8 L857.3,278.7 L920.0,241.8" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="241.8" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M617.3,172.8 L680.0,174.0 L737.3,173.5 L800.0,172.1 L857.3,170.5 L920.0,164.5" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="164.5" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text x="740.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">K, live cells</text>
 <text x="32.0" y="250.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 250.0)">pause</text>
-<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · time-shared · 2026-10-10</text>
+<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 3f21b8987e (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 · time-shared · 2026-10-11</text>
 </svg>

@@ -19,20 +19,22 @@
 <text x="450.0" y="408.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="middle">100 k</text>
 <line x1="90" y1="390.0" x2="450" y2="390.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="82.0" y="394.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 µs</text>
-<line x1="90" y1="320.0" x2="450" y2="320.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="324.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 µs</text>
-<line x1="90" y1="250.0" x2="450" y2="250.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="254.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 µs</text>
-<line x1="90" y1="180.0" x2="450" y2="180.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="184.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 ms</text>
+<line x1="90" y1="334.0" x2="450" y2="334.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="338.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 µs</text>
+<line x1="90" y1="278.0" x2="450" y2="278.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="282.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 µs</text>
+<line x1="90" y1="222.0" x2="450" y2="222.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="226.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 ms</text>
+<line x1="90" y1="166.0" x2="450" y2="166.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="170.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
 <line x1="90" y1="110.0" x2="450" y2="110.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
-<path d="M147.3,333.2 L210.0,327.2 L267.3,308.9 L330.0,282.5 L387.3,252.3 L450.0,217.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="217.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M147.3,361.5 L210.0,343.7 L267.3,320.7 L330.0,288.2 L387.3,254.9 L450.0,219.4" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="219.4" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M147.3,161.1 L210.0,157.7 L267.3,158.6 L330.0,153.0 L387.3,147.1 L450.0,129.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="450.0" cy="129.0" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="82.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 ms</text>
+<path d="M147.3,343.9 L210.0,339.0 L267.3,325.7 L330.0,304.1 L387.3,279.9 L450.0,253.0" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="253.0" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M147.3,367.0 L210.0,354.1 L267.3,334.1 L330.0,305.3 L387.3,282.6 L450.0,253.3" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="253.3" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M147.3,203.7 L210.0,205.3 L267.3,203.5 L330.0,201.8 L387.3,196.0 L450.0,180.5" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="450.0" cy="180.5" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text x="270.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">K, live cells</text>
 <text x="560.0" y="96.0" font-family="DejaVu Sans, sans-serif" font-size="15" fill="#0b0b0b" text-anchor="start" font-weight="bold">longest pause</text>
 <line x1="560.0" y1="110" x2="560.0" y2="390" stroke="#e8e7e4" stroke-width="1"/>
@@ -45,21 +47,23 @@
 <text x="920.0" y="408.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="middle">100 k</text>
 <line x1="560" y1="390.0" x2="920" y2="390.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="552.0" y="394.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 µs</text>
-<line x1="560" y1="320.0" x2="920" y2="320.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="552.0" y="324.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 µs</text>
-<line x1="560" y1="250.0" x2="920" y2="250.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="552.0" y="254.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 µs</text>
-<line x1="560" y1="180.0" x2="920" y2="180.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="552.0" y="184.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 ms</text>
+<line x1="560" y1="334.0" x2="920" y2="334.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="552.0" y="338.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 µs</text>
+<line x1="560" y1="278.0" x2="920" y2="278.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="552.0" y="282.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 µs</text>
+<line x1="560" y1="222.0" x2="920" y2="222.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="552.0" y="226.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">1.0 ms</text>
+<line x1="560" y1="166.0" x2="920" y2="166.0" stroke="#e8e7e4" stroke-width="1"/>
+<text x="552.0" y="170.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
 <line x1="560" y1="110.0" x2="920" y2="110.0" stroke="#e8e7e4" stroke-width="1"/>
-<text x="552.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">10 ms</text>
-<path d="M617.3,268.7 L680.0,273.1 L737.3,266.8 L800.0,257.6 L857.3,236.0 L920.0,204.9" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="204.9" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M617.3,302.5 L680.0,300.0 L737.3,289.2 L800.0,274.8 L857.3,238.6 L920.0,213.8" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="213.8" r="5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<path d="M617.3,124.7 L680.0,119.8 L737.3,120.6 L800.0,119.1 L857.3,116.7 L920.0,110.4" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="920.0" cy="110.4" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="552.0" y="114.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">100 ms</text>
+<path d="M617.3,295.8 L680.0,293.7 L737.3,292.3 L800.0,284.1 L857.3,267.0 L920.0,243.3" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="243.3" r="5" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M617.3,321.0 L680.0,317.7 L737.3,310.7 L800.0,296.4 L857.3,274.0 L920.0,245.7" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="245.7" r="2.5" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<path d="M617.3,173.5 L680.0,173.7 L737.3,173.6 L800.0,173.0 L857.3,171.3 L920.0,165.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="920.0" cy="165.0" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text x="740.0" y="428.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">K, live cells</text>
 <text x="32.0" y="250.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 250.0)">pause</text>
-<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · time-shared · 2026-10-10</text>
+<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 3f21b8987e (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 · time-shared · 2026-10-11</text>
 </svg>

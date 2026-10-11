@@ -14,34 +14,34 @@
 <text x="546.4" y="94.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#0b0b0b" text-anchor="start">region, a window per 1000 events</text>
 <line x1="90" y1="380.0" x2="790" y2="380.0" stroke="#e8e7e4" stroke-width="1"/>
 <text x="82.0" y="384.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">0 M</text>
-<line x1="90" y1="302.5" x2="790" y2="302.5" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="306.5" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">20 M</text>
-<line x1="90" y1="224.9" x2="790" y2="224.9" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="228.9" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">40 M</text>
-<line x1="90" y1="147.4" x2="790" y2="147.4" stroke="#e8e7e4" stroke-width="1"/>
-<text x="82.0" y="151.4" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">60 M</text>
-<rect x="139.0" y="172.2" width="47.4" height="207.8" fill="#2a78d6"/>
-<text x="162.7" y="167.2" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">53.6 M</text>
-<rect x="189.4" y="285.2" width="47.4" height="94.8" fill="#eda100"/>
-<text x="213.1" y="280.2" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">24.4 M</text>
+<line x1="90" y1="302.3" x2="790" y2="302.3" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="306.3" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">20 M</text>
+<line x1="90" y1="224.5" x2="790" y2="224.5" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="228.5" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">40 M</text>
+<line x1="90" y1="146.8" x2="790" y2="146.8" stroke="#e8e7e4" stroke-width="1"/>
+<text x="82.0" y="150.8" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="end">60 M</text>
+<rect x="139.0" y="173.8" width="47.4" height="206.2" fill="#2a78d6"/>
+<text x="162.7" y="168.8" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">53.0 M</text>
+<rect x="189.4" y="286.9" width="47.4" height="93.1" fill="#eda100"/>
+<text x="213.1" y="281.9" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">23.9 M</text>
 <rect x="239.8" y="159.7" width="47.4" height="220.3" fill="#eb6834"/>
-<text x="263.5" y="154.7" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">56.8 M</text>
-<rect x="290.2" y="162.1" width="47.4" height="217.9" fill="#1baf7a"/>
-<text x="313.9" y="157.1" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">56.2 M</text>
-<rect x="340.6" y="283.8" width="47.4" height="96.2" fill="#52514e"/>
-<text x="364.3" y="278.8" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">24.8 M</text>
+<text x="263.5" y="154.7" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">56.7 M</text>
+<rect x="290.2" y="159.9" width="47.4" height="220.1" fill="#1baf7a"/>
+<text x="313.9" y="154.9" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">56.6 M</text>
+<rect x="340.6" y="278.1" width="47.4" height="101.9" fill="#52514e"/>
+<text x="364.3" y="273.1" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">26.2 M</text>
 <text x="265.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">W = 3</text>
-<rect x="489.0" y="338.6" width="47.4" height="41.4" fill="#2a78d6"/>
-<text x="512.7" y="333.6" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">10.7 M</text>
-<rect x="539.4" y="303.4" width="47.4" height="76.6" fill="#eda100"/>
-<text x="563.1" y="298.4" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">19.8 M</text>
-<rect x="589.8" y="215.0" width="47.4" height="165.0" fill="#eb6834"/>
-<text x="613.5" y="210.0" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">42.6 M</text>
-<rect x="640.2" y="230.6" width="47.4" height="149.4" fill="#1baf7a"/>
-<text x="663.9" y="225.6" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">38.6 M</text>
-<rect x="690.6" y="293.1" width="47.4" height="86.9" fill="#52514e"/>
-<text x="714.3" y="288.1" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">22.4 M</text>
+<rect x="489.0" y="339.4" width="47.4" height="40.6" fill="#2a78d6"/>
+<text x="512.7" y="334.4" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">10.4 M</text>
+<rect x="539.4" y="298.5" width="47.4" height="81.5" fill="#eda100"/>
+<text x="563.1" y="293.5" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">21.0 M</text>
+<rect x="589.8" y="222.3" width="47.4" height="157.7" fill="#eb6834"/>
+<text x="613.5" y="217.3" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">40.6 M</text>
+<rect x="640.2" y="236.3" width="47.4" height="143.7" fill="#1baf7a"/>
+<text x="663.9" y="231.3" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">37.0 M</text>
+<rect x="690.6" y="297.9" width="47.4" height="82.1" fill="#52514e"/>
+<text x="714.3" y="292.9" font-family="DejaVu Sans, sans-serif" font-size="10" fill="#0b0b0b" text-anchor="middle" paint-order="stroke" stroke="#fcfcfb" stroke-width="3" stroke-linejoin="round">21.1 M</text>
 <text x="615.0" y="398.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#0b0b0b" text-anchor="middle">W = 200</text>
 <text x="32.0" y="250.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle" transform="rotate(-90 32 250.0)">events per second</text>
-<text x="40.0" y="448.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · time-shared · 2026-10-10</text>
+<text x="40.0" y="448.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 3f21b8987e (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 · time-shared · 2026-10-11</text>
 </svg>

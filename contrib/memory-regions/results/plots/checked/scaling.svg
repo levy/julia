@@ -54,5 +54,5 @@
 <path d="M530.0,149.7 L643.3,226.5 L756.7,281.3 L870.0,300.0" fill="none" stroke="#eb6834" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="870.0" cy="300.0" r="5" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
 <text x="700.0" y="408.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#52514e" text-anchor="middle">threads</text>
-<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · cores 24-28,30,31 · time-shared · 2026-10-10</text>
+<text x="40.0" y="458.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 3f21b8987e (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · cores 24-28,30,31 · time-shared · 2026-10-11</text>
 </svg>

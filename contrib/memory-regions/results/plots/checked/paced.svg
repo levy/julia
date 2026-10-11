@@ -27,16 +27,16 @@
 <line x1="840.0" y1="100" x2="840.0" y2="190" stroke="#e8e7e4" stroke-width="1"/>
 <text x="840.0" y="208.0" font-family="DejaVu Sans, sans-serif" font-size="12" fill="#52514e" text-anchor="middle">100 ms</text>
 <text x="184.0" y="134.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#0b0b0b" text-anchor="end">stock GC</text>
-<circle cx="277.8" cy="130.0" r="6.0" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="350.3" cy="130.0" r="6.0" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="720.3" cy="130.0" r="6.0" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="720.3" cy="130.0" r="3.3" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text x="852.0" y="134.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">59 slot misses, 1 collections</text>
+<circle cx="277.3" cy="130.0" r="6.0" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="351.2" cy="130.0" r="6.0" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="720.8" cy="130.0" r="6.0" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="720.8" cy="130.0" r="3.3" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text x="852.0" y="134.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">55 slot misses, 1 collections</text>
 <text x="184.0" y="174.0" font-family="DejaVu Sans, sans-serif" font-size="13" fill="#0b0b0b" text-anchor="end">regions</text>
-<circle cx="295.2" cy="170.0" r="6.0" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="333.8" cy="170.0" r="6.0" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="472.1" cy="170.0" r="6.0" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
-<circle cx="575.2" cy="170.0" r="6.0" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
-<text x="852.0" y="174.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">2 slot misses, 0 collections</text>
-<text x="40.0" y="238.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia e1175e721d (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 28 · time-shared · 2026-10-10</text>
+<circle cx="291.4" cy="170.0" r="6.0" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="319.1" cy="170.0" r="6.0" fill="#eda100" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="453.9" cy="170.0" r="6.0" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="510.4" cy="170.0" r="6.0" fill="#1baf7a" stroke="#fcfcfb" stroke-width="2"/>
+<text x="852.0" y="174.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">0 slot misses, 0 collections</text>
+<text x="40.0" y="238.0" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#52514e" text-anchor="start">julia 3f21b8987e (1.14.0-DEV.3416) · AMD RYZEN AI MAX+ 395 w/ Radeon 8060S · core 29 · SCHED_FIFO 50 · 2026-10-11</text>
 </svg>

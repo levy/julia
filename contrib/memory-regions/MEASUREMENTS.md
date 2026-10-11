@@ -51,18 +51,17 @@ transparent huge pages `madvise`, idle for the whole run. The kernel command
 line keeps CPUs 13 and 29, the two threads of one core, tickless and free of
 RCU callbacks (`nohz_full=13,29`), and [`tools/hil_isolation.sh`](tools/hil_isolation.sh)
 takes them out of the scheduler at run time through cgroup v2 (`sudo ... on`).
-In this run the partition was off, so every row ran outside it: the
-one-thread rows, the **latency rows** (E1, M3, M4, M5 and M6) among them,
-pinned to CPU 28 in the normal class; the multi-thread rows on CPUs 24 to
-28, 30 and 31; the collector rows M13 and M14 on the 30 CPUs outside 13 and
-29, so their largest thread count is 30 where the release-1.13 line had 32.
-The latency rows read the tails of a core that keeps its tick and its
-housekeeping; the run of 2026-09-23 inside the partition, pinned to CPU 29
-in the real-time class (`SCHED_FIFO` 50), read 211 interrupts a second on
-that core against 2,000 outside, and a pure spin of five seconds there had a
-worst gap of 2.1 µs. Every row ran under a timeout and pinned; the cost rows
-also under a memory cap in a systemd scope, the latency rows without one, as
-they did inside the partition. `data/<run>/context.tsv` records the date, the
+The **latency rows** (E1, M3, M4, M5 and M6) ran inside the partition,
+pinned to CPU 29 in the real-time class (`SCHED_FIFO` 50), the driver beside
+them in the normal class; the tick leaves the core there (211 interrupts a
+second against 2,000 outside the partition, measured on 2026-09-23), and a
+pure spin of five seconds has a worst gap of 2.1 µs. Every other row ran
+outside the partition, the one-thread rows pinned to CPU 28, the multi-
+thread rows on CPUs 24 to 28, 30 and 31, and the collector rows M13 and M14
+on the 30 CPUs outside 13 and 29, so their largest thread count is 30 where
+the release-1.13 line had 32. Every row ran under a timeout and pinned; the
+cost rows also under a memory cap in a systemd scope, the latency rows
+without one, inside the partition's own cgroup. `data/<run>/context.tsv` records the date, the
 commit, the host, the CPU, the kernel and the cores of each run.
 
 ## E1 — The two independent commits
@@ -82,7 +81,7 @@ in every run.
 <!-- table E1-deferral run=e1 -->
 |  | master | base (the fix) | base / master [95 %] | rounds |
 | --- | --- | --- | --- | --- |
-| ns per allocation, past the target | 9.26 [9.23, 9.32] | 4.01 [3.96, 4.11] | 0.432 [0.428, 0.445] | 10 |
+| ns per allocation, past the target | 9.32 [9.3, 9.35] | 4.07 [4.05, 4.07] | 0.436 [0.433, 0.438] | 10 |
 <!-- /table -->
 
 **The heap reserve.** `jl_gc_heap_reserve(bytes)` maps and prefaults pool
@@ -100,9 +99,9 @@ column says nothing about the reserve and the paced tables do not carry it.
 <!-- table E1-reserve-growth run=e1 -->
 | run | mapped by the reserve (MB) | page faults while the heap grows | live heap after (MB) |
 | --- | --- | --- | --- |
-| base, no reserve | 0 | 19,583 | 111 |
+| base, no reserve | 0 | 19,575 | 111 |
 | base, 512 MB reserved | 536 | 166 | 111 |
-| master, no reserve | 0 | 19,529 | 111 |
+| master, no reserve | 0 | 19,561 | 111 |
 <!-- /table -->
 
 ## E2 — The cost when the regions are built and unused
@@ -332,10 +331,10 @@ removed by hand. With 512 MB reserved, on the isolated core:
 <!-- table M3 run=checked -->
 | script | variant | p50 (ns) | p99 (ns) | p99.9 (ns) | p99.99 (ns) | max (ns) | over 100 µs | collections | GC (ms) | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| yardstick | alloc | 60 | 81 | 251 | 1,162 | 5,433,433 | 21 | 11 | 14.2 | 981 |
-| yardstick | pooled | 60 | 71 | 90 | 912 | 162,517 | 1 | 0 | 0.0 | 890 |
-| tail | baseline | 60 | 80 | 240 | 881 | 4,111,288 | 16 | 15 | 15.5 | 1,475 |
-| tail | regions | 71 | 111 | 120 | 1,012 | 174,910 | 1 | 0 | 0.0 | 1,608 |
+| yardstick | alloc | 70 | 81 | 230 | 892 | 5,382,923 | 17 | 11 | 13.5 | 964 |
+| yardstick | pooled | 61 | 71 | 90 | 601 | 163,869 | 1 | 0 | 0.0 | 886 |
+| tail | baseline | 80 | 101 | 131 | 621 | 3,917,399 | 16 | 16 | 14.8 | 1,458 |
+| tail | regions | 80 | 121 | 121 | 752 | 91,583 | 0 | 0 | 0.0 | 1,592 |
 <!-- /table -->
 
 ![M3 on checked](results/plots/checked/tail.svg)
@@ -343,23 +342,21 @@ removed by hand. With 512 MB reserved, on the isolated core:
 <!-- table M3 run=trusted -->
 | script | variant | p50 (ns) | p99 (ns) | p99.9 (ns) | p99.99 (ns) | max (ns) | over 100 µs | collections | GC (ms) | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| yardstick | alloc | 70 | 81 | 251 | 1,032 | 5,657,136 | 20 | 11 | 13.8 | 968 |
-| yardstick | pooled | 60 | 71 | 100 | 792 | 92,645 | 0 | 0 | 0.0 | 887 |
-| tail | baseline | 60 | 80 | 231 | 711 | 3,932,861 | 16 | 16 | 16.5 | 1,461 |
-| tail | regions | 70 | 110 | 120 | 992 | 170,442 | 1 | 0 | 0.0 | 1,573 |
+| yardstick | alloc | 70 | 91 | 241 | 932 | 5,487,501 | 20 | 11 | 13.8 | 964 |
+| yardstick | pooled | 70 | 80 | 90 | 581 | 154,862 | 1 | 0 | 0.0 | 886 |
+| tail | baseline | 60 | 71 | 210 | 561 | 4,037,676 | 16 | 16 | 14.1 | 1,459 |
+| tail | regions | 70 | 101 | 111 | 181 | 91,213 | 0 | 0 | 0.0 | 1,535 |
 <!-- /table -->
 
 ![M3 on trusted](results/plots/trusted/tail.svg)
 
-The stock loop's longest event is 3.9 to 4.1 ms, a collection; the region
-loop's is 175 µs on `checked` and 170 on `trusted`, one event of twenty
-million over 100 µs in each run, and the pooled yardstick's, which allocates
-nothing, is 93 to 163. That maximum is the machine's, not the runtime's: a
+The stock loop's longest event is 3.9 to 4.0 ms, a collection; the region
+loop's is 92 µs on `checked` and 91 on `trusted`, no event of twenty million
+over 100 µs, and the pooled yardstick's, which allocates nothing, is 155 to
+164, one event over. That maximum is the machine's, not the runtime's: a
 loop that never touches the allocator meets it as the region loop does,
-about once in twenty million events, three seconds of wall time, and it is a
-stall of the core, which keeps its tick and its housekeeping outside the
-partition. Inside the partition on 2026-09-23 the same three rows read 97,
-94 and 92 µs. A run with the event queue as a binary heap that never
+about once in twenty million events, three seconds of wall time, a stall of
+the isolated core. A run with the event queue as a binary heap that never
 reallocates, on 2026-09-24, read the same maximum in every row and ten
 nanoseconds more per event, which put the queue out of the question.
 
@@ -380,20 +377,20 @@ switches. On `checked`:
 <!-- table M4 run=checked -->
 | class | mode | events/s | p50 (ns) | p99 (ns) | p99.99 (ns) | max (ns) | max, no preemption (ns) | stock collections | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| recording, W=200 | stock, own heuristics | 6.5 M | 80 | 391 | 2,766 | 3,270,082 | 3,270,082 | 325 | 1,840 |
-| recording, W=200 | stock, program schedule | 6.5 M | 80 | 390 | 2,936 | 3,373,968 | 3,373,968 | 363 | 1,839 |
-| recording, W=200 | regions, census | 14.1 M | 50 | 80 | 491 | 49,924 | 49,924 | — | 1,800 |
-| recording, W=200 | regions, no census | 14.2 M | 50 | 80 | 551 | 23,575 | 23,575 | — | 1,800 |
-| light, W=3 | stock, own heuristics | 17.1 M | 30 | 50 | 450 | 3,559,778 | 3,559,778 | 37 | 1,839 |
-| light, W=3 | stock, program schedule | 16.6 M | 40 | 50 | 351 | 3,116,732 | 3,116,732 | 51 | 1,839 |
-| light, W=3 | regions, census | 15.9 M | 40 | 51 | 421 | 61,756 | 61,756 | — | 1,800 |
-| light, W=3 | regions, no census | 16.3 M | 40 | 51 | 371 | 14,708 | 14,708 | — | 1,800 |
+| recording, W=200 | stock, own heuristics | 6.6 M | 80 | 391 | 661 | 3,323,681 | 3,323,681 | 324 | 1,831 |
+| recording, W=200 | stock, program schedule | 6.5 M | 80 | 390 | 671 | 3,233,220 | 3,233,220 | 354 | 1,831 |
+| recording, W=200 | regions, census | 13.1 M | 51 | 90 | 210 | 50,536 | 50,536 | — | 1,791 |
+| recording, W=200 | regions, no census | 14.1 M | 50 | 80 | 311 | 14,758 | 14,758 | — | 1,791 |
+| light, W=3 | stock, own heuristics | 16.9 M | 30 | 50 | 251 | 3,612,827 | 3,612,827 | 36 | 1,831 |
+| light, W=3 | stock, program schedule | 16.3 M | 40 | 50 | 201 | 3,194,397 | 3,194,397 | 51 | 1,831 |
+| light, W=3 | regions, census | 16.1 M | 40 | 51 | 451 | 58,631 | 58,631 | — | 1,791 |
+| light, W=3 | regions, no census | 16.4 M | 40 | 51 | 281 | 14,988 | 14,988 | — | 1,791 |
 <!-- /table -->
 
 ![M4 on checked](results/plots/checked/latency_ccdf.svg)
 
-The stock collector's longest event is 3.1 to 3.6 ms; the regions' is 50 to
-62 µs with the census, at a census boundary, and 15 to 24 µs without it.
+The stock collector's longest event is 3.2 to 3.6 ms; the regions' is 51 to
+59 µs with the census, at a census boundary, and 15 µs without it.
 
 ### M6 — Paced and endurance
 
@@ -409,8 +406,8 @@ loop with 512 MB reserved.
 <!-- table M6-paced run=checked -->
 | variant | events | latency p50 (ns) | latency max (ns) | lateness p99.9 (ns) | lateness max (ns) | slot misses | GC events | GC (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| baseline | 1,000,000 | 71 | 4,907,230 | 750 | 4,907,287 | 59 | 1 | 4.9 |
-| regions | 1,000,000 | 110 | 9,458 | 353 | 126,911 | 2 | 0 | 0.0 |
+| baseline | 1,000,000 | 70 | 4,970,967 | 595 | 4,971,024 | 55 | 1 | 4.9 |
+| regions | 1,000,000 | 100 | 5,981 | 261 | 24,857 | 0 | 0 | 0.0 |
 <!-- /table -->
 
 ![M6-paced on checked](results/plots/checked/paced.svg)
@@ -418,18 +415,16 @@ loop with 512 MB reserved.
 <!-- table M6-paced run=trusted -->
 | variant | events | latency p50 (ns) | latency max (ns) | lateness p99.9 (ns) | lateness max (ns) | slot misses | GC events | GC (ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| baseline | 1,000,000 | 80 | 4,613,286 | 580 | 4,613,334 | 56 | 1 | 4.6 |
-| regions | 1,000,000 | 81 | 11,983 | 260 | 114,947 | 1 | 0 | 0.0 |
+| baseline | 1,000,000 | 80 | 4,528,483 | 597 | 4,528,542 | 51 | 1 | 4.5 |
+| regions | 1,000,000 | 80 | 7,514 | 248 | 23,480 | 0 | 0 | 0.0 |
 <!-- /table -->
 
 ![M6-paced on trusted](results/plots/trusted/paced.svg)
 
-The stock loop completes an event 4.6 to 4.9 ms late at worst and misses 56
-to 59 slots of a million; the region loop's longest event is 9.5 µs on
-`checked` and 12 µs on `trusted`, and its worst lateness 127 and 115 µs, two
-slots and one slot missed: outside the partition the stalls of the core
-reach the loop, where the run inside it on 2026-09-23 completed every event
-within 6.8 and 6.2 µs and missed none.
+The stock loop completes an event 4.5 to 5.0 ms late at worst and misses 51
+to 55 slots of a million; the region loop's longest event is 6.0 µs on
+`checked` and 7.5 µs on `trusted`, its worst lateness 25 and 23 µs, and it
+misses none.
 
 [`bench/endurance.jl`](bench/endurance.jl) runs eighteen million events
 over thirty minutes with one sample per hundred thousand:
@@ -440,19 +435,18 @@ over thirty minutes with one sample per hundred thousand:
 | samples (one per 100 000 events) | 180 |
 | events | 18,000,000 |
 | wall (s) | 1,800 |
-| RSS at the first sample (MB) | 367.09 |
-| RSS at the last sample (MB) | 367.09 |
-| RSS max (MB) | 367.09 |
+| RSS at the first sample (MB) | 365.21 |
+| RSS at the last sample (MB) | 365.21 |
+| RSS max (MB) | 365.21 |
 | allocated through the region, first to last sample (MB) | 525 |
-| slot misses | 1,173 |
+| slot misses | 0 |
 <!-- /table -->
 
 ![M6-endurance on checked](results/plots/checked/endurance.svg)
 
-The RSS is 367 MB on `checked` and 312 MB on `trusted` at the first sample
-and at the last, with 525 MB allocated through the region between them.
-Outside the partition the loop missed 1,173 slots of eighteen million on
-`checked` and 50 on `trusted`; inside it on 2026-09-23 it missed none.
+The RSS is 365 MB on `checked` and 310 MB on `trusted` at the first sample
+and at the last, with 525 MB allocated through the region between them, and
+no slot missed in the thirty minutes.
 
 ### M7 — Against the C++ program
 
@@ -594,24 +588,24 @@ hundred thousand, K live records:
 <!-- table M5-pause run=checked -->
 | variant | K | pause p50 (µs) | pause max (µs) | stop the world (µs) | mark (µs) | sweep (µs) | live cells | freed cells |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| scoped | 300 | 6.5 | 48.1 | 2.7 | 3.9 | 1.2 | 302 | 100,515 |
-| coop | 300 | 2.5 | 19.8 | 0.1 | 2.8 | 1.2 | 302 | 100,515 |
-| full | 300 | 2131.0 | 6429.1 | — | — | — | — | — |
-| scoped | 1,000 | 7.8 | 52.0 | 2.9 | 5.0 | 1.3 | 1,002 | 100,550 |
-| coop | 1,000 | 4.6 | 23.6 | 0.1 | 4.4 | 1.5 | 1,002 | 100,550 |
-| full | 1,000 | 2107.8 | 6614.8 | — | — | — | — | — |
-| scoped | 3,000 | 13.8 | 53.4 | 3.3 | 9.7 | 2.0 | 3,002 | 100,650 |
-| coop | 3,000 | 9.8 | 29.1 | 0.0 | 8.8 | 2.0 | 3,002 | 100,650 |
-| full | 3,000 | 2089.4 | 6689.8 | — | — | — | — | — |
-| scoped | 10,000 | 33.8 | 80.1 | 3.2 | 27.9 | 5.0 | 10,002 | 101,000 |
-| coop | 10,000 | 28.8 | 50.0 | 0.1 | 25.1 | 5.0 | 10,002 | 101,000 |
-| full | 10,000 | 2402.4 | 6942.4 | — | — | — | — | — |
-| scoped | 30,000 | 90.6 | 155.1 | 2.7 | 77.5 | 13.7 | 30,002 | 102,000 |
-| coop | 30,000 | 94.7 | 135.9 | 0.1 | 85.2 | 14.1 | 30,002 | 102,000 |
-| full | 30,000 | 3047.5 | 8099.5 | — | — | — | — | — |
-| scoped | 100,000 | 278.8 | 424.6 | 2.6 | 241.8 | 46.4 | 100,002 | 105,500 |
-| coop | 100,000 | 275.4 | 425.7 | 0.1 | 242.6 | 46.2 | 100,002 | 105,500 |
-| full | 100,000 | 5321.1 | 10488.2 | — | — | — | — | — |
+| scoped | 300 | 6.5 | 47.6 | 3.1 | 3.3 | 1.0 | 302 | 100,515 |
+| coop | 300 | 2.8 | 18.5 | 0.1 | 2.6 | 1.1 | 302 | 100,515 |
+| full | 300 | 2054.2 | 7561.4 | — | — | — | — | — |
+| scoped | 1,000 | 8.9 | 52.0 | 3.5 | 5.3 | 1.4 | 1,002 | 100,550 |
+| coop | 1,000 | 4.7 | 20.4 | 0.1 | 4.1 | 1.3 | 1,002 | 100,550 |
+| full | 1,000 | 2084.8 | 7192.7 | — | — | — | — | — |
+| scoped | 3,000 | 13.9 | 53.1 | 3.0 | 9.8 | 2.3 | 3,002 | 100,650 |
+| coop | 3,000 | 10.3 | 28.6 | 0.1 | 9.2 | 2.1 | 3,002 | 100,650 |
+| full | 3,000 | 2170.3 | 7331.3 | — | — | — | — | — |
+| scoped | 10,000 | 34.2 | 72.8 | 3.0 | 27.3 | 4.9 | 10,002 | 101,000 |
+| coop | 10,000 | 31.2 | 48.1 | 0.1 | 27.4 | 5.0 | 10,002 | 101,000 |
+| full | 10,000 | 2394.5 | 7775.7 | — | — | — | — | — |
+| scoped | 30,000 | 92.8 | 132.1 | 3.2 | 77.8 | 13.1 | 30,002 | 102,000 |
+| coop | 30,000 | 84.0 | 97.3 | 0.1 | 71.8 | 13.0 | 30,002 | 102,000 |
+| full | 30,000 | 3122.8 | 8318.2 | — | — | — | — | — |
+| scoped | 100,000 | 282.1 | 455.2 | 3.3 | 246.0 | 48.3 | 100,002 | 105,500 |
+| coop | 100,000 | 297.9 | 443.7 | 0.1 | 261.9 | 46.4 | 100,002 | 105,500 |
+| full | 100,000 | 5390.0 | 10639.9 | — | — | — | — | — |
 <!-- /table -->
 
 ![M5-pause on checked](results/plots/checked/census_pause.svg)
@@ -619,23 +613,23 @@ hundred thousand, K live records:
 <!-- table M5-throughput run=checked -->
 | variant | W | B | events/s | collections | peak RSS (MB) |
 | --- | --- | --- | --- | --- | --- |
-| autopool | 3 | 1 | 53.6 M | 0 | 1,230 |
-| batch | 3 | 1 | 24.4 M | 0 | 1,222 |
-| batch | 3 | 100 | 56.8 M | 0 | 1,232 |
-| batch | 3 | 1000 | 56.2 M | 0 | 1,241 |
-| pooled | 3 | 1 | 24.8 M | 50 | 1,230 |
-| autopool | 200 | 1 | 10.7 M | 0 | 1,232 |
-| batch | 200 | 1 | 19.8 M | 0 | 1,231 |
-| batch | 200 | 100 | 42.6 M | 0 | 1,232 |
-| batch | 200 | 1000 | 38.6 M | 0 | 1,232 |
-| pooled | 200 | 1 | 22.4 M | 50 | 1,231 |
+| autopool | 3 | 1 | 53.0 M | 0 | 1,222 |
+| batch | 3 | 1 | 23.9 M | 0 | 1,222 |
+| batch | 3 | 100 | 56.7 M | 0 | 1,222 |
+| batch | 3 | 1000 | 56.6 M | 0 | 1,222 |
+| pooled | 3 | 1 | 26.2 M | 50 | 1,222 |
+| autopool | 200 | 1 | 10.4 M | 0 | 1,223 |
+| batch | 200 | 1 | 21.0 M | 0 | 1,222 |
+| batch | 200 | 100 | 40.6 M | 0 | 1,222 |
+| batch | 200 | 1000 | 37.0 M | 0 | 1,222 |
+| pooled | 200 | 1 | 21.1 M | 50 | 1,222 |
 <!-- /table -->
 
 ![M5-throughput on checked](results/plots/checked/census_throughput.svg)
 
 A census of a region with 300 live records pauses 6.5 µs at the median,
-stop the world, and 2.5 µs cooperative; a full stock collection of the same
-heap 2.1 ms. With 30,000 live records the census pauses 91 µs.
+stop the world, and 2.8 µs cooperative; a full stock collection of the same
+heap 2.1 ms. With 30,000 live records the census pauses 93 µs.
 
 ### M10 — The demonstrators
 
@@ -704,9 +698,8 @@ release-1.13 line.
   cost 7 % at thirty-two; the probe build says that the mark's census filter
   is about half of it.
 - The checked reset costs 27 µs alone, as before; the unchecked one 30 ns.
-- The paced loop's worst completion is 115 to 127 µs outside the partition
-  in this run, and was 6 to 7 µs inside it on 2026-09-23, where the
-  release-1.13 line read 5.6 µs on a partition made at boot.
+- The paced loop's longest event is 6 to 7.5 µs where it was 5.6 µs, on a
+  partition made at run time rather than at boot.
 - Against the C++ program the region loop runs at 0.77 with the barrier
   and 0.83 without it, where it ran at 0.85.
 - The system image grows 7.9 % with the barrier built, where it grew 3.4 %;

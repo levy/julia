@@ -1,17 +1,17 @@
 # key	value
-date	2026-10-10
-sha	e1175e721d
+date	2026-10-11
+sha	3f21b8987e
 julia	1.14.0-DEV.3416
 vanilla	a1389396b1
 host	valarmorghulis
 cpu	AMD RYZEN AI MAX+ 395 w/ Radeon 8060S
 kernel	7.0.0-38-generic
-core	28
+core	29
 mtcores	24-28,30,31
 rounds	10
-cores	32
+cores	1
 isolated	
 nohz_full	13,29
 governor	performance
 boost	1
-realtime	none
+realtime	SCHED_FIFO 50
