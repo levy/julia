@@ -19,9 +19,14 @@ export region_set, region_reset, unsafe_region_reset, @with_region, @in_region_o
 # may reference its own region and every older one. A declaration lets two
 # leaves over a shared trunk be mutually isolated: neither may reference the
 # other, only their common ancestors.
-region_parent!(child::Int, parent::Int) =
-    (ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), child, parent) == 0 ||
-     error("bad region edge: parent ($parent) must be >= 0 and < child ($child)"))
+function region_parent!(child::Int, parent::Int)
+    r = ccall(:jl_gc_region_declare_parent, Cint, (Cint, Cint), child, parent)
+    r == 0 && return nothing
+    r == -1 && error("bad region edge: parent ($parent) must be >= 0 and < child ($child)")
+    r == -2 && error("a window is open: declare the tree before the first window")
+    r == -7 && error("a region is live on some heap: declare the tree before the regions are used")
+    error("region_parent! refused with code $r")
+end
 region_parent_of(child::Int) = Int(ccall(:jl_gc_region_parent_of, Cint, (Cint,), child))
 # Arm the open-region census: when a region window grows past `pages`, its dead
 # cells are reclaimed in place (the live search state on the stack is kept), so
@@ -43,9 +48,11 @@ region_current()       = Int(ccall(:jl_gc_region_current, Cint, ()))
 region_of(x)           = Int(ccall(:jl_gc_region_of, Cint, (Any,), x))
 region_debug(on::Int)  = ccall(:jl_gc_region_set_debug, Cvoid, (Cint,), on)
 # Has an escape quarantined this region? A store that breaks the reference
-# rule quarantines the region of the child, process-wide and for the life of
-# the process: from then on its reset and its censuses refuse with -5, a
-# window on it is refused, and its memory is retained. Every entry that
+# rule quarantines the region of the child, process-wide, until the next stock
+# collection hands its pages to the stock collector: until then its reset and
+# its censuses refuse with -5 and a window on it is refused; after the
+# hand-over the region is empty and usable again, and the escaped objects live
+# on as stock objects. Every entry that
 # refuses returns that code, so a program can read the state from a return
 # value; this asks the question directly, which is what a program wants
 # before it opens a window or after it caught a refusal.
@@ -133,7 +140,8 @@ end
 # purpose: a plain ccall is not a safepoint, so the caller would keep live
 # references in registers where the precise stack scan cannot see them. A
 # Julia call is a safepoint boundary -- the caller spills every live value
-# into its GC frame, which is exactly what the rule-5 scan reads.
+# into its GC frame, which is exactly what the root scan of the checked reset
+# reads.
 # region_reset checks the execution roots before it frees: the escape
 # barrier sees the heap and not the stack, so this check is what stands
 # between a live local and a freed object. It stops the world for the scan
@@ -157,8 +165,8 @@ end
 #
 # Use it where the pause of the checked entry is the thing being measured, or
 # in a loop that has shown with the checked entry that no root survives its
-# window. The benchmarks and the demonstrators of this folder use it for that
-# reason; a program that has not made that case uses region_reset.
+# window. The benchmarks and the demonstrators of the evidence branch use it for
+# that reason; a program that has not made that case uses region_reset.
 @noinline unsafe_region_reset(n::Int) = UInt64(ccall(:jl_gc_region_unsafe_reset, UInt64, (Cint,), n))
 # The cross-heap reset of a shared region (a trunk): stops the world and
 # resets every thread heap's instance as one act, because trunk objects on

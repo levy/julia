@@ -148,8 +148,8 @@ static void region_tree_rebuild(void)
 }
 
 // Declare the parent of `child` (parent < child). Returns EBUSY while any
-// region is live on any heap or any window is open: the tree is declared
-// before the regions are used.
+// window is open and ECHILD while any region is live on any heap: the tree
+// is declared before the regions are used.
 JL_DLLEXPORT int jl_gc_region_declare_parent(int child, int parent) JL_CANSAFEPOINT
 {
     jl_task_t *ct = jl_current_task;
@@ -1338,7 +1338,9 @@ JL_DLLEXPORT int64_t jl_gc_region_check(int n) JL_CANSAFEPOINT
     jl_task_t *ct = jl_current_task;
     jl_ptls_t ptls = ct->ptls;
     jl_thread_heap_t *heap = &ptls->gc_tls.heap;
-    if (!region_valid(n) || heap->regions[n] == NULL)
+    if (!region_valid(n))
+        return JL_GC_REGION_EINVAL;
+    if (heap->regions[n] == NULL)
         return 0;
     if (heap->current_region != 0 || heap->finalizer_depth != 0 ||
         jl_atomic_load_relaxed(&region_windows_open) != 0)

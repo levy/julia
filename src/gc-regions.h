@@ -40,9 +40,11 @@ enum {
                                     // (cooperative census only)
     JL_GC_REGION_EQUARANTINED = -5, // an escape quarantined the region, until
                                     // the next stock collection
-    JL_GC_REGION_EFINALIZERS = -6,  // finalizers are pending; a cooperative
-                                    // census runs them first
-    JL_GC_REGION_ECHILD = -7,       // the region has a live child region
+    JL_GC_REGION_EFINALIZERS = -6,  // finalizers are pending (stop-the-world
+                                    // census, global reset); the cooperative
+                                    // census runs them after its sweep
+    JL_GC_REGION_ECHILD = -7,       // the region has a live child region, on
+                                    // any heap
     JL_GC_REGION_EROOT = -8,        // an execution root references the region
 };
 

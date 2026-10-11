@@ -243,11 +243,13 @@ function census_parked_task()
     parked, release = Base.Event(), Base.Event()
     tA = Threads.@spawn census_spawn_parked(parked, release)
     wait(parked)
-    freed = EUNSAFE
-    for _ in 1:100
-        freed = region_collect_coop(1)
-        freed != EUNSAFE && break
+    # EUNSAFE until the parked task's thread is parked GC-safe: retry, bounded
+    # by time, not by a count, so a loaded machine does not fail the case.
+    deadline = time_ns() + 20_000_000_000
+    freed = region_collect_coop(1)
+    while freed == EUNSAFE && time_ns() < deadline
         sleep(0.01)
+        freed = region_collect_coop(1)
     end
     check("the census ran (got $freed)", freed >= 0)
     notify(release)

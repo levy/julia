@@ -508,7 +508,7 @@ $(BUILDDIR)/gc-stacks.o $(BUILDDIR)/gc-stacks.dbg.obj $(BUILDDIR)/gc-stacks.stat
 $(BUILDDIR)/gc-stock.o $(BUILDDIR)/gc-stock.dbg.obj $(BUILDDIR)/gc-stock.static.o: $(SRCDIR)/gc-common.h $(SRCDIR)/gc-stock.h $(SRCDIR)/gc-regions.h $(SRCDIR)/gc-heap-snapshot.h $(SRCDIR)/gc-alloc-profiler.h $(SRCDIR)/gc-page-profiler.h
 $(BUILDDIR)/gc-regions.o $(BUILDDIR)/gc-regions.dbg.obj $(BUILDDIR)/gc-regions.static.o: $(SRCDIR)/gc-common.h $(SRCDIR)/gc-stock.h $(SRCDIR)/gc-regions.h $(SRCDIR)/threading.h
 $(BUILDDIR)/gc-common.o $(BUILDDIR)/gc-common.dbg.obj $(BUILDDIR)/gc-common.static.o: $(SRCDIR)/gc-common.h $(SRCDIR)/gc-regions.h
-$(addprefix $(BUILDDIR)/,task.o task.dbg.obj task.static.o gf.o gf.dbg.obj gf.static.o jltypes.o jltypes.dbg.obj jltypes.static.o staticdata.o staticdata.dbg.obj staticdata.static.o): $(SRCDIR)/gc-regions.h
+$(addprefix $(BUILDDIR)/,task.o task.dbg.obj task.static.o gf.o gf.dbg.obj gf.static.o jltypes.o jltypes.dbg.obj jltypes.static.o staticdata.o staticdata.dbg.obj staticdata.static.o array.o array.dbg.obj array.static.o builtins.o builtins.dbg.obj builtins.static.o module.o module.dbg.obj module.static.o rtutils.o rtutils.dbg.obj rtutils.static.o): $(SRCDIR)/gc-regions.h
 $(BUILDDIR)/gc-heap-snapshot.o $(BUILDDIR)/gc-heap-snapshot.dbg.obj $(BUILDDIR)/gc-heap-snapshot.static.o: $(SRCDIR)/gc-heap-snapshot.h $(SRCDIR)/gc-common.h
 $(BUILDDIR)/gc-alloc-profiler.o $(BUILDDIR)/gc-alloc-profiler.dbg.obj $(BUILDDIR)/gc-alloc-profiler.static.o: $(SRCDIR)/gc-alloc-profiler.h
 $(BUILDDIR)/gc-page-profiler.o $(BUILDDIR)/gc-page-profiler.dbg.obj $(BUILDDIR)/gc-page-profiler.static.o: $(addprefix $(SRCDIR)/,gc-page-profiler.h gc-stock.h gc-common.h threading.h)
