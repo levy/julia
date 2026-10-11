@@ -692,7 +692,18 @@ void jl_gc_region_close_window(jl_task_t *ct) JL_NOTSAFEPOINT
 // world.
 static int64_t region_root_scan(jl_ptls_t ptls, jl_thread_heap_t *heap, int n) JL_CANSAFEPOINT;
 static int64_t region_root_scan_global(jl_ptls_t ptls, int n);
-static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL_NOTSAFEPOINT;
+
+// Whether a child of region n is live on any heap; the other threads are
+// stopped or parked, so the masks are read without a fence.
+static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL_NOTSAFEPOINT
+{
+    for (int t_i = 0; t_i < nthreads; t_i++) {
+        jl_ptls_t ptls2 = all[t_i];
+        if (ptls2 != NULL && ((ptls2->gc_tls.heap.region_haschild_mask >> n) & 1))
+            return 1;
+    }
+    return 0;
+}
 
 // The finalizer phase of a reset runs Julia code, before the free and never
 // with the world stopped. A finalizer can register a finalizer on another
@@ -1039,18 +1050,6 @@ static void region_clear_marks_on_other_heaps(jl_ptls_t *all, int nthreads, jl_t
             pg->has_marked = 0;
         }
     }
-}
-
-// Whether a child of region n is live on any heap; the other threads are
-// stopped or parked, so the masks are read without a fence.
-static int region_child_live_on_any_heap(jl_ptls_t *all, int nthreads, int n) JL_NOTSAFEPOINT
-{
-    for (int t_i = 0; t_i < nthreads; t_i++) {
-        jl_ptls_t ptls2 = all[t_i];
-        if (ptls2 != NULL && ((ptls2->gc_tls.heap.region_haschild_mask >> n) & 1))
-            return 1;
-    }
-    return 0;
 }
 
 // Move the entries whose object the mark did not reach to `dead`; both
