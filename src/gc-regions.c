@@ -774,6 +774,12 @@ static uint64_t region_reset_body(int n, int checked) JL_CANSAFEPOINT
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return (uint64_t)JL_GC_REGION_ECHILD;
 
+    // The finalizers run Julia code: not under a lock the caller holds and
+    // not while the caller inhibits finalizers, the states in which the
+    // stock collector defers them. A reset refuses there instead.
+    if (heap->regions[n]->finalizers.len != 0 &&
+        (ptls->locks.len != 0 || ptls->finalizers_inhibited != 0))
+        return (uint64_t)JL_GC_REGION_EBUSY;
     int pending = region_reset_finalizers(ct, heap, n);
     if (__unlikely(pending != 0))
         return (uint64_t)pending;
@@ -1179,6 +1185,11 @@ JL_DLLEXPORT int64_t jl_gc_region_collect_coop(int n) JL_CANSAFEPOINT
     if (__unlikely((heap->region_haschild_mask >> n) & 1))
         return JL_GC_REGION_ECHILD;
     if (heap->current_region != 0 || heap->finalizer_depth != 0)
+        return JL_GC_REGION_EBUSY;
+    // The finalizers of the dead run after the sweep, Julia code: not under
+    // a lock the caller holds and not while the caller inhibits finalizers.
+    if (heap->regions[n]->finalizers.len != 0 &&
+        (ptls->locks.len != 0 || ptls->finalizers_inhibited != 0))
         return JL_GC_REGION_EBUSY;
 
     uint64_t t0 = jl_hrtime();

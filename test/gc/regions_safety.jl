@@ -19,6 +19,7 @@ const FINAL = 2
 const DEAD = 3
 const BURNED = 4
 const PAUSED = 5          # the stop-the-world entries with the collector disabled
+const LOCKED = 6          # a reset with finalizers to run, under a lock
 
 # The reset must run as a real call with the reference live across it, or
 # the compiler keeps the reference in a register the precise scan cannot
@@ -126,6 +127,7 @@ end
     return s
 end
 function the_entries_run_with_the_collector_disabled()
+a_reset_with_finalizers_refuses_under_a_lock()
     GC.enable(false)
     paused_fill()
     check("a census runs with the collector disabled", region_collect(PAUSED) >= 0)
@@ -143,6 +145,33 @@ function the_entries_run_with_the_collector_disabled()
     check("a declare runs its pause with the collector disabled (code $code)", code == 0 || code == ECHILD)
     check("the collector stays disabled after the declare", GC.enable(true) == false)
     GC.enable(true)
+end
+
+# The finalizers of a reset run Julia code, so a reset with finalizers to
+# run refuses under a lock the caller holds (a ReentrantLock inhibits
+# finalizers while it is held), as the stock collector defers finalizers in
+# that state; the same reset succeeds once the lock is released.
+# The object with the finalizer is made in one function and registered in
+# another, and the finalizer has an effect: the compiler removes an
+# effect-free finalizer, and inlines the finalizer of an object whose
+# allocation it sees.
+const LOCKED_RAN = Ref(0)
+@noinline make_locked_vector() = (region_set(LOCKED); v = [Ref(1)]; region_set(0); v)
+@noinline register_finalizer!(v) = (finalizer(_ -> (LOCKED_RAN[] += 1), v[1]); nothing)
+@noinline function locked_fill()
+    v = make_locked_vector()
+    register_finalizer!(v)
+    return v[1][]
+end
+function a_reset_with_finalizers_refuses_under_a_lock()
+    locked_fill()
+    l = ReentrantLock()
+    r = @lock l reset_via_call(LOCKED)
+    check("a reset with finalizers to run refuses under a lock (code $(code(r)))", code(r) == EBUSY)
+    check("the finalizer did not run under the lock", LOCKED_RAN[] == 0)
+    r = reset_via_call(LOCKED)
+    check("the same reset succeeds without the lock (code $(code(r)))", !refused(r))
+    check("the finalizer ran at the reset", LOCKED_RAN[] == 1)
 end
 
 checked_reset_refuses_under_a_root()

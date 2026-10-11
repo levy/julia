@@ -188,7 +188,10 @@ other heaps. Both return `EBUSY` while a window is open. `jl_gc_region_census_th
 page claim of a window run a census of the open region past that many pages,
 which bounds a window whose garbage dies inside the window. A finalizer
 registered on a region object goes to the list of the region: the reset runs
-them all, the census the dead ones. A `Memory` with malloc'd data allocated in
+them all, the census the dead ones. They run Julia code, so a reset or a
+cooperative census with finalizers to run refuses with `EBUSY` while the
+caller holds a lock or has finalizers inhibited, the states in which the
+stock collector defers finalizers. A `Memory` with malloc'd data allocated in
 a region is freed with the region. An object larger than the pool limit is a
 big object of region 0. An allocation in a region counts in `gc_num.allocd`,
 and nothing ever subtracts a region object from `Base.gc_live_bytes()`.

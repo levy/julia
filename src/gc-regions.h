@@ -32,7 +32,9 @@ enum {
     JL_GC_REGION_EINVAL = -1,       // a bad region number, a bad tree edge,
                                     // or a build that cannot allocate in a region
     JL_GC_REGION_EBUSY = -2,        // the region is current, a window is open,
-                                    // or this heap runs region finalizers now
+                                    // this heap runs region finalizers now, or the
+                                    // caller holds a lock or inhibits finalizers
+                                    // while the region has finalizers to run
     JL_GC_REGION_ERACE = -3,        // lost the race for the safepoint; retry
     JL_GC_REGION_EUNSAFE = -4,      // another thread runs managed code
                                     // (cooperative census only)
