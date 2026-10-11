@@ -36,8 +36,9 @@ buffer that replaces the buffer of an object that exists; every managed pointer
 store checks the one rule while a region is in use, and a store that breaks it
 quarantines the region of the child until the next stock collection; a region is
 reset only when no execution root references into it and no live child region
-exists; a collection of one region takes its roots from the execution roots of
-every task and from the younger regions, nothing else. The store check is what
+exists on any heap; a collection of one region takes its roots from the
+execution roots of every task, nothing else, and refuses while a younger region
+that may reference it is live. The store check is what
 makes the design different from a generational collector: that barrier records
 a store, this one rejects a store.
 
@@ -112,12 +113,17 @@ elements: a region object stored into a long-lived container is an escape.
 ## The reset
 
 `jl_gc_region_reset` runs four phases: the preconditions (a valid region, no
-window on it, no finalizer run on this thread, no quarantine, no live child);
+window on it, no finalizer run on this thread, no quarantine, no live child on
+this heap);
 the finalizers of the region, in rounds until the list is empty; the quarantine
-read again, because a finalizer can escape; the root check and the free in one
-stop-the-world pause. The root check marks from the execution roots of every
-thread with the region filter and returns `EROOT` when a reference into the
-region exists: the barrier covers the heap, the root check covers the stacks.
+read again, because a finalizer can escape; the child test over every heap, the
+quarantine once more, the root check and the free in one stop-the-world pause.
+The root check marks from the execution roots of every thread with the region
+filter and returns `EROOT` when a reference into the region exists: the barrier
+covers the heap, the root check covers the stacks. A refused check prints
+`REGION-RESET refused: N live references into region n` on stderr, and with
+`jl_gc_region_set_debug(1)` one `REGION-RESET-CHECK` line per reference, with
+its address and its type.
 A Julia frame roots a local until the frame ends, so build and use the region's
 objects in one function and reset after it returned. When several threads
 reset at once, a reset retries the safepoint and returns `ERACE` after many
@@ -148,11 +154,13 @@ to the program; `contrib/memory-regions/regions.jl` wraps them, and
 | `jl_gc_region_set_debug(on)`, `jl_gc_region_check(n)`, `jl_gc_region_verify(n)` | Name the roots a refused reset found; run the root check alone; walk the page chains for consistency. |
 
 The refusal codes are negative: `EINVAL` (-1) a bad region number or tree edge,
-`EBUSY` (-2) the region is current, a window is open, or this heap runs region
-finalizers, `ERACE` (-3) the safepoint race was lost, `EUNSAFE` (-4) another
-thread runs managed code (cooperative census), `EQUARANTINED` (-5), `EFINALIZERS`
-(-6) finalizers are pending (cooperative census), `ECHILD` (-7) a live child
-region, `EROOT` (-8) an execution root references the region.
+`EBUSY` (-2) the region is current, a window is open, this heap runs region
+finalizers, or the caller holds a lock or inhibits finalizers while the region
+has finalizers to run, `ERACE` (-3) the safepoint race was lost, `EUNSAFE` (-4)
+another thread runs managed code (cooperative census), `EQUARANTINED` (-5),
+`EFINALIZERS` (-6) finalizers are pending (stop-the-world census, global reset),
+`ECHILD` (-7) a live child region on any heap, `EROOT` (-8) an execution root
+references the region.
 
 ## [The window, the tree, the census](@id gc-regions-tree)
 
@@ -245,8 +253,8 @@ and nothing ever subtracts a region object from `Base.gc_live_bytes()`.
 - `WITH_GC_REGIONS=1` and a third-party GC exclude each other; Linux x86-64 is the platform
   the design was exercised on. The demonstrators, the benchmarks, the
   measurements and the history of the design are outside this tree, on the
-  branch [`gc-regions-master-evidence`](https://github.com/levy/julia/tree/gc-regions-master-evidence/contrib/memory-regions)
-  of the fork: this tree plus `bench/`, `demo/`, `tools/`, `results/`,
+  branch `gc-regions-master-evidence` of the author's fork (the pull request
+  links it): this tree plus `bench/`, `demo/`, `tools/`, `results/`,
   `MEASUREMENTS.md`, `COST.md` and `HISTORY.md` under `contrib/memory-regions`.
 
 ## Files
