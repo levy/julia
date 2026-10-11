@@ -412,7 +412,16 @@ finalizer of an object whose allocation the compiler sees is inlined and the
 object elided.
 
 None of the fixes touches a measured path, so the measurements of entry 14
-stand on `f3b83d5555` as the documents say.
+stand on `f3b83d5555` as the documents say. The same evening the series was
+rebased onto master `df8b6ac5c2` (tip `61c9346e2e`): two CI jobs were red
+for the base's age alone, the multicast timeout of the Sockets test (#56290,
+rewritten by #63646) and the overflow rounding of the emulated `fma` on
+32-bit Windows (fixed by #63525), and master had taken the spawn-many test
+fix as #63566, so the series stands on the two independent commits again.
+Four conflicts, all by hand: the NEWS bullet beside master's new one, the
+`IdSet` push inside the region block with master's new body, the Makefile
+rules in master's four-target form, and master's version of the threads
+test.
 
 ## The detours
 

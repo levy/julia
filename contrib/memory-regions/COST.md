@@ -5,8 +5,9 @@ window, runs the stock collector with a few hooks in it. This document says
 what such a program pays, in memory and in time, and which build option
 takes which part out. Every number was measured on 2026-10-10 on the tree
 of the pull request's tip `f3b83d5555`, on master `b883b468f0`, which the
-fix round of 2026-10-11 followed without a change on a measured path; the
-method, the machine and the five builds are those of
+fix round and the rebase onto master `df8b6ac5c2` of 2026-10-11 followed
+without a change on a measured path; the method, the machine and the five
+builds are those of
 [`MEASUREMENTS.md`](MEASUREMENTS.md), whose E2 section holds the same tables.
 [`results/tables.py`](results/tables.py) writes the tables of both documents
 from the data files under [`results/data/`](results/data).
