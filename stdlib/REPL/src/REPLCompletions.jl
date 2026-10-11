@@ -811,6 +811,8 @@ const COMPLETION_WORLD = Ref{UInt}(typemax(UInt))
 code_typed(CC.typeinf, (REPLInterpreter, CC.InferenceState))
 repl_eval_ex(:(1 + 1), @__MODULE__)
 repl_eval_ex(:((1, 2).first), @__MODULE__)
+repl_eval_ex(:(identity((1, 2)...)), @__MODULE__)
+repl_eval_ex(:(invoke(identity, Tuple{Any}, 1)), @__MODULE__)
 
 # Method completion on function call expression that look like :(max(1))
 MAX_METHOD_COMPLETIONS::Int = 40
@@ -996,8 +998,9 @@ function bslash_completions(string::String, pos::Int, hint::Bool=false)
         # return possible matches; these cannot be mixed with regular
         # Julian completions as only latex / emoji symbols contain the leading \
         symbol_dict = startswith(s, "\\:") ? emoji_symbols : latex_symbols
-        namelist = Iterators.filter(k -> startswith(k, s), keys(symbol_dict))
-        completions = Completion[BslashCompletion(name, "$(symbol_dict[name]) $name") for name in sort!(collect(namelist))]
+        filt = startswith(s, "\\?") ? k -> contains(k, s[3:end]) : k -> startswith(k, s)
+        namelist = Iterators.filter(filt, keys(symbol_dict)) |> collect |> sort!
+        completions = Completion[BslashCompletion(name, "$(symbol_dict[name]) $name") for name in namelist]
         return (true, (completions, slashpos:pos, true))
     end
     return (false, (Completion[], 1:0, false))
