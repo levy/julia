@@ -7,9 +7,10 @@ commits under it, the deferral fix, the heap reserve and a test fix. Two
 things followed on 2026-10-11 and left every measured path as it was, so the
 numbers stand on that tree: the fix round that changed the refusal paths of
 the reset and of the census, the hand-over of a quarantined region and the
-clear after a cooperative census; and the rebase onto master `df8b6ac5c2`,
-which took the test fix as its own (#63566), so the series (tip
-`61c9346e2e`) stands on two independent commits now. The release-1.13 line had its own set of
+clear after a cooperative census; and the rebase onto master, first
+`df8b6ac5c2` and then `7e178224d3` of 2026-10-12 (the first green master
+after a red stretch), which took the test fix as its own (#63566), so the
+series (tip `2b28b485ea`) stands on two independent commits now. The release-1.13 line had its own set of
 numbers; they are gone from this document, and the last section says where
 the two lines differ.
 

@@ -413,7 +413,10 @@ object elided.
 
 None of the fixes touches a measured path, so the measurements of entry 14
 stand on `f3b83d5555` as the documents say. The same evening the series was
-rebased onto master `df8b6ac5c2` (tip `61c9346e2e`): two CI jobs were red
+rebased onto master `df8b6ac5c2` (tip `61c9346e2e`), and on 2026-10-13 once
+more onto `7e178224d3` (tip `2b28b485ea`), the first master commit with a
+green CI after a red stretch in which the MMTk job hung in the REPL ^C test,
+fixed on master by #63763; the second rebase met no conflict: two CI jobs were red
 for the base's age alone, the multicast timeout of the Sockets test (#56290,
 rewritten by #63646) and the overflow rounding of the emulated `fma` on
 32-bit Windows (fixed by #63525), and master had taken the spawn-many test
