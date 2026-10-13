@@ -1985,6 +1985,8 @@ static unsigned type_hash(jl_value_t *kj, int *failed) JL_NOTSAFEPOINT
         return hasha + hashb;
     }
     else if (jl_is_typeeq(uw)) {
+        if (jl_is_typeofbottom_param(uw))
+            return jl_typeofbottom_type->hash;
         return typeeq_hash(jl_typeeq_T(uw), failed);
     }
     else if (jl_is_typeegal(uw)) {
@@ -4795,6 +4797,9 @@ void post_boot_hooks(void)
     jl_weakref_type = (jl_datatype_t*)core("WeakRef");
     jl_vecelement_typename = ((jl_datatype_t*)jl_unwrap_unionall(core("VecElement")))->name;
     jl_abioverride_type = (jl_datatype_t*)core("ABIOverride");
+
+    jl_abstractlibrary_type = (jl_datatype_t*)core("AbstractLibrary");
+    jl_libraryid_type = (jl_datatype_t*)core("LibraryID");
 
     jl_const_type = (jl_datatype_t*)core("Const");
     jl_partial_struct_type = (jl_datatype_t*)core("PartialStruct");

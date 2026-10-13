@@ -66,6 +66,10 @@ New language features
 Language changes
 ----------------
 
+* The implementation of non-scalar indexed assignment (`A[I...] = X`) now matches its
+  documentation, throwing `DimensionMismatch` on incompatible shapes that the previous
+  implementation would permit, and allowing non-1-based axes on the right-hand value (`X`)
+  that would previously have been forbidden ([#59025]).
 * `Type{T} <: S` now holds only if every type `==` to `T` is an instance of `S`, fixing a
   long-standing soundness hole where e.g. `Type{Int} <: DataType` held even though types like
   `Tuple{S} where S<:Int` are `==` (and `isa`) their canonical spelling without being `DataType`s.
@@ -258,6 +262,17 @@ Standard library changes
   and may stop being bundled in a future release ([#59119]).
 
 #### JuliaSyntaxHighlighting
+
+#### Libdl
+
+* `Libdl.LazyLibrary` is not compatible with `--trim`.
+* A new abstract type `Libdl.LazyLibraryCallback` has been added to provide
+  an automatic compilation hint for LazyLibrary on-load callbacks under trim.
+* Library types used with `ccall` / `cglobal` can now subtype `Libdl.AbstractLibrary`
+  to opt-in to `Libdl.dlid` support. This allows libraries to identify themselves
+  at precompilation time by implementing `Libdl.dlid` and providing a `Libdl.LibraryID`.
+  The `LibraryID` is used by `JuliaC.jl` and the runtime to report required libraries
+  and symbols for `--trim` applications and configure linking on a per-library basis.
 
 #### LinearAlgebra
 
