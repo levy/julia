@@ -33,14 +33,19 @@ and the omnet front end drives it with one bare command
   runtime entry, the variables are flags, and `julia -m PackageCompiler`
   founds, rebuilds, watches, reports and stops a store; the omnet front
   end is a client with its catalog.
-- Beyond: the source diff for the packages of the Manifest, and the
-  compaction of the global slots without a founding.
-- Stage I, package images through the store, is planned (2026-10-31) and
+- Beyond: the compaction of the global slots without a founding. The
+  source diff for the path packages of the Manifest moved into Stage I.
+- Stage I, the path dependencies and the image of a session, is in work
+  (2026-10-31, branch `reactive-dependencies`). Its goals: the IDE binary
+  of omnet-julia and the `jo` session both ready a few seconds after a
+  change in the platform package of projectured-julia.
+- Stage J, package images through the store, is planned (2026-10-31) and
   nothing of it is built. It takes the store of `reactive-materialization.md`
   across processes and applies it to the package images that Pkg builds,
   where the build-id cascade and the path of the sources rebuild what did
-  not change. The log entry "2026-10-31, package images" has the
-  measurements that started it.
+  not change. It serves the processes that do not start from an image.
+  The log entry "2026-10-31, package images" has the measurements that
+  started it.
 
 ## The invariant
 
@@ -120,7 +125,7 @@ Recorded 2026-09-05, from the discussion that started this plan:
   with source hashes and a reverse index, which
   `reactive-materialization.md` measured as wrong (facts 1, 2 and 13).
   Its core, a store across processes keyed by content, is the recorded-read
-  store of that plan. Stage I builds that core for package images. The
+  store of that plan. Stage J builds that core for package images. The
   daemon, the database and the protocol can come after it.
 
 ## The options
@@ -1436,7 +1441,73 @@ PackageCompiler is one client among them.
       write above the gate's 4 s bound, which pages and overlays meet, as
       the record of Stage D says.
 
-## Stage I — package images through the store
+## Stage I — the path dependencies and the image of a session
+
+Agreed with the user on 2026-10-31, after the plan of Stage J. Two goals:
+
+1. `bin/build_omnet_ide` of omnet-julia rebuilds the IDE binary a few
+   seconds after a change in the platform package of projectured-julia.
+2. `jo`, the user's session of omnet-julia (`julia
+   --project=omnet-julia/environment/all -i -e "using Revise, OmnetRepl"`),
+   has every package loaded a few seconds after such a change.
+
+Today neither is possible. A store tracks the include walk of the
+application package alone (`tracked_sources` of PackageCompiler). The
+projectured packages are path dependencies of omnet-julia, so a platform
+change is outside every store: a rebuild does not see it, and only a
+founding is correct. `jo` loads package images, and a platform change
+rebuilds every image from the platform up through omnet-julia.
+
+The route: a store tracks the path packages of its Manifest, each file in
+the module of its own package. Both goals then come from one kind of store:
+the IDE store for the binary, and a session store of `environment/all` with
+`OmnetRepl` as its application, whose image `jo` starts from. Stage J stays
+for the processes that do not start from an image.
+
+Build in this order, and stop at a gate that fails:
+
+- [ ] I0, the three risks of the route, each a small test with the
+      reactive Julia. (a) Revise tracks a package that is in the image: an
+      image that holds a small path package, `julia -J` on it, `using
+      Revise`, an edit of the package, and the next call gives the new
+      value. (b) A package image that depends on a package in the image
+      stays valid after a save: a package A in the image and a package B
+      outside it; build B's image, save an edit of A, start from the new
+      image, and load B without a rebuild. (c) The founding of the session
+      store of omnet-julia's `environment/all`: its time and peak memory.
+      Gate: (a) and (b) pass, and (c) fits a cap of 16 GB.
+- [ ] I1, the path dependencies in the store. `tracked_sources` takes the
+      Manifest of the build and adds, for each package with a `path` entry
+      that the image loads, the include walk of its root file. A file of a
+      dependency names its module from the root module of its package. The
+      child resolves that module through the loaded modules, not from the
+      application module. The refusal F3 stays for a package that is not
+      in the image. Gate: the HazardApp gate with a path dependency — a
+      changed method body, a new method, and a refused change in the
+      dependency — and the oracle against a founding of the final sources.
+- [ ] I2, the IDE store. `bin/build_omnet_ide --reactive` founds the store
+      of the IDE, and the bare command rebuilds it. Gate: a method body
+      changes in the platform package of a scratch worktree of
+      projectured-julia; the time from the save to a rebuilt binary that
+      shows the change is a few seconds. The founding time is recorded.
+- [ ] I3, `jo` from the session image. The session store of
+      `environment/all` with `OmnetRepl` as its application. `jo` starts
+      `julia -J` on the image of the last snapshot, and starts as today
+      when no store exists. A watch rebuilds after each save of a tracked
+      file. Gate: the same platform change; the time from the save to a
+      `jo` session with every package loaded is a few seconds, and Revise
+      applies a later edit inside that session.
+
+Decisions at the start: the module path of a dependency file (the name of
+its package, then the submodules, as `ProjecturedPlatform.WidgetModule`);
+which path packages a store tracks (every `path` entry that the image
+loads); where the session store lives.
+
+The gates edit a scratch worktree of projectured-julia and an omnet-julia
+environment that points at it, never the main checkouts that other
+sessions use.
+
+## Stage J — package images through the store
 
 Stages 0 to H rebuild one image, the application's. The package images
 that Pkg builds for a development session stay outside: Julia rebuilds a
@@ -1480,7 +1551,7 @@ name and its top-level evaluation read nothing that changed.
 
 Build in this order, and stop at a gate that fails:
 
-- [ ] I1, the ceiling. No change to Julia. Take the ten latest commits of
+- [ ] J1, the ceiling. No change to Julia. Take the ten latest commits of
       projectured-julia that change only its platform package. For each,
       build the images before and after. For every dependent image,
       compute the read key of each code instance (`src/ReadKey.jl`) and
@@ -1489,8 +1560,8 @@ Build in this order, and stop at a gate that fails:
       equal, and the code instances whose keys change. Gate: the counts
       exist for all ten commits. If fewer than half of the dependent
       images stay equal, relinkable images gain little, and the stage
-      stops after I4.
-- [ ] I2, relinkable package images. A package image names the objects of
+      stops after J4.
+- [ ] J2, relinkable package images. A package image names the objects of
       its dependencies by name, not by a build id and an offset, and Julia
       matches the sources of an image by their content, not by their path.
       Julia then loads a dependent image whose recorded reads still hold
@@ -1500,7 +1571,7 @@ Build in this order, and stop at a gate that fails:
       method body changes in a dependency with a small cone; the dependent
       image loads without a rebuild, the oracle passes, and its load time
       is measured against today's.
-- [ ] I3, the top-level reads of a package. The include of a package reads
+- [ ] J3, the top-level reads of a package. The include of a package reads
       its dependencies: the macros it expands, the constants that its
       top-level expressions compute, the types that it names. Record these
       reads for each package image, as the ledger of Stage B records them
@@ -1508,22 +1579,22 @@ Build in this order, and stop at a gate that fails:
       Gate: three edits in a dependency — a method body, a macro, a
       constant. The first keeps the dependent image, the other two rebuild
       it, and the oracle passes after each.
-- [ ] I4, the store across processes. Inferred code instances and their
+- [ ] J4, the store across processes. Inferred code instances and their
       object code, with their recorded reads, stored by content key in one
       store outside any depot path. A package build takes a code instance
       from the store when all its reads hold, and the image write takes
       its object code. Gate: a second worktree of the same commit builds
       its images with no inference of the recorded lists; the time and the
       share of reused code instances are measured.
-- [ ] I5, the server for a package. The server of Stage D loads the images
+- [ ] J5, the server for a package. The server of Stage D loads the images
       of an environment, applies the changed expressions of one package,
       and writes that package's image as an overlay. Gate: the change of
-      I2, timed from the save of the file to a new process that has loaded
+      J2, timed from the save of the file to a new process that has loaded
       every package, against 279 s.
 
-Decisions at the start: whether the references by name of I2 change the
+Decisions at the start: whether the references by name of J2 change the
 package image format for upstream Julia or for the fork alone; the store
-of I4, one for each machine or one for each depot; and the unit of a
+of J4, one for each machine or one for each depot; and the unit of a
 strongly connected component of methods across package boundaries.
 
 Not part of this stage: the parallel side of the same measurement. On
@@ -1535,9 +1606,8 @@ separate change to the fork.
 
 The items that the catalog leaves open, not planned in detail.
 
-- F3 for dependencies: the sources of the packages of the Manifest are
-  available; the same diff applies to them, at the cost of a ledger for
-  every package. Until then a version change is a founding.
+- F3 for registered dependencies: a version change of a package from the
+  registry stays a founding. Stage I tracks the path packages.
 - the compaction of the global slots without a founding.
 
 ## Risks
@@ -1588,11 +1658,11 @@ The items that the catalog leaves open, not planned in detail.
   is staged beside the app and swapped in at the end.
 - A relink by name at every load can make the start of a process slower.
   The prelink work measured that relocation decides the start of a system
-  image (270 ms against 21.7 ms). Gate I2 measures the load time for that
+  image (270 ms against 21.7 ms). Gate J2 measures the load time for that
   reason.
 - The top-level reads of a package can be so broad that every dependent
   rebuilds anyway: a `using` reads the whole exported surface of a module.
-  I1 measures it before I2 and I3 are built.
+  J1 measures it before J2 and J3 are built.
 
 ## Log
 
@@ -1633,7 +1703,7 @@ all cores for the package images and the binary.
   rebuilds every image.
 
 From these numbers: the cascade costs more than any lack of parallel
-work, and only reuse below the package removes it. Stage I plans that
+work, and only reuse below the package removes it. Stage J plans that
 reuse.
 
 **2026-09-09, the cone.** The question of "the invalidation itself" was
