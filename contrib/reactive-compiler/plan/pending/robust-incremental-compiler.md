@@ -1476,7 +1476,20 @@ Build in this order, and stop at a gate that fails:
       image, and load B without a rebuild. (c) The founding of the session
       store of omnet-julia's `environment/all`: its time and peak memory.
       Gate: (a) and (b) pass, and (c) fits a cap of 16 GB.
-- [ ] I1, the path dependencies in the store. `tracked_sources` takes the
+      *As measured (2026-10-31, the reactive Julia of `reactive-compiler`,
+      a small application and a path package in a scratch folder):* (a)
+      passes with `Revise.track(mod)`. Revise watches a package that the
+      image holds only after `track`; then it applies an edit (the first
+      call takes 2.0 s, the compile of Revise included). (b) fails: after a
+      save, Julia rejects a package image above the reactive image, "made
+      with a different julia version", because `Core` of the image gets a
+      new build id at each save (the check of `Core` in `base/loading.jl`).
+      Decision: the route goes on, because the failure has a way around
+      inside it. The session image holds every package that `jo` loads,
+      Revise included; a package that a session loads later, such as a test
+      package, compiles again after each save. (c) is measured with the
+      founding of I3.
+- [x] I1, the path dependencies in the store. `tracked_sources` takes the
       Manifest of the build and adds, for each package with a `path` entry
       that the image loads, the include walk of its root file. A file of a
       dependency names its module from the root module of its package. The
@@ -1485,6 +1498,28 @@ Build in this order, and stop at a gate that fails:
       in the image. Gate: the HazardApp gate with a path dependency — a
       changed method body, a new method, and a refused change in the
       dependency — and the oracle against a founding of the final sources.
+      *As built (2026-10-31, PackageCompiler 293475d4 on its branch
+      `reactive-dependencies`):* the child needed no change:
+      `rc_module_or_nothing` already resolves the first name of a module
+      path through the loaded modules when `Main` does not bind it.
+      `materialize_app` takes `track_dependencies`; the founding adds the
+      sources of every path package of the Manifest after
+      `Pkg.instantiate`, and each rebuild walks them again, so a new file
+      of a dependency is tracked from that rebuild on. The include walk
+      computes a path from a string, `@__DIR__`, `@__FILE__`, `joinpath`,
+      `normpath`, `abspath`, `dirname` and the `const` path names of the
+      module, because many packages include through a constant such as
+      `_SOURCE`; a file that two modules include is an error. For the IDE
+      application of omnet-julia the walk finds 983 files (12 MB) of 38
+      packages in 0.68 s, with no file in two modules. Gate I1
+      (`tool/gate_i1.sh`, `tool/i1_dependency`) passes: the store tracks
+      the three files of `DepLib` in `""`, `DepLib` and `DepLib.Inner`; the
+      rebuild applies 3 expressions of the dependency in 3.3 ms, 7.5 s in
+      all (whole write, no server), and the binary shows the edit; the
+      module option is refused (F1) and the binary stays; checks 1 to 4 of
+      the oracle are equal (5 methods, 2 roots, 4 output lines, 1 global).
+      The gate ran with the reactive Julia of `reactive-compiler`, whose
+      child is the same code.
 - [ ] I2, the IDE store. `bin/build_omnet_ide --reactive` founds the store
       of the IDE, and the bare command rebuilds it. Gate: a method body
       changes in the platform package of a scratch worktree of
