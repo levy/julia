@@ -8,7 +8,7 @@ that rebuild robust, reliable and complete: every kind of change is applied
 or refused, the compiler process never executes the program, dead code
 leaves the image, and a server saves an image without an exit.
 
-## Where the plan stands (2026-09-09)
+## Where the plan stands (2026-10-31)
 
 Stages 0 to G are built and gated: the oracle, the rebuild without
 execution, the ledger and the classifier, the fresh table and the dead
@@ -35,6 +35,12 @@ and the omnet front end drives it with one bare command
   end is a client with its catalog.
 - Beyond: the source diff for the packages of the Manifest, and the
   compaction of the global slots without a founding.
+- Stage I, package images through the store, is planned (2026-10-31) and
+  nothing of it is built. It takes the store of `reactive-materialization.md`
+  across processes and applies it to the package images that Pkg builds,
+  where the build-id cascade and the path of the sources rebuild what did
+  not change. The log entry "2026-10-31, package images" has the
+  measurements that started it.
 
 ## The invariant
 
@@ -104,6 +110,18 @@ Recorded 2026-09-05, from the discussion that started this plan:
   trimmed product and the way the image is written are three keywords of
   `materialize_app`, each with an environment default, and any
   combination is valid. The section "The options" lists them.
+- **Package images join the store; no separate compilation server.**
+  Recorded 2026-10-31, after a comparison with a proposal of a
+  machine-wide compilation server (isolated worker processes, a SQLite
+  index of dependencies, native code per specialization, registered in
+  each client). Its first version builds the package images that Pkg
+  already builds, in parallel and by content hash, so it gains nothing.
+  Its validity model is a list of dependency kinds that a person keeps,
+  with source hashes and a reverse index, which
+  `reactive-materialization.md` measured as wrong (facts 1, 2 and 13).
+  Its core, a store across processes keyed by content, is the recorded-read
+  store of that plan. Stage I builds that core for package images. The
+  daemon, the database and the protocol can come after it.
 
 ## The options
 
@@ -1418,6 +1436,101 @@ PackageCompiler is one client among them.
       write above the gate's 4 s bound, which pages and overlays meet, as
       the record of Stage D says.
 
+## Stage I — package images through the store
+
+Stages 0 to H rebuild one image, the application's. The package images
+that Pkg builds for a development session stay outside: Julia rebuilds a
+whole package when one of its files changes, and every package above it,
+because an image accepts only the exact build id of each dependency
+(`stale_cachefile`, fact 12 of `reactive-materialization.md`). An image
+also records the absolute path of its sources, so a new worktree rebuilds
+every image even when the content is the same. The log entry "2026-10-31,
+package images" measures what this costs in projectured-julia: a change in
+its platform package rebuilds 99 of 114 images, along a chain of 279 s,
+and half of its commits make such a change.
+
+The target, stated as a fresh process:
+
+> Change one method body of a package that most packages depend on.
+> **Start a new Julia process** that loads every package. The images that
+> the change does not reach load without a rebuild. The changed package
+> rebuilds its cone. Beat today's 279 s on the same machine.
+
+In a package image the inference is a large term, not the small term that
+it is in an application image. The routing application spends 0.77 s in
+inference, because its package images already did that work. The
+platform image of projectured spends 39 s of the 80 s of its recorded list
+in inference. So the store keeps inferred code instances as well as
+object code.
+
+What a small cone buys depends on how much of the stage is built. The
+times are estimates for a change in the platform package:
+
+| built | what a dependent image costs | the chain |
+| --- | --- | --- |
+| nothing (today) | a full rebuild: include, the list's inference, code generation, the write | 279 s |
+| the store, inference and code levels | the include and the write; no inference and no code generation where the reads hold | about 100 s |
+| also relinkable images and top-level reads | no rebuild: a check of its reads and a relink at load | the changed package alone, about 30 s |
+| also the server for a package | the changed package applies its changed expressions and writes an overlay | seconds |
+
+A small cone alone does not make the rebuild fast. Each dependent image
+keeps the cost of its include and its write until it can stay as it is,
+and it can stay only when it names the objects of its dependencies by
+name and its top-level evaluation read nothing that changed.
+
+Build in this order, and stop at a gate that fails:
+
+- [ ] I1, the ceiling. No change to Julia. Take the ten latest commits of
+      projectured-julia that change only its platform package. For each,
+      build the images before and after. For every dependent image,
+      compute the read key of each code instance (`src/ReadKey.jl`) and
+      the oracle digest of the image (method tables, lowered code,
+      globals). Count the dependent images whose keys and digest stay
+      equal, and the code instances whose keys change. Gate: the counts
+      exist for all ten commits. If fewer than half of the dependent
+      images stay equal, relinkable images gain little, and the stage
+      stops after I4.
+- [ ] I2, relinkable package images. A package image names the objects of
+      its dependencies by name, not by a build id and an offset, and Julia
+      matches the sources of an image by their content, not by their path.
+      Julia then loads a dependent image whose recorded reads still hold
+      after a dependency was rebuilt, and relinks it. Stage G met the same
+      coupling: a package image names objects of the system image by
+      offset, so the overlay loader keeps them at their offsets. Gate: a
+      method body changes in a dependency with a small cone; the dependent
+      image loads without a rebuild, the oracle passes, and its load time
+      is measured against today's.
+- [ ] I3, the top-level reads of a package. The include of a package reads
+      its dependencies: the macros it expands, the constants that its
+      top-level expressions compute, the types that it names. Record these
+      reads for each package image, as the ledger of Stage B records them
+      for each expression. A change of one of them rebuilds the dependent.
+      Gate: three edits in a dependency — a method body, a macro, a
+      constant. The first keeps the dependent image, the other two rebuild
+      it, and the oracle passes after each.
+- [ ] I4, the store across processes. Inferred code instances and their
+      object code, with their recorded reads, stored by content key in one
+      store outside any depot path. A package build takes a code instance
+      from the store when all its reads hold, and the image write takes
+      its object code. Gate: a second worktree of the same commit builds
+      its images with no inference of the recorded lists; the time and the
+      share of reused code instances are measured.
+- [ ] I5, the server for a package. The server of Stage D loads the images
+      of an environment, applies the changed expressions of one package,
+      and writes that package's image as an overlay. Gate: the change of
+      I2, timed from the save of the file to a new process that has loaded
+      every package, against 279 s.
+
+Decisions at the start: whether the references by name of I2 change the
+package image format for upstream Julia or for the fork alone; the store
+of I4, one for each machine or one for each depot; and the unit of a
+strongly connected component of methods across package boundaries.
+
+Not part of this stage: the parallel side of the same measurement. On
+Julia 1.13 one global lock serializes inference inside a precompile
+process (the log entry), and upstream master removed it. That is a
+separate change to the fork.
+
 ## Beyond
 
 The items that the catalog leaves open, not planned in detail.
@@ -1473,8 +1586,55 @@ The items that the catalog leaves open, not planned in detail.
   four generations reaches the growth bound. The gates keep their
   rebuilds rebuilds with `--compact=1000,1.0`. Closed by H4: the founding
   is staged beside the app and swapped in at the end.
+- A relink by name at every load can make the start of a process slower.
+  The prelink work measured that relocation decides the start of a system
+  image (270 ms against 21.7 ms). Gate I2 measures the load time for that
+  reason.
+- The top-level reads of a package can be so broad that every dependent
+  rebuilds anyway: a `using` reads the whole exported surface of a module.
+  I1 measures it before I2 and I3 are built.
 
 ## Log
+
+**2026-10-31, package images.** Measured in projectured-julia at
+`ca6d48ce4`, stock Julia 1.13.1, a machine of 16 cores and 32 threads, each
+build into a new depot of a scratch worktree. The question was how to use
+all cores for the package images and the binary.
+
+- A build of the 114 package images takes 309 s with 6 precompile
+  processes and 497 s with 2, and uses 5.1 cores on average. The chain
+  of images is Kernel 6 → Platform 101 → Julia 13 → Formula 4 → Research
+  10 → All 8 → Example 92 → Test 34 → REPL 15, that is 283 s.
+- A change rebuilds the changed package and every package above it. In
+  the platform package: 99 images, chain 279 s. In the kernel: 112
+  images, 285 s. In one domain: 17 to 42 images, 142 to 178 s. Of 2,428
+  commits in 60 days, 1,215 change the kernel or the platform.
+- The platform image takes 101 s, and 19 s without its recorded list
+  (11,456 calls). Of the 80.5 s of the list: the evaluation of the call
+  strings 5.6 s, inference 39 s, the serial part of the output about
+  24 s, LLVM about 12 s on 16 image threads (about 190 s of CPU, from the
+  CPU and wall times).
+- The list in 8 packages, compiled in parallel: 263 s of image time and
+  632 MB against 81 s and 225 MB, because each part infers the shared
+  callees again. When the dependent images do not load the parts, each of
+  them compiles the shared code again: 56 % more CPU in all, images 1.9
+  times larger. When they load the parts, the whole build takes 360 s
+  against 309 s.
+- Threads in a precompile process do not help on 1.13. With
+  ``compilecache(...; flags = `--threads=N`)`` the inference of the list
+  takes 39, 36, 36 and 40 s at 1, 4, 8 and 16 threads. A stack sample
+  shows 7 of 8 threads waiting on `jl_typeinf_lock` in `jl_type_infer`
+  (`src/gf.c`). Upstream added the lock again on 2026-01-20 (#60689) and
+  removed it on 2026-04-28 (#61255). On a 1.14-DEV build, `precompile`
+  defers its work to the output step, so the same test gives no answer
+  there.
+- An image records the absolute path of its sources
+  (`base/loading.jl`, "because it is for file"), so a new worktree
+  rebuilds every image.
+
+From these numbers: the cascade costs more than any lack of parallel
+work, and only reuse below the package removes it. Stage I plans that
+reuse.
 
 **2026-09-09, the cone.** The question of "the invalidation itself" was
 measured before any design. A probe on the routing image redefines
