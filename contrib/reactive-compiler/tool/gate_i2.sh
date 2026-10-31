@@ -14,6 +14,8 @@
 #   check-3    - the image answers (2, 2)
 #   watch      - the same edit and revert through `bin/build_omnet_ide --watch`:
 #                the time from the save to the rebuilt image
+#   stop       - the server of the store stops: the next rebuild starts one,
+#                the way a rebuild on demand does
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -38,6 +40,7 @@ edit() {
     grep -q "mod1(index, 4)" "$PROJECTURED/$FILE" && echo "=== edit: get_scroll_layout_cell counts by 4 at $(date +%T.%N | cut -c1-12)"
 }
 revert() { git -C "$PROJECTURED" checkout -- "$FILE" && echo "=== revert: $FILE restored at $(date +%T.%N | cut -c1-12)"; }
+stop() { (cd "$OMNET" && bin/build_omnet_ide --stop-server) > "$OUT/stop.log" 2>&1; echo "=== stop: $(tail -1 "$OUT/stop.log")"; }
 
 rebuild() {
     local name=$1 start
@@ -95,6 +98,7 @@ for step in $steps; do
         rebuild-back) rebuild rebuild-back ;;
         check-3) check "(2, 2)" ;;
         watch) watch ;;
+        stop) stop ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; revert >/dev/null 2>&1; exit 1; }
 done
