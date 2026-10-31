@@ -1612,6 +1612,17 @@ Build in this order, and stop at a gate that fails:
       into an image only by a server save, and the founding image has none.
       The fix: the founding runs the trace through the harness too, with
       the `script` of `create_app`. It needs a new founding.
+      *Built (2026-11-01):* the founding precompiles the trace through the
+      harness (PackageCompiler 9dc124fb); the founding image of gate I1
+      holds its resolved statements, and a server that starts from it
+      precompiles the trace in 0.0 s. The ledger parses only the files whose
+      text changed (74dbf687b8). An apply takes every file when a changed or
+      removed expression has dependents by name (any kind but a method and
+      an `@eval` form), or when a read file changed. A parallel parse is not
+      safe: the save forks the server, and the fork does nothing for other
+      threads. Gate B passes with its oracle: the edit of every kind and
+      the reverse edit take every file, the reformat 1 of 5 files, and the
+      empty rebuild 0 of 5. Gate I1 passes with a server and overlays.
 - [ ] I3, `jo` from the session image. The session store of
       `environment/all` with `OmnetRepl` as its application. `jo` rebuilds
       the store when it starts, with no watch and no service (the rebuild
