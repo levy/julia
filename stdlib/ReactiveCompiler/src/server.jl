@@ -92,6 +92,10 @@ end
 
 # The tail of the object script: the image carries no path of this build.
 function rc_before_write()
+    # The ledger and the parses of the tracked files serve the next apply of
+    # the server; in the image they are the parsed sources of every file.
+    RC_LEDGER_CACHE[] = nothing
+    empty!(RC_PARSED)
     empty!(Base.Filesystem.TEMP_CLEANUP)
     empty!(Core.ARGS)
     empty!(Base.ARGS)

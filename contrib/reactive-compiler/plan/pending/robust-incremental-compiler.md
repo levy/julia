@@ -1547,6 +1547,26 @@ Build in this order, and stop at a gate that fails:
       changes in the platform package of a scratch worktree of
       projectured-julia; the time from the save to a rebuilt binary that
       shows the change is a few seconds. The founding time is recorded.
+      *As measured, first run (2026-10-31, `tool/gate_i2.sh`, 8 cores,
+      4 image threads):* the founding takes 37 min with a peak of 27.9 GB,
+      above the budget of `bounded-run`; the user allowed a run above it.
+      The front takes 820 s, `jl_emit_native` 229 s, the dump of the
+      shards 244 s; the image is 1.4 GB. The gate is correct: the edit of
+      `get_scroll_layout_cell` and its revert each give an image that
+      answers the new value. The time is not a few seconds: the bare
+      command takes 46 s (the server starts) and 26 s, and the watch 16.8 s
+      from the save to the image. Of one watch rebuild of 15.9 s, the apply
+      takes 6.2 s, of which the ledger 5.17 s, and the save 8.4 s, of which
+      the heap 4.2 s. Two faults of the harness cause most of it. The
+      ledger parses all 982 tracked files at each apply. And the save
+      writes the ledger cache of the server into the image: the image held
+      25187 items of 982 files, 628 MB by `summarysize`, and each overlay
+      had 75 MB of new objects for a one-line edit. The fix: the ledger
+      keeps the parse of each file with its text (`RC_PARSED`) and parses
+      a file again only when its text changed, and the child of the save
+      clears the ledger and the parses before the write. The server of a
+      store runs the harness of its founding image, so the fix needs a new
+      founding.
 - [ ] I3, `jo` from the session image. The session store of
       `environment/all` with `OmnetRepl` as its application. `jo` starts
       `julia -J` on the image of the last snapshot, and starts as today

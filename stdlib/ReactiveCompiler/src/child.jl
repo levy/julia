@@ -44,6 +44,12 @@ const RC_OPTION_MACROS = (Symbol("@compiler_options"), Symbol("@optlevel"), Symb
 # files takes it as its old ledger (a server applies many edits).
 const RC_LEDGER_CACHE = Ref{Any}(nothing)
 
+# The entries of the last parse of each tracked file, by path, with the text
+# they come from: a file whose text is the same at a later ledger of this
+# process takes its entries without a parse. A store tracks the path
+# packages of its Manifest, a thousand files, and an edit changes one.
+const RC_PARSED = Dict{String, Tuple{String, Vector{ReactiveSourceDiff.Entry}}}()
+
 mutable struct RcItem
     file::Int
     path::String
@@ -181,12 +187,17 @@ end
 
 # The items of every file of `files`, read from `texts` (the stored copies
 # for the old ledger, the files themselves for the new one). The parse names
-# the real file.
+# the real file, and a text that `RC_PARSED` holds is not parsed again.
 function rc_ledger(files::Vector{String}, texts::Vector{String})
     items = RcItem[]
     for (index, path) in enumerate(files)
         text = read(texts[index], String)
-        for entry in ReactiveSourceDiff.file_entries(text, path)
+        parsed = get(RC_PARSED, path, nothing)
+        if parsed === nothing || parsed[1] != text
+            parsed = (text, ReactiveSourceDiff.file_entries(text, path))
+            RC_PARSED[path] = parsed
+        end
+        for entry in parsed[2]
             push!(items, RcItem(index, path, entry, ReactiveSourceDiff.entry_kind(entry.expr),
                                 ReactiveSourceDiff.defined_name(entry.expr), Method[]))
         end
@@ -578,6 +589,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     match = rc_match_files(old_files, old_copies, new_files)
     t_ledger = time() - t0
     tracked = Set(new_files)
+    filter!(entry -> entry.first in tracked, RC_PARSED)
     refusals = String[]
     queue = RcQueue()
     removals = RcChange[]
