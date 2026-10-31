@@ -309,6 +309,8 @@ typedef struct {
 #define REACTIVE_CHAIN_MAX 64
 static reactive_chain_image_t reactive_chain[REACTIVE_CHAIN_MAX];
 static size_t reactive_chain_n = 0;
+// The CRC of the overlays of the loaded chain: a part of the identity of the image.
+static uint32_t reactive_chain_crc = 0;
 static char *reactive_syms_buffer = NULL;           // the symbols of the base and the overlays, concatenated
 
 JL_DLLEXPORT int jl_reactive_overlay_mode(void) JL_NOTSAFEPOINT
@@ -5699,9 +5701,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     jl_read_memreflist(&s); // memref_list relocs
     // s.link_ids_gvars will be processed in `jl_update_all_gvars`
     // s.link_ids_external_fns will be processed in `jl_update_all_gvars`
-    if (reactive_chain_n > 0) {
+    if (!s.incremental && reactive_chain_n > 0) {
         // the chain of an overlay-mode process: every image's record sets
-        // its own slots, and every image gets the small typeof table
+        // its own slots, and every image gets the small typeof table; a
+        // package image sets its own slots below
         for (size_t ci = 0; ci < reactive_chain_n; ci++) {
             ios_t record;
             ios_static_buffer(&record, (char*)reactive_chain[ci].gvar.ptr, reactive_chain[ci].gvar.size);
@@ -6072,9 +6075,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     s.s = &sysimg;
     jl_update_all_fptrs(&s, image); // fptr relocs and registration
-    if (reactive_chain_n > 0) {
+    if (!s.incremental && reactive_chain_n > 0) {
         // the chain: the external-function slots of every overlay take the
-        // pointers of the code instances, which the fresh table set now
+        // pointers of the code instances, which the fresh table set now; a
+        // package image rooted its own slots above
         for (size_t ci = 0; ci < reactive_chain_n; ci++) {
             ios_t record;
             ios_static_buffer(&record, (char*)reactive_chain[ci].gvar.ptr, reactive_chain[ci].gvar.size);
@@ -6796,6 +6800,7 @@ static void reactive_chain_load(jl_image_t *image)
     reactive_chain[0].gvar = reactive_sections.gvar;
     reactive_chain[0].external_fns_begin = (uint32_t)(reactive_sections.gvar.size / sizeof(reloc_t));
     reactive_chain_n = 1;
+    reactive_chain_crc = 0;
     jl_image_fptrs_t composed = image->fptrs;
     uint8_t *origin = (uint8_t*)calloc_s(composed.nptrs + 1);
     size_t page = jl_getpagesize();
@@ -6824,6 +6829,7 @@ static void reactive_chain_load(jl_image_t *image)
                       reactive_sections.sysimg.size, reactive_sections.const_data.size, reactive_sections.symbols.size);
         if (reactive_chain_n >= REACTIVE_CHAIN_MAX)
             jl_errorf("reactive: the chain holds more than %d overlays", REACTIVE_CHAIN_MAX);
+        reactive_chain_crc = jl_crc32c(reactive_chain_crc, (const char*)ob.data, ob.size);
         const char *blob = (const char*)ob.data;
         // the new objects, then the patches over the pages they name
         size_t objects_start = reactive_sections.sysimg.size;
@@ -6976,7 +6982,13 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     JL_SIGATOMIC_BEGIN();
     ios_static_buffer(&f, (char *)buf.data, buf.size);
 
-    jl_restore_system_image_from_stream(&f, image, buf.checksum);
+    // A save in overlay mode leaves the base file as it was, so the identity
+    // of the image also names its overlays: a package image built on an
+    // earlier snapshot names another build id of Core, and Julia rejects it.
+    uint32_t checksum = buf.checksum;
+    if (reactive_chain_n > 1)
+        checksum = jl_crc32c(checksum, (const char*)&reactive_chain_crc, sizeof(reactive_chain_crc));
+    jl_restore_system_image_from_stream(&f, image, checksum);
     if (reactive_sections_on) {
         // the lists of the loaded state decode at the first save: a bundle's
         // launcher never saves, and the decode costs a large part of a start
