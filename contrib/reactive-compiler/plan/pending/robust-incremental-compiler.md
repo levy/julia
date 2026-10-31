@@ -1489,6 +1489,28 @@ Build in this order, and stop at a gate that fails:
       Revise included; a package that a session loads later, such as a test
       package, compiles again after each save. (c) is measured with the
       founding of I3.
+      (b) with the overlay write, the default of the omnet builder: the
+      build id of `Core` stays the same across saves, so Julia accepts a
+      package image built on an earlier snapshot, and the load of a
+      package image above an overlay image crashes in
+      `jl_root_new_gvars` (`src/staticdata.c`), even of one compiled on the
+      current image: a slot for an external function names a code instance
+      without a specialized entry. So in overlay mode no package image
+      loads above a reactive image. The IDE binary loads everything from
+      its image and is not affected; the session of I3 is, and must either
+      write its image whole or have this fault fixed.
+      *Fixed (2026-10-31, 5b81de9216):* the restore of a package image ran the two loops over the
+      overlay chain of the system image, so it relocated the slots of the
+      chain in place of its own and rooted the chain's external-function
+      slots a second time; the loops now run for the system image alone.
+      The checksum that becomes `build_id.hi` of the loaded modules now
+      includes a CRC of the overlays of the chain. Measured on the small
+      application in overlay mode: Revise and `B` load above the image,
+      a second session loads `B` without a compile, and after a save Julia
+      rejects the image of `B` and compiles it again. So (b) passes as
+      every whole image does: a package image above the session image is
+      valid for one snapshot. The session image still holds Revise, whose
+      compile takes more than a minute.
 - [x] I1, the path dependencies in the store. `tracked_sources` takes the
       Manifest of the build and adds, for each package with a `path` entry
       that the image loads, the include walk of its root file. A file of a
