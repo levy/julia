@@ -1688,6 +1688,77 @@ struct jl_aliasinfo_t {
     static jl_aliasinfo_t fromTBAA(jl_codectx_t &ctx, MDNode *tbaa);
 };
 
+static bool allpointers(jl_datatype_t *typ)
+{
+    return jl_datatype_size(typ) == typ->layout->npointers * sizeof(void*);
+}
+
+// A class to hold GC roots that can be either:
+// 1. Materialized: a SmallVector of Value* that have already been loaded
+// 2. Lazy: a pointer + count + tbaa that allows loading on demand
+// This allows deferring the load of GC roots until they are actually needed.
+struct jl_gc_roots_t {
+private:
+    // Materialized roots (when ptr is null)
+    SmallVector<Value*,0> roots;
+    // Lazy loading state (when ptr is non-null)
+    Value *ptr = nullptr;
+    size_t count = 0;
+    MDNode *tbaa = nullptr;
+
+public:
+    // Default constructor - empty roots
+    jl_gc_roots_t() = default;
+
+    // Constructor from ArrayRef
+    template <typename U>
+    explicit jl_gc_roots_t(ArrayRef<U*> roots) : roots(roots.begin(), roots.end()) {}
+
+    // Constructor from SmallVector (move)
+    explicit jl_gc_roots_t(SmallVector<Value*,0> &&values) : roots(std::move(values)) {}
+
+    // Constructor for lazy loading
+    jl_gc_roots_t(Value *ptr, size_t count, MDNode *tbaa)
+        : ptr(ptr), count(count), tbaa(tbaa) {}
+
+    // Copy constructor
+    jl_gc_roots_t(const jl_gc_roots_t &other) = default;
+
+    // Move constructor
+    jl_gc_roots_t(jl_gc_roots_t &&other) = default;
+
+    // Copy assignment
+    jl_gc_roots_t &operator=(const jl_gc_roots_t &other) = default;
+
+    // Move assignment
+    jl_gc_roots_t &operator=(jl_gc_roots_t &&other) = default;
+
+    // Get the number of roots
+    size_t size() const { return ptr ? count : roots.size(); }
+
+    // Check if empty
+    bool empty() const { return size() == 0; }
+
+    // Get a pointer to roots (tbaa_gcframe)
+    Value *get_ptr(jl_codectx_t &ctx) const;
+
+    // Get a single root at index i, loading lazily if needed
+    Value *get(jl_codectx_t &ctx, size_t i) const;
+
+    // Truncate to n roots
+    void truncate(size_t n) {
+        if (ptr) {
+            assert(n <= count);
+            count = n;
+        } else {
+            roots.truncate(n);
+        }
+    }
+
+    // Extract roots from [first, first+numel), lazily
+    jl_gc_roots_t slice(jl_codectx_t &ctx, size_t first, size_t numel) const;
+};
+
 // metadata tracking for a llvm Value* during codegen
 const uint8_t UNION_BOX_MARKER = 0x80;
 struct jl_cgval_t {
@@ -1709,7 +1780,7 @@ struct jl_cgval_t {
     Value *Vboxed;
 
     Value *TIndex; // if `V` is an unboxed (tagged) Union described by `typ`, this gives the DataType index (1-based, small int) as an i8
-    SmallVector<Value*,0> inline_roots; // if present, `V` is a pointer, but not in canonical layout
+    jl_gc_roots_t inline_roots; // if present, `V` is a pointer, but not in canonical layout
     jl_value_t *constant; // constant value (rooted in linfo.def.roots)
     jl_value_t *typ; // the original type of V, never nullptr
     bool isboxed; // whether this value is a jl_value_t* allocated on the heap with the right type tag
@@ -1744,11 +1815,11 @@ struct jl_cgval_t {
         assert(TIndex == nullptr || TIndex->getType() == getInt8Ty(TIndex->getContext()));
     }
     jl_cgval_t(Value *Vptr, bool isboxed, jl_value_t *typ, Value *tindex, MDNode *tbaa, Value* inline_roots) = delete;
-    jl_cgval_t(Value *Vptr, bool isboxed, jl_value_t *typ, Value *tindex, MDNode *tbaa, ArrayRef<Value*> inline_roots) : // general pointer constructor
+    jl_cgval_t(Value *Vptr, bool isboxed, jl_value_t *typ, Value *tindex, MDNode *tbaa, jl_gc_roots_t inline_roots) : // general pointer constructor
         V(Vptr),
         Vboxed(isboxed ? Vptr : nullptr),
         TIndex(tindex),
-        inline_roots(inline_roots),
+        inline_roots(std::move(inline_roots)),
         constant(nullptr),
         typ(typ),
         isboxed(isboxed),
@@ -2029,6 +2100,10 @@ static Value *get_current_ptls(jl_codectx_t &ctx);
 static Value *get_tls_world_age(jl_codectx_t &ctx);
 static Value *get_scope_field(jl_codectx_t &ctx);
 static Value *get_tls_world_age_field(jl_codectx_t &ctx);
+static LoadInst *emit_tls_world_age_load(jl_codectx_t &ctx);
+static StoreInst *emit_tls_world_age_store(jl_codectx_t &ctx, Value *world);
+static LoadInst *emit_world_counter_load(jl_codectx_t &ctx, AtomicOrdering order = AtomicOrdering::Acquire);
+static LoadInst *emit_in_pure_callback_load(jl_codectx_t &ctx);
 static void CreateTrap(IRBuilder<> &irbuilder, bool create_new_block = true);
 static CallInst *emit_jlcall(jl_codectx_t &ctx, Value *theFptr, Value *theF,
                              ArrayRef<jl_cgval_t> args, size_t nargs, JuliaFunction<> *trampoline);
@@ -2075,6 +2150,8 @@ static inline GlobalVariable *prepare_global_in(Module *M, GlobalVariable *G)
 
 static Value *emit_ptrgep(jl_codectx_t &ctx, Value *base, size_t byte_offset, const Twine &Name="")
 {
+    if (byte_offset == 0)
+        return base;
     auto *gep = ctx.builder.CreateConstInBoundsGEP1_32(getInt8Ty(ctx.builder.getContext()), base, byte_offset);
     setName(ctx.emission_context, gep, Name);
     return gep;
@@ -2089,6 +2166,15 @@ static Value *emit_ptrgep(jl_codectx_t &ctx, Value *base, Value *byte_offset, co
 
 
 // --- convenience functions for tagging llvm values with julia types ---
+
+// Globals are created in the datalayout's globals address space, which isn't 0 on targets
+// like AMDGPU and SPIR-V. Loads and stores can use such a global directly, but where its
+// address is used as a generic pointer (a call argument, a select operand, an initializer)
+// it has to be cast first.
+static Constant *generic_global_ptr(Constant *GV)
+{
+    return ConstantExpr::getPointerBitCastOrAddrSpaceCast(GV, getPointerTy(GV->getContext()));
+}
 
 static GlobalVariable *get_pointer_to_constant(jl_codegen_params_t &emission_context, Constant *val, Align align, const Twine &name, Module &M)
 {
@@ -2199,7 +2285,7 @@ static inline jl_cgval_t ghostValue(jl_codectx_t &ctx, jl_value_t *typ)
     if (jl_is_type_type(typ)) {
         assert(is_uniquerep_Type(typ));
         // replace T::Type{T} with T, by assuming that T must be a leaftype of some sort
-        jl_cgval_t constant(NULL, true, typ, NULL, best_tbaa(ctx.tbaa(), typ), None);
+        jl_cgval_t constant(NULL, true, typ, NULL, best_tbaa(ctx.tbaa(), typ), jl_gc_roots_t());
         constant.constant = jl_tparam0(typ);
         if (typ == (jl_value_t*)jl_typeofbottom_type->super)
             constant.isghost = true;
@@ -2223,16 +2309,16 @@ static inline jl_cgval_t mark_julia_const(jl_codectx_t &ctx, jl_value_t *jv)
         if (jl_is_datatype_singleton((jl_datatype_t*)typ))
             return ghostValue(ctx, typ);
     }
-    jl_cgval_t constant(NULL, true, typ, NULL, best_tbaa(ctx.tbaa(), typ), None);
+    jl_cgval_t constant(NULL, true, typ, NULL, best_tbaa(ctx.tbaa(), typ), jl_gc_roots_t());
     constant.constant = jv;
     return constant;
 }
 
 
-static inline jl_cgval_t mark_julia_slot(Value *v, jl_value_t *typ, Value *tindex, MDNode *tbaa, ArrayRef<Value*> inline_roots=None)
+static inline jl_cgval_t mark_julia_slot(Value *v, jl_value_t *typ, Value *tindex, MDNode *tbaa, jl_gc_roots_t &&inline_roots=jl_gc_roots_t())
 {
     // this enables lazy-copying of immutable values and stack or argument slots
-    jl_cgval_t tagval(v, false, typ, tindex, tbaa, inline_roots);
+    jl_cgval_t tagval(v, false, typ, tindex, tbaa, std::move(inline_roots));
     return tagval;
 }
 
@@ -2273,12 +2359,8 @@ static inline jl_cgval_t value_to_pointer(jl_codectx_t &ctx, Value *v, jl_value_
 static inline jl_cgval_t value_to_pointer(jl_codectx_t &ctx, const jl_cgval_t &v)
 {
     if (!v.inline_roots.empty()) {
-        //if (v.V == nullptr) {
-        //    AllocaInst *loc = emit_static_roots(ctx, v.inline_roots.size());
-        //    for (size_t i = 0; i < v.inline_roots.counts(); i++)
-        //        ctx.builder.CreateAlignedStore(v.inline_roots[i], emit_ptrgep(ctx, loc, i * sizeof(void*)), Align(sizeof(void*)));
-        //    return mark_julia_slot(loc, v.typ, v.TIndex, ctx.tbaa().tbaa_gcframe);
-        //}
+        if (allpointers((jl_datatype_t*)v.typ))
+            return mark_julia_slot(v.inline_roots.get_ptr(ctx), v.typ, v.TIndex, ctx.tbaa().tbaa_gcframe);
         Align align(julia_alignment(v.typ));
         Type *ty = julia_type_to_llvm(ctx, v.typ);
         AllocaInst *loc = emit_static_alloca(ctx, ty, align);
@@ -2327,7 +2409,7 @@ static inline jl_cgval_t mark_julia_type(jl_codectx_t &ctx, Value *v, bool isbox
             return value_to_pointer(ctx, v, typ, NULL);
     }
     if (isboxed)
-        return jl_cgval_t(v, isboxed, typ, NULL, best_tbaa(ctx.tbaa(), typ), None);
+        return jl_cgval_t(v, isboxed, typ, NULL, best_tbaa(ctx.tbaa(), typ), jl_gc_roots_t());
     return jl_cgval_t(v, typ, NULL);
 }
 
@@ -2386,6 +2468,41 @@ static inline jl_cgval_t update_julia_type(jl_codectx_t &ctx, const jl_cgval_t &
 }
 
 static jl_cgval_t convert_julia_type(jl_codectx_t &ctx, const jl_cgval_t &v, jl_value_t *typ, Value **skip=nullptr);
+
+Value *jl_gc_roots_t::get(jl_codectx_t &ctx, size_t i) const
+{
+    if (ptr) {
+        // Lazy mode - load the root on demand
+        Type *T_prjlvalue = ctx.types().T_prjlvalue;
+        auto roots_ai = jl_aliasinfo_t::fromTBAA(ctx, tbaa);
+        LoadInst *load = ctx.builder.CreateAlignedLoad(T_prjlvalue, emit_ptrgep(ctx, ptr, i * sizeof(jl_value_t*)), Align(sizeof(void*)));
+        roots_ai.decorateInst(load);
+        return load;
+    }
+    return roots[i];
+}
+
+Value *jl_gc_roots_t::get_ptr(jl_codectx_t &ctx) const
+{
+    if (ptr)
+        return ptr;
+    auto roots_ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
+    Value *copyptr = emit_static_roots(ctx, size());
+    for (size_t i = 0; i < size(); i++) {
+        StoreInst *SI = ctx.builder.CreateAlignedStore(get(ctx, i), emit_ptrgep(ctx, copyptr, i * sizeof(void*)), Align(sizeof(void*)));
+        roots_ai.decorateInst(SI);
+    }
+    return copyptr;
+}
+
+jl_gc_roots_t jl_gc_roots_t::slice(jl_codectx_t &ctx, size_t first, size_t numel) const {
+    if (numel == 0)
+        return jl_gc_roots_t();
+    else if (ptr)
+        return jl_gc_roots_t(emit_ptrgep(ctx, ptr, first * sizeof(void*)), numel, tbaa);
+    else
+        return jl_gc_roots_t(ArrayRef(roots).slice(first, numel));
+}
 
 // --- allocating local variables ---
 
@@ -2606,7 +2723,7 @@ static jl_cgval_t convert_julia_type_union(jl_codectx_t &ctx, const jl_cgval_t &
         }
     }
     else {
-        return jl_cgval_t(boxed(ctx, v), true, typ, NULL, best_tbaa(ctx.tbaa(), typ), None);
+        return jl_cgval_t(boxed(ctx, v), true, typ, NULL, best_tbaa(ctx.tbaa(), typ), jl_gc_roots_t());
     }
     return jl_cgval_t(v, typ, new_tindex);
 }
@@ -3306,7 +3423,7 @@ static jl_cgval_t emit_globalop(jl_codectx_t &ctx, jl_module_t *mod, jl_sym_t *s
                         return jl_cgval_t();
                 }
                 bool isboxed = true;
-                bool maybe_null = jl_atomic_load_relaxed(&bnd->value) == NULL;
+                bool maybe_null = true;
                 if (possibly_deprecated) {
                     ctx.builder.CreateCall(prepare_call(jldepcheck_func), { bp });
                 }
@@ -3360,9 +3477,11 @@ static jl_cgval_t emit_globalop(jl_codectx_t &ctx, jl_module_t *mod, jl_sym_t *s
         return mark_julia_type(ctx, r, true, jl_any_type);
     }
     else if (issetglobalonce) {
-        Value *r = ctx.builder.CreateCall(prepare_call(jlcheckassignonce_func),
+        Value *old = ctx.builder.CreateCall(prepare_call(jlcheckassignonce_func),
                 { bp, m, s, mark_callee_rooted(ctx, boxed(ctx, rval)) });
-        return mark_julia_type(ctx, r, true, jl_bool_type);
+        // jl_checked_assignonce returns the previous value, or NULL when the store succeeds.
+        Value *r = ctx.builder.CreateIsNull(old);
+        return mark_julia_type(ctx, r, false, jl_bool_type);
     }
     abort(); // unreachable
 }
@@ -4159,6 +4278,43 @@ static bool emit_builtin_call(jl_codectx_t &ctx, jl_cgval_t *ret, jl_value_t *f,
         }
     }
 
+    else if ((f == BUILTIN(invokelatest) && nargs >= 1) ||
+             (f == BUILTIN(invoke_in_world) && nargs >= 2 &&
+              argv[1].typ == (jl_value_t*)jl_ulong_type)) {
+        // Equivalent to jl_f_invokelatest / jl_f_invoke_in_world, but emitted
+        // inline so that the call through the builtin fptr is avoided and the
+        // world argument (if any) does not need to be boxed:
+        //   size_t last_age = ct->world_age;
+        //   if (!ct->ptls->in_pure_callback) {
+        //       size_t world_counter = jl_atomic_load_acquire(&jl_world_counter);
+        //       // invokelatest has no world argument and always uses world_counter
+        //       ct->world_age = world < world_counter ? world : world_counter;
+        //   }
+        //   ret = jl_apply_generic(args[i], &args[i+1], nargs - i - 1);
+        //   ct->world_age = last_age;
+        // If the applied call throws, the world age is restored by
+        // jl_eh_restore_state at the enclosing catch, as for the builtins.
+        size_t fidx = (f == BUILTIN(invoke_in_world)) ? 2 : 1; // index of the applied function in argv
+        Instruction *last_age = emit_tls_world_age_load(ctx);
+        last_age->setName("last_age");
+        LoadInst *in_pure_callback = emit_in_pure_callback_load(ctx);
+        Value *not_pure = ctx.builder.CreateICmpEQ(in_pure_callback,
+                ConstantInt::get(in_pure_callback->getType(), 0));
+        LoadInst *world_counter = emit_world_counter_load(ctx);
+        Value *target_world = world_counter;
+        if (f == BUILTIN(invoke_in_world)) {
+            Value *world = emit_unbox(ctx, ctx.types().T_size, argv[1], (jl_value_t*)jl_ulong_type);
+            target_world = ctx.builder.CreateSelect(
+                ctx.builder.CreateICmpULT(world, world_counter), world, world_counter);
+        }
+        Value *new_age = ctx.builder.CreateSelect(not_pure, target_world, last_age);
+        emit_tls_world_age_store(ctx, new_age);
+        Value *r = emit_jlcall(ctx, jlapplygeneric_func, nullptr, argv.drop_front(fidx), nargs - fidx + 1, julia_call);
+        emit_tls_world_age_store(ctx, last_age);
+        *ret = mark_julia_type(ctx, r, true, rt);
+        return true;
+    }
+
     else if (f == BUILTIN(tuple)) {
         if (nargs == 0) {
             *ret = ghostValue(ctx, jl_emptytuple_type);
@@ -4946,7 +5102,7 @@ isdefined_unknown_idx:
             if (!obj.inline_roots.empty()) {
                 auto offsets = split_value_field(stt, fieldidx);
                 assert(offsets.second >= 0);
-                fldv = obj.inline_roots[offsets.second];
+                fldv = obj.inline_roots.get(ctx, offsets.second);
             }
             else if (obj.ispointer()) {
                 auto tbaa = best_field_tbaa(ctx, obj, stt, fieldidx, offs);
@@ -5132,16 +5288,11 @@ static jl_cgval_t emit_call_specfun_other(jl_codectx_t &ctx, bool is_opaque_clos
             else if (et->isAggregateType()) {
                 auto tracked = CountTrackedPointers(et);
                 if (tracked.count && !tracked.all) {
-                    Value *val = arg.V;
-                    SmallVector<Value*,0> roots(arg.inline_roots);
-                    if (roots.empty())
-                        std::tie(val, roots) = split_value(ctx, arg, Align(julia_alignment(jt)));
-                    AllocaInst *proots = emit_static_roots(ctx, roots.size());
-                    for (size_t i = 0; i < roots.size(); i++)
-                        ctx.builder.CreateAlignedStore(roots[i], emit_ptrgep(ctx, proots, i * sizeof(void*)), Align(sizeof(void*)));
+                    auto [val, roots, result_tbaa] = split_value(ctx, arg, Align(julia_alignment(jt)), /*copy_required*/false);
+                    Value *proots = roots.get_ptr(ctx);
                     assert(val);
-                    argvals[idx++] = decay_derived(ctx, val);
-                    argvals[idx] = proots;
+                    argvals[idx] = decay_derived(ctx, val);
+                    argvals[++idx] = proots;
                 }
                 else {
                     if (!arg.isboxed)
@@ -5177,7 +5328,7 @@ static jl_cgval_t emit_call_specfun_other(jl_codectx_t &ctx, bool is_opaque_clos
             break;
         case jl_returninfo_t::SRet:
             assert(result);
-            retval = mark_julia_slot(result, jlretty, NULL, ctx.tbaa().tbaa_gcframe, load_gc_roots(ctx, return_roots, returninfo.return_roots, ctx.tbaa().tbaa_gcframe));
+            retval = mark_julia_slot(result, jlretty, NULL, ctx.tbaa().tbaa_gcframe, make_lazy_gc_roots(return_roots, returninfo.return_roots, ctx.tbaa().tbaa_gcframe));
             break;
         case jl_returninfo_t::Union: {
             Value *box = ctx.builder.CreateExtractValue(call, 0);
@@ -5715,7 +5866,7 @@ static jl_cgval_t emit_varinfo(jl_codectx_t &ctx, jl_varinfo_t &vi, jl_sym_t *va
             Value *tindex = NULL;
             if (vi.pTIndex)
                 tindex = ctx.builder.CreateAlignedLoad(getInt8Ty(ctx.builder.getContext()), vi.pTIndex, Align(1), vi.isVolatile);
-            v = mark_julia_slot(ssaslot, vi.value.typ, tindex, ctx.tbaa().tbaa_stack, None);
+            v = mark_julia_slot(ssaslot, vi.value.typ, tindex, ctx.tbaa().tbaa_stack, jl_gc_roots_t());
         }
         if (vi.inline_roots) {
             AllocaInst *varslot = vi.inline_roots;
@@ -5726,7 +5877,13 @@ static jl_cgval_t emit_varinfo(jl_codectx_t &ctx, jl_varinfo_t &vi, jl_sym_t *va
                 T_prjlvalue = AT->getElementType();
             }
             assert(T_prjlvalue == ctx.types().T_prjlvalue);
-            v.inline_roots = load_gc_roots(ctx, varslot, nroots, ctx.tbaa().tbaa_gcframe, vi.isVolatile);
+            SmallVector<Value*,0> gcroots(nroots);
+            auto roots_ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
+            for (size_t i = 0; i < nroots; i++) {
+                Value *ptr = emit_ptrgep(ctx, varslot, i * sizeof(jl_value_t*));
+                gcroots[i] = roots_ai.decorateInst(ctx.builder.CreateAlignedLoad(T_prjlvalue, ptr, Align(sizeof(void*)), vi.isVolatile));
+            }
+            v.inline_roots = jl_gc_roots_t(std::move(gcroots));
         }
         if (vi.usedUndef) {
             assert(vi.defFlag);
@@ -5914,8 +6071,7 @@ static void emit_phinode_assign(jl_codectx_t &ctx, ssize_t idx, jl_value_t *r)
             ctx.builder.CreateMemCpy(phi, align, dest, align, nb, false);
             ctx.builder.CreateLifetimeEnd(dest);
         }
-        slot = mark_julia_slot(phi, phiType, NULL, ctx.tbaa().tbaa_stack,
-                roots.empty() ? ArrayRef<Value*>() : ArrayRef((Value *const *)&roots.front(), roots.size()));
+        slot = mark_julia_slot(phi, phiType, NULL, ctx.tbaa().tbaa_stack, jl_gc_roots_t(ArrayRef(roots)));
     }
     else {
         value_phi = PHINode::Create(vtype, jl_array_nrows(edges), "value_phi");
@@ -6396,18 +6552,6 @@ static std::pair<Function*, Function*> get_oc_function(jl_codectx_t &ctx, jl_met
     return std::make_pair(F, specF);
 }
 
-static void emit_latestworld(jl_codectx_t &ctx)
-{
-    auto world_age_field = get_tls_world_age_field(ctx);
-    LoadInst *world = ctx.builder.CreateAlignedLoad(ctx.types().T_size,
-        prepare_global_in(jl_Module, jlgetworld_global), ctx.types().alignof_ptr,
-        /*isVolatile*/false);
-    world->setOrdering(AtomicOrdering::Acquire);
-    StoreInst *store_world = ctx.builder.CreateAlignedStore(world, world_age_field,
-        ctx.types().alignof_ptr, /*isVolatile*/false);
-    (void)store_world;
-}
-
 // `expr` is not actually clobbered in JL_TRY
 JL_GCC_IGNORE_START("-Wclobbered")
 static jl_cgval_t emit_expr(jl_codectx_t &ctx, jl_value_t *expr, ssize_t ssaidx_0based)
@@ -6770,7 +6914,7 @@ static jl_cgval_t emit_expr(jl_codectx_t &ctx, jl_value_t *expr, ssize_t ssaidx_
         return jl_cgval_t((jl_value_t*)jl_nothing_type);
     }
     else if (head == jl_latestworld_sym && !jl_is_method(ctx.linfo->def.method)) {
-        emit_latestworld(ctx);
+        emit_tls_world_age_store(ctx, emit_world_counter_load(ctx));
         return jl_cgval_t((jl_value_t*)jl_nothing_type);
     }
     else {
@@ -6816,11 +6960,48 @@ static Value *get_current_ptls(jl_codectx_t &ctx)
     return get_current_ptls_from_task(ctx.builder, get_current_task(ctx), ctx.tbaa().tbaa_gcframe);
 }
 
-// Get the address of the world age of the current task
+// Load `ptls->in_pure_callback`
+static LoadInst *emit_in_pure_callback_load(jl_codectx_t &ctx)
+{
+    Type *T_int16 = getInt16Ty(ctx.builder.getContext());
+    Value *field_ptr = emit_ptrgep(ctx, get_current_ptls(ctx),
+            offsetof(jl_tls_states_t, in_pure_callback), "in_pure_callback_ptr");
+    jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
+    return cast<LoadInst>(ai.decorateInst(ctx.builder.CreateAlignedLoad(
+            T_int16, field_ptr, Align(sizeof(int16_t)), "in_pure_callback")));
+}
+
+// Get the address of the world age of the current task.
+// All memory accesses to this field must be tagged tbaa_gcframe (or left untagged).
 static Value *get_tls_world_age_field(jl_codectx_t &ctx)
 {
     Value *ct = get_current_task(ctx);
     return emit_ptrgep(ctx, ct, offsetof(jl_task_t, world_age), "world_age");
+}
+
+// Load the world age of the current task at the current insert point.
+static LoadInst *emit_tls_world_age_load(jl_codectx_t &ctx)
+{
+    jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
+    return cast<LoadInst>(ai.decorateInst(ctx.builder.CreateAlignedLoad(
+            ctx.types().T_size, get_tls_world_age_field(ctx), ctx.types().alignof_ptr)));
+}
+
+// Store the world age of the current task at the current insert point.
+static StoreInst *emit_tls_world_age_store(jl_codectx_t &ctx, Value *world)
+{
+    jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
+    return cast<StoreInst>(ai.decorateInst(ctx.builder.CreateAlignedStore(
+            world, get_tls_world_age_field(ctx), ctx.types().alignof_ptr)));
+}
+
+// Load the global world counter `jl_world_counter` at the current insert point
+static LoadInst *emit_world_counter_load(jl_codectx_t &ctx, AtomicOrdering order)
+{
+    LoadInst *world = ctx.builder.CreateAlignedLoad(ctx.types().T_size,
+        prepare_global_in(jl_Module, jlgetworld_global), ctx.types().alignof_ptr);
+    world->setOrdering(order);
+    return world;
 }
 
 // Get the value of the world age of the current task
@@ -6834,9 +7015,7 @@ static Value *get_tls_world_age(jl_codectx_t &ctx)
         ctx.builder.SetInsertPoint(ctx.topalloca->getParent(), ++ctx.topalloca->getIterator());
         ctx.builder.SetCurrentDebugLocation(ctx.topalloca->getStableDebugLoc());
     }
-    jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
-    auto *world = ctx.builder.CreateAlignedLoad(ctx.types().T_size, get_tls_world_age_field(ctx), ctx.types().alignof_ptr);
-    ai.decorateInst(world);
+    auto *world = emit_tls_world_age_load(ctx);
     if (!toplevel)
         ctx.world_age_at_entry = world;
     return world;
@@ -6887,8 +7066,8 @@ static Function *emit_modifyhelper(jl_codectx_t &ctx2, const jl_cgval_t &op, con
         ArgTy.push_back(rhs.Vboxed->getType());
     if (rhs.TIndex)
         ArgTy.push_back(rhs.TIndex->getType());
-    for (auto &root : rhs.inline_roots)
-        ArgTy.push_back(root->getType());
+    for (size_t i = 0; i < rhs.inline_roots.size(); i++)
+        ArgTy.push_back(rhs.inline_roots.get(ctx2, i)->getType());
     if (gcstack_arg)
         ArgTy.push_back(ctx.builder.getPtrTy());
     FunctionType *FT = FunctionType::get(elty, ArgTy, false);
@@ -6905,8 +7084,12 @@ static Function *emit_modifyhelper(jl_codectx_t &ctx2, const jl_cgval_t &op, con
         rhs.Vboxed = &*AI++;
     if (rhs.TIndex)
         rhs.TIndex = &*AI++;
-    for (size_t i = 0; i < rhs.inline_roots.size(); i++)
-        rhs.inline_roots[i] = &*AI++;
+    if (!rhs.inline_roots.empty()) {
+        SmallVector<Value*,0> new_roots(rhs.inline_roots.size());
+        for (size_t i = 0; i < rhs.inline_roots.size(); i++)
+            new_roots[i] = &*AI++;
+        rhs.inline_roots = jl_gc_roots_t(std::move(new_roots));
+    }
     rhs.promotion_point = nullptr;
     rhs.promotion_ssa = -1;
     if (gcstack_arg) {
@@ -7059,12 +7242,12 @@ static void emit_specsig_to_specsig(
             ++AI;
             if (!isboxed && et->isAggregateType()) {
                 auto tracked = CountTrackedPointers(et);
-                SmallVector<Value*,0> roots;
+                jl_gc_roots_t roots;
                 if (tracked.count && !tracked.all) {
-                    roots = load_gc_roots(ctx, &*AI, tracked.count, ctx.tbaa().tbaa_const);
+                    roots = make_lazy_gc_roots(&*AI, tracked.count, ctx.tbaa().tbaa_const);
                     ++AI;
                 }
-                myargs[i] = mark_julia_slot(arg_v, jt, NULL, ctx.tbaa().tbaa_const, roots);
+                myargs[i] = mark_julia_slot(arg_v, jt, NULL, ctx.tbaa().tbaa_const, std::move(roots));
             }
             else {
                 assert(arg_v->getType() == et);
@@ -7293,7 +7476,7 @@ std::string emit_abi_constreturn(Module *M, jl_codegen_params_t &params, bool sp
 // if (last_world_v != jl_world_counter)
 //   fptr = compute_new_fptr(&last_world_v)
 // return fptr()
-static jl_cgval_t emit_abi_call(jl_codectx_t &ctx, jl_value_t *declrt, jl_value_t *sigt, ArrayRef<jl_cgval_t> inputargs, size_t nargs, Value *world_age_field)
+static jl_cgval_t emit_abi_call(jl_codectx_t &ctx, jl_value_t *declrt, jl_value_t *sigt, ArrayRef<jl_cgval_t> inputargs, size_t nargs)
 {
     jl_cgval_t retval;
     if (sigt) {
@@ -7317,22 +7500,20 @@ static jl_cgval_t emit_abi_call(jl_codectx_t &ctx, jl_value_t *declrt, jl_value_
                     Vnull,
                     Vnull,
                     Vnull,
-                    literal_pointer_val_slot(ctx.emission_context, M, declrt),
-                    literal_pointer_val_slot(ctx.emission_context, M, sigt),
+                    generic_global_ptr(literal_pointer_val_slot(ctx.emission_context, M, declrt)),
+                    generic_global_ptr(literal_pointer_val_slot(ctx.emission_context, M, sigt)),
                     literal_static_pointer_val((void*)flags, T_ptr)}));
         Value *last_world_p = ctx.builder.CreateConstInBoundsGEP1_32(ctx.types().T_size, cfuncdata, 1);
         LoadInst *last_world_v = ctx.builder.CreateAlignedLoad(T_size, last_world_p, ctx.types().alignof_ptr);
         last_world_v->setOrdering(AtomicOrdering::Acquire);
         LoadInst *callee = ctx.builder.CreateAlignedLoad(T_ptr, cfuncdata, ctx.types().alignof_ptr);
         callee->setOrdering(AtomicOrdering::Monotonic);
-        LoadInst *world_v = ctx.builder.CreateAlignedLoad(ctx.types().T_size,
-            prepare_global_in(M, jlgetworld_global), ctx.types().alignof_ptr);
-        world_v->setOrdering(AtomicOrdering::Acquire);
-        ctx.builder.CreateStore(world_v, world_age_field);
+        LoadInst *world_v = emit_world_counter_load(ctx, AtomicOrdering::Acquire);
+        emit_tls_world_age_store(ctx, world_v);
         Value *age_not_ok = ctx.builder.CreateICmpNE(last_world_v, world_v);
         Value *target = emit_guarded_test(ctx, age_not_ok, callee, [&] {
                 Function *getcaller = prepare_call(jlgetabiconverter_func);
-                CallInst *cw = ctx.builder.CreateCall(getcaller, {get_current_task(ctx), cfuncdata});
+                CallInst *cw = ctx.builder.CreateCall(getcaller, {get_current_task(ctx), generic_global_ptr(cfuncdata)});
                 cw->setAttributes(getcaller->getAttributes());
                 return cw;
             });
@@ -7454,10 +7635,7 @@ static Function *gen_cfun_wrapper(
     ctx.builder.SetCurrentDebugLocation(noDbg);
     allocate_gc_frame(ctx, b0, true);
 
-    auto world_age_field = get_tls_world_age_field(ctx);
-    jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
-    ctx.world_age_at_entry = ai.decorateInst(
-            ctx.builder.CreateAlignedLoad(ctx.types().T_size, world_age_field, ctx.types().alignof_ptr));
+    ctx.world_age_at_entry = emit_tls_world_age_load(ctx);
 
     // first emit code to record the arguments
     Function::arg_iterator AI = cw->arg_begin();
@@ -7617,7 +7795,7 @@ static Function *gen_cfun_wrapper(
     assert(AI == cw->arg_end());
 
     // Create the call
-    jl_cgval_t retval = emit_abi_call(ctx, declrt, sigt, inputargs, nargs + 1, world_age_field);
+    jl_cgval_t retval = emit_abi_call(ctx, declrt, sigt, inputargs, nargs + 1);
     bool jlfunc_sret = retval.V && isa<AllocaInst>(retval.V) && !retval.TIndex && retval.inline_roots.empty();
 
     // Prepare the return value
@@ -7650,7 +7828,7 @@ static Function *gen_cfun_wrapper(
         r = NULL;
     }
 
-    ctx.builder.CreateStore(ctx.world_age_at_entry, world_age_field);
+    emit_tls_world_age_store(ctx, ctx.world_age_at_entry);
     ctx.builder.CreateRet(r);
 
     ctx.builder.SetCurrentDebugLocation(noDbg);
@@ -7830,13 +8008,13 @@ static jl_cgval_t emit_cfunction(jl_codectx_t &ctx, jl_value_t *output_type, con
             JL_GC_POP();
         }
         Type *T_htable = ArrayType::get(ctx.types().T_size, sizeof(htable_t) / sizeof(void*));
-        Value *cache = new GlobalVariable(*jl_Module, T_htable, false,
+        GlobalVariable *cache = new GlobalVariable(*jl_Module, T_htable, false,
                                GlobalVariable::PrivateLinkage,
                                ConstantAggregateZero::get(T_htable));
         F = ctx.builder.CreateCall(prepare_call(jlgetcfunctiontrampoline_func), {
                  fobj,
                  literal_pointer_val(ctx, output_type),
-                 cache,
+                 generic_global_ptr(cache),
                  literal_pointer_val(ctx, (jl_value_t*)fill),
                  F,
                  closure_types ? literal_pointer_val(ctx, (jl_value_t*)unionall_env) : Constant::getNullValue(ctx.types().T_pjlvalue),
@@ -8740,12 +8918,8 @@ static jl_llvm_functions_t
         emit_gc_safepoint(ctx.builder, ctx.types().T_size, get_current_ptls(ctx), ctx.tbaa().tbaa_const);
 
     Value *last_age = NULL;
-    Value *world_age_field = NULL;
     if (ctx.is_opaque_closure) {
-        world_age_field = get_tls_world_age_field(ctx);
-        jl_aliasinfo_t ai = jl_aliasinfo_t::fromTBAA(ctx, ctx.tbaa().tbaa_gcframe);
-        last_age = ai.decorateInst(ctx.builder.CreateAlignedLoad(
-                   ctx.types().T_size, world_age_field, ctx.types().alignof_ptr));
+        last_age = emit_tls_world_age_load(ctx);
     }
 
     // step 7. allocate local variables slots
@@ -8794,7 +8968,7 @@ static jl_llvm_functions_t
             AllocaInst *roots = sizes.second > 0 ? emit_static_roots(ctx, sizes.second) : nullptr;
             if (bits) bits->setName(jl_symbol_name(s));
             if (roots) roots->setName(StringRef(".roots.") + jl_symbol_name(s));
-            varinfo.value = mark_julia_slot(bits, jt, NULL, ctx.tbaa().tbaa_stack, None);
+            varinfo.value = mark_julia_slot(bits, jt, NULL, ctx.tbaa().tbaa_stack, jl_gc_roots_t());
             varinfo.inline_roots = roots;
             alloc_def_flag(ctx, varinfo);
             if (debug_enabled && varinfo.dinfo) {
@@ -8893,11 +9067,11 @@ static jl_llvm_functions_t
         jl_cgval_t theArg;
         if (!isboxed && llvmArgType->isAggregateType()) {
             maybe_mark_argument_dereferenceable(param, argType);
-            SmallVector<Value*,0> roots;
+            jl_gc_roots_t roots;
             auto tracked = CountTrackedPointers(llvmArgType);
             if (tracked.count && !tracked.all) {
                 Argument *RootArg = &*AI;
-                roots = load_gc_roots(ctx, RootArg, tracked.count, ctx.tbaa().tbaa_const);
+                roots = make_lazy_gc_roots(RootArg, tracked.count, ctx.tbaa().tbaa_const);
                 AttrBuilder param(ctx.builder.getContext(), f->getAttributes().getParamAttrs(Arg->getArgNo()));
                 param.addAttribute(Attribute::NonNull);
                 param.addAttribute(Attribute::NoUndef);
@@ -8906,7 +9080,7 @@ static jl_llvm_functions_t
                 attrs[RootArg->getArgNo()] = AttributeSet::get(Arg->getContext(), param);
                 ++AI;
             }
-            theArg = mark_julia_slot(Arg, argType, NULL, ctx.tbaa().tbaa_const, roots); // this argument is by-pointer
+            theArg = mark_julia_slot(Arg, argType, NULL, ctx.tbaa().tbaa_const, std::move(roots)); // this argument is by-pointer
         }
         else {
             if (isboxed)
@@ -8937,7 +9111,7 @@ static jl_llvm_functions_t
                 nullptr, nullptr, false, AtomicOrdering::NotAtomic, false, alignof_ptr.value());
             assert(ctx.world_age_at_entry == nullptr);
             ctx.world_age_at_entry = closure_world.V; // The tls world in a OC is the world of the closure
-            emit_unbox_store(ctx, closure_world, world_age_field, ctx.tbaa().tbaa_gcframe, alignof_ptr, alignof_ptr);
+            emit_unbox_store(ctx, closure_world, get_tls_world_age_field(ctx), ctx.tbaa().tbaa_gcframe, alignof_ptr, alignof_ptr);
 
             if (s == jl_unused_sym || vi.value.constant)
                 continue;
@@ -9466,7 +9640,7 @@ static jl_llvm_functions_t
             // N.B.: For toplevel thunks, we expect world age restore to be handled
             // by the interpreter which invokes us.
             if (ctx.is_opaque_closure)
-                ctx.builder.CreateStore(last_age, world_age_field);
+                emit_tls_world_age_store(ctx, last_age);
             assert(type_is_ghost(retty) || returninfo.cc == jl_returninfo_t::SRet ||
                 retval->getType() == ctx.f->getReturnType());
             ctx.builder.CreateRet(retval);
@@ -9901,8 +10075,11 @@ static jl_llvm_functions_t
         bool error = L.linkInModule(std::move(Mod));
         assert(!error && "linking llvmcall modules failed");
         (void)error;
+        // local definitions may be gone (the linker drops those that nothing
+        // references) or unnamed, and those are internal already
         for (auto FN: Exports)
-            jl_Module->getFunction(FN)->setLinkage(GlobalVariable::InternalLinkage);
+            if (Function *F = jl_Module->getFunction(FN))
+                F->setLinkage(GlobalVariable::InternalLinkage);
     }
 
     JL_GC_POP();

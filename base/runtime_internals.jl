@@ -1391,6 +1391,7 @@ julia> instances(Color)
 function instances end
 
 function to_tuple_type(@nospecialize(t))
+    @_terminates_locally_meta
     if isa(t, Tuple) || isa(t, AbstractArray) || isa(t, SimpleVector)
         t = Tuple{t...}
     end
@@ -1463,7 +1464,7 @@ get_world_counter() = ccall(:jl_get_world_counter, UInt, ())
 """
     tls_world_age()
 
-Returns the world the [current_task()](@ref) is executing within.
+Returns the world the [`current_task`](@ref) is executing within.
 """
 tls_world_age() = ccall(:jl_get_tls_world_age, UInt, ())
 

@@ -620,7 +620,7 @@ function show_method_candidates(io::IO, ex::MethodError, kwargs=[])
             println(iob)
 
             m = parentmodule_before_main(method)
-            modulecolor = get!(() -> popfirst!(STACKTRACE_MODULECOLORS), STACKTRACE_FIXEDCOLORS, m)
+            modulecolor = get_stacktrace_color(m)
             print_module_path_file(iob, m, string(file), line; modulecolor, digit_align_width = 3)
             push!(lines, takestring!(buf))
             push!(line_score, -(right_matches * 2 + (length(arg_types_param) < 2 ? 1 : 0)))
@@ -660,6 +660,12 @@ const update_stackframes_callback = Ref{Function}(identity)
 
 const STACKTRACE_MODULECOLORS = Iterators.Stateful(Iterators.cycle([:magenta, :cyan, :green, :yellow]))
 const STACKTRACE_FIXEDCOLORS = IdDict(Base => :light_black, Core => :light_black)
+# Profile's package colors share the same color cycler.
+const STACKTRACE_COLORS_LOCK = ReentrantLock()
+
+function get_stacktrace_color(key, colordict=STACKTRACE_FIXEDCOLORS, colorcycler=STACKTRACE_MODULECOLORS)
+    return @lock STACKTRACE_COLORS_LOCK get!(() -> popfirst!(colorcycler), colordict, key)
+end
 
 const BIG_STACKTRACE_SIZE = 50 # Arbitrary constant chosen here
 
@@ -810,7 +816,7 @@ function print_stackframe(io, i, frame::StackFrame, ndigits_max::Int, max_nested
     m = Base.parentmodule(frame)
     modulecolor = if m !== nothing
         m = parentmodule_before_main(m)
-        get!(() -> popfirst!(modulecolorcycler), modulecolordict, m)
+        get_stacktrace_color(m, modulecolordict, modulecolorcycler)
     else
         :default
     end
@@ -976,7 +982,7 @@ end
 
 function _backtrace_remove_kwcall_frames!(trace)
     todelete = findall(trace) do (frame, _)
-        code = frame.linfo
+        code = StackTraces.frame_mi(frame)
         if code isa MethodInstance
             def = code.def
             if def isa Method && def.name !== :kwcall && def.sig <: Tuple{typeof(Core.kwcall),NamedTuple,Any,Vararg}
@@ -985,7 +991,7 @@ function _backtrace_remove_kwcall_frames!(trace)
                 # the argument list, since it has the right line number info)
                 return true
             end
-        else
+        else # this branch may not be needed, from before current keyword argument handling
             frame.func === :kwcall && return true
         end
         return false

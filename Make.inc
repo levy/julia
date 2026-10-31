@@ -1135,6 +1135,11 @@ ifeq ($(ISX86),1)
 SHIPFLAGS_GCC += -momit-leaf-frame-pointer
 endif
 
+# On 32-bit x86, make sure not to use 80-bit x87 math when we want 64-bit math.
+ifeq ($(ISX86)$(BINARY),132)
+JCFLAGS += -mfpmath=sse
+endif
+
 # File name of make binary-dist result
 ifeq ($(JULIA_BINARYDIST_FILENAME),)
 DIST_OS:=$(shell echo $(OS) | tr '[:upper:]' '[:lower:]')
@@ -1152,10 +1157,6 @@ ifneq (,$(filter $(ARCH), powerpc64le ppc64le))
 DIST_ARCH:=ppc64le
 endif
 ifeq (1,$(ISX86))
-# on x86 make sure not to use 80 bit math when we want 64 bit math.
-ifeq (32,$(BINARY))
-JCFLAGS += -mfpmath=sse
-endif
 DIST_ARCH:=$(BINARY)
 endif
 ifneq (,$(findstring arm,$(ARCH)))
@@ -1439,6 +1440,17 @@ BB_TRIPLET_CXXABI := $(subst $(SPACE),-,$(filter-out libgfortran%,$(subst -,$(SP
 BB_TRIPLET := $(subst $(SPACE),-,$(filter-out cxx%,$(filter-out libgfortran%,$(subst -,$(SPACE),$(BB_TRIPLET_LIBGFORTRAN_CXXABI)))))
 
 LIBGFORTRAN_VERSION := $(subst libgfortran,,$(filter libgfortran%,$(subst -,$(SPACE),$(BB_TRIPLET_LIBGFORTRAN))))
+
+# The C library of the target. This only matters on Linux, where it is either glibc
+# (`*-linux-gnu*`) or musl (`*-linux-musl*`) as recorded in the normalized triplet;
+# it is left empty elsewhere.
+ifeq ($(OS),Linux)
+ifneq (,$(findstring musl,$(BB_TRIPLET)))
+LIBC := musl
+else
+LIBC := glibc
+endif
+endif
 
 # CSL_NEXT_GLIBCXX_VERSION is a triple of the symbols representing support for whatever
 # the next libstdc++ version would be. This is used for two things.

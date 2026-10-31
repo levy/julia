@@ -1048,7 +1048,7 @@ __safe_setindex!(A::Vector{T}, x,    i::Int) where {T} = (@inline;
 # This is redundant with the abstract fallbacks but needed and helpful for bootstrap
 function setindex!(A::Array, X::AbstractArray, I::AbstractVector{Int})
     @_propagate_inbounds_meta
-    @boundscheck setindex_shape_check(X, length(I))
+    setindex_shape_check(X, length(I))
     @boundscheck checkbounds(A, I)
     require_one_based_indexing(X)
     X′ = unalias(A, X)
@@ -1066,7 +1066,7 @@ function setindex!(A::Array{T}, X::Array{T}, I::AbstractUnitRange{Int}) where T
     @inline
     @boundscheck checkbounds(A, I)
     lI = length(I)
-    @boundscheck setindex_shape_check(X, lI)
+    setindex_shape_check(X, lI)
     if lI > 0
         unsafe_copyto!(A, first(I), X, 1, lI)
     end
@@ -1075,7 +1075,7 @@ end
 function setindex!(A::Array{T}, X::Array{T}, c::Colon) where T
     @inline
     lI = length(A)
-    @boundscheck setindex_shape_check(X, lI)
+    setindex_shape_check(X, lI)
     if lI > 0
         unsafe_copyto!(A, 1, X, 1, lI)
     end
@@ -1464,7 +1464,12 @@ julia> prepend!([6], [1, 2], [3, 4, 5])
 function prepend! end
 
 function prepend!(a::Vector{T}, items::Union{AbstractVector{<:T},Tuple}) where T
-    items isa Tuple && (items = map(x -> convert(T, x), items))
+    if items isa Tuple
+        items = map(x -> convert(T, x), items)
+    elseif items !== a
+        # growing at the front moves the data of `a`, which a view of `a` would then misread
+        items = unalias(a, items)
+    end
     n = length(items)
     _growbeg!(a, n)
     # in case of aliasing, the _growbeg might have shifted our data, so copy

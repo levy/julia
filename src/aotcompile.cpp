@@ -1627,7 +1627,7 @@ static AOTOutputs add_output_impl(Module &M, TargetMachine &SourceTM, ShardTimer
             // BFloat16 conversion routines
             injectCRTAlias(M, "__truncsfbf2", "julia__truncsfbf2",
                     FunctionType::get(Type::getBFloatTy(M.getContext()), { Type::getFloatTy(M.getContext()) }, false));
-            injectCRTAlias(M, "__truncsdbf2", "julia__truncdfbf2",
+            injectCRTAlias(M, "__truncdfbf2", "julia__truncdfbf2",
                     FunctionType::get(Type::getBFloatTy(M.getContext()), { Type::getDoubleTy(M.getContext()) }, false));
         }
         timers.optimize.stopTimer();
@@ -2387,8 +2387,11 @@ void jl_dump_native_impl(void *native_code,
             jl_small_typeof_copy->setVisibility(GlobalValue::HiddenVisibility);
             jl_small_typeof_copy->setDSOLocal(true);
 
-            // Create CPU target string constant
-            auto cpu_target_str = jl_options.cpu_target ? jl_options.cpu_target : "native";
+            // Create CPU target string constant. Expand the "sysimage" keyword so that the
+            // stored string is usable when this image is later loaded with `--cpu-target=sysimage`.
+            char *expanded = jl_expand_sysimage_keyword(jl_options.cpu_target ? jl_options.cpu_target : "native");
+            std::string cpu_target_str(expanded);
+            free(expanded);
             auto cpu_target_data = ConstantDataArray::getString(Context, cpu_target_str, true);
             auto cpu_target_global = new GlobalVariable(metadataM, cpu_target_data->getType(), true,
                                                        GlobalVariable::InternalLinkage,

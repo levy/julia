@@ -902,17 +902,10 @@ function type_annotate!(::AbstractInterpreter, sv::InferenceState)
 end
 
 function merge_call_chain!(::AbstractInterpreter, parent::InferenceState, child::InferenceState)
-    # add backedge of parent <- child
-    # then add all backedges of parent <- parent.parent
+    # update all cycleid to be in the same group
     frames = parent.callstack::Vector{AbsIntState}
     @assert child.callstack === frames
     ancestorid = child.cycleid
-    while true
-        add_cycle_backedge!(parent, child)
-        parent.cycleid === ancestorid && break
-        child = parent
-        parent = cycle_parent(child)::InferenceState
-    end
     # ensure that walking the callstack has the same cycleid (DAG)
     for frameid = reverse(ancestorid:length(frames))
         frame = frames[frameid]::InferenceState
@@ -923,7 +916,6 @@ function merge_call_chain!(::AbstractInterpreter, parent::InferenceState, child:
 end
 
 function add_cycle_backedge!(caller::InferenceState, frame::InferenceState)
-    update_valid_age!(caller, frame.world.valid_worlds)
     backedge = (caller, caller.currpc)
     contains_is(frame.cycle_backedges, backedge) || push!(frame.cycle_backedges, backedge)
     return frame
@@ -942,9 +934,8 @@ end
 # frame matching `mi` is encountered, then there is a cycle in the call graph
 # (i.e. `mi` is a descendant callee of itself). Upon encountering this cycle,
 # we "resolve" it by merging the call chain, which entails updating each intermediary
-# frame's `cycleid` field and adding the appropriate backedges. Finally,
-# we return `mi`'s pre-existing frame. If no cycles are found, `nothing` is
-# returned instead.
+# frame's `cycleid` field. Finally, we return `mi`'s pre-existing frame.
+# If no cycles are found, `nothing` is returned instead.
 function resolve_call_cycle!(interp::AbstractInterpreter, mi::MethodInstance, parent::AbsIntState)
     # TODO (#48913) implement a proper recursion handling for irinterp:
     # This works most of the time currently just because the irinterp code doesn't get used much with
@@ -1128,6 +1119,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                     result.ci_as_edge = edge_ci # set the edge for the inliner usage
                     VolatileInferenceResult(result)
                 end
+                isinferred || add_cycle_backedge!(caller, frame)
                 mresult[] = MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects,
                     edge, edgecycle, edgelimited, volatile_inf_result)
                 return true
@@ -1145,6 +1137,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     effects = adjust_effects(effects_for_cycle(frame.ipo_effects), method)
     bestguess = frame.bestguess
     exc_bestguess = refine_exception_type(frame.exc_bestguess, effects)
+    add_cycle_backedge!(caller, frame)
     return Future(MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects, nothing, edgecycle, edgelimited))
 end
 
@@ -1480,6 +1473,29 @@ markinspected!(queue::CompilationQueue, item) = push!(queue.inspected, item)
 isinspected(queue::CompilationQueue, item) = item in queue.inspected
 Base.isempty(queue::CompilationQueue) = isempty(queue.tocompile)
 
+# The runner of a `Threads.@threads` loop is not specialized on the loop body, so its tasks
+# call the body through a dynamic dispatch, which `--trim` cannot follow. So at each call of
+# the runner, where the body type is known, return the signature of that body call for the
+# trim compiler to compile and verify. Return `nothing` for any other invoke.
+function threads_deferred_call_type(stmt::Expr, ci::CodeInfo, sptypes::Vector{VarState})
+    length(stmt.args) == 4 || return nothing
+    edge = stmt.args[1]
+    def = edge isa CodeInstance ? get_ci_mi(edge).def : edge isa MethodInstance ? edge.def : nothing
+    def isa Method || return nothing
+    is_base_threads_method(def, :threading_run) || return nothing
+    ft = argextype(stmt.args[3], ci, sptypes)
+    return argtypes_to_type(Any[ft, Int])
+end
+
+# Identified by name rather than through the `Base.Threads` binding, which does not exist
+# in the world this code is compiled in.
+function is_base_threads_method(def::Method, name::Symbol)
+    m = def.module
+    return def.name === name && nameof(m) === :Threads && parentmodule(m) === Base
+end
+
+is_threads_call_def(@nospecialize def) = def isa Method && is_base_threads_method(def, :_threads_call)
+
 # collect a list of all code that is needed along with CodeInstance to codegen it fully
 function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vector{VarState};
                          invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
@@ -1497,6 +1513,13 @@ function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vec
                     (isexpr(stmt, :invoke_modify) ||
                      !(external_linkage && ci_from_image(edge) && ci_has_invoke(edge)))
                 push!(workqueue, edge)
+            end
+        end
+        if invokelatest_queue !== nothing && isexpr(stmt, :invoke)
+            atype = threads_deferred_call_type(stmt, ci, sptypes)
+            if atype !== nothing
+                mi = compileable_specialization_for_call(invokelatest_queue.interp, atype)
+                mi === nothing || push!(invokelatest_queue, mi)
             end
         end
 
@@ -1727,7 +1750,7 @@ function typeinf_ext_toplevel(methods::Vector{Any}, worlds::Vector{UInt}, trim_m
 end
 
 const _verify_trim_world_age = RefValue{UInt}(typemax(UInt))
-verify_typeinf_trim(codeinfos::Vector{Any}, onlywarn::Bool) = Core._call_in_world(_verify_trim_world_age[], verify_typeinf_trim, stdout, codeinfos, onlywarn)
+verify_typeinf_trim(codeinfos::Vector{Any}, onlywarn::Bool) = Core._call_in_world(_verify_trim_world_age[], verify_typeinf_trim, Base.stderr, codeinfos, onlywarn)
 
 function return_type(@nospecialize(f), t::DataType) # this method has a special tfunc
     world = tls_world_age()

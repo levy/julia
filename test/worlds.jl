@@ -527,6 +527,24 @@ Base.delete_method(fshadow_m2)
 
 @test_throws "Method of fshadow already disabled" Base.delete_method(fshadow_m2)
 
+# A caller compiled with an ambiguous callee instead compiles a `throw(::MethodError)`.
+# Deleting one of the ambiguous methods must invalidate the caller (#63224).
+module AmbiguousDeletion
+f(::Nothing, x) = :nothing_method
+f(x, ::Int) = :int_method
+g(a, b) = f(a, b)
+end
+@test_throws "is ambiguous" AmbiguousDeletion.g(nothing, 1)
+wc_ambiguous = get_world_counter()
+Base.delete_method(which(AmbiguousDeletion.f, (Any, Int)))
+@test AmbiguousDeletion.f(nothing, 1) === :nothing_method
+@test AmbiguousDeletion.g(nothing, 1) === :nothing_method
+@test Base.invokelatest(AmbiguousDeletion.g, nothing, 1) === :nothing_method
+# The deletion is not retroactive: earlier worlds retain the ambiguity.
+# `showerror` looks up candidates in the latest world, so test the exception rather than its message.
+@test_throws MethodError Base.invoke_in_world(wc_ambiguous, AmbiguousDeletion.f, nothing, 1)
+@test_throws MethodError Base.invoke_in_world(wc_ambiguous, AmbiguousDeletion.g, nothing, 1)
+
 # Generated functions without edges must have min_world = 1.
 # N.B.: If changing this, move this test to precompile and make sure
 # that the specialization survives revalidation.
@@ -643,3 +661,23 @@ let ci = method_instance(fshow61667, (Vector{ShowInval61667},)).cache
     Core.eval(Main, :(struct ShowInval61667 end))
     @test ci.max_world == typemax(UInt)
 end
+
+# a keyword method whose function argument is a Vararg still invalidates callers
+# that were compiled against no matching keyword method
+kwvararg_f(x) = 1
+kwvararg_caller() = kwvararg_f(; x=1)
+@test_throws MethodError kwvararg_caller()
+Core.kwcall(::NamedTuple{(:x,)}, ::typeof(kwvararg_f)...) = 2
+@test kwvararg_caller() === 2
+
+# a method on a kind still invalidates callers that were compiled against no
+# matching constructor
+abstract type KindCalleeT end
+struct KindCalleeArg end
+kindcallee_caller() = KindCalleeT(KindCalleeArg(), KindCalleeArg())
+@test_throws MethodError kindcallee_caller()
+(::DataType)(::KindCalleeArg, ::KindCalleeArg) = 2
+@test kindcallee_caller() === 2
+# every type now has this constructor method, so remove it before later test files look at their methods
+Base.delete_method(which(KindCalleeT, Tuple{KindCalleeArg, KindCalleeArg}))
+@test_throws MethodError kindcallee_caller()

@@ -1520,6 +1520,8 @@ static int bindingkey_eq(size_t idx, const void *var, jl_value_t *data, uint_t h
     if (idx >= jl_svec_len(data))
         return 0; // We got a OOB access, probably due to a data race
     jl_binding_t *b = (jl_binding_t*)jl_svecref(data, idx);
+    if (b == NULL || (jl_value_t*)b == jl_nothing)
+        return 0; // slot not yet published, probably due to a data race
     jl_sym_t *name = b->globalref->name;
     return var == name;
 }
@@ -1825,7 +1827,7 @@ JL_DLLEXPORT void jl_deprecate_binding(jl_module_t *m, jl_sym_t *var, int flag)
                                    0;
     JL_LOCK(&world_counter_lock);
     size_t new_world = jl_atomic_load_acquire(&jl_world_counter)+1;
-    jl_binding_partition_t *old_bpart = jl_get_binding_partition(b, jl_current_task->world_age);
+    jl_binding_partition_t *old_bpart = jl_get_binding_partition(b, new_world);
     if ((old_bpart->kind & DEPWARN_FLAGS) == new_flags) {
         JL_UNLOCK(&world_counter_lock);
         return;
@@ -1939,7 +1941,7 @@ JL_DLLEXPORT jl_value_t *jl_checked_modify(jl_binding_t *b, jl_module_t *mod, jl
     if (jl_bkind_is_some_constant(kind))
         jl_errorf("invalid assignment to constant %s.%s",
                   jl_symbol_name(mod->name), jl_symbol_name(var));
-    jl_value_t *ty = bpart->restriction;
+    jl_value_t *ty = kind == PARTITION_KIND_DECLARED ? (jl_value_t*)jl_any_type : bpart->restriction;
     JL_GC_PROMISE_ROOTED(ty);
     return modify_value(ty, &b->value, (jl_value_t*)b, op, rhs, 1, b, mod, var);
 }

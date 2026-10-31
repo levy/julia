@@ -494,6 +494,27 @@ static inline int get_clone_base(const char *start, const char *end)
     return (int)idx + 1;
 }
 
+// The CPU target string stored in the loaded sysimage (see `jl_set_sysimage_cpu_target`)
+static std::string sysimage_cpu_target;
+
+// If `cpu_target` starts with the "sysimage" keyword, replace it with the target string
+// stored in the loaded sysimage ("native" if no sysimage is loaded). Otherwise return as-is.
+static std::string expand_sysimage_keyword(const char *cpu_target)
+{
+    std::string option(cpu_target);
+    if (option.compare(0, 8, "sysimage") == 0 && (option.size() == 8 || option[8] == ';')) {
+        std::string expanded = sysimage_cpu_target.empty() ? "native" : sysimage_cpu_target;
+        expanded += option.substr(8);  // append the rest after "sysimage"
+        return expanded;
+    }
+    return option;
+}
+
+extern "C" JL_DLLEXPORT char *jl_expand_sysimage_keyword(const char *cpu_target)
+{
+    return strdup(expand_sysimage_keyword(cpu_target).c_str());
+}
+
 // Parse cmdline string. This handles `clone_all` and `base` special features.
 // Other feature names will be passed to `feature_cb` for target dependent parsing.
 template<size_t n, typename F>
@@ -503,19 +524,9 @@ parse_cmdline(const char *option, F &&feature_cb)
     if (!option)
         abort();
 
-    // Preprocess the option string to expand "sysimage" keyword
-    std::string processed_option;
-    if (strncmp(option, "sysimage", 8) == 0 && (option[8] == '\0' || option[8] == ';')) {
-        // Replace "sysimage" with the actual sysimage CPU target
-        jl_value_t *target_str = jl_get_sysimage_cpu_target();
-        if (target_str != nullptr) {
-            processed_option = std::string(jl_string_data(target_str), jl_string_len(target_str));
-            if (option[8] == ';') {
-                processed_option += option + 8;  // append the rest after "sysimage"
-            }
-            option = processed_option.c_str();
-        }
-    }
+    // Expand the "sysimage" keyword to the target string stored in the loaded sysimage
+    std::string processed_option = expand_sysimage_keyword(option);
+    option = processed_option.c_str();
 
     llvm::SmallVector<TargetData<n>, 0> res;
     TargetData<n> arg{};
@@ -634,7 +645,7 @@ static inline llvm::SmallVector<TargetData<n>, 0> &get_cmdline_targets(const cha
 // Load sysimg, use the `callback` for dispatch and perform all relocations
 // for the selected target.
 template<typename F>
-static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *ctx)
+static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *ctx, bool is_sysimg)
 {
     JL_TIMING(LOAD_IMAGE, LOAD_Processor);
     jl_image_t res{};
@@ -646,7 +657,7 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
     const void *ids = pointers->target_data;
 
     // Set the sysimage CPU target from the stored string
-    if (pointers->cpu_target_string) {
+    if (is_sysimg && pointers->cpu_target_string) {
         jl_set_sysimage_cpu_target(pointers->cpu_target_string);
     }
 
@@ -1007,9 +1018,6 @@ static std::string jl_get_cpu_features_llvm(void)
 #include "processor_fallback.cpp"
 
 #endif
-
-// Global variable to store the CPU target string used for the sysimage
-static std::string sysimage_cpu_target;
 
 JL_DLLEXPORT jl_value_t *jl_get_cpu_name(void)
 {
