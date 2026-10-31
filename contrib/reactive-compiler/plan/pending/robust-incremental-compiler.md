@@ -1583,13 +1583,42 @@ Build in this order, and stop at a gate that fails:
       package and resolves its project, bundles the fonts and starts the
       binary once (about 1.3 s), and the watch waits 0.5 s for the files to
       stay still.
+      *A rebuild on demand (2026-10-31).* The user does not want a compile
+      at each save: a rebuild when the binary or the session starts is
+      enough, if it takes a few seconds and not hundreds. So the target is
+      the bare command with no server running. It took 22.2 s, and 16 s
+      with a server. The server works 4.4 s of that (the apply 1.1 s, the
+      save 3.3 s). The build process compiles 287 methods in 8.8 s at each
+      build, writes the app package and resolves its project in 2.6 s, and
+      bundles the fonts and starts the binary in 0.65 s. And each new
+      server appended an overlay of 80 to 105 MB, of which the lists are
+      59 MB, so the growth bound of 25 % founded the store again after about
+      four servers: 37 min and 28 GB.
+      *Decision of the user (2026-10-31):* a writer of an overlay starts
+      from the founding image; its overlay holds every change since the
+      founding and replaces the chain (choice B; choice A was a whole write
+      that merges the chain into a new base). *Built (PackageCompiler
+      9d996d02):* the server loads the founding image through a hard link in
+      the store, because the runtime reads the chain beside the real path
+      of the image (`absrealpath` in `src/jlapi.c`), and a symbolic link
+      finds the chain again. Each snapshot records its tracked files and
+      their roots in `tracked.toml`, the old side of an edit that starts
+      from it. *Measured* with the new `stop` step of the gate: the chain
+      keeps one overlay, and each image answers its edit. A rebuild with no
+      server takes 38 to 39 s. The server itself listens 0.6 s after its
+      start, so the 5.2 s of the start were the compile of the client code
+      in the build process. The first ledger takes 5.3 s, and the trace
+      13.4 s: the cache of the resolved statements (`RC_TRACE_CACHE`) gets
+      into an image only by a server save, and the founding image has none.
+      The fix: the founding runs the trace through the harness too, with
+      the `script` of `create_app`. It needs a new founding.
 - [ ] I3, `jo` from the session image. The session store of
-      `environment/all` with `OmnetRepl` as its application. `jo` starts
-      `julia -J` on the image of the last snapshot, and starts as today
-      when no store exists. A watch rebuilds after each save of a tracked
-      file. Gate: the same platform change; the time from the save to a
-      `jo` session with every package loaded is a few seconds, and Revise
-      applies a later edit inside that session.
+      `environment/all` with `OmnetRepl` as its application. `jo` rebuilds
+      the store when it starts, with no watch and no service (the rebuild
+      on demand of I2), then starts `julia -J` on the image; it starts as
+      today when no store exists. Gate: the same platform change; the time
+      from the start of `jo` to a session with every package loaded is a
+      few seconds, and Revise applies a later edit inside that session.
 
 Decisions at the start: the module path of a dependency file (the name of
 its package, then the submodules, as `ProjecturedPlatform.WidgetModule`);
