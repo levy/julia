@@ -1567,6 +1567,22 @@ Build in this order, and stop at a gate that fails:
       clears the ledger and the parses before the write. The server of a
       store runs the harness of its founding image, so the fix needs a new
       founding.
+      *As measured, after the fix (fc56d44459, a new founding of 37 min and
+      27.6 GB):* the gate passes. The bare command takes 38.6 s with the
+      start of the server and 18.8 s after it; the watch takes 9.6 s from
+      the save to the image. Of one watch rebuild of 8.5 s, the apply takes
+      1.1 s (the ledger 0.04 s) and the save 6.0 s: the front 1.2 s,
+      `jl_emit_native` 1.1 s, the heap 2.0 s, the dump of 2174 functions at
+      `-O3` 1.3 s. Each overlay has 8 MB of new objects in place of 75 MB.
+      With `JULIA_REACTIVE_DELTA_OPT=1` the watch takes 6.8 s: the save
+      3.3 s (the front 0.8 s, `jl_emit_native` 0.8 s, the heap 1.1 s, the
+      dump 0.15 s). The first server after a founding writes more than a
+      later one: its overlay patches 277k objects of the founding image, and
+      the overlay of a server that starts from that chain patches 46k. The
+      rest of a rebuild is outside the server: the builder writes the app
+      package and resolves its project, bundles the fonts and starts the
+      binary once (about 1.3 s), and the watch waits 0.5 s for the files to
+      stay still.
 - [ ] I3, `jo` from the session image. The session store of
       `environment/all` with `OmnetRepl` as its application. `jo` starts
       `julia -J` on the image of the last snapshot, and starts as today
