@@ -40,8 +40,10 @@ const RC_OPTION_MACROS = (Symbol("@compiler_options"), Symbol("@optlevel"), Symb
 # One entry of a ledger: the entry of the file at `file` in its list, its
 # kind and defined name (both syntactic), and its methods once they are
 # looked up.
-# The ledger of the last apply of this process: the next apply of the same
-# files takes it as its old ledger (a server applies many edits).
+# The ledger of the last apply of this process: the file list, and the items
+# with their methods of each file of the list that the apply parsed, by its
+# index. The next apply of the same file list takes a file's old items from
+# it (a server applies many edits).
 const RC_LEDGER_CACHE = Ref{Any}(nothing)
 
 # The entries of the last parse of each tracked file, by path, with the text
@@ -191,18 +193,69 @@ end
 function rc_ledger(files::Vector{String}, texts::Vector{String})
     items = RcItem[]
     for (index, path) in enumerate(files)
-        text = read(texts[index], String)
-        parsed = get(RC_PARSED, path, nothing)
-        if parsed === nothing || parsed[1] != text
-            parsed = (text, ReactiveSourceDiff.file_entries(text, path))
-            RC_PARSED[path] = parsed
-        end
-        for entry in parsed[2]
-            push!(items, RcItem(index, path, entry, ReactiveSourceDiff.entry_kind(entry.expr),
-                                ReactiveSourceDiff.defined_name(entry.expr), Method[]))
-        end
+        append!(items, rc_file_items(index, path, texts[index]))
     end
     return items
+end
+
+# The items of the file `path` at `index` of its list, read from `text_path`.
+function rc_file_items(index::Int, path::String, text_path::String)
+    text = read(text_path, String)
+    parsed = get(RC_PARSED, path, nothing)
+    if parsed === nothing || parsed[1] != text
+        parsed = (text, ReactiveSourceDiff.file_entries(text, path))
+        RC_PARSED[path] = parsed
+    end
+    return RcItem[RcItem(index, path, entry, ReactiveSourceDiff.entry_kind(entry.expr),
+                         ReactiveSourceDiff.defined_name(entry.expr), Method[]) for entry in parsed[2]]
+end
+
+# The old items of the files at `indices` of `old_files`: from the ledger of
+# the last apply when it has the file, else parsed from the stored copy, with
+# the methods of the method table. Also the ledger of the last apply by index.
+function rc_old_items(old_files::Vector{String}, old_copies::Vector{String}, indices)
+    cached = RC_LEDGER_CACHE[]
+    byindex = cached !== nothing && cached[1] == old_files ? cached[2]::Dict{Int, Vector{RcItem}} :
+              Dict{Int, Vector{RcItem}}()
+    items = RcItem[]
+    parsed = RcItem[]
+    for i in indices
+        found = get(byindex, i, nothing)
+        if found === nothing
+            found = rc_file_items(i, old_files[i], old_copies[i])
+            append!(parsed, found)
+        end
+        append!(items, found)
+    end
+    isempty(parsed) || rc_assign_methods!(parsed, rc_methods_by_file(Set(item.path for item in parsed)))
+    return items, byindex
+end
+
+# The new items of the files at `indices` of `new_files`.
+rc_new_items(new_files::Vector{String}, indices) =
+    RcItem[item for j in indices for item in rc_file_items(j, new_files[j], new_files[j])]
+
+# The kinds of expression whose change the apply follows into other files: a
+# type, a binding, a `using` and a macro have dependents by name, and a
+# module and an include change what the other expressions are.
+const RC_ITEM_KINDS_LOCAL = (:method, :other)
+
+# Whether the apply needs the items of every file, not only of the files
+# whose text changed: a changed or removed expression of a kind outside
+# `RC_ITEM_KINDS_LOCAL`, or a read file whose content changed, has its
+# dependents in any file. `pair_of_new` maps a new file index to its old one.
+function rc_needs_all_files(old_items, new_items, pair_of_new::Dict{Int, Int}, old_reads)
+    old_keys = Set{Tuple{Int, UInt64}}((item.file, item.entry.key) for item in old_items)
+    new_keys = Set{Tuple{Int, UInt64}}((get(pair_of_new, item.file, 0), item.entry.key) for item in new_items)
+    for item in new_items
+        item.kind in RC_ITEM_KINDS_LOCAL && continue
+        (get(pair_of_new, item.file, 0), item.entry.key) in old_keys || return true
+    end
+    for item in old_items
+        item.kind in RC_ITEM_KINDS_LOCAL && continue
+        (item.file, item.entry.key) in new_keys || return true
+    end
+    return any(((path, h),) -> !isfile(path) || rc_content_hash(path) != h, old_reads)
 end
 
 # Call f on every live method of the method table: `Base.visit` walks the
@@ -574,19 +627,26 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                           reads_out::String, refusal_out::String)
     rc_warm()
     t0 = time()
-    # The old ledger: the one the previous apply of this process left, when
-    # the tracked files are the same (a server), else parsed from the stored
-    # copies with a walk of the method table.
-    cached = RC_LEDGER_CACHE[]
-    if cached !== nothing && cached[1] == old_files
-        old_items = cached[2]::Vector{RcItem}
-    else
-        old_items = rc_ledger(old_files, old_copies)
-        rc_assign_methods!(old_items, rc_methods_by_file(Set(old_files)))
+    # The ledgers of the files whose text changed: a pair by path whose texts
+    # differ, and every renamed, removed and added file. The old items come
+    # from the ledger of the previous apply of this process when it has them
+    # (a server), else from the stored copies with a walk of the method
+    # table. A change that has dependents in other files takes the ledgers
+    # of every file.
+    match = rc_match_files(old_files, old_copies, new_files)
+    changed_pairs = Tuple{Int, Int}[(i, j) for (i, j) in match.pairs
+                                    if read(old_copies[i], String) != read(new_files[j], String)]
+    old_indices = sort!(vcat(first.(changed_pairs), first.(match.renamed), match.removed))
+    new_indices = sort!(vcat(last.(changed_pairs), last.(match.renamed), match.added))
+    pair_of_new = Dict{Int, Int}(j => i for (i, j) in vcat(match.pairs, match.renamed))
+    old_items, old_ledger = rc_old_items(old_files, old_copies, old_indices)
+    new_items = rc_new_items(new_files, new_indices)
+    all_files = rc_needs_all_files(old_items, new_items, pair_of_new, old_reads)
+    if all_files
+        old_items, old_ledger = rc_old_items(old_files, old_copies, eachindex(old_files))
+        new_items = rc_new_items(new_files, eachindex(new_files))
     end
     RC_LEDGER_CACHE[] = nothing
-    new_items = rc_ledger(new_files, new_files)
-    match = rc_match_files(old_files, old_copies, new_files)
     t_ledger = time() - t0
     tracked = Set(new_files)
     filter!(entry -> entry.first in tracked, RC_PARSED)
@@ -665,9 +725,11 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             change === nothing || rc_enqueue!(queue, change)
         end
     end
-    # E1: a changed read file re-evaluates the expressions that name it.
+    # E1: a changed read file re-evaluates the expressions that name it. A
+    # ledger of the changed files found every old read file the same, and the
+    # reads of the other files carry over.
     old_hashes = Dict{String, String}(path => h for (path, h) in old_reads)
-    new_reads = Tuple{String, String}[]
+    new_reads = all_files ? Tuple{String, String}[] : copy(old_reads)
     for item in new_items
         for path in ReactiveSourceDiff.read_paths(item.entry.expr, dirname(item.path))
             h = rc_content_hash(path)
@@ -808,8 +870,25 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     for change in vcat(removals, queue.changes), method in change.old_methods
         push!(skip, method)
     end
-    rc_assign_methods!(new_items, rc_methods_by_file(tracked), skip)
-    RC_LEDGER_CACHE[] = (copy(new_files), new_items)
+    byfile = rc_methods_by_file(tracked)
+    rc_assign_methods!(new_items, byfile, skip)
+    # The ledger for the next apply: the new items, and the old items of each
+    # file whose text stayed, under the file's new index.
+    ledger = Dict{Int, Vector{RcItem}}()
+    for item in new_items
+        push!(get!(ledger, item.file, RcItem[]), item)
+    end
+    for (i, j) in match.pairs
+        haskey(ledger, j) && continue
+        kept_items = get(old_ledger, i, nothing)
+        kept_items === nothing && continue
+        for item in kept_items
+            item.file = j
+        end
+        rc_assign_methods!(kept_items, byfile, skip)
+        ledger[j] = kept_items
+    end
+    RC_LEDGER_CACHE[] = (copy(new_files), ledger)
     # A replacement can sit in another item of the module than the change
     # that holds the old method (two changes of the same name share their
     # old items), so the signatures of every new item count. An old method
@@ -867,7 +946,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     println("rc: applied ", length(queue.changes), " expressions and ", length(removals), " removals in ",
             round(1e3 * t_eval, digits = 1), " ms, ", kept, " methods kept, ", deleted, " methods deleted, ", line_updates,
             " lines updated, world ", world_before, " -> ", world_after, "; ledger ",
-            round(t_ledger, digits = 2), " s; cone ", length(replaced), " replaced, ", length(closed),
+            round(t_ledger, digits = 2), " s of ", all_files ? string("all ", length(new_files)) :
+            string(length(new_indices), " changed of ", length(new_files)), " files; cone ", length(replaced), " replaced, ", length(closed),
             " closed; scan ", round(t_scan, digits = 2), " s")
     return (before = before, moved = world_after > world_before)
 end
@@ -1036,6 +1116,11 @@ function rc_warm()
     kinds = [item.kind for item in new_items]
     kinds == [:method, :module, :type, :method, :const, :macro, :method, :using, :include] ||
         error("rc_warm: the kinds are ", kinds)
+    length(rc_new_items([new_path], [1])) == 9 || error("rc_warm: the new items of one file are not 9")
+    rc_needs_all_files(old_items, new_items, Dict(1 => 1), Tuple{String, String}[]) ||
+        error("rc_warm: a changed type and macro do not need every file")
+    rc_needs_all_files(old_items[1:1], old_items[1:1], Dict(1 => 1), Tuple{String, String}[]) &&
+        error("rc_warm: an unchanged method needs every file")
     old_by_key = Dict{UInt64, RcItem}(item.entry.key => item for item in old_items)
     changed = RcItem[item for item in new_items if !haskey(old_by_key, item.entry.key)]
     length(changed) == 6 || error("rc_warm: ", length(changed), " changed items")
