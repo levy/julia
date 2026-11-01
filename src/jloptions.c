@@ -360,7 +360,7 @@ static const char opts_hidden[]  =
     "                                               (JULIA_REACTIVE_DELTA_OPT)\n"
     " --reactive-timings=<n>                        The timing report of a reactive build, 0 to 2\n"
     "                                               (JULIA_REACTIVE_TIMINGS)\n"
-    " --reactive-trim-memo=<file>                   The memo of the trimmed pass (JULIA_REACTIVE_TRIM_MEMO)\n"
+    " --reactive-trim-memo=<file>                   The memo of a trim pass (JULIA_REACTIVE_TRIM_MEMO)\n"
     " --reactive-heapdump=<file>                    Dump the roots of the image's heap at the write\n"
     "                                               (JULIA_REACTIVE_HEAPDUMP)\n"
     " --reactive-dirty-pages=<file>                 Report the pages the process wrote and their writers\n"
