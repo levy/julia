@@ -1640,6 +1640,24 @@ Build in this order, and stop at a gate that fails:
       server 0.6 s; the apply 0.8 s and the save 4.9 s (the image 3.5 s,
       the dump 1.2 s); the link and the copies 0.3 s; the fonts and one
       start of the binary 0.6 s.
+      *The build command in the package (2026-11-01, approved by the user;
+      omnet-julia 0b5cf7c27):* `source/tool/build_binary.jl` calls
+      `OmnetBuilder.run_omnet_build_command`, as projectured's script calls
+      `run_build_command`, and `OmnetBuilder` compiles ahead the 233 calls
+      of `precompile/rebuild.txt`, recorded from the trace of a rebuild by
+      `source/tool/record_rebuild_calls.jl`. The build process compiles
+      1.35 s of code in place of 5.85 s, and a rebuild with a server takes
+      11.5 s in place of 15.5 s. A rebuild with no server took 16 to 20 s
+      in this run, because its ledger took every file: a constant names
+      `/proc/sys/kernel/perf_event_paranoid`, the read rule of SourceDiff
+      counts each string literal that names a file, and the value of that
+      setting changed after the founding, so rule E1 takes every file at
+      the first apply of each server. The fix: the read rule skips the
+      files under `/proc`, `/sys` and `/dev`, which hold the state of the
+      machine and no source; it waits for the next founding. And
+      `test_build()` of omnet-julia writes the app package of the IDE under
+      `build/app/omnet_ide`: with a store there, two of its tests are
+      refused and leave the app files changed.
 - [ ] I3, `jo` from the session image. The session store of
       `environment/all` with `OmnetRepl` as its application. `jo` rebuilds
       the store when it starts, with no watch and no service (the rebuild
