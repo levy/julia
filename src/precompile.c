@@ -101,12 +101,15 @@ JL_DLLEXPORT void jl_write_compiler_output(void)
         return;
     }
 
+    uint64_t t_start = jl_hrtime();
+    jl_reactive_dirty_report("before the write");
     jl_task_wait_empty(); // wait for most work to finish (except possibly finalizers)
     jl_gc_collect(JL_GC_FULL);
     jl_gc_collect(JL_GC_INCREMENTAL); // sweep finalizers
     jl_task_t *ct = jl_current_task;
     jl_gc_enable_finalizers(ct, 0); // now disable finalizers, as they could schedule more work or make other unexpected changes to reachability
     jl_task_wait_empty(); // then make sure we are the only thread alive that could be running user code past here
+    uint64_t t_collected = jl_hrtime();
 
     jl_array_t *worklist = jl_module_init_order;
     if (!worklist) {
@@ -140,6 +143,7 @@ JL_DLLEXPORT void jl_write_compiler_output(void)
     jl_create_system_image(emit_native ? &native_code : NULL,
                            jl_options.incremental ? worklist : NULL,
                            emit_split, &s, &z, &udeps, &srctextpos, jl_module_init_order);
+    uint64_t t_created = jl_hrtime();
 
     if (!emit_split)
         z = s;
@@ -169,6 +173,14 @@ JL_DLLEXPORT void jl_write_compiler_output(void)
                         z, targets, NULL);
         jl_postoutput_hook();
     }
+    // The phases of a save, for the timing report of a reactive build: the
+    // collections, the image (the front, the emission and the heap, timed
+    // inside), and the dump of the object.
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: save collect %.1f s, image %.1f s, dump %.1f s\n",
+                       (t_collected - t_start) / 1e9, (t_created - t_collected) / 1e9,
+                       (jl_hrtime() - t_created) / 1e9);
+    jl_reactive_dirty_report("after the write");
 
     if (outputji) {
         if (jl_options.incremental) {

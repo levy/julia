@@ -1,0 +1,10 @@
+# This file is machine-generated - editing it directly is not advised
+
+julia_version = "1.13.0-rc4"
+manifest_format = "2.1"
+project_hash = "1c918451fc3a1fa18214f32a020393fe5ae3cdaa"
+
+[[deps.TrimApp]]
+path = "."
+uuid = "7e1a6f5c-3b2d-4c8e-9a1f-2d5b6c7e8f90"
+version = "0.1.0"

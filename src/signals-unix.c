@@ -520,6 +520,14 @@ JL_NO_ASAN static void segv_handler(int sig, siginfo_t *info, void *context)
         return;
     }
     jl_task_t *ct = jl_get_current_task();
+#if defined(_OS_LINUX_) && defined(_CPU_X86_64_)
+    // A write into a protected page of the image marks the page and lifts
+    // the protection, whatever the state of the thread: the collector
+    // writes the header of a remembered object too.
+    if (sig == SIGSEGV && info->si_code == SEGV_ACCERR && is_write_fault(context) &&
+        jl_reactive_dirty_fault(info->si_addr, (void*)((ucontext_t*)context)->uc_mcontext.gregs[REG_RIP]))
+        return;
+#endif
     if (ct == NULL || ct->ptls == NULL || jl_atomic_load_relaxed(&ct->ptls->gc_state) == JL_GC_STATE_WAITING) {
         sigdie_handler(sig, info, context);
         return;

@@ -96,6 +96,11 @@ let
             # 1-depth packages
             :LinearAlgebra, # Commits type-piracy and GEMM
             :Random, # Can't be removed due to rand being exported by Base
+
+            # The harness of the reactive compiler: in every image, so a
+            # server or a rebuild child starts on the image of a store
+            # without an include (contrib/reactive-compiler)
+            :ReactiveCompiler,
         ]
     end
     # PackageCompiler can filter out stdlibs so it can be empty

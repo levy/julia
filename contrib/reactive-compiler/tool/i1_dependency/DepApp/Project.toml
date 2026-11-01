@@ -1,0 +1,9 @@
+name = "DepApp"
+uuid = "5c1e8f2a-3d4b-4e6f-9a7b-1c2d3e4f5a62"
+version = "0.1.0"
+
+[deps]
+DepLib = "5c1e8f2a-3d4b-4e6f-9a7b-1c2d3e4f5a61"
+
+[sources]
+DepLib = {path = "../DepLib"}

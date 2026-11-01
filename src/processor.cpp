@@ -658,17 +658,43 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
     }
     JL_GC_POP();
 
-    if (pointers->header->version != 1) {
+    const uint32_t version = pointers->header->version;
+    if (version != 2 && version != 3) {
         jl_error("Image file is not compatible with this version of Julia");
     }
 
     llvm::SmallVector<void*, 0> fvars(pointers->header->nfvars);
+    llvm::SmallVector<const char*, 0> fnames(pointers->header->nfvars);
     llvm::SmallVector<const char*, 0> gvars(pointers->header->ngvars);
 
     llvm::SmallVector<std::pair<uint32_t, void*>, 0> clones;
 
+    if (version == 3) {
+        // The reactive image: one target, and the one function table in
+        // `pointers`, in id order. The shards hold the global slots alone.
+        if (target_idx != 0)
+            jl_error("Reactive image: the image has one CPU target");
+        const char *fname = pointers->fvar_names;
+        for (uint32_t i = 0; i < pointers->header->nfvars; i++) {
+            fvars[i] = pointers->fvar_ptrs[i];
+            fnames[i] = fname;
+            fname += strlen(fname) + 1;
+        }
+    }
+
     for (unsigned i = 0; i < pointers->header->nshards; i++) {
         auto shard = pointers->shards[i];
+
+        if (version == 3) {
+            auto gidxs = shard.gvar_idxs;
+            unsigned ngvars = shard.gvar_offsets[0];
+            assert(ngvars <= pointers->header->ngvars);
+            char *data_base = (char*)shard.gvar_offsets;
+            for (uint32_t i = 0; i < ngvars; i++) {
+                gvars[gidxs[i]] = data_base + shard.gvar_offsets[i+1];
+            }
+            continue;
+        }
 
         void **fvar_shard = shard.fvar_ptrs;
         uintptr_t nfunc = *shard.fvar_count;
@@ -758,8 +784,11 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
         }
 
         auto fidxs = shard.fvar_idxs;
+        const char *fname = shard.fvar_names;
         for (uint32_t i = 0; i < nfunc; i++) {
             fvars[fidxs[i]] = fvar_shard[i];
+            fnames[fidxs[i]] = fname;
+            fname += strlen(fname) + 1;
         }
 
         // .data base
@@ -774,11 +803,14 @@ static inline jl_image_t parse_sysimg(jl_image_buf_t image, F &&callback, void *
 
     if (!fvars.empty()) {
         auto ptrs = (void**) malloc(sizeof(void*) * fvars.size());
+        auto names = (const char**) malloc(sizeof(const char*) * fvars.size());
         for (size_t i = 0; i < fvars.size(); i++) {
             assert(fvars[i] && "Missing function pointer!");
             ptrs[i] = fvars[i];
+            names[i] = fnames[i];
         }
         res.fptrs.ptrs = ptrs;
+        res.fptrs.names = names;
         res.fptrs.nptrs = fvars.size();
     }
 

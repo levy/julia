@@ -1,6 +1,6 @@
 # This file is a part of Julia. License is MIT: https://julialang.org/license
 
-import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call
+import ..Compiler: verify_typeinf_trim, NativeInterpreter, argtypes_to_type, compileable_specialization_for_call, reactive_reused_set, reactive_verify_reused
 
 using ..Compiler:
      # operators
@@ -323,6 +323,25 @@ function get_verify_typeinf_trim(codeinfos::Vector{Any})
                 end
             end
         end
+    end
+    # Reactive reuse: a code instance that the loaded image serves is
+    # compiled (`reactive_reused_set`, filled by the compile pass); its
+    # edges were verified when it was compiled, and a code instance that
+    # an edit invalidated is not reused.
+    for item in reactive_reused_set
+        item isa CodeInstance || continue
+        push!(inspected, item)
+        if item.owner === nothing && item.min_world <= this_world <= item.max_world
+            mi = get_ci_mi(item)
+            mi === item.def && !haskey(caches, mi) && (caches[mi] = item)
+        end
+    end
+    # The served code with its IR is verified like the delta: its machine
+    # code is in the trimmed image.
+    for i = 1:2:length(reactive_verify_reused)
+        item = reactive_verify_reused[i]::CodeInstance
+        src = reactive_verify_reused[i + 1]::CodeInfo
+        verify_codeinstance!(interp, item, src, inspected, caches, parents, errors)
     end
     for i = 1:length(codeinfos)
         item = codeinfos[i]

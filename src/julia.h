@@ -2219,6 +2219,9 @@ JL_DLLEXPORT void jl_push_newly_inferred(jl_value_t *ci);
 JL_DLLEXPORT void jl_set_inference_entrance_backtraces(jl_value_t *inference_entrance_backtraces);
 JL_DLLEXPORT void jl_push_inference_entrance_backtraces(jl_value_t *ci);
 JL_DLLEXPORT void jl_write_compiler_output(void);
+// the dirty pages of the image (staticdata.c, the measurement of Stage F)
+JL_DLLEXPORT int jl_reactive_dirty_fault(void *addr, void *ip) JL_NOTSAFEPOINT;
+JL_DLLEXPORT void jl_reactive_dirty_report(const char *tag);
 
 // parsing
 JL_DLLEXPORT jl_value_t *jl_parse_all(const char *text, size_t text_len,
