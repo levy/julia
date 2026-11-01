@@ -1623,6 +1623,23 @@ Build in this order, and stop at a gate that fails:
       threads. Gate B passes with its oracle: the edit of every kind and
       the reverse edit take every file, the reformat 1 of 5 files, and the
       empty rebuild 0 of 5. Gate I1 passes with a server and overlays.
+      *Measured after a new founding (2026-11-01, 38 min 51 s, 26.1 GB):*
+      a rebuild takes 18.0 s with no server and 18.4 s with one, and each
+      image answers its edit. The ledger takes 0.13 s (1 of 982 files) and
+      the trace 0.26 s. So the rest is the build process: it compiled
+      8.6 s of code. The rebuild path of PackageCompiler then went into its
+      package image (PackageCompiler 625287a9: `_materialize_rebuild` with
+      concrete arguments, and the founding through a dynamic call), and a
+      rebuild takes 15.5 s, with or without a server:
+      the start of Julia, the resolve and the instantiate of the tool
+      environment and the compile of `Main.run_build` of the script (2.2 s)
+      take 4.2 s; the builder compiles `build_executable` for its keywords
+      (0.9 s) and writes the app package, 1.3 s; the resolve of the app
+      package 1.2 s; from the call of `materialize_app` to a server that
+      answers 2.1 s, of which the walk of the tracked files 0.7 s and the
+      server 0.6 s; the apply 0.8 s and the save 4.9 s (the image 3.5 s,
+      the dump 1.2 s); the link and the copies 0.3 s; the fonts and one
+      start of the binary 0.6 s.
 - [ ] I3, `jo` from the session image. The session store of
       `environment/all` with `OmnetRepl` as its application. `jo` rebuilds
       the store when it starts, with no watch and no service (the rebuild
