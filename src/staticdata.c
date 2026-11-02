@@ -286,7 +286,9 @@ typedef struct {
     uint64_t off_roots;
     uint32_t external_fns_begin;
     uint32_t ngvars;
-    uint64_t reserved[4];
+    uint64_t off_delta_relocs;   // the lists of the pointers that a start on a prelinked base converts
+    uint64_t delta_relocs_size;  // zero in an overlay written before the lists
+    uint64_t reserved[2];
 } reactive_overlay_header_t;
 static int reactive_overlay_on = 0;                 // this save writes an overlay
 static reactive_overlay_header_t reactive_overlay_header;
@@ -4024,6 +4026,67 @@ static void reactive_overlay_align(ios_t *f, size_t a)
     write_padding(f, LLT_ALIGN(rel, a) - rel);
 }
 
+static void reactive_write_offset_diff(ios_t *f, size_t diff)
+{
+    while (diff) {
+        if (diff <= 127) {
+            write_int8(f, diff);
+            break;
+        }
+        int8_t ns = diff & (int8_t)0x7F;
+        diff >>= 7;
+        ns |= (!!diff) << 7;
+        write_int8(f, ns);
+    }
+}
+
+// The delta lists: the four offset lists of `relocs` with only the positions
+// that a start on a prelinked base converts, then the fixup list whole. A
+// prelinked base holds its pointers converted, and the overlay rewrites the
+// words of its patched runs and adds its new objects, so a position counts when
+// it is past `objects_start` or inside a run of `patches` ((start, size) pairs
+// in the order of their offsets). A memory reference spans two words, its
+// pointer and its owner, so it counts when either word is in a run.
+static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, arraylist_t *patches, size_t objects_start)
+{
+    const uint8_t *p = (const uint8_t*)relocs->buf;
+    for (int list = 0; list < 4; list++) {
+        size_t span = list >= 2 ? 2 * sizeof(void*) : sizeof(void*);
+        size_t last_in = 0, last_out = 0, k = 0;
+        while (1) {
+            size_t diff = 0, cnt = 0;
+            uint8_t c;
+            do {
+                c = *p++;
+                diff |= ((size_t)c & 0x7F) << (7 * cnt++);
+            } while (c >> 7);
+            if (diff == 0)
+                break;
+            size_t pos = last_in + diff;
+            last_in = pos;
+            int keep = pos >= objects_start;
+            while (!keep && k < patches->len) {
+                size_t start = (size_t)patches->items[k];
+                size_t size = (size_t)patches->items[k + 1];
+                if (start + size <= pos) {
+                    k += 2;
+                    continue;
+                }
+                keep = start < pos + span;
+                break;
+            }
+            if (keep) {
+                reactive_write_offset_diff(f, pos - last_out);
+                last_out = pos;
+            }
+        }
+        write_int8(f, 0);
+    }
+    uintptr_t nfixups;
+    memcpy(&nfixups, p, sizeof(nfixups));
+    ios_write(f, (const char*)p, (1 + nfixups) * sizeof(uintptr_t));
+}
+
 // Write the overlay blob: the header (completed after the roots), the page
 // patches of the sysimg and the const data, the new objects, the new
 // symbols, the lists and the records. The offsets are relative to the blob.
@@ -4092,6 +4155,10 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
         }
     }
     h->npatch_sysimg = idx.len / 2;
+    arraylist_t patches;
+    arraylist_new(&patches, 0);
+    for (size_t i = 0; i < idx.len; i++)
+        arraylist_push(&patches, idx.items[i]);
     reactive_overlay_align(f, 8);
     h->off_patch_idx_sysimg = ios_pos(f) - reactive_overlay_blob_start;
     for (size_t i = 0; i < idx.len; i += 2) {
@@ -4159,6 +4226,11 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     ios_seek(relocs, 0);
     ios_copyall(f, relocs);
     reactive_overlay_align(f, 8);
+    h->off_delta_relocs = ios_pos(f) - reactive_overlay_blob_start;
+    reactive_overlay_write_delta(f, relocs, &patches, reactive_base_end);
+    h->delta_relocs_size = ios_pos(f) - reactive_overlay_blob_start - h->off_delta_relocs;
+    arraylist_free(&patches);
+    reactive_overlay_align(f, 8);
     h->off_gvar = ios_pos(f) - reactive_overlay_blob_start;
     h->gvar_size = gvar->size;
     ios_seek(gvar, 0);
@@ -4169,9 +4241,10 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     ios_seek(fptr, 0);
     ios_copyall(f, fptr);
     if (jl_reactive_timings())
-        jl_safe_printf("reactive: overlay: %zu objects and %zu const pages patched, %zu KB new objects, %zu KB new const, %zu KB lists\n",
+        jl_safe_printf("reactive: overlay: %zu objects and %zu const pages patched, %zu KB new objects, %zu KB new const, %zu KB lists, %zu KB delta lists\n",
                        (size_t)h->npatch_sysimg, (size_t)h->npatch_const, (size_t)h->new_sysimg_size / 1024,
-                       (size_t)h->new_const_size / 1024, (size_t)h->relocs_size / 1024);
+                       (size_t)h->new_const_size / 1024, (size_t)h->relocs_size / 1024,
+                       (size_t)h->delta_relocs_size / 1024);
 }
 
 // After the roots: the header gets its last sizes and lands at the front.
