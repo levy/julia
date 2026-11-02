@@ -3229,7 +3229,7 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
             }
             jl_code_instance_t *codeinst = (jl_code_instance_t*)(base + offset);
             assert(jl_is_method(jl_get_ci_mi(codeinst)->def.method) && jl_atomic_load_relaxed(&codeinst->invoke) != jl_fptr_const_return);
-            assert(specfunc ? jl_atomic_load_relaxed(&codeinst->invoke) != NULL : jl_atomic_load_relaxed(&codeinst->invoke) == NULL);
+            assert(specfunc ? jl_atomic_load_relaxed(&codeinst->invoke) != NULL : jl_atomic_load_relaxed(&codeinst->invoke) == NULL || reactive_prelinked_chain);
             linfos[i] = jl_get_ci_mi(codeinst);     // now it's a MethodInstance
             void *fptr = fvars.ptrs[i];
             for (; clone_idx < fvars.nclones; clone_idx++) {
@@ -3240,12 +3240,19 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
                     fptr = fvars.clone_ptrs[clone_idx];
                 break;
             }
+            // A prelinked base under a chain holds most of these values in its
+            // file already: a store only where a value differs keeps the page
+            // shared with the file, and a start copies no page for it.
             if (specfunc) {
-                jl_atomic_store_relaxed(&codeinst->specptr.fptr, fptr);
+                if (jl_atomic_load_relaxed(&codeinst->specptr.fptr) != fptr)
+                    jl_atomic_store_relaxed(&codeinst->specptr.fptr, fptr);
                 // TODO: set JL_CI_FLAGS_SPECPTR_SPECIALIZED only if confirmed to be true
-                jl_atomic_store_relaxed(&codeinst->flags, jl_atomic_load_relaxed(&codeinst->flags) | JL_CI_FLAGS_SPECPTR_SPECIALIZED | JL_CI_FLAGS_INVOKE_MATCHES_SPECPTR | JL_CI_FLAGS_FROM_IMAGE);
+                uint8_t flags = jl_atomic_load_relaxed(&codeinst->flags);
+                uint8_t image_flags = flags | JL_CI_FLAGS_SPECPTR_SPECIALIZED | JL_CI_FLAGS_INVOKE_MATCHES_SPECPTR | JL_CI_FLAGS_FROM_IMAGE;
+                if (image_flags != flags)
+                    jl_atomic_store_relaxed(&codeinst->flags, image_flags);
             }
-            else {
+            else if (jl_atomic_load_relaxed(&codeinst->invoke) != (jl_callptr_t)fptr) {
                 jl_atomic_store_relaxed(&codeinst->invoke, (jl_callptr_t)fptr);
             }
         }
