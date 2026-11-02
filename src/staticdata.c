@@ -95,6 +95,7 @@ External links:
 #include <fcntl.h>
 #include <link.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 
 #include "valgrind.h"
@@ -256,6 +257,11 @@ static char *reactive_gap_hi = NULL;
 static size_t reactive_objects_end = 0;      // the end of the objects of the base and the overlays (a sysimg offset)
 static size_t reactive_base_end = 0;         // the end of the objects of the base alone: the overlays' objects lie past the const headroom
 static size_t reactive_base_file_extent = 0; // the sysimg extent of the base FILE as mapped: a baseline past it is not in the file
+// A prelinked program under a chain: its base loads in place, at the address of
+// the program, and its residual list is copied before the overlay writes over
+// the end of its blob.
+static int reactive_prelinked_chain = 0;
+static uintptr_t *reactive_base_residual = NULL;
 
 // The overlay image (Stage G): the delta as a shared object of its own,
 // with the blob below; the loader applies a chain of them to the base.
@@ -5887,6 +5893,9 @@ JL_DLLEXPORT void jl_reactive_dirty_report(const char *tag)
     ios_close(&out);
 }
 
+static void reactive_apply_base_residual(jl_serializer_state *s, int pass, jl_array_t *link_ids,
+                                         uint8_t bits) JL_NOTSAFEPOINT;
+
 static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
                                                  jl_array_t *depmods, uint64_t checksum,
                                 /* outputs */    jl_array_t **restored,         jl_array_t **init_order,
@@ -6140,6 +6149,12 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
 
     s.s = &sysimg;
     size_t sizeof_tags = 0;
+    if (reactive_prelinked_chain && !s.incremental) {
+        // The pointers that the file of the prelinked base could not hold,
+        // outside the runs of the overlay; the delta lists convert the rest.
+        reactive_apply_base_residual(&s, 0, s.link_ids_gctags, GC_OLD_MARKED | GC_IN_IMAGE);
+        reactive_apply_base_residual(&s, 1, s.link_ids_relocs, 0);
+    }
     if (prelinked) {
         // Fast path: pointers into the program and memory references are final in the
         // file; apply the residual list. The gvar slots live in .bss and are filled
@@ -7191,6 +7206,18 @@ static int reactive_region_load(jl_image_buf_t buf)
     reactive_sections_t sec;
     if (!reactive_parse_blob((const char*)buf.data, buf.size, &sec))
         return 0;
+    // A prelinked image holds the addresses of its program, so it can not move
+    // into a region; it loads in place. An image written with room for a
+    // prelink and not prelinked has a record with no address, and moves.
+    if (buf.size >= 6 * sizeof(uintptr_t) &&
+        jl_load_unaligned_i64((const char*)buf.data + buf.size - sizeof(uint64_t)) == JL_PRELINK_MAGIC) {
+        uintptr_t prelinked_at;
+        memcpy(&prelinked_at, (const char*)buf.data + buf.size - 6 * sizeof(uintptr_t), sizeof(prelinked_at));
+        if (prelinked_at != 0) {
+            jl_safe_printf("reactive: overlay: a prelinked image does not move into a region; the image loads in place\n");
+            return 0;
+        }
+    }
     const char *fname = NULL;
     size_t file_off = 0;
     if (!reactive_blob_file(buf.data, &fname, &file_off)) {
@@ -7241,6 +7268,135 @@ static int reactive_region_load(jl_image_buf_t buf)
     return 1;
 }
 
+#if defined(_OS_LINUX_)
+typedef struct {
+    uintptr_t lo, hi;
+    int found;
+} reactive_writable_query_t;
+
+// Whether a writable segment of the running program holds [lo, hi). The first
+// object that `dl_iterate_phdr` visits is the program itself.
+static int reactive_visit_program(struct dl_phdr_info *info, size_t size, void *data) JL_NOTSAFEPOINT
+{
+    reactive_writable_query_t *q = (reactive_writable_query_t*)data;
+    for (size_t i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *ph = &info->dlpi_phdr[i];
+        uintptr_t lo = info->dlpi_addr + ph->p_vaddr;
+        if (ph->p_type == PT_LOAD && (ph->p_flags & PF_W) && lo <= q->lo && q->hi <= lo + ph->p_memsz)
+            q->found = 1;
+    }
+    return 1;
+}
+#endif
+
+// Load the base of a chain in place, when it is a prelinked image linked into
+// the running program: its pointers hold the addresses of the program, so it
+// can not move, and the program reserves the headroom of a region after its
+// image. The overlay writes over the end of the blob, where the lists and the
+// records of the base are, so the symbols, the slot record and the residual
+// list of the base are copied first. Answers 0 for an image that is not
+// prelinked, which loads in a region.
+static int reactive_inplace_load(jl_image_buf_t buf)
+{
+#if defined(_OS_LINUX_)
+    const char *blob = (const char*)buf.data;
+    size_t size = buf.size;
+    if (size < 6 * sizeof(uintptr_t) || jl_load_unaligned_i64(blob + size - sizeof(uint64_t)) != JL_PRELINK_MAGIC)
+        return 0;
+    uintptr_t record[6];
+    memcpy(record, blob + size - 6 * sizeof(uintptr_t), sizeof(record));
+    if (record[0] != (uintptr_t)blob)
+        return 0;
+    reactive_sections_t sec;
+    if (!reactive_parse_blob(blob, size, &sec))
+        jl_errorf("reactive: the prelinked image of the program does not parse");
+    size_t page = jl_getpagesize();
+    if ((uintptr_t)blob % page != 0)
+        jl_errorf("reactive: the prelinked image of the program is not page aligned");
+    size_t const_start = sec.const_data.ptr - blob;
+    size_t mapped = LLT_ALIGN(const_start + sec.const_data.size, page);
+    size_t const_limit = mapped + REACTIVE_CONST_HEADROOM;
+    size_t span = const_limit + REACTIVE_SYSIMG_HEADROOM;
+    reactive_writable_query_t q = {(uintptr_t)blob, (uintptr_t)blob + span, 0};
+    dl_iterate_phdr(reactive_visit_program, &q);
+    if (!q.found)
+        jl_errorf("reactive: the program holds no writable headroom of %zu MB after its "
+                  "prelinked image, which a chain needs", (span - mapped) >> 20);
+    const uintptr_t *zone = (const uintptr_t*)(sec.relocs.ptr + record[2]);
+    size_t nresidual = 2 + 2 * (zone[0] + zone[1]);
+    reactive_base_residual = (uintptr_t*)malloc_s(nresidual * sizeof(uintptr_t));
+    memcpy(reactive_base_residual, zone, nresidual * sizeof(uintptr_t));
+    char *syms = (char*)malloc_s(sec.symbols.size + 1);
+    memcpy(syms, sec.symbols.ptr, sec.symbols.size);
+    free(reactive_syms_buffer);
+    reactive_syms_buffer = syms;
+    sec.symbols.ptr = syms;
+    char *gvar = (char*)malloc_s(sec.gvar.size + 1);
+    memcpy(gvar, sec.gvar.ptr, sec.gvar.size);
+    sec.gvar.ptr = gvar;
+    reactive_region_base = (char*)blob;
+    reactive_region_span = span;
+    reactive_region_const = (char*)blob + const_start;
+    reactive_region_const_limit = (char*)blob + const_limit;
+    reactive_gap_lo = (char*)blob + mapped;
+    reactive_gap_hi = (char*)blob + const_limit;
+    reactive_objects_end = sec.sysimg.size;
+    reactive_base_end = sec.sysimg.size;
+    reactive_sections = sec;
+    reactive_sections.sysimg.ptr = blob;
+    reactive_sections.sysimg.size = const_limit;
+    reactive_sections.const_data.ptr = blob + const_start;
+    reactive_sections.blob_span = const_limit;
+    reactive_sections_on = 1;
+    reactive_prelinked_chain = 1;
+    if (jl_reactive_timings())
+        jl_safe_printf("reactive: overlay: the prelinked base loads in place (sysimg %zu MB, const %zu MB, %zu residual pointers)\n",
+                       sec.sysimg.size >> 20, sec.const_data.size >> 20, (size_t)(zone[0] + zone[1]));
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// A prelinked base whose chain file named no overlay restores as a prelinked
+// image: nothing wrote over its blob.
+static void reactive_inplace_drop(void)
+{
+    reactive_prelinked_chain = 0;
+    reactive_sections_on = 0;
+    reactive_region_base = NULL;
+    reactive_region_span = 0;
+    reactive_region_const = NULL;
+    reactive_region_const_limit = NULL;
+    reactive_gap_lo = NULL;
+    reactive_gap_hi = NULL;
+    free(reactive_base_residual);
+    reactive_base_residual = NULL;
+}
+
+// Apply one pass of the residual list of a prelinked base under a chain, outside
+// the runs that the overlay rewrote: the delta lists convert those.
+static void reactive_apply_base_residual(jl_serializer_state *s, int pass, jl_array_t *link_ids,
+                                         uint8_t bits) JL_NOTSAFEPOINT
+{
+    const uintptr_t *zone = reactive_base_residual;
+    uintptr_t base = (uintptr_t)s->s->buf;
+    size_t first = pass == 0 ? 0 : zone[0];
+    size_t n = zone[pass];
+    const uintptr_t *pairs = zone + 2 + 2 * first;
+    const reactive_patch_t *patches = reactive_chain[1].patches;
+    size_t npatches = reactive_chain[1].npatches, k = 0;
+    int link_index = 0;
+    for (size_t i = 0; i < n; i++) {
+        uintptr_t pos = pairs[2 * i];
+        while (k < npatches && patches[k].offset + patches[k].size <= pos)
+            k++;
+        if (k < npatches && patches[k].offset <= pos)
+            continue;
+        jl_apply_reloc(s, base, (uintptr_t*)(base + pos), pairs[2 * i + 1], bits, link_ids, &link_index);
+    }
+}
+
 static jl_image_buf_t get_image_buf(void *handle, int is_pkgimage);
 
 // Grow the sysimg of the region to `size` bytes: the headroom pages it
@@ -7272,28 +7428,53 @@ static int reactive_region_grow_const(size_t size)
     return 1;
 }
 
-// Apply the chain of overlays named by `<image file>.chain`, one path per
-// line relative to the image's directory: each overlay's new objects go
+// The chain file of the loaded image: `<image file>.chain`. An image linked into
+// the running program has a folder for its image file, and its chain is
+// `<program>.chain`. Null when there is no name to look under.
+static char *reactive_chain_path(void) JL_NOTSAFEPOINT
+{
+    const char *image_file = jl_options.image_file;
+    if (image_file == NULL)
+        return NULL;
+    char program[PATH_MAX];
+    const char *base = image_file;
+#if defined(_OS_LINUX_)
+    struct stat st;
+    if (stat(image_file, &st) != 0 || !S_ISREG(st.st_mode)) {
+        size_t n = sizeof(program);
+        if (uv_exepath(program, &n) != 0)
+            return NULL;
+        base = program;
+    }
+#endif
+    size_t flen = strlen(base);
+    char *chain_path = (char*)malloc_s(flen + 8);
+    memcpy(chain_path, base, flen);
+    strcpy(chain_path + flen, ".chain");
+    return chain_path;
+}
+
+// Apply the chain of overlays named by the chain file, one path per line
+// relative to the real folder of that file: each overlay's new objects go
 // after the current end, its patches over the pages they name, and its
 // function table composes with the current one through its reuse map;
 // the last overlay's lists, records and roots restore the image. The
 // base image `image` becomes the composed image.
 static void reactive_chain_load(jl_image_t *image)
 {
-    const char *image_file = jl_options.image_file;
-    if (image_file == NULL)
+    char *chain_path = reactive_chain_path();
+    if (chain_path == NULL)
         return;
-    size_t flen = strlen(image_file);
-    char *chain_path = (char*)malloc_s(flen + 8);
-    memcpy(chain_path, image_file, flen);
-    strcpy(chain_path + flen, ".chain");
     FILE *chain = fopen(chain_path, "r");
     if (chain == NULL) {
         free(chain_path);
         return;
     }
-    char *dir = (char*)malloc_s(flen + 1);
-    memcpy(dir, image_file, flen + 1);
+    // The real folder of the chain file: a program names the chain of its
+    // bundle through a link.
+    char *dir = realpath(chain_path, NULL);
+    if (dir == NULL)
+        dir = strdup(chain_path);
     char *slash = strrchr(dir, '/');
     if (slash)
         *slash = '\0';
@@ -7373,6 +7554,14 @@ static void reactive_chain_load(jl_image_t *image)
         reactive_sections.symbols.size = new_syms;
         reactive_sections.relocs.ptr = blob + h->off_relocs;
         reactive_sections.relocs.size = h->relocs_size;
+        if (reactive_prelinked_chain) {
+            // A prelinked base holds its pointers converted, so the delta
+            // lists convert the patched runs and the new objects.
+            if (h->delta_relocs_size == 0)
+                jl_errorf("reactive: overlay %s carries no delta lists, which a prelinked program needs", path);
+            reactive_sections.relocs.ptr = blob + h->off_delta_relocs;
+            reactive_sections.relocs.size = h->delta_relocs_size;
+        }
         reactive_sections.gvar.ptr = blob + h->off_gvar;
         reactive_sections.gvar.size = h->gvar_size;
         reactive_sections.fptr.ptr = blob + h->off_fptr;
@@ -7435,6 +7624,10 @@ static void reactive_chain_load(jl_image_t *image)
         free(origin);
         return;
     }
+    // The delta lists of an overlay name the runs that it rewrote over the
+    // founding image, so a prelinked base takes one overlay.
+    if (reactive_prelinked_chain && applied != 1)
+        jl_errorf("reactive: a prelinked program takes a chain of one overlay, not %zu", applied);
     image->fptrs = composed;
     reactive_fvar_origin = origin;
     reactive_objects_end = reactive_sections.sysimg.size;
@@ -7447,13 +7640,9 @@ static void reactive_chain_load(jl_image_t *image)
 // save an overlay load through the region.
 static int reactive_chain_exists(void) JL_NOTSAFEPOINT
 {
-    const char *image_file = jl_options.image_file;
-    if (image_file == NULL)
+    char *chain_path = reactive_chain_path();
+    if (chain_path == NULL)
         return 0;
-    size_t flen = strlen(image_file);
-    char *chain_path = (char*)malloc_s(flen + 8);
-    memcpy(chain_path, image_file, flen);
-    strcpy(chain_path + flen, ".chain");
     int exists = access(chain_path, R_OK) == 0;
     free(chain_path);
     return exists;
@@ -7466,7 +7655,13 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
     reactive_chain_n = 0;
-    if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || reactive_chain_exists()) && reactive_region_load(buf))
+    if (buf.kind == JL_IMAGE_KIND_SO && !reactive_overlay_mode() && reactive_chain_exists() &&
+        reactive_inplace_load(buf)) {
+        reactive_chain_load(image);
+        if (reactive_chain_n == 0)
+            reactive_inplace_drop();
+    }
+    else if (buf.kind == JL_IMAGE_KIND_SO && (reactive_overlay_mode() || reactive_chain_exists()) && reactive_region_load(buf))
         reactive_chain_load(image);
 
     if (buf.kind == JL_IMAGE_KIND_SO) {
@@ -7499,6 +7694,7 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
         reactive_base_lists_pending = 1;
     }
     reactive_sections_on = 0;
+    reactive_prelinked_chain = 0;
 
     ios_close(&f);
     JL_SIGATOMIC_END();
