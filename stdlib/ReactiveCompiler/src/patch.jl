@@ -45,10 +45,25 @@ function patch_live_methods()
     return found
 end
 
+# The docstrings of the modules of the package, as `(module, binding, sig)`
+# => the docstring.
+function patch_docstrings(modules::Vector{Module})
+    found = IdDict{Any, Any}()
+    for mod in modules
+        meta = Base.Docs.meta(mod; autoinit = false)
+        meta === nothing && continue
+        for (binding, multidoc) in meta, (sig, docstring) in multidoc.docs
+            found[(mod, binding, sig)] = docstring
+        end
+    end
+    return found
+end
+
 # The module of the patch, which the output of the process writes: the new
-# bindings of the package's modules, as `(module, name, value)`, and the
-# methods that the apply deleted.
-function define_patch_module(pkg::Base.PkgId, bindings::Vector{Any}, deleted::Vector{Method})
+# bindings of the package's modules, as `(module, name, value)`, the methods
+# that the apply deleted, and the new docstrings, as `(module, binding, sig,
+# docstring)`.
+function define_patch_module(pkg::Base.PkgId, bindings::Vector{Any}, deleted::Vector{Method}, docstrings::Vector{Any})
     patch_id = Base.package_patch_id(pkg)
     uuid = convert(NTuple{2, UInt64}, patch_id.uuid::Base.UUID)
     ccall(:jl_set_module_uuid, Cvoid, (Any, NTuple{2, UInt64}), Base.__toplevel__, uuid)
@@ -57,6 +72,7 @@ function define_patch_module(pkg::Base.PkgId, bindings::Vector{Any}, deleted::Ve
     body = ex.args[end]::Expr
     push!(body.args, Expr(:const, Expr(:(=), :bindings, QuoteNode(bindings))))
     push!(body.args, Expr(:const, Expr(:(=), :deleted_methods, QuoteNode(deleted))))
+    push!(body.args, Expr(:const, Expr(:(=), :docstrings, QuoteNode(docstrings))))
     Core.eval(Base.__toplevel__, ex)
     return nothing
 end
@@ -126,19 +142,26 @@ function apply_package_patch(pkg::Base.PkgId, root::Module, cachefile::String,
     modules = patch_modules(root)
     names_before = Dict{Module, Set{Symbol}}(m => Set(names(m; all = true, imported = false)) for m in modules)
     methods_before = patch_live_methods()
+    docstrings_before = patch_docstrings(modules)
     world_before = Base.get_world_counter()
-    rc_apply_tracked(files, roots, copies, files, roots, Tuple{String, String}[],
-                     joinpath(work, "reads"), joinpath(work, "refusals"); allowed = PATCH_CHANGES)
+    # The log messages of the apply, such as a replaced docstring, go to the
+    # log of the build.
+    Base.CoreLogging.with_logger(Base.CoreLogging.SimpleLogger(stdout)) do
+        rc_apply_tracked(files, roots, copies, files, roots, Tuple{String, String}[],
+                         joinpath(work, "reads"), joinpath(work, "refusals"); allowed = PATCH_CHANGES)
+    end
     world_after = Base.get_world_counter()
     t_apply = time() - t0 - t_load
     # The bindings that the apply made: the type of a closure of a changed
     # method, and its instance. A new global that is not a constant has no
-    # value that a patch can carry.
+    # value that a patch can carry; one with a generated name is a temporary
+    # of a macro at the top level, such as the one of a docstring.
     bindings = Any[]
     for mod in modules, name in Base.invokelatest(names, mod; all = true, imported = false)
         name in names_before[mod] && continue
         Base.invokelatest(isdefined, mod, name) || continue
         if !Base.invokelatest(isconst, mod, name)
+            startswith(String(name), '#') && continue
             println("rc: refuse the new global ", mod, ".", name, ": not a constant")
             return false
         end
@@ -188,11 +211,17 @@ function apply_package_patch(pkg::Base.PkgId, root::Module, cachefile::String,
         ccall(:jl_tag_newly_inferred_disable, Cvoid, ())
     end
     t_compile = time() - t0 - t_load - t_apply
-    define_patch_module(pkg, bindings, deleted)
+    docstrings = Any[]
+    for ((mod, binding, sig), docstring) in patch_docstrings(modules)
+        get(docstrings_before, (mod, binding, sig), nothing) === docstring && continue
+        push!(docstrings, (mod, binding, sig, docstring))
+    end
+    define_patch_module(pkg, bindings, deleted, docstrings)
     Base.invokelatest(record_patch_sources, root, includes)
     println("rc: patch of ", pkg.name, ": load ", round(t_load; digits = 2), " s, apply ",
             round(t_apply; digits = 2), " s, compile ", round(t_compile; digits = 2), " s; ",
             length(bindings), " new bindings, ", length(deleted), " deleted methods, ",
+            length(docstrings), " new docstrings, ",
             compiled, " of ", length(closed), " closed instances compiled again")
     return true
 end

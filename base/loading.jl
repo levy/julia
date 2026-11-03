@@ -1324,10 +1324,10 @@ function find_package_patch(pkg::PkgId, build_id::UInt128, modpath::String, cach
 end
 
 # Load the patch of the file of `pkg` that `_include_from_serialized` just
-# loaded as `M`, when one fits. Install the bindings that the patch made and
-# delete the methods that it removed: the file of the patch holds its new
-# methods, but a binding or a deletion in a module of an older file is a
-# change that no file can carry.
+# loaded as `M`, when one fits. Install the bindings and the docstrings that
+# the patch made and delete the methods that it removed: the file of the patch
+# holds its new methods, but a binding, a docstring or a deletion in a module
+# of an older file is a change that no file can carry.
 function load_package_patch(pkg::PkgId, M::Module, cachefile::String)
     modpath = something(get(pkgorigins, pkg, PkgOrigin()).path, locate_package(pkg), "")::String
     patch = find_package_patch(pkg, module_build_id(M), modpath, cachefile)
@@ -1341,6 +1341,15 @@ function load_package_patch(pkg::PkgId, M::Module, cachefile::String)
     end
     for method in getglobal(loaded, :deleted_methods)::Vector{Method}
         delete_method(method)
+    end
+    for (mod, binding, sig, docstring) in getglobal(loaded, :docstrings)::Vector{Any}
+        # A module of the file without docstrings has no table for them, and a
+        # precompile process can not add one to it.
+        meta = Docs.meta(mod; autoinit = false)
+        meta === nothing && continue
+        multidoc = get!(Docs.MultiDoc, meta, binding)
+        haskey(multidoc.docs, sig) || push!(multidoc.order, sig)
+        multidoc.docs[sig] = docstring
     end
     return nothing
 end
