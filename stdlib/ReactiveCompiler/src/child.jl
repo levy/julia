@@ -311,11 +311,17 @@ function rc_assign_methods!(items::Vector{RcItem}, byfile, skip = Base.IdSet{Met
         empty!(item.methods)
         for method in get(byfile, item.path, Method[])
             method in skip && continue
-            method.line in item.entry.lines && push!(item.methods, method)
+            method.line in item.entry.lines && rc_owns(item, method) && push!(item.methods, method)
         end
     end
     return nothing
 end
+
+# A macro owns its method and the methods of the functions of its body, whose
+# signatures name the macro. Every other method at its lines comes from an
+# expansion of the macro, which carries the lines of the macro body.
+rc_owns(item::RcItem, method::Method) =
+    item.kind !== :macro || item.name === nothing || occursin(String(item.name::Symbol), string(method.sig))
 
 # Match the old file list with the new one: `pairs` by path, `renamed` by
 # content or as the lone leftover pair, then the removed and the added. A
