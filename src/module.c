@@ -799,7 +799,7 @@ static int is_module_open(jl_module_t *m)
         }
     }
     JL_UNLOCK(&jl_modules_mutex);
-    return open;
+    return open || jl_reactive_package_patch_owns(m);
 }
 
 extern void check_safe_newbinding(jl_module_t *m, jl_sym_t *var)

@@ -773,7 +773,7 @@ JL_DLLEXPORT void jl_check_top_level_effect(jl_module_t *m, char *fname)
                 }
             }
             JL_UNLOCK(&jl_modules_mutex);
-            if (!open && !jl_is__toplevel__mod(m, jl_current_task)) {
+            if (!open && !jl_is__toplevel__mod(m, jl_current_task) && !jl_reactive_package_patch_owns(m)) {
                 const char* name = jl_symbol_name(m->name);
                 jl_errorf("Evaluation into the closed module `%s` breaks incremental compilation "
                           "because the side effects will not be permanent. "

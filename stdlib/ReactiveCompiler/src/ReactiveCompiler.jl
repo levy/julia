@@ -12,12 +12,15 @@ a server or a rebuild child starts on that image without an include. The
 protocol of the server is the interface: `apply <spec.toml>`, `save <archive>`,
 `trim <archive> [dir]`, `status` and `quit`, one line each way over a Unix
 socket, the reply `ok ...`, `refused <file>` or `error <message>`.
-PackageCompiler (branch `reactive`) is one client.
+PackageCompiler (branch `reactive`) is one client. It also builds the patch of
+a package file (`write_package_patch`), which `Base.compilecache` asks for
+when the sources of a package changed.
 """
 module ReactiveCompiler
 
 include("SourceDiff.jl")
 include("child.jl")
+include("patch.jl")
 include("entrypoints.jl")
 include("server.jl")
 
@@ -30,5 +33,7 @@ precompile(rc_save, (String,))
 precompile(rc_precompile_trace, (String,))
 precompile(rc_keep_statements, (String, String))
 precompile(trim_entrypoints!, ())
+precompile(write_package_patch, (Base.PkgId, String, Vector{Core.CodeInstance}))
+precompile(apply_package_patch, (Base.PkgId, Module, String, Vector{Core.CodeInstance}, Float64))
 
 end

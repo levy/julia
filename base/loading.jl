@@ -1238,7 +1238,7 @@ function find_all_in_cache_path(pkg::PkgId, DEPOT_PATH::typeof(DEPOT_PATH)=DEPOT
         for file in readdir(path, sort = false) # no sort given we sort later
             if !((pkg.uuid === nothing && file == entryfile * ".ji") ||
                  (pkg.uuid !== nothing && startswith(file, entryfile * "_") &&
-                  endswith(file, ".ji")))
+                  endswith(file, ".ji") && !endswith(file, ".patch.ji")))
                  continue
             end
             filepath = joinpath(path, file)
@@ -1284,6 +1284,67 @@ end
 ocachefile_from_cachefile(cachefile) = string(chopsuffix(cachefile, ".ji"), ".", Libc.Libdl.dlext)
 cachefile_from_ocachefile(cachefile) = string(chopsuffix(cachefile, ".$(Libc.Libdl.dlext)"), ".ji")
 
+# The patch of a package file: the changes of the package's sources since the
+# file was written, as a small file of its own beside it. A precompile process
+# of the reactive compiler writes it (`include_package_patch_for_output`): it
+# loads the file, applies the changed definitions, compiles again what they
+# reach, and writes only that. The loader loads the patch right after the
+# file, so the package keeps the build id of the file, and a file of a
+# package above that names the file stays loadable. The patch is a module of
+# its own, so a file compiled above it names the patch, and a new patch makes
+# that file out of date.
+package_patch_file(cachefile::String) = string(chopsuffix(cachefile, ".ji"), ".patch.ji")
+package_patch_id(pkg::PkgId) = PkgId(uuid5(pkg.uuid::UUID, "patch"), string(pkg.name, "#patch"))
+
+# Remove the patch of `cachefile`, its native code and the log of its build.
+function rm_package_patch(cachefile::String)
+    patchfile = package_patch_file(cachefile)
+    for path in (patchfile, ocachefile_from_cachefile(patchfile), patchfile * ".log")
+        rm(path; force = true)
+    end
+end
+
+# The patch of `cachefile`, the file of `pkg` with build `build_id`, when the
+# patch fits the sources as they are now and was made from this build:
+# `(patchfile, opatchfile, depmods)` for `_include_from_serialized`, else
+# `nothing`.
+function find_package_patch(pkg::PkgId, build_id::UInt128, modpath::String, cachefile::String)
+    pkg.uuid === nothing && return nothing
+    patchfile = package_patch_file(cachefile)
+    isfile(patchfile) || return nothing
+    fresh = stale_cachefile(package_patch_id(pkg), UInt128(0), modpath, patchfile)
+    fresh === true && return nothing
+    depmods, opatchfile, _ = fresh
+    for dep in depmods
+        key, id = dep isa Module ? (PkgId(dep), module_build_id(dep)) : (dep[2], dep[3])
+        key == pkg || continue
+        return id == build_id ? (patchfile, opatchfile, depmods) : nothing
+    end
+    return nothing
+end
+
+# Load the patch of the file of `pkg` that `_include_from_serialized` just
+# loaded as `M`, when one fits. Install the bindings that the patch made and
+# delete the methods that it removed: the file of the patch holds its new
+# methods, but a binding or a deletion in a module of an older file is a
+# change that no file can carry.
+function load_package_patch(pkg::PkgId, M::Module, cachefile::String)
+    modpath = something(get(pkgorigins, pkg, PkgOrigin()).path, locate_package(pkg), "")::String
+    patch = find_package_patch(pkg, module_build_id(M), modpath, cachefile)
+    patch === nothing && return nothing
+    patchfile, opatchfile, depmods = patch
+    patch_id = package_patch_id(pkg)
+    loaded = _include_from_serialized(patch_id, patchfile, opatchfile, depmods; patch = false)
+    loaded isa Module || return loaded
+    for (mod, name, value) in getglobal(loaded, :bindings)::Vector{Any}
+        Core.declare_const(mod, name, value)
+    end
+    for method in getglobal(loaded, :deleted_methods)::Vector{Method}
+        delete_method(method)
+    end
+    return nothing
+end
+
 
 # use an Int counter so that nested @time_imports calls all remain open
 const TIMING_IMPORTS = Threads.Atomic{Int}(0)
@@ -1293,7 +1354,7 @@ const TIMING_IMPORTS = Threads.Atomic{Int}(0)
 # these return either the array of modules loaded from the path / content given
 # or an Exception that describes why it couldn't be loaded
 # and it reconnects the Base.Docs.META
-function _include_from_serialized(pkg::PkgId, path::String, ocachepath::Union{Nothing, String}, depmods::Vector{Any}; register::Bool=true)
+function _include_from_serialized(pkg::PkgId, path::String, ocachepath::Union{Nothing, String}, depmods::Vector{Any}; register::Bool=true, patch::Bool=true)
     assert_havelock(require_lock)
     timing_imports = TIMING_IMPORTS[] > 0
     try
@@ -1342,6 +1403,10 @@ function _include_from_serialized(pkg::PkgId, path::String, ocachepath::Union{No
             M = M::Module
             if is_root_module(M) && PkgId(M) == pkg
                 register && register_root_module(M)
+                if register && patch
+                    failed = load_package_patch(pkg, M, path)
+                    failed === nothing || return failed
+                end
                 if timing_imports
                     elapsed_time = time_ns() - t_before
                     comp_time, recomp_time = cumulative_compile_time_ns() .- t_comp_before
@@ -2038,7 +2103,7 @@ end
 
 # loads a precompile cache file, ignoring stale_cachefile tests
 # load all dependent modules first
-function _tryrequire_from_serialized(pkg::PkgId, path::String, ocachepath::Union{Nothing, String})
+function _tryrequire_from_serialized(pkg::PkgId, path::String, ocachepath::Union{Nothing, String}; patch::Bool=true)
     assert_havelock(require_lock)
     local depmodnames
     io = open(path, "r")
@@ -2072,7 +2137,7 @@ function _tryrequire_from_serialized(pkg::PkgId, path::String, ocachepath::Union
         depmods[i] = dep
     end
     # then load the file
-    loaded = _include_from_serialized(pkg, path, ocachepath, depmods; register = true)
+    loaded = _include_from_serialized(pkg, path, ocachepath, depmods; register = true, patch)
     return loaded
 end
 
@@ -3196,6 +3261,33 @@ function include_package_for_output(pkg::PkgId, input::String, depot_path::Vecto
     # run_package_callbacks(pkg)
 end
 
+# The process of a patch build (`compile_package_patch`): the reactive
+# compiler loads the file `cachefile` of `pkg` without its patch, applies the
+# changes of the package's sources since that file, compiles again what they
+# reach, and defines the module of the patch, which the output writes. The
+# process exits with 3 and writes nothing when the reactive compiler does not
+# take the changes.
+function include_package_patch_for_output(pkg::PkgId, cachefile::String, depot_path::Vector{String},
+                                          dl_load_path::Vector{String}, load_path::Vector{String},
+                                          concrete_deps::typeof(_concrete_dependencies))
+    @lock require_lock begin
+    append!(empty!(Base.DEPOT_PATH), depot_path)
+    append!(empty!(Base.DL_LOAD_PATH), dl_load_path)
+    append!(empty!(Base.LOAD_PATH), load_path)
+    ENV["JULIA_LOAD_PATH"] = join(load_path, Sys.iswindows() ? ';' : ':')
+    set_active_project(nothing)
+    append!(empty!(Base._concrete_dependencies), concrete_deps)
+    end
+    rc = require(PkgId(UUID("1dda119b-71a3-45fb-bd14-d17b1eb16859"), "ReactiveCompiler"))
+    if !(invokelatest(rc.write_package_patch, pkg, cachefile, newly_inferred)::Bool)
+        flush(stdout)
+        flush(stderr)
+        # Exit without the output that the exit hook writes.
+        ccall(:_exit, Cvoid, (Cint,), 3)
+    end
+    return nothing
+end
+
 function check_package_module_loaded_error(pkg)
     # match compilecache error type for non-125 errors
     error("package `$(pkg.name)` did not define the expected \
@@ -3211,7 +3303,8 @@ _pkg_str(_pkg::Nothing) = "nothing"
 const PRECOMPILE_TRACE_COMPILE = Ref{String}()
 function create_expr_cache(pkg::PkgId, input::String, output::String, output_o::Union{Nothing, String},
                            concrete_deps::typeof(_concrete_dependencies), flags::Cmd=``, cacheflags::CacheFlags=CacheFlags(),
-                           internal_stderr::IO = stderr, internal_stdout::IO = stdout, loadable_exts::Union{Vector{PkgId},Nothing}=nothing)
+                           internal_stderr::IO = stderr, internal_stdout::IO = stdout, loadable_exts::Union{Vector{PkgId},Nothing}=nothing;
+                           patch_of::Union{Nothing, String}=nothing)
     @nospecialize internal_stderr internal_stdout
     depot_path = String[abspath(x) for x in DEPOT_PATH]
     dl_load_path = String[abspath(x) for x in DL_LOAD_PATH]
@@ -3268,14 +3361,21 @@ function create_expr_cache(pkg::PkgId, input::String, output::String, output_o::
                        stderr = internal_stderr, stdout = internal_stdout),
               "w", stdout)
     # write data over stdin to avoid the (unlikely) case of exceeding max command line size
+    output = patch_of === nothing ?
+        """
+        Base.include_package_for_output($(_pkg_str(pkg)), $(repr(abspath(input))), $(repr(depot_path)), $(repr(dl_load_path)),
+            $(repr(load_path)), $(_pkg_str(concrete_deps)), $(repr(source_path(nothing))))
+        """ :
+        """
+        Base.include_package_patch_for_output($(_pkg_str(pkg)), $(repr(patch_of)), $(repr(depot_path)), $(repr(dl_load_path)),
+            $(repr(load_path)), $(_pkg_str(concrete_deps)))
+        """
     write(io.in, """
         empty!(Base.EXT_DORMITORY) # If we have a custom sysimage with `EXT_DORMITORY` prepopulated
         Base.track_nested_precomp($(_pkg_str(vcat(Base.precompilation_stack, pkg))))
         Base.loadable_extensions = $(_pkg_str(loadable_exts))
         Base.precompiling_extension = $(loading_extension)
-        Base.include_package_for_output($(_pkg_str(pkg)), $(repr(abspath(input))), $(repr(depot_path)), $(repr(dl_load_path)),
-            $(repr(load_path)), $(_pkg_str(concrete_deps)), $(repr(source_path(nothing))))
-        """)
+        $output""")
     close(io.in)
     return io
 end
@@ -3376,6 +3476,11 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
         if cache_objects
             close(tmpio_o)
             close(tmpio_so)
+            if pkg.uuid !== nothing && get(ENV, "JULIA_REACTIVE_PACKAGE_PATCH", "1") != "0"
+                patched = compile_package_patch(pkg, path, concrete_deps, flags, cacheflags,
+                                                internal_stderr, internal_stdout, loadable_exts)
+                patched === nothing || return patched
+            end
         end
         p = create_expr_cache(pkg, path, tmppath, tmppath_o, concrete_deps, flags, cacheflags, internal_stderr, internal_stdout, loadable_exts)
 
@@ -3415,12 +3520,13 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
             # prune the directory with cache files
             if pkg.uuid !== nothing
                 entrypath, entryfile = cache_file_entry(pkg)
-                cachefiles = filter!(x -> startswith(x, entryfile * "_") && endswith(x, ".ji"), readdir(cachepath))
+                cachefiles = filter!(x -> startswith(x, entryfile * "_") && endswith(x, ".ji") && !endswith(x, ".patch.ji"), readdir(cachepath))
                 if length(cachefiles) >= MAX_NUM_PRECOMPILE_FILES[]
                     idx = findmin(mtime.(joinpath.(cachepath, cachefiles)))[2]
                     evicted_cachefile = joinpath(cachepath, cachefiles[idx])
                     @debug "Evicting file from cache" evicted_cachefile
                     rm(evicted_cachefile; force=true)
+                    rm_package_patch(evicted_cachefile)
                     try
                         rm(ocachefile_from_cachefile(evicted_cachefile); force=true)
                         @static if Sys.isapple()
@@ -3446,6 +3552,8 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
             # but force=true means it will fall back to non atomic
             # move if the initial rename fails.
             mv(tmppath, cachefile; force=true)
+            # A patch of the file that this one replaces fits no more.
+            rm_package_patch(cachefile)
             return cachefile, ocachefile
         end
     finally
@@ -3459,6 +3567,66 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
         return PrecompilableError()
     else
         error("Failed to precompile $(repr("text/plain", pkg)) to $(repr(tmppath)) ($(Base.process_status(p))).")
+    end
+end
+
+# Compile a patch of the newest file of `pkg` that is fresh in all but the
+# content of its sources, and answer that file and its native code file, which
+# load with the patch. Answer `nothing` when no such file exists or the patch
+# build refuses the changes: the caller then compiles the package whole.
+function compile_package_patch(pkg::PkgId, path::String, concrete_deps::typeof(_concrete_dependencies),
+                               flags::Cmd, cacheflags::CacheFlags, internal_stderr::IO, internal_stdout::IO,
+                               loadable_exts::Union{Vector{PkgId},Nothing})
+    @nospecialize internal_stderr internal_stdout
+    local cachefile, ocachefile
+    found = false
+    for candidate in find_all_in_cache_path(pkg)
+        fresh = stale_cachefile(pkg, UInt128(0), path, candidate; requested_flags = cacheflags, check_sources = false)
+        fresh === true && continue
+        ocandidate = fresh[2]
+        ocandidate === nothing && continue
+        cachefile, ocachefile = candidate, ocandidate::String
+        found = true
+        break
+    end
+    found || return nothing
+    patchfile = package_patch_file(cachefile)
+    opatchfile = ocachefile_from_cachefile(patchfile)
+    cachepath = dirname(cachefile)
+    tmppath, tmpio = mktemp(cachepath)
+    tmppath_o, tmpio_o = mktemp(cachepath)
+    tmppath_so, tmpio_so = mktemp(cachepath)
+    try
+        close(tmpio)
+        close(tmpio_o)
+        close(tmpio_so)
+        p = create_expr_cache(pkg, path, tmppath, tmppath_o, concrete_deps, flags, cacheflags,
+                              internal_stderr, internal_stdout, loadable_exts; patch_of = cachefile)
+        if !success(p)
+            @debug "The patch build of $(repr("text/plain", pkg)) did not apply the changes; the package compiles whole"
+            return nothing
+        end
+        Linking.link_image(tmppath_o, tmppath_so)
+        crc_so = open(_crc32c, tmppath_so, "r")
+        open(tmppath, "r+") do f
+            if iszero(isvalid_cache_header(f))
+                error("Incompatible header for $(repr("text/plain", pkg)) in new patch file $(repr(tmppath)).")
+            end
+            seekend(f)
+            write(f, crc_so)
+            seekstart(f)
+            write(f, _crc32c(f))
+        end
+        chmod(tmppath, filemode(path) & 0o777 | 0o200)
+        # The native code first: a reader that finds the new header checks
+        # the checksum of the native code against it.
+        mv(tmppath_so, opatchfile; force = true)
+        mv(tmppath, patchfile; force = true)
+        return cachefile, ocachefile
+    finally
+        rm(tmppath, force = true)
+        rm(tmppath_o, force = true)
+        rm(tmppath_so, force = true)
     end
 end
 
@@ -4176,8 +4344,10 @@ end
 @constprop :none function stale_cachefile(modkey::PkgId, build_id::UInt128, modpath::String, cachefile::String;
                                           ignore_loaded::Bool=false, requested_flags::CacheFlags=CacheFlags(),
                                           reasons::Union{Dict{String,Int},Nothing}=nothing, stalecheck::Bool=true,
-                                          verify_checksums::Bool=true)
+                                          verify_checksums::Bool=true, check_sources::Bool=true)
     # n.b.: this function does nearly all of the file validation, not just those checks related to stale, so the name is potentially unclear
+    # `check_sources = false` answers whether the file is fresh in all but the
+    # content of its sources: the base of a patch build.
     io = try
         open(cachefile, "r")
     catch ex
@@ -4329,7 +4499,9 @@ end
                     return true
                 end
             end
-            if any_includes_stale(includes, cachefile, reasons)
+            # A file whose sources changed is fresh with a patch that fits them.
+            if check_sources && any_includes_stale(includes, cachefile, reasons) &&
+               find_package_patch(id, id_build, modpath, cachefile) === nothing
                 return true
             end
         end

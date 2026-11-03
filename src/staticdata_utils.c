@@ -82,6 +82,37 @@ static uint64_t jl_worklist_key(jl_array_t *worklist) JL_NOTSAFEPOINT
     return 0;
 }
 
+// The root module of the package that a patch build applies to
+// (`Base.write_package_patch`): a precompile process that loaded the old file
+// of this package, applied the changed definitions of its sources to it, and
+// writes only what the apply made. Its modules stay open to the apply, a
+// method of it can replace another one, and the writer keeps every new method
+// of it. NULL in every other process. The loaded modules root it.
+static jl_module_t *package_patch_root JL_GLOBALLY_ROOTED = NULL;
+
+JL_DLLEXPORT void jl_reactive_set_package_patch(jl_value_t *root)
+{
+    package_patch_root = jl_is_module(root) ? (jl_module_t*)root : NULL;
+}
+
+// Whether a patch build applies to module `m`: a module of the patched
+// package, or a module that the patch build itself made.
+JL_DLLEXPORT int jl_reactive_package_patch_owns(jl_module_t *m) JL_NOTSAFEPOINT
+{
+    jl_module_t *root = package_patch_root;
+    if (root == NULL)
+        return 0;
+    if (!jl_object_in_image((jl_value_t*)m))
+        return 1;
+    while (1) {
+        if (m == root)
+            return 1;
+        if (m->parent == m)
+            return 0;
+        m = m->parent;
+    }
+}
+
 static jl_array_t *newly_inferred JL_GLOBALLY_ROOTED /*FIXME*/;
 // Mutex for newly_inferred
 jl_mutex_t newly_inferred_mutex;
@@ -539,7 +570,10 @@ static jl_array_t *queue_external_cis(jl_array_t *list, jl_query_cache *query_ca
         int dispatch_status = jl_atomic_load_relaxed(&m->dispatch_status);
         if (!(dispatch_status & METHOD_SIG_LATEST_WHICH))
             continue; // ignore replaced methods
-        if (jl_atomic_load_relaxed(&ci->inferred) && jl_is_method(m) && jl_object_in_image((jl_value_t*)m->module)) {
+        // The code of a new method of a patch build goes with its method.
+        int new_patch_method = package_patch_root != NULL && !jl_object_in_image((jl_value_t*)m);
+        if (jl_atomic_load_relaxed(&ci->inferred) && jl_is_method(m) && jl_object_in_image((jl_value_t*)m->module) &&
+            !new_patch_method) {
             int found = has_backedge_to_worklist(mi, &visited, &stack, query_cache);
             assert(found == 0 || found == 1 || found == 2);
             assert(stack.len == 0);
@@ -572,6 +606,12 @@ static int jl_collect_methcache_from_mod(jl_typemap_entry_t *ml, void *closure)
     jl_method_t *m = ml->func.method;
     if (!jl_object_in_image((jl_value_t*)m->module))
         jl_array_ptr_1d_push(s, (jl_value_t*)m); // extext
+    // A patch build evaluates into the modules of an older file: a new method
+    // of them that is valid now is a method of the patch.
+    else if (package_patch_root != NULL && !jl_object_in_image((jl_value_t*)m) &&
+             jl_atomic_load_relaxed(&ml->max_world) == ~(size_t)0 &&
+             jl_reactive_package_patch_owns(m->module))
+        jl_array_ptr_1d_push(s, (jl_value_t*)m);
     return 1;
 }
 

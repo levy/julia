@@ -617,14 +617,16 @@ end
 # changes and their dependents in their modules. `old_reads` holds the
 # hash of every file that a top-level expression of the previous snapshot
 # could read; the new listing is written to `reads_out`. A refusal is written
-# to `refusal_out` and the child exits before any evaluation. Answer the set
-# of method instances that exist before the trace, and whether the world
-# moved.
+# to `refusal_out` and the child exits before any evaluation. With `allowed`,
+# the ids of the change catalog that this apply takes, every other change is
+# refused too. Answer the set of method instances that exist before the trace,
+# and whether the world moved.
 function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Symbol}},
                           old_copies::Vector{String},
                           new_files::Vector{String}, new_roots::Vector{Vector{Symbol}},
                           old_reads::Vector{Tuple{String, String}},
-                          reads_out::String, refusal_out::String)
+                          reads_out::String, refusal_out::String;
+                          allowed::Union{Nothing, Set{String}} = nothing)
     rc_warm()
     t0 = time()
     # The ledgers of the files whose text changed: a pair by path whose texts
@@ -755,6 +757,12 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 push!(seen_macros, user.name)
                 push!(pending_macros, user.name)
             end
+        end
+    end
+    if allowed !== nothing
+        isempty(match.renamed) || push!(refusals, "H3 a renamed file: not taken by this apply")
+        for change in vcat(removals, queue.changes)
+            change.id in allowed || push!(refusals, string(change.id, " ", change.where, ": not taken by this apply"))
         end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)

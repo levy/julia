@@ -2105,8 +2105,10 @@ static void method_overwrite(jl_typemap_entry_t *newentry, jl_method_t *oldvalue
     if (jl_kwcall_type && dt == jl_kwcall_type)
         dt = jl_nth_argument_datatype(oldvalue->sig, 3);
     int anon = dt && is_anonfn_typename(jl_symbol_name(dt->name->name));
-    if ((jl_options.warn_overwrite == JL_OPTIONS_WARN_OVERWRITE_ON) ||
-        (jl_options.incremental && jl_generating_output()) || anon) {
+    // A patch build replaces the methods of its package on purpose.
+    int patch = jl_reactive_package_patch_owns(newmod);
+    if (!patch && ((jl_options.warn_overwrite == JL_OPTIONS_WARN_OVERWRITE_ON) ||
+        (jl_options.incremental && jl_generating_output()) || anon)) {
         JL_STREAM *s = JL_STDERR;
         jl_printf(s, "WARNING: Method definition ");
         jl_static_show_func_sig(s, (jl_value_t*)newentry->sig);
@@ -2122,7 +2124,7 @@ static void method_overwrite(jl_typemap_entry_t *newentry, jl_method_t *oldvalue
         jl_printf(s, ".\n");
         jl_uv_flush(s);
     }
-    if (jl_generating_output() && jl_options.incremental) {
+    if (jl_generating_output() && jl_options.incremental && !patch) {
         jl_printf(JL_STDERR, "ERROR: Method overwriting is not permitted during Module precompilation. Use `__precompile__(false)` to opt-out of precompilation.\n");
         jl_throw(jl_precompilable_error);
     }
@@ -2644,7 +2646,9 @@ static void _method_table_invalidate(jl_methcache_t *mc, void *env0)
 
 static void jl_method_table_invalidate(jl_method_t *replaced, size_t max_world)
 {
-    if (jl_options.incremental && jl_generating_output())
+    // A patch build deletes the methods that its package removed; the patch
+    // carries the deletion to the load.
+    if (jl_options.incremental && jl_generating_output() && !jl_reactive_package_patch_owns(replaced->module))
         jl_error("Method deletion is not possible during Module precompile.");
     assert(!replaced->is_for_opaque_closure);
     assert(jl_atomic_load_relaxed(&jl_world_counter) == max_world);
