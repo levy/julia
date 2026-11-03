@@ -1298,6 +1298,13 @@ cachefile_from_ocachefile(cachefile) = string(chopsuffix(cachefile, ".$(Libc.Lib
 # chain is fresh when its last patch fits the sources as they are now.
 const MAX_PACKAGE_PATCHES = 32
 
+# The source texts of the files that the loaded chain of a package file
+# changed, by the path of the package file: the copies that the last patch of
+# the chain holds. `read_dependency_src` answers them, so a tool that reads the
+# source of a loaded package, such as Revise, reads the text that the session
+# runs.
+const package_patch_sources = Dict{String, Dict{String, String}}()
+
 package_patch_id(pkg::PkgId, k::Int) = PkgId(uuid5(pkg.uuid::UUID, "patch$k"), string(pkg.name, "#patch", k))
 
 # The name of the package of a patch and the place of the patch in its chain,
@@ -1455,6 +1462,9 @@ function load_package_patches(pkg::PkgId, M::Module, cachefile::String; fresh::B
     finally
         ccall(:jl_reactive_set_package_patch, Cvoid, (Any,), previous)
     end
+    # The build of a patch loads the chain that is not fresh, and reads the
+    # text of the package file.
+    fresh && (package_patch_sources[cachefile] = read_dependency_srcs(chain[end][1]))
     return nothing
 end
 
@@ -4060,10 +4070,26 @@ function cache_dependencies(cachefile::String)
 end
 
 function read_dependency_src(io::IO, cachefile::AbstractString, filename::AbstractString)
+    texts = @lock require_lock get(package_patch_sources, cachefile, nothing)
+    if texts !== nothing
+        text = get(texts, filename, nothing)
+        text === nothing || return text
+    end
     _, (includes, _, _), _, srctextpos, _, _, _ = parse_cache_header(io, cachefile)
     srctextpos == 0 && error("no source-text stored in cache file")
     seek(io, srctextpos)
     return _read_dependency_src(io, filename, includes)
+end
+
+# The name of a file of the source text, as the header holds it in
+# `depotfn`, with the path of its depot restored.
+function _dependency_src_filename(depotfn::String, includes::Vector{CacheHeaderIncludes})
+    startswith(depotfn, string("@depot", Filesystem.pathsep())) || return depotfn
+    basefn = restore_depot_path(depotfn, "")
+    idx = findfirst(includes) do inc
+        endswith(inc.filename, basefn)
+    end
+    return isnothing(idx) ? depotfn : includes[idx].filename
 end
 
 function _read_dependency_src(io::IO, filename::AbstractString, includes::Vector{CacheHeaderIncludes}=CacheHeaderIncludes[])
@@ -4072,21 +4098,34 @@ function _read_dependency_src(io::IO, filename::AbstractString, includes::Vector
         filenamelen == 0 && break
         depotfn = String(read(io, filenamelen))
         len = read(io, UInt64)
-        fn = if !startswith(depotfn, string("@depot", Filesystem.pathsep()))
-            depotfn
-        else
-            basefn = restore_depot_path(depotfn, "")
-            idx = findfirst(includes) do inc
-                endswith(inc.filename, basefn)
-            end
-            isnothing(idx) ? depotfn : includes[idx].filename
-        end
-        if fn == filename
+        if _dependency_src_filename(depotfn, includes) == filename
             return String(read(io, len))
         end
         seek(io, position(io) + len)
     end
     error(filename, " is not stored in the source-text cache")
+end
+
+# Every source text that `cachefile` holds, by the name of its file.
+function read_dependency_srcs(cachefile::String)
+    texts = Dict{String, String}()
+    io = open(cachefile, "r")
+    try
+        iszero(isvalid_cache_header(io)) && throw(ArgumentError("Incompatible header in cache file $cachefile."))
+        _, (includes, _, _), _, srctextpos, _, _, _ = parse_cache_header(io, cachefile)
+        srctextpos == 0 && return texts
+        seek(io, srctextpos)
+        while !eof(io)
+            filenamelen = read(io, Int32)
+            filenamelen == 0 && break
+            depotfn = String(read(io, filenamelen))
+            len = read(io, UInt64)
+            texts[_dependency_src_filename(depotfn, includes)] = String(read(io, len))
+        end
+    finally
+        close(io)
+    end
+    return texts
 end
 
 function read_dependency_src(cachefile::String, filename::AbstractString)
