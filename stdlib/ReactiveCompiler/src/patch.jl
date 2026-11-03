@@ -356,7 +356,9 @@ function record_top_level_reads(root::Module)
         dir = Base.package_names_dir(cachefile)
         for mod in patch_modules(dep), name in read_names
             Base.invokelatest(isdefinedglobal, mod, name) || continue
-            Base.binding_module(mod, name) === mod || continue
+            # A name that two imports give has no owner, so it has no stamp.
+            owner = try Base.binding_module(mod, name) catch; nothing end
+            owner === mod || continue
             Base.invokelatest(isconst, mod, name) || continue
             value = Base.invokelatest(getglobal, mod, name)
             if !startswith(String(name), '@')
