@@ -123,7 +123,7 @@ function macro_name(head)
     head isa Symbol && return head
     head isa GlobalRef && return head.name
     head isa Expr && head.head === :. && head.args[2] isa QuoteNode &&
-        return (head.args[2]::QuoteNode).value
+        (head.args[2]::QuoteNode).value isa Symbol && return (head.args[2]::QuoteNode).value
     return nothing
 end
 
@@ -283,7 +283,8 @@ function names!(set, e)
         push!(set, e)
     elseif e isa Expr
         if e.head === :. && length(e.args) == 2 && e.args[2] isa QuoteNode
-            push!(set, (e.args[2]::QuoteNode).value)
+            field = (e.args[2]::QuoteNode).value
+            field isa Symbol ? push!(set, field) : names!(set, field)
             names!(set, e.args[1])
         elseif e.head === :quote
             # A quoted symbol names nothing; a quoted expression is the body

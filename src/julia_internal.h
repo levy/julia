@@ -1350,6 +1350,7 @@ JL_DLLEXPORT uint8_t jl_object_in_image(jl_value_t* v) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_reuse_enabled(void) JL_NOTSAFEPOINT;
 // The package that a patch build applies to (`Base.write_package_patch`).
 JL_DLLEXPORT void jl_reactive_set_package_patch(jl_value_t *root);
+JL_DLLEXPORT jl_value_t *jl_reactive_package_patch(void);
 JL_DLLEXPORT int jl_reactive_package_patch_owns(jl_module_t *m) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_image_format(void) JL_NOTSAFEPOINT;
 JL_DLLEXPORT int jl_reactive_overlay_mode(void) JL_NOTSAFEPOINT;

@@ -95,6 +95,11 @@ JL_DLLEXPORT void jl_reactive_set_package_patch(jl_value_t *root)
     package_patch_root = jl_is_module(root) ? (jl_module_t*)root : NULL;
 }
 
+JL_DLLEXPORT jl_value_t *jl_reactive_package_patch(void)
+{
+    return package_patch_root ? (jl_value_t*)package_patch_root : jl_nothing;
+}
+
 // Whether a patch build applies to module `m`: a module of the patched
 // package, or a module that the patch build itself made.
 JL_DLLEXPORT int jl_reactive_package_patch_owns(jl_module_t *m) JL_NOTSAFEPOINT

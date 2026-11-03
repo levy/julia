@@ -14,7 +14,8 @@ protocol of the server is the interface: `apply <spec.toml>`, `save <archive>`,
 socket, the reply `ok ...`, `refused <file>` or `error <message>`.
 PackageCompiler (branch `reactive`) is one client. It also builds the patch of
 a package file (`write_package_patch`), which `Base.compilecache` asks for
-when the sources of a package changed.
+when the sources of a package changed, and records the top-level reads of a
+package at its whole compile (`record_top_level_reads`).
 """
 module ReactiveCompiler
 
@@ -33,7 +34,7 @@ precompile(rc_save, (String,))
 precompile(rc_precompile_trace, (String,))
 precompile(rc_keep_statements, (String, String))
 precompile(trim_entrypoints!, ())
-precompile(write_package_patch, (Base.PkgId, String, Vector{Core.CodeInstance}))
-precompile(apply_package_patch, (Base.PkgId, Module, String, Vector{Core.CodeInstance}, Float64))
+precompile(write_package_patch, (Base.PkgId, String, Int, Vector{Core.CodeInstance}))
+precompile(record_top_level_reads, (Module,))
 
 end
