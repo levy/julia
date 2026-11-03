@@ -90,9 +90,11 @@ stamp_name(mod::Module, name::Symbol) = string(join(fullname(mod), "."), ".", na
 # changed constants of the package's modules, as `(module, name, value)`, the
 # methods that the apply deleted, the new docstrings, as `(module, binding,
 # sig, docstring)`, the methods that moved to another line, as `(method,
-# line)`, the stamp of the patch and the names it changed.
+# line)`, the stamp of the patch, the names it changed, and the counter of the
+# generated names of each module of the package, as `(module, counter)`.
 function define_patch_module(pkg::Base.PkgId, k::Int, bindings::Vector{Any}, deleted::Vector{Method},
-                             docstrings::Vector{Any}, moved::Vector{Any}, stamp::String, changed::Vector{String})
+                             docstrings::Vector{Any}, moved::Vector{Any}, stamp::String, changed::Vector{String},
+                             counters::Vector{Any})
     patch_id = Base.package_patch_id(pkg, k)
     uuid = convert(NTuple{2, UInt64}, patch_id.uuid::Base.UUID)
     ccall(:jl_set_module_uuid, Cvoid, (Any, NTuple{2, UInt64}), Base.__toplevel__, uuid)
@@ -105,6 +107,7 @@ function define_patch_module(pkg::Base.PkgId, k::Int, bindings::Vector{Any}, del
     push!(body.args, Expr(:const, Expr(:(=), :moved_methods, QuoteNode(moved))))
     push!(body.args, Expr(:const, Expr(:(=), :stamp, stamp)))
     push!(body.args, Expr(:const, Expr(:(=), :changed_names, QuoteNode(changed))))
+    push!(body.args, Expr(:const, Expr(:(=), :module_counters, QuoteNode(counters))))
     Core.eval(Base.__toplevel__, ex)
     return nothing
 end
@@ -302,7 +305,8 @@ function apply_package_patch(pkg::Base.PkgId, root::Module, cachefile::String, k
     # `Base.compile_package_patch` writes after the patch.
     stamp = string(Base.UUID(rand(UInt128)))
     write(Base.package_patch_file(pkg, cachefile, k) * ".names", join([stamp; changed], '\n'))
-    define_patch_module(pkg, k, bindings, deleted, docstrings, moved, stamp, changed)
+    counters = Any[(mod, ccall(:jl_reactive_module_counter, UInt32, (Any,), mod)) for mod in modules]
+    define_patch_module(pkg, k, bindings, deleted, docstrings, moved, stamp, changed, counters)
     changed_files = Set{String}(f for f in files if read(f, String) != base_texts[f])
     record_patch_sources(root, includes, changed_files)
     println("rc: patch ", k, " of ", pkg.name, ": load ", round(t_load; digits = 2), " s, apply ",

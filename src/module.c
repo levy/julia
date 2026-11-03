@@ -649,6 +649,38 @@ JL_DLLEXPORT jl_binding_partition_t *jl_declare_constant_val3(
     return new_bpart;
 }
 
+// A constant that a package patch adds: a binding that no image holds and
+// that has only guard partitions. Its partition starts at the require world,
+// as a partition of a package image does, so the code of the patch and of a
+// file compiled on top of the patch stays valid at the load. For any other
+// binding it returns 0 and changes nothing, and the caller declares the
+// constant at the current world.
+JL_DLLEXPORT int jl_reactive_declare_patch_constant(jl_module_t *m, jl_sym_t *var, jl_value_t *val)
+{
+    if (jl_require_world == ~(size_t)0)
+        return 0;
+    jl_binding_t *b = jl_get_module_binding(m, var, 1);
+    if (jl_object_in_image((jl_value_t*)b))
+        return 0;
+    JL_LOCK(&world_counter_lock);
+    jl_binding_partition_t *old_bpart = jl_atomic_load_relaxed(&b->partitions);
+    for (jl_binding_partition_t *bpart = old_bpart; bpart; bpart = jl_atomic_load_relaxed(&bpart->next)) {
+        if (jl_binding_kind(bpart) != PARTITION_KIND_GUARD) {
+            JL_UNLOCK(&world_counter_lock);
+            return 0;
+        }
+    }
+    jl_binding_partition_t *new_bpart = new_binding_partition();
+    new_bpart->kind = (size_t)PARTITION_KIND_CONST | (old_bpart ? (old_bpart->kind & PARTITION_MASK_FLAG) : 0);
+    new_bpart->restriction = val;
+    jl_gc_wb_fresh(new_bpart, val);
+    jl_atomic_store_relaxed(&new_bpart->min_world, jl_require_world);
+    jl_atomic_store_release(&b->partitions, new_bpart);
+    jl_gc_wb(b, new_bpart);
+    JL_UNLOCK(&world_counter_lock);
+    return 1;
+}
+
 JL_DLLEXPORT jl_module_t *jl_new_module(jl_sym_t *name, jl_module_t *parent)
 {
     return jl_new_module_(name, parent, 1, 1);
@@ -657,6 +689,21 @@ JL_DLLEXPORT jl_module_t *jl_new_module(jl_sym_t *name, jl_module_t *parent)
 uint32_t jl_module_next_counter(jl_module_t *m)
 {
     return jl_atomic_fetch_add_relaxed(&m->counter, 1);
+}
+
+// The counter of the generated names of a module. A package patch carries it,
+// and its load raises the counter to it, so the build of a later patch makes
+// no name that an earlier patch made.
+JL_DLLEXPORT uint32_t jl_reactive_module_counter(jl_module_t *m)
+{
+    return jl_atomic_load_relaxed(&m->counter);
+}
+
+JL_DLLEXPORT void jl_reactive_raise_module_counter(jl_module_t *m, uint32_t counter)
+{
+    uint32_t old = jl_atomic_load_relaxed(&m->counter);
+    while (old < counter && !jl_atomic_cmpswap_relaxed(&m->counter, &old, counter))
+        ;
 }
 
 JL_DLLEXPORT jl_value_t *jl_f_new_module(jl_sym_t *name, uint8_t std_imports, uint8_t default_names)

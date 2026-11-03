@@ -1426,8 +1426,15 @@ function load_package_patches(pkg::PkgId, M::Module, cachefile::String; fresh::B
         for (k, (patchfile, opatchfile, depmods)) in enumerate(chain)
             loaded = _include_from_serialized(package_patch_id(pkg, k), patchfile, opatchfile, depmods; patch = false)
             loaded isa Module || return loaded
+            # A name that the patch adds is defined from the require world on,
+            # as a name of a package file is; a changed name of the file is
+            # declared at the current world, and that invalidates its readers.
             for (mod, name, value) in getglobal(loaded, :bindings)::Vector{Any}
-                Core.declare_const(mod, name, value)
+                added = ccall(:jl_reactive_declare_patch_constant, Cint, (Any, Any, Any), mod, name, value)
+                added == 0 && Core.declare_const(mod, name, value)
+            end
+            for (mod, counter) in getglobal(loaded, :module_counters)::Vector{Any}
+                ccall(:jl_reactive_raise_module_counter, Cvoid, (Any, UInt32), mod::Module, counter::UInt32)
             end
             for method in getglobal(loaded, :deleted_methods)::Vector{Method}
                 delete_method(method)
