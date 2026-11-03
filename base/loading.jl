@@ -1346,6 +1346,9 @@ function rm_package_patches(pkg::PkgId, cachefile::String)
         for path in (patchfile, ocachefile_from_cachefile(patchfile), patchfile * ".log", patchfile * ".names")
             rm(path; force = true)
         end
+        # The folder of the patch goes with its last file.
+        folder = dirname(patchfile)
+        isdir(folder) && isempty(readdir(folder)) && rm(folder; force = true)
     end
 end
 
