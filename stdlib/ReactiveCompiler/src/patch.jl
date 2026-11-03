@@ -79,15 +79,14 @@ end
 
 # Record the files of the package in the header of the patch, as they are now,
 # so the loader takes the patch only while the sources stay the same. The
-# entry file is first, as in the header of the package file.
-function record_patch_sources(root::Module, includes)
+# entry file is first, as in the header of the package file. Each file is a
+# file of `Main`, as an `include_dependency` is: the writer then copies no
+# source text into the patch, which no reader needs, since every patch is
+# made from the text that the package file holds.
+function record_patch_sources(includes)
     for inc in includes
-        mod = inc.id == Base.PkgId("") ? Base.__toplevel__ : root
-        for name in inc.modpath
-            mod = getglobal(mod, Symbol(name))::Module
-        end
         content = inc.mtime < 0
-        Base._include_dependency!(Base._require_dependencies, true, mod, inc.filename, content, !content)
+        Base._include_dependency!(Base._require_dependencies, true, Main, inc.filename, content, !content)
     end
 end
 
@@ -217,7 +216,7 @@ function apply_package_patch(pkg::Base.PkgId, root::Module, cachefile::String,
         push!(docstrings, (mod, binding, sig, docstring))
     end
     define_patch_module(pkg, bindings, deleted, docstrings)
-    Base.invokelatest(record_patch_sources, root, includes)
+    record_patch_sources(includes)
     println("rc: patch of ", pkg.name, ": load ", round(t_load; digits = 2), " s, apply ",
             round(t_apply; digits = 2), " s, compile ", round(t_compile; digits = 2), " s; ",
             length(bindings), " new bindings, ", length(deleted), " deleted methods, ",
