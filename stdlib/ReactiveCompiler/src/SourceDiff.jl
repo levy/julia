@@ -422,7 +422,9 @@ end
 The files that the evaluation of the expression can read: every string
 literal in it that names a file relative to `dir`, the directory of the
 source file, as `joinpath(@__DIR__, "data.txt")` and `include_dependency`
-name them. An `include` names a tracked file, not a read.
+name them. An `include` names a tracked file, not a read. A literal that can
+not be a path, such as `"\\0"` or a name longer than the system takes, names
+no file.
 """
 function read_paths(e, dir::AbstractString)
     paths = String[]
@@ -430,11 +432,20 @@ function read_paths(e, dir::AbstractString)
     literals = String[]
     string_literals!(literals, e)
     for s in literals
-        occursin('\n', s) && continue
+        (occursin('\n', s) || occursin('\0', s)) && continue
         path = isabspath(s) ? s : joinpath(dir, s)
-        isfile(path) && push!(paths, normpath(path))
+        names_file(path) && push!(paths, normpath(path))
     end
     return unique!(paths)
+end
+# `isfile` throws for a name that the system refuses, where a literal names no file.
+function names_file(path::AbstractString)
+    try
+        return isfile(path)
+    catch err
+        err isa Base.IOError || rethrow()
+        return false
+    end
 end
 function string_literals!(literals, e)
     if e isa String
