@@ -485,6 +485,50 @@ function rc_refuse!(refusals, id, item, reason)
     return nothing
 end
 
+# The functions of a path that the walk of the tracked files computes.
+const RC_PATH_FUNCTIONS = (joinpath = joinpath, normpath = normpath, abspath = abspath,
+                           dirname = dirname)
+
+# The file that an `include` in `file` names, by the rules of the walk of the
+# tracked files (`tracked_sources` of PackageCompiler): a string, `@__DIR__`,
+# `@__FILE__`, and `joinpath`, `normpath`, `abspath` and `dirname` of those, and
+# the name of a `const` of `mod` that holds a `String`. The module is loaded, so
+# its `const` holds the path that the walk computes from its definition. Nothing
+# for every other form.
+function rc_include_path(argument, file::String, mod)
+    path = rc_static_path(argument, file, mod)
+    return path === nothing ? nothing : normpath(joinpath(dirname(file), path))
+end
+
+function rc_static_path(x, file::String, mod)
+    x isa AbstractString && return String(x)
+    if x isa Symbol
+        mod isa Module && isdefined(mod, x) && isconst(mod, x) || return nothing
+        value = getglobal(mod, x)
+        return value isa String ? value : nothing
+    end
+    x isa Expr || return nothing
+    if x.head === :macrocall
+        x.args[1] === Symbol("@__DIR__") && return dirname(file)
+        x.args[1] === Symbol("@__FILE__") && return file
+        return nothing
+    end
+    x.head === :call && !isempty(x.args) && x.args[1] isa Symbol || return nothing
+    f = get(RC_PATH_FUNCTIONS, x.args[1], nothing)
+    f === nothing && return nothing
+    parts = String[]
+    for argument in x.args[2:end]
+        part = rc_static_path(argument, file, mod)
+        part === nothing && return nothing
+        push!(parts, part)
+    end
+    try
+        return f(parts...)::String
+    catch
+        return nothing
+    end
+end
+
 # The id and the checks of one changed expression, with the old items of the
 # same name. Answer nothing for a refused change.
 function rc_classify(item::RcItem, old::Vector{RcItem}, new_roots, tracked, refusals)
@@ -556,8 +600,7 @@ function rc_classify(item::RcItem, old::Vector{RcItem}, new_roots, tracked, refu
     end
     kind === :export && return RcChange("C3", item, old, "")
     if kind === :include
-        argument = length(e.args) == 2 ? e.args[2] : nothing
-        included = argument isa AbstractString ? normpath(joinpath(dirname(item.path), argument)) : nothing
+        included = length(e.args) == 2 ? rc_include_path(e.args[2], item.path, mod) : nothing
         if included === nothing || !(included in tracked)
             rc_refuse!(refusals, "C4", item, "includes a file that is not tracked")
             return nothing
@@ -1159,6 +1202,28 @@ function rc_warm()
         error("rc_warm: the refusals are ", refusals)
     ids = [change.id for change in queue.changes]
     ids == ["A2", "B2", "C1", "D1", "C3"] || error("rc_warm: the ids are ", ids)
+    # C4: a new include takes a tracked file when the rules of the walk compute
+    # its path, and an include of another form is refused.
+    include_path = joinpath(dir, "warm3.jl")
+    write(include_path, "include(joinpath(@__DIR__, \"warm2.jl\"))\n" *
+                        "include(joinpath(pwd(), \"warm2.jl\"))\n")
+    include_ids = String[]
+    include_refusals = String[]
+    for item in rc_ledger([include_path], [include_path])
+        change = rc_classify(item, RcItem[], roots, tracked, include_refusals)
+        change === nothing || push!(include_ids, change.id)
+    end
+    include_ids == ["C4"] && length(include_refusals) == 1 &&
+        occursin("warm3.jl:2", include_refusals[1]) ||
+        error("rc_warm: the includes give ", include_ids, " and ", include_refusals)
+    # The bindings are new, so they are read at the latest world.
+    paths = Module()
+    Core.eval(paths, :(const SOURCE = $dir))
+    Core.eval(paths, :(VARIABLE = $dir))
+    Base.invokelatest(rc_include_path, :(joinpath(SOURCE, "warm2.jl")), include_path, paths) == new_path &&
+        Base.invokelatest(rc_include_path, :(joinpath(VARIABLE, "warm2.jl")), include_path, paths) === nothing &&
+        rc_include_path(:(normpath(@__FILE__, "..", "warm2.jl")), include_path, nothing) == new_path ||
+        error("rc_warm: a const path of a module does not give the included file")
     rc_resolution(Base, [:sin, :nosuchname])[:sin] === Base || error("rc_warm: sin does not resolve in Base")
     rc_new_dependency(Base, :(using NoSuchPackage)) === :NoSuchPackage ||
         error("rc_warm: a new dependency is not seen")
