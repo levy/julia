@@ -529,6 +529,43 @@ function rc_static_path(x, file::String, mod)
     end
 end
 
+# A module header split into its docstring and the module with the empty body:
+# `doc` and `source` are `nothing` for a header without a docstring. A header
+# under another macro keeps the macro in `bare`.
+function rc_split_module_doc(header)
+    if header isa Expr && header.head === :macrocall && length(header.args) == 4 &&
+       (header.args[1] == GlobalRef(Core, Symbol("@doc")) || header.args[1] === Symbol("@doc")) &&
+       ReactiveSourceDiff.is_module(header.args[4])
+        return (doc = header.args[3], source = header.args[2], bare = header.args[4])
+    end
+    return (doc = nothing, source = nothing, bare = header)
+end
+
+# Whether two module headers differ only in the docstring.
+function rc_is_module_doc_change(old_header, new_header)
+    old_split = rc_split_module_doc(old_header)
+    new_split = rc_split_module_doc(new_header)
+    return ReactiveSourceDiff.is_module(old_split.bare) && ReactiveSourceDiff.is_module(new_split.bare) &&
+           ReactiveSourceDiff.strip_lines(old_split.bare) == ReactiveSourceDiff.strip_lines(new_split.bare)
+end
+
+# H2 of a module: the docstring of `header` replaces the docstring of the loaded
+# module `target`, which stays the same object. The expression is the one of
+# `Base.Docs.moduledoc` for a module that exists, so the binding and the metadata
+# are the ones that the definition of the module gives; it names the module, and
+# a module binds its own name. The old entry goes first, so `doc!` replaces no
+# docstring, and a header without a docstring removes it.
+function rc_set_module_doc!(target::Module, header)
+    split = rc_split_module_doc(header)
+    docs = Base.Docs.meta(target; autoinit = false)
+    docs === nothing || delete!(docs, Base.Docs.Binding(target, nameof(target)))
+    split.doc === nothing && return nothing
+    docex = Base.Docs.docm(split.source, parentmodule(target), split.doc, split.bare, false)
+    docex isa Expr && docex.head === :escape && (docex = docex.args[1])
+    Core.eval(target, docex)
+    return nothing
+end
+
 # The id and the checks of one changed expression, with the old items of the
 # same name. Answer nothing for a refused change.
 function rc_classify(item::RcItem, old::Vector{RcItem}, new_roots, tracked, refusals)
@@ -610,6 +647,10 @@ function rc_classify(item::RcItem, old::Vector{RcItem}, new_roots, tracked, refu
     kind === :dependency && return RcChange("E1", item, old, "")
     if kind === :module
         isempty(old) && return RcChange("C5", item, old, "new module")
+        # H2: the change keeps the loaded module, so it takes no old method: the
+        # methods at the line of the old header stay.
+        all(o -> rc_is_module_doc_change(o.entry.expr, e), old) &&
+            return RcChange("H2", item, RcItem[], "the docstring of the module")
         rc_refuse!(refusals, "C5", item, "the header of a module changed")
         return nothing
     end
@@ -850,6 +891,12 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         change = queue.changes[queue.cursor]
         item = change.item
         item.kind === :include && continue
+        if change.id == "H2" && item.kind === :module
+            path = vcat(rc_module_path(new_roots, item), item.name)
+            Base.invokelatest(rc_set_module_doc!, Base.invokelatest(rc_resolve_module, path),
+                              item.entry.expr)
+            continue
+        end
         mod = rc_resolve_module(rc_module_path(new_roots, item))
         # The bindings are read at the latest world: this loop moves it.
         old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
@@ -1224,6 +1271,39 @@ function rc_warm()
         Base.invokelatest(rc_include_path, :(joinpath(VARIABLE, "warm2.jl")), include_path, paths) === nothing &&
         rc_include_path(:(normpath(@__FILE__, "..", "warm2.jl")), include_path, nothing) == new_path ||
         error("rc_warm: a const path of a module does not give the included file")
+    # H2: a header that differs only in its docstring keeps the loaded module and
+    # sets its docstring; another change of a header is refused.
+    header_of(text, name) = (write(joinpath(dir, name), text);
+                             rc_ledger([joinpath(dir, name)], [joinpath(dir, name)])[1])
+    old_header = header_of("\"old\"\nmodule D\nend\n", "warm4.jl")
+    new_header = header_of("\n\"new\"\nmodule D\nend\n", "warm5.jl")
+    plain_header = header_of("module D\nend\n", "warm6.jl")
+    bare_header = header_of("\"new\"\nbaremodule D\nend\n", "warm7.jl")
+    header_ids = String[]
+    header_refusals = String[]
+    for header in (new_header, plain_header, bare_header)
+        change = rc_classify(header, [old_header], roots, tracked, header_refusals)
+        push!(header_ids, change === nothing ? "refused" : change.id)
+    end
+    header_ids == ["H2", "H2", "refused"] && length(header_refusals) == 1 &&
+        startswith(header_refusals[1], "C5") ||
+        error("rc_warm: the headers give ", header_ids, " and ", header_refusals)
+    documented_parent = Module()
+    Core.eval(documented_parent, old_header.entry.expr)
+    documented = Base.invokelatest(getglobal, documented_parent, :D)
+    module_doc(m) = (docs = Base.Docs.meta(m; autoinit = false);
+                     binding = Base.Docs.Binding(m, nameof(m));
+                     docs === nothing || !haskey(docs, binding) ? nothing :
+                         join(docs[binding].docs[Union{}].text))
+    Base.invokelatest(module_doc, documented) == "old" ||
+        error("rc_warm: the module of the old header has no docstring")
+    Base.invokelatest(rc_set_module_doc!, documented, new_header.entry.expr)
+    Base.invokelatest(getglobal, documented_parent, :D) === documented &&
+        Base.invokelatest(module_doc, documented) == "new" ||
+        error("rc_warm: the docstring of the module is not replaced in place")
+    Base.invokelatest(rc_set_module_doc!, documented, plain_header.entry.expr)
+    Base.invokelatest(module_doc, documented) === nothing ||
+        error("rc_warm: a header without a docstring keeps the docstring of the module")
     rc_resolution(Base, [:sin, :nosuchname])[:sin] === Base || error("rc_warm: sin does not resolve in Base")
     rc_new_dependency(Base, :(using NoSuchPackage)) === :NoSuchPackage ||
         error("rc_warm: a new dependency is not seen")
