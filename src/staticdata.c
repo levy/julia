@@ -4345,7 +4345,8 @@ static void reactive_write_offset_diff(ios_t *f, size_t diff)
 // words of its patched runs and adds its new objects, so a position counts when
 // it is past `objects_start` or inside a run of `patches` ((start, size) pairs
 // in the order of their offsets). A memory reference spans two words, its
-// pointer and its owner, so it counts when either word is in a run.
+// pointer and its owner, and a run holds both or neither of them (see
+// `reactive_overlay_emit`), so it counts when either word is in a run.
 static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, arraylist_t *patches, size_t objects_start)
 {
     const uint8_t *p = (const uint8_t*)relocs->buf;
@@ -4386,6 +4387,33 @@ static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, arraylist_t *p
     ios_write(f, (const char*)p, (1 + nfixups) * sizeof(uintptr_t));
 }
 
+static int reactive_pages_cmp_pos(const void *a, const void *b) JL_NOTSAFEPOINT;
+
+// The positions of the memory references of `relocs`, ascending: the entries of
+// its third and fourth lists, the owners of shared memory and the references.
+// Each is the first of two words, the pointer and its owner.
+static void reactive_overlay_read_memory_references(ios_t *relocs, arraylist_t *positions)
+{
+    const uint8_t *p = (const uint8_t*)relocs->buf;
+    for (int list = 0; list < 4; list++) {
+        size_t pos = 0;
+        while (1) {
+            size_t diff = 0, cnt = 0;
+            uint8_t c;
+            do {
+                c = *p++;
+                diff |= ((size_t)c & 0x7F) << (7 * cnt++);
+            } while (c >> 7);
+            if (diff == 0)
+                break;
+            pos += diff;
+            if (list >= 2)
+                arraylist_push(positions, (void*)pos);
+        }
+    }
+    qsort(positions->items, positions->len, sizeof(void*), reactive_pages_cmp_pos);
+}
+
 // Write the overlay blob: the header (completed after the roots), the page
 // patches of the sysimg and the const data, the new objects, the new
 // symbols, the lists and the records. The offsets are relative to the blob.
@@ -4408,6 +4436,10 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     // baseline: (offset, size) records, then the bytes.
     arraylist_t idx;
     arraylist_new(&idx, 0);
+    arraylist_t references;
+    arraylist_new(&references, 0);
+    reactive_overlay_read_memory_references(relocs, &references);
+    size_t next_reference = 0;
     arraylist_t *tags = &reactive_base.gctags;
     size_t rewritten = 0, unchanged = 0, patch_bytes = 0;
     for (size_t i = 0; i < tags->len; i++) {
@@ -4434,25 +4466,47 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
         // changes one word of its many.
         const char *now = sysimg->buf + start;
         size_t w = 0, nwords = size / sizeof(uint64_t);
+        uint8_t *changed = (uint8_t*)calloc_s(nwords + 1);
+        for (size_t k = 0; k < nwords; k++)
+            changed[k] = memcmp(now + k * 8, baseline + k * 8, 8) != 0;
+        // A memory reference is its pointer and its owner. The file holds the
+        // pointer as an offset into the data of the owner, a prelinked base
+        // holds it converted, and a start converts the two words together: a
+        // run that takes one word of a reference takes the other. An array
+        // whose memory a save replaced keeps the offset 0, and without its
+        // pointer in the run a start adds the new data address to the old one.
+        while (next_reference < references.len && (size_t)references.items[next_reference] < start)
+            next_reference++;
+        for (size_t r = next_reference; r < references.len; r++) {
+            size_t pos = (size_t)references.items[r];
+            if (pos + 2 * 8 > start + nwords * 8)
+                break;
+            size_t k = (pos - start) / 8;
+            assert((pos - start) % 8 == 0);
+            if (changed[k] || changed[k + 1])
+                changed[k] = changed[k + 1] = 1;
+        }
         while (w < nwords) {
-            if (memcmp(now + w * 8, baseline + w * 8, 8) == 0) {
+            if (!changed[w]) {
                 w++;
                 continue;
             }
             size_t run = w;
-            while (run < nwords && memcmp(now + run * 8, baseline + run * 8, 8) != 0)
+            while (run < nwords && changed[run])
                 run++;
             arraylist_push(&idx, (void*)(start + w * 8));
             arraylist_push(&idx, (void*)((run - w) * 8));
             patch_bytes += (run - w) * 8;
             w = run;
         }
+        free(changed);
         if (nwords * 8 < size && memcmp(now + nwords * 8, baseline + nwords * 8, size - nwords * 8) != 0) {
             arraylist_push(&idx, (void*)(start + nwords * 8));
             arraylist_push(&idx, (void*)(size - nwords * 8));
             patch_bytes += size - nwords * 8;
         }
     }
+    arraylist_free(&references);
     h->npatch_sysimg = idx.len / 2;
     arraylist_t patches;
     arraylist_new(&patches, 0);
