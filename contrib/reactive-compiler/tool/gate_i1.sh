@@ -1,10 +1,13 @@
 #!/bin/bash
 # Gate I1 of Stage I (plan/pending/robust-incremental-compiler.md): a store
 # tracks the path packages of its Manifest. The application DepApp
-# (tool/i1_dependency) loads the path package DepLib, and every edit of the
-# gate is in DepLib: a method body through a path constant, a body in a
-# submodule, a new method, and a module option that a rebuild refuses. The
-# chain is compared with the founding of the final sources.
+# (tool/i1_dependency) loads the path package DepLib. The edits of the gate
+# are a method body through a path constant, a body in a submodule, a new
+# method, a module option that a rebuild refuses, and an edit whose parts
+# the rebuild must apply in the load order: a type in DepLib with a method
+# on it in DepApp, which the tracked list puts first, and in the root file of
+# DepLib a `using` of a module that the include above it defines. The chain
+# is compared with the founding of the final sources.
 #   copy         - the packages into $OUT/src, where the gate edits them
 #   found-chain  - materialize_app founds $OUT/chain/depapp with
 #                  track_dependencies
@@ -15,9 +18,13 @@
 #   run-s2       - the rebuilt binary: leaf 6, inner 40, extra 2
 #   refuse       - a module option in DepLib: the rebuild refuses it (F1),
 #                  and the binary is as it was
+#   edit-order   - DepLib-order.jl, leaf-order.jl and app-order.jl replace
+#                  their files, and added-order.jl is the new parts/added.jl
+#   mat-s3       - the rebuild of the edit, in the load order
+#   run-s3       - the rebuilt binary: also part 5, added 7
 #   trace        - the workload under --trace-compile at the final sources
 #   found-final  - materialize_app founds $OUT/final/depapp at those sources
-#   run-final    - the founded binary
+#   run-final    - the founded binary: as run-s3
 #   compare      - the four checks of the invariant: the method tables, the
 #                  roots, the output, the globals
 # Pass step names to run some steps, or nothing to run all of them in order.
@@ -136,6 +143,14 @@ refuse() {
     runbin s2-after-refusal "$CHAIN" "leaf=6 inner=40 extra=2"
 }
 
+edit_order() {
+    cp "$TOOL/i1_dependency/DepLib-order.jl" "$SRC/DepLib/src/DepLib.jl" &&
+    cp "$TOOL/i1_dependency/leaf-order.jl" "$SRC/DepLib/src/parts/leaf.jl" &&
+    cp "$TOOL/i1_dependency/added-order.jl" "$SRC/DepLib/src/parts/added.jl" &&
+    cp "$TOOL/i1_dependency/app-order.jl" "$SRC/DepApp/src/app.jl" &&
+    echo "=== edited DepLib.jl, leaf.jl and app.jl, added parts/added.jl"
+}
+
 trace() {
     light trace-warm "$JULIA" --startup-file=no --project="$SRC/DepApp" "$SRC/workload.jl" || return 1
     light trace "$JULIA" --startup-file=no --project="$SRC/DepApp" \
@@ -170,12 +185,12 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    check 3 "output" "^shape: " "$OUT/run-s2.log" "$OUT/run-final.log" || failed=1
+    check 3 "output" "^shape: " "$OUT/run-s3.log" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain tracked run-s1 edit mat-s2 run-s2 refuse trace found-final run-final compare}
+steps=${*:-copy found-chain tracked run-s1 edit mat-s2 run-s2 refuse edit-order mat-s3 run-s3 trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -186,9 +201,12 @@ for step in $steps; do
         mat-s2) mat mat-s2 "$CHAIN" ;;
         run-s2) runbin s2 "$CHAIN" "leaf=6 inner=40 extra=2" ;;
         refuse) refuse ;;
+        edit-order) edit_order ;;
+        mat-s3) mat mat-s3 "$CHAIN" ;;
+        run-s3) runbin s3 "$CHAIN" "leaf=6 inner=40 extra=2 part=5 added=7" ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
-        run-final) runbin final "$FINAL" "leaf=6 inner=40 extra=2" ;;
+        run-final) runbin final "$FINAL" "leaf=6 inner=40 extra=2 part=5 added=7" ;;
         compare) compare ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }
