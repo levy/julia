@@ -99,11 +99,17 @@ commit.
   from the log of the trim fork of the server, which this change does not
   touch, and no baseline of gate E ran to compare. The architecture says the
   three rules in "The compiler server".
-- [ ] **Step 3: the IDE.** After the owner approves the landing and the push
+- [x] **Step 3: the IDE.** After the owner approves the landing and the push
   of `projectured/PackageCompiler.jl` `reactive`: `Pkg.update("PackageCompiler")`
   in `environment/build` of omnet-julia and of projectured-julia, and a
   precompile there. Then a rebuild of `omnet_ide` passes, and its server log
   starts with the `listens` line.
+  *Done (2026-11-09).* `reactive` is `64153d81`, and both Manifests pin its
+  tree `90e695d8`; the `Project.toml` files do not change. The first rebuild
+  reused a server that another rebuild had started. After that server
+  stopped, the next rebuild warned that the session server does not answer,
+  started its own server, and sent it every request. Its log starts with
+  `rc: server <pid> listens`, and the binary starts.
 
 ## Not in this plan
 
