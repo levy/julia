@@ -174,12 +174,30 @@ Each step is a commit.
   same bound. So it is older than this plan, and it is not part of it. The
   3 000 bytes of difference fit the longer path of the worktree, which the
   image holds in its file names.
-- [ ] **Step 5: the IDE.** After the owner approves the landing on
+- [x] **Step 5: the IDE.** After the owner approves the landing on
   `merged-next`: `make` in `julia-merged-next`, then `bin/build_omnet_ide
   --found` in omnet-julia (about 1 h, peak 23 GB). Then one test edit in a
   copy of the change that adds a struct in a dependency and a method on it in
   `OmnetIde`. The rebuild must apply it, and the binary must start. Remove the
   edit and rebuild. The test edit is never committed.
+  *Done (2026-11-09).* The `make` takes 3 min 39 s, and the founding 1 h 01
+  min at a 22.9 GB peak. The test edit adds `struct RebuildOrderTestEntry`
+  with its export in `LegacyIniFileEntry.jl`, its export in
+  `OmnetLegacySimulatorPresentation.jl`, and in
+  `LegacyIniFileEntryToWidget.jl` a `using` of it and a method on it. The
+  rebuild applies the five changes in the load order: the export and the
+  struct of `LegacyIniFileEntry.jl`, the export of the package, then the
+  `using` and the method of `OmnetIde`. The binary starts. The rebuild
+  without the edit applies 0 expressions, and the binary starts.
+  *Found in this step:* the first rebuild with the edit failed with the
+  `UndefVarError` of the fault. Another store server answered it. A rebuild
+  from a terminal at 15:05 started that server from the founding of 12:05,
+  which has the old order key, and the new founding did not stop it. When the
+  store has no session file, PackageCompiler starts a new server and takes
+  the first server that answers on the socket path of the store, so the
+  older server got the request. Its log shows the request and the error. The
+  new server got no request. The second rebuild sent its requests to its own
+  server and passed.
 
 ## Not in this plan
 
@@ -188,3 +206,12 @@ Each step is a commit.
   error is a separate change.
 - An order for two new packages that load each other. D2 puts every new
   package last, and F3 refuses a `using` of a package that is not loaded.
+- A new server must be the server that answers. The wait for a new server in
+  `_reactive_server_ensure` of PackageCompiler accepts any process that
+  answers `status` on the socket path, and a founding does not stop the
+  server of the store that it replaces. A separate change can check the pid
+  in the answer, and a founding can quit the server of the old store.
+- The server log keeps the output of the server. PackageCompiler opens
+  `server.log` once for stdout and once for stderr, so a write to stderr,
+  such as the trace of a stop by a signal, writes over the start of the
+  output.
