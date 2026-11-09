@@ -153,6 +153,9 @@ edit_order() {
 
 trace() {
     light trace-warm "$JULIA" --startup-file=no --project="$SRC/DepApp" "$SRC/workload.jl" || return 1
+    # A workload that compiles nothing at run time writes no file: its trace
+    # is empty.
+    : > "$OUT/trace.jl"
     light trace "$JULIA" --startup-file=no --project="$SRC/DepApp" \
         --trace-compile="$OUT/trace.jl" "$SRC/workload.jl" || return 1
     echo "=== trace: $(grep -c '^precompile' "$OUT/trace.jl") statements"
