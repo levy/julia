@@ -272,8 +272,20 @@ generator is an anonymous method at `none:0` and belongs to no item.
 The **classifier** (`rc_classify`) gives every change an id of the catalog
 of `plan/pending/robust-incremental-compiler.md`, and the report is one
 `rc: change <id> <file>:<line> <name> (<note>)` line per change. The apply
-runs the removals first, in file order, then a queue of changes and their
-dependents:
+runs the removals first, then a queue of changes and their dependents in
+the load order of the founding (`RcLoadOrder`):
+
+- a package comes after the packages that it loads, in the order of
+  `Base.loaded_modules_order` of the process; a package that is not loaded
+  comes last;
+- when the ledger holds every tracked file, the items of an included file
+  come at the line of its `include`, so a `using` after an `include` comes
+  after the module that the included file defines;
+- when the ledger holds the changed files alone, every change is a method or
+  an expression of another kind, and the files of a package keep the order
+  of the tracked list, which lists a file before the files that it includes.
+
+The changes and their dependents:
 
 - a removed or changed expression deletes its old methods
   (`rc_delete_method`, which deletes the generator of a generated method

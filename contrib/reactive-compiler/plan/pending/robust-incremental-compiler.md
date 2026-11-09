@@ -390,14 +390,15 @@ refusal of what it cannot apply.
       expression could read.
 - [x] A3, A4: a removed or re-signed expression deletes its methods by
       `delete_method` before the additions of the same file. *As built:*
-      the removals go first, in file order; a changed expression deletes
+      the removals go first; a changed expression deletes
       its old methods after its evaluation, so a replacement of the same
       signature is a dead entry and one without a replacement makes the
       change an A4. `rc_delete_method` deletes the generator's method with
       a generated method.
 - [x] B2, B3: a changed type re-evaluates every tracked expression that
       names the type in a signature, a field type or an initializer, in
-      file order; a changed supertype does the same for every subtype,
+      the load order (`RcLoadOrder`); a changed supertype does the same
+      for every subtype,
       transitively. Julia 1.12 allows the redefinition of a struct; the
       compiler process has no instances of the old type, because it never
       executes the program. *As built:* the dependents are the tracked

@@ -87,6 +87,19 @@ These are my proposals. The owner approves them with the plan.
   that the classify step uses now. A tracked file with no such item keeps the
   order of the list after the known files of its package, and the server
   prints one line `rc: order: no include of <file>`.
+  *As built (a refinement found in Step 2):* the new ledger holds every
+  tracked file only when `rc_needs_all_files` says so: when a change is of
+  a kind other than a method or an `:other` expression. Then the key is
+  exact. When the ledger holds the changed files alone, every change is a
+  method or an `:other` expression, and the key is the rank of the package,
+  the index of the file in the list, and the line. That order is right
+  across packages, and the order of method definitions does not matter. The
+  one case that it can get wrong: an `:other` expression after an `include`
+  in a parent file that depends on a changed method of the included file. A
+  parse of every file for that case would cost about 6 s on every rebuild
+  with a changed `precompile` list, so the plan accepts it. The line
+  `rc: order: no include of <file>` appears only when the ledger holds every
+  file.
 - **D4. The removals keep their order.** They delete methods before any
   evaluation, so their order does not change the result.
 - **D5. The same step also fixes the world of the module lookup in the apply
@@ -101,7 +114,11 @@ These are my proposals. The owner approves them with the plan.
 The work is done in a worktree `julia-rebuild-load-order` of `merged-next`.
 Each step is a commit.
 
-- [ ] **Step 1: the test, which fails first.** Gate I1
+- [ ] **Step 1: the test, which fails first.** *Written (25c29e9131); the
+  run on `merged-next` waits for memory room.* *As built:* the module is
+  `Added` in `parts/added.jl`, and the binary prints the lines of a plain
+  function `shape_lines`, so the edit changes that function and
+  `julia_main`, the `@ccallable` entry point, stays as it is. Gate I1
   (`tool/gate_i1.sh`, packages in `tool/i1_dependency`) gets three more steps
   after `refuse`:
   - `edit-order`: one edit with two parts.
@@ -115,12 +132,21 @@ Each step is a commit.
   The steps `trace`, `found-final` and `compare` then include this edit too.
   On `merged-next` now, `mat-s3` must fail with the `UndefVarError`. The gate
   comment says that the edits of `DepApp` are new.
-- [ ] **Step 2: the order key.** In `child.jl`:
+- [ ] **Step 2: the order key.** *Written; it parses; not built yet.* In
+  `child.jl`:
   - a table from each new file to its position, made after the new ledger;
   - the rank of each package from `Base.loaded_modules_order`;
   - `rc_order` takes the table, and `RcQueue` holds it;
   - D5, the lookup of the loop through `Base.invokelatest`.
-- [ ] **Step 3: the documents.** `doc/architecture.md` and the stage log of
+  *As built:* `RcLoadOrder` holds one key per file, a tuple of numbers, and
+  `rc_load_order(files, roots, items, every_file)` makes it. The package of
+  a root file is its name, because `tracked_sources` finds the root file at
+  `src/<package>.jl`. A check in `rc_warm`, the self-test before every
+  apply, puts a `using` after the module of the include above it, and
+  `Base` before a package that is not loaded. Checked in the `+merged`
+  Julia: `Base.loaded_modules_order` holds the modules of the image in load
+  order, and `(1, 137, 5) < (1, 197)`.
+- [x] **Step 3: the documents.** `doc/architecture.md` and the stage log of
   `robust-incremental-compiler.md` say "in the load order" where they say "in
   file order", with the rule of the key.
 - [ ] **Step 4: the gates.** Build the worktree (`make`). Gate I1 passes with
