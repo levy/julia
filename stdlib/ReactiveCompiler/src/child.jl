@@ -869,12 +869,14 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 change.deleted, " methods deleted")
     end
     # C3: how the names of every expression of a module with a changed
-    # `using` resolve before the apply.
+    # `using` resolve before the apply. A new module has no such names: the
+    # apply makes it, and no expression of it ran before.
     resolutions = Dict{UInt, Dict{Symbol, Any}}()
     for change in queue.changes
         change.item.kind === :using || continue
         module_path = rc_module_path(new_roots, change.item)
-        mod = rc_resolve_module(module_path)
+        mod = rc_module_or_nothing(module_path)
+        mod === nothing && continue
         for item in new_items
             rc_module_path(new_roots, item) == module_path || continue
             haskey(resolutions, objectid(item)) && continue
