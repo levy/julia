@@ -114,8 +114,16 @@ These are my proposals. The owner approves them with the plan.
 The work is done in a worktree `julia-rebuild-load-order` of `merged-next`.
 Each step is a commit.
 
-- [ ] **Step 1: the test, which fails first.** *Written (25c29e9131); the
-  run on `merged-next` waits for memory room.* *As built:* the module is
+- [x] **Step 1: the test, which fails first.** *Done (25c29e9131,
+  8c2de9ee70).* On the `+merged` Julia without the fix, `mat-s3` fails with
+  `UndefVarError: Part not defined in DepLib`; with the `DepApp` part of
+  the edit taken out, it fails with `UndefVarError: Added not defined in
+  DepLib`. So each of the two parts fails on its own. The run of the gate
+  needs `PC=~/.julia/packages/PackageCompiler/VcvCs`, the PackageCompiler
+  of the IDE build: the default `workspace/PackageCompiler.jl` is 6 commits
+  behind and has no `track_dependencies`. The trace step starts from an
+  empty file, because the binary of the gate is now fully inferred and its
+  workload compiles nothing at run time. *As built:* the module is
   `Added` in `parts/added.jl`, and the binary prints the lines of a plain
   function `shape_lines`, so the edit changes that function and
   `julia_main`, the `@ccallable` entry point, stays as it is. Gate I1
@@ -132,7 +140,9 @@ Each step is a commit.
   The steps `trace`, `found-final` and `compare` then include this edit too.
   On `merged-next` now, `mat-s3` must fail with the `UndefVarError`. The gate
   comment says that the edits of `DepApp` are new.
-- [ ] **Step 2: the order key.** *Written; it parses; not built yet.* In
+- [x] **Step 2: the order key.** *Done (a5de8e5458).* The worktree build
+  takes 14 min 18 s at a 9.6 GB peak; `rc_warm` passes with the checks of
+  the key. In
   `child.jl`:
   - a table from each new file to its position, made after the new ledger;
   - the rank of each package from `Base.loaded_modules_order`;
@@ -149,10 +159,21 @@ Each step is a commit.
 - [x] **Step 3: the documents.** `doc/architecture.md` and the stage log of
   `robust-incremental-compiler.md` say "in the load order" where they say "in
   file order", with the rule of the key.
-- [ ] **Step 4: the gates.** Build the worktree (`make`). Gate I1 passes with
+- [x] **Step 4: the gates.** Build the worktree (`make`). Gate I1 passes with
   the new steps. Gate B (one change of every category of the catalog, on
   `HazardApp`, compared with a founding by the oracle) and gate C pass,
   because the new key changes the order of every queue.
+  *Gate I1 passes (2026-11-09):* `mat-s3` applies the edit, `run-s3` prints
+  part 5 and added 7, and the four checks of the oracle are equal between
+  the chain and the founding of the final sources (method tables 10 lines,
+  roots 0, output 6, globals 1). *Gate B passes:* both comparisons with a
+  founding are equal in all four checks, and the two refusals hold. *Gate
+  C:* every step passes but `sizes`. The chain grows 103 568 bytes over 10
+  edit-and-reverse cycles, and the bound is 35 136 bytes. That step fails
+  on the `+merged` Julia without this change too: 100 568 bytes against the
+  same bound. So it is older than this plan, and it is not part of it. The
+  3 000 bytes of difference fit the longer path of the worktree, which the
+  image holds in its file names.
 - [ ] **Step 5: the IDE.** After the owner approves the landing on
   `merged-next`: `make` in `julia-merged-next`, then `bin/build_omnet_ide
   --found` in omnet-julia (about 1 h, peak 23 GB). Then one test edit in a
