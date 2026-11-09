@@ -85,9 +85,20 @@ commit.
   - `stop`: the server and the decoys stop.
   With the PackageCompiler of the IDE build (`38dfd6e7`), `decoy`, `signal`
   and `founding` must each fail.
-- [ ] **Step 2: the fix.** D1 and D2 and D3 in `src/reactive.jl` of
-  PackageCompiler. The gate passes. Gate I1 passes, because it builds with
-  the child log of D3.
+- [x] **Step 2: the fix.** D1 and D2 and D3 in `src/reactive.jl` of
+  PackageCompiler. The gate passes. Gate E passes, because its founding
+  runs the trim child of D3.
+  *Done (2026-11-09).* The server gate passes in 4 min 50 s at a 7.1 GB
+  peak. `decoy`: the decoy gets `status` and `quit`, the build warns that a
+  server outside the session answers, and the log starts with the `listens`
+  line of the new server. `signal`: the log keeps that line and holds the
+  trace of the signal. `founding`: the decoy gets `quit`. Gate E passes its
+  steps `full`, `dynamic` and `stop`: the founding writes the trimmed
+  product through the trim child, and the dynamic edit is refused with T1.
+  The list of verifier lines under `refused T1` is empty. That reason comes
+  from the log of the trim fork of the server, which this change does not
+  touch, and no baseline of gate E ran to compare. The architecture says the
+  three rules in "The compiler server".
 - [ ] **Step 3: the IDE.** After the owner approves the landing and the push
   of `projectured/PackageCompiler.jl` `reactive`: `Pkg.update("PackageCompiler")`
   in `environment/build` of omnet-julia and of projectured-julia, and a

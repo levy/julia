@@ -417,7 +417,12 @@ snapshot in the output mode of the rebuild child (`--output-o` for its
 whole life, `JULIA_REACTIVE_REUSE=1`). `materialize_app(...; server = true)`,
 or `JULIA_REACTIVE_SERVER=1`, starts it that way, detached, its log in the
 store, and records the session (the socket, the base snapshot, the pid) in
-`server.toml`; a later call reuses the server that answers. Any build tool
+`server.toml`; a later call reuses the server that answers. A call that
+starts a new server first sends `quit` to any process that answers on the
+socket path, and removes the path, so it talks only to the server that it
+starts. A founding stops the server of the store that it replaces. The log
+takes stdout and stderr through one open file, so their lines keep their
+order. `tool/gate_server.sh` tests these three rules. Any build tool
 can start and drive it the same way (`tool/gate_h.sh` does, with the
 Python client alone). The socket is a Unix socket in the
 temp directory (a socket path holds 107 bytes); both sides use raw
