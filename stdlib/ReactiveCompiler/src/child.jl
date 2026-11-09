@@ -22,11 +22,11 @@
 #   3. the diff of each matched pair by key, and the classification of every
 #      changed or removed entry with an id of the change catalog of
 #      `plan/pending/robust-incremental-compiler.md`; a refusal stops here;
-#   4. the apply, in file order: the removals delete their methods first,
-#      then every change is evaluated in its module, and the dependents that
-#      the evaluation reveals (the expressions that name a changed type, a
-#      changed binding or a changed macro, or whose names resolve differently
-#      after a changed `using`) join the queue;
+#   4. the apply, in the load order (`RcLoadOrder`): the removals delete
+#      their methods first, then every change is evaluated in its module,
+#      and the dependents that the evaluation reveals (the expressions that
+#      name a changed type, a changed binding or a changed macro, or whose
+#      names resolve differently after a changed `using`) join the queue;
 #   5. the new ledger: the methods of every new entry, from the method table
 #      after the apply; every old method of a change is deleted — one whose
 #      signature no new method of the entry has made the change a removal
@@ -477,8 +477,72 @@ end
 
 rc_content_hash(path) = string(hash(read(path, String)); base = 16)
 
-# The order of an item in the apply: its file, then its first line.
-rc_order(item::RcItem) = (item.file, item.entry.lines.start)
+# The load order of the apply: a key for each tracked file, which the key of
+# an item of the file extends with the first line of the item. Two keys
+# compare from left to right, and a key that begins another comes first.
+#
+# The first number is the rank of the package of the file in the load order
+# of this process, `Base.loaded_modules_order`: Julia loads a package after
+# the packages that it loads. A package that is not loaded comes after every
+# loaded one; no loaded module can name it (F3).
+#
+# When the ledger holds every tracked file, the next numbers are the lines of
+# the includes from the root file of the package down to the file, so the
+# items of an included file come at the line of its include. A file whose
+# include the ledger does not hold comes after the other files of its
+# package, in the order of the list. When the ledger holds the changed files
+# alone, every change is a method or an expression of another kind (see
+# `rc_needs_all_files`), and the next number is the index of the file in the
+# list: the walk of the tracked files lists a file before the files that it
+# includes, and a method does not depend on the order of the other methods.
+struct RcLoadOrder
+    keys::Vector{Tuple{Vararg{Int}}}
+end
+
+rc_order(order::RcLoadOrder, item::RcItem) = (order.keys[item.file]..., item.entry.lines.start)
+
+# The package of a tracked file: the first name of its module, or for a root
+# file, which `tracked_sources` finds at `src/<package>.jl`, its name.
+rc_package_name(file::String, root::Vector{Symbol}) =
+    isempty(root) ? Symbol(splitext(basename(file))[1]) : root[1]
+
+function rc_load_order(files::Vector{String}, roots::Vector{Vector{Symbol}}, items::Vector{RcItem},
+                       every_file::Bool)
+    ranks = Dict{Symbol, Int}()
+    for (index, mod) in enumerate(Base.loaded_modules_order)
+        get!(ranks, nameof(mod), index)
+    end
+    unloaded = length(Base.loaded_modules_order) + 1
+    rank(j) = get(ranks, rc_package_name(files[j], roots[j]), unloaded)
+    every_file || return RcLoadOrder(Tuple{Vararg{Int}}[(rank(j), j) for j in eachindex(files)])
+    index_of = Dict{String, Int}(file => j for (j, file) in enumerate(files))
+    parents = Dict{Int, Tuple{Int, Int}}()
+    for item in items
+        item.kind === :include || continue
+        e = item.entry.expr
+        length(e.args) == 2 || continue
+        mod = rc_module_or_nothing(rc_module_path(roots, item))
+        included = rc_include_path(e.args[2], item.path, mod)
+        j = included === nothing ? nothing : get(index_of, included, nothing)
+        j === nothing || (parents[j] = (item.file, item.entry.lines.start))
+    end
+    keys = Tuple{Vararg{Int}}[]
+    for j in eachindex(files)
+        lines = Int[]
+        k = j
+        while !isempty(roots[k]) && haskey(parents, k) && length(lines) < length(files)
+            k, line = parents[k]
+            pushfirst!(lines, line)
+        end
+        if isempty(roots[k])
+            push!(keys, (rank(j), lines...))
+        else
+            println("rc: order: no include of ", basename(files[j]))
+            push!(keys, (rank(j), typemax(Int), j))
+        end
+    end
+    return RcLoadOrder(keys)
+end
 
 function rc_refuse!(refusals, id, item, reason)
     push!(refusals, string(id, " ", rc_where(item), " ", rc_what(item), ": ", reason))
@@ -659,24 +723,25 @@ end
 
 # ── the apply ───────────────────────────────────────────────────────────────
 
-# The queue of changes, kept in file order. A change that joins the queue
+# The queue of changes, kept in the load order. A change that joins the queue
 # behind the cursor is evaluated in its turn; one that belongs before the
 # cursor goes to the end.
 mutable struct RcQueue
     changes::Vector{RcChange}
     cursor::Int
     queued::Set{UInt}
+    order::RcLoadOrder
 end
-RcQueue() = RcQueue(RcChange[], 0, Set{UInt}())
+RcQueue(order::RcLoadOrder) = RcQueue(RcChange[], 0, Set{UInt}(), order)
 
 function rc_enqueue!(queue::RcQueue, change::RcChange)
     key = objectid(change.item)
     key in queue.queued && return false
     push!(queue.queued, key)
-    order = rc_order(change.item)
+    order = rc_order(queue.order, change.item)
     position = length(queue.changes) + 1
     for index in (queue.cursor + 1):length(queue.changes)
-        if rc_order(queue.changes[index].item) > order
+        if rc_order(queue.order, queue.changes[index].item) > order
             position = index
             break
         end
@@ -743,7 +808,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     tracked = Set(new_files)
     filter!(entry -> entry.first in tracked, RC_PARSED)
     refusals = String[]
-    queue = RcQueue()
+    queue = RcQueue(rc_load_order(new_files, new_roots, new_items, all_files))
     removals = RcChange[]
     line_updates = 0
     # H3: a renamed file keeps its methods, under the new name.
@@ -856,7 +921,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
-    # The apply. The removals first, then the queue in file order, with the
+    # The apply. The removals first, then the queue in the load order, with the
     # dependents that each evaluation reveals.
     deleted = 0
     for change in removals
@@ -899,8 +964,9 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                               item.entry.expr)
             continue
         end
-        mod = rc_resolve_module(rc_module_path(new_roots, item))
-        # The bindings are read at the latest world: this loop moves it.
+        # The bindings are read at the latest world: this loop moves it, and a
+        # module that an earlier change of the loop made is newer than the loop.
+        mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
         old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
                    Base.invokelatest(getfield, mod, item.name) : nothing
         Core.eval(mod, item.entry.expr)
@@ -1241,7 +1307,7 @@ function rc_warm()
     refusals = String[]
     tracked = Set([new_path])
     roots = [Symbol[:Base]]
-    queue = RcQueue()
+    queue = RcQueue(rc_load_order([new_path], roots, new_items, false))
     for item in changed
         old = RcItem[o for o in old_items if o.name === item.name && o.name !== nothing]
         change = rc_classify(item, old, roots, tracked, refusals)
@@ -1251,6 +1317,22 @@ function rc_warm()
         error("rc_warm: the refusals are ", refusals)
     ids = [change.id for change in queue.changes]
     ids == ["A2", "B2", "C1", "D1", "C3"] || error("rc_warm: the ids are ", ids)
+    # The load order: a loaded package before one that is not loaded, and a
+    # `using` after the module that the include above it loads.
+    root_path = joinpath(dir, "W.jl")
+    part_path = joinpath(dir, "warm4.jl")
+    write(root_path, "module W\ninclude(\"warm4.jl\")\nusing .X\nend\n")
+    write(part_path, "module X\nend\n")
+    order_roots = [Symbol[], Symbol[:W]]
+    order_items = rc_ledger([root_path, part_path], [root_path, part_path])
+    order = rc_load_order([root_path, part_path], order_roots, order_items, true)
+    using_item = only(item for item in order_items if item.kind === :using)
+    module_item = only(item for item in order_items if item.kind === :module && item.file == 2)
+    rc_order(order, module_item) < rc_order(order, using_item) ||
+        error("rc_warm: the load order puts ", rc_order(order, using_item), " before ",
+              rc_order(order, module_item))
+    rc_load_order([new_path, root_path], [Symbol[:Base], Symbol[]], RcItem[], false).keys[1] <
+        order.keys[1] || error("rc_warm: Base does not load before an unloaded package")
     # C4: a new include takes a tracked file when the rules of the walk compute
     # its path, and an include of another form is refused.
     include_path = joinpath(dir, "warm3.jl")
