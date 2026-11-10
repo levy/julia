@@ -20,9 +20,10 @@
 #              commit. A rebuild that fails in another way is a fault: the
 #              store founds again, the replay goes on, and the gate fails
 #   final    - materialize_app founds $OUT/final/replay at the last commit
-#   control  - a second whole build of the last commit; the lines of the
-#              oracle that differ between the two whole builds are the noise
-#              of the oracle, and the comparisons leave them out
+#   control  - a second whole build of the last commit, which compiles the
+#              tracked packages again; the lines of the oracle that differ
+#              between the two whole builds are the noise of the oracle, and
+#              the comparisons leave them out
 #   compare  - the chain against the founding of the last commit: the lines
 #              of the two programs, the method tables and the globals of the
 #              oracle; the roots that the chain lacks are counted, not failed
@@ -291,9 +292,15 @@ oracle() {
 
 # A second whole build of the same sources. A fact of the oracle that differs
 # between two whole builds says nothing about a rebuild: its key goes to
-# noise.txt, the line without its last word.
+# noise.txt, the line without its last word. The compiled files of the tracked
+# packages leave the depot first, so that this build compiles them again: a
+# module gets a new build id there, as the modules of the chain and of the
+# founding of the last commit have different ones, and a fact that depends on
+# the build id (the hash of a type) is noise too.
 control() {
     rm -rf "$OUT/control"
+    local name
+    for name in ${TRACKED//,/ }; do rm -rf "$OUT/depot/compiled"/*/"$name"; done
     mat mat-control "$OUT/control/replay" "" || { echo "=== control: the founding failed; see $OUT/mat-control.log"; return 1; }
     oracle control "$OUT/control/replay" && oracle final "$FINAL" || return 1
     diff <(grep -E "^(method|global) " "$OUT/oracle-control.log") <(grep -E "^(method|global) " "$OUT/oracle-final.log") |

@@ -172,8 +172,10 @@ oracle_strip_lines(e::Expr) = Expr(e.head, Any[oracle_strip_lines(a) for a in e.
 
 # The name of an anonymous function, a closure or a generator carries the
 # gensym counters of its process (`var"##3#4"`, `var"#f##0#f##1"`); a chain
-# and a founding count differently. The digest drops the counters.
-oracle_canonical(text::AbstractString) = replace(text, r"#+\d+" => "#")
+# and a founding count differently. So does the name that the lowering gives
+# to an argument or a type variable that the source does not name (`#s131`,
+# as for `::Type{<:T}`). The digest drops the counters.
+oracle_canonical(text::AbstractString) = replace(text, r"#+s?\d+" => "#")
 
 # The state of a signature: `compiled` when a code instance valid in `world`
 # has native code, `inferred` when one exists without native code, `absent`
