@@ -387,6 +387,44 @@ test that fails before the change.
   check fails before the change. The change is in the writer alone, so the
   IDE needs a build of the library and one rebuild from a new server, and no
   whole build. The check on the new overlay of the IDE must count zero.
+
+  *The owner approved this step alone on 2026-11-09. The work is in the
+  worktree `julia-overlay-const-data`, branch `overlay-const-data`.*
+
+  *The test, which fails first (2026-11-09).* `tool/gate_const.sh` builds the
+  test program of gate I1 with a table of bytes in `DepLib`
+  (`tool/const_table`). The edit of the gate adds a top-level statement that
+  sets 64 bytes of the table, 8256 bytes apart. So each byte is on a page of
+  its own with no write on the page before it, and the 64 bytes are at 64
+  different places of a page. The rebuilt program must count 64. With the
+  Julia of `merged-next` (91863c31f7) it counts 55. The constant data of that
+  image starts 576 bytes into a page, and 9 of the 64 bytes are at a place
+  below 576: the writer lost exactly those. `tool/overlay_check.py` counts 4
+  specializations that are missing from their key sets in the overlay of
+  that rebuild of one statement.
+
+  *As built (2026-11-10, 4d56a98d60 the gate and the check tool, b17c03e72b
+  the correction).* `reactive_range_dirty` in `src/staticdata.c` answers
+  whether the process wrote a byte of a range. The copy of the written pages
+  of the constant data and the list of its patched pages use it. A page of
+  the sysimg starts at a page limit, so nothing changes for it. The format of
+  an overlay and the loader stay as they are. The build of the worktree has
+  no warning. *Measured with the corrected Julia:*
+
+  - `gate_const.sh` passes: the rebuilt program counts 64, and
+    `overlay_check.py` finds no wrong entry. The constant data of that image
+    starts 3072 bytes into a page, so the old writer loses 48 of the 64
+    bytes there.
+  - Gate I1 with overlays and a server passes, with the four checks of the
+    oracle equal, and `overlay_check.py` finds no wrong entry in its overlay.
+  - A rebuild of the IDE store by hand, with each output in a scratch folder
+    (a server on `founding.so`, the request of the rebuild of 2026-11-09
+    21:49, the same 599 expressions and 23 removals): the overlay has no wrong
+    entry, where the overlay of the store has 54 root tables, 1 919
+    specializations and 302 bindings. The overlay is 2.4 MB larger.
+
+  *Open:* the landing on `merged-next`, the build of that checkout, and one
+  rebuild of the IDE from a new server. They wait for the word of the owner.
 - [ ] **Step 2: the two gates and the baseline (D8).** The program gate on the
   test program of gate I1; it runs `tool/overlay_check.py` after each
   rebuild. The replay gate on the smallest real program whose whole build
