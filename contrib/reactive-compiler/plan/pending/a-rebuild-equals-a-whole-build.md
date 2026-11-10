@@ -714,9 +714,11 @@ commits. The numbers of the steps stay as they are.
   - No tracked file has a `@generated` function.
 
   *The gate with the replay.* `tool/gate_runs.sh` passes through a child
-  with whole images: the rebuilt program prints the values of the whole
-  build, and the chain equals the whole build in the four checks (22
-  methods, the roots, 12 lines of output, 9 globals). The program has five
+  with whole images, and through a server with overlays
+  (`JULIA_REACTIVE_SERVER=1`, `JULIA_REACTIVE_IMAGE_WRITE=overlay`): the
+  rebuilt program prints the values of the whole build, and the chain equals
+  the whole build in the four checks (22 methods, the roots, 12 lines of
+  output, 9 globals). The program has five
   more expressions than the first form of the gate:
 
   | expression | before the edit | after it |
