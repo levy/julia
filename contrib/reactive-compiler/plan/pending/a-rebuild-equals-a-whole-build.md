@@ -93,7 +93,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 37 | Under overlays, a save that can not write an object back in its place stops the build, and each later build, until a whole build. | a `BigInt` of the base on a written page; a module with more `using` lines than its object has room for | `staticdata.c:2253`, `:2580`, `:5122` | Read (audit) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read |
-| 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read |
+| 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10 |
 | 4 | A changed top-level statement adds to the effect of the old one. | `register!(TABLE, a)` becomes `register!(TABLE, b)`. The table of the rebuild holds `a` and `b`. A whole build holds `b`. | `child.jl:649-659` (ids `X`, `D2`) | Read |
 | 5 | A value of a struct type that changed stays inside a global, when a function made the value. | `const DEFAULT = make_default()` gives a `Theme`. `Theme` gets a field. `DEFAULT` holds an old `Theme`, and no method of the new type accepts it. | the limit that `doc/architecture.md` names | Read |
 | 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test |
@@ -131,7 +131,7 @@ Julia runs no pass that needs caller and callee in one module.
 
 | # | what happens | where | state |
 | --- | --- | --- | --- |
-| 12 | A start with an overlay does work for the whole image, not for the overlay only: a checksum over the whole overlay (198 MB today), a pass over each of the 222 894 entries of the function table and over each of the 64 034 slots of the base, a walk of each function name. The overlay holds 70 MB of lists that this start never reads. | `staticdata.c:7577`, `:3220`, `:6657`; `processor.cpp:672` | Read (audit); 72 ms with no overlay, 150 ms after a one-line edit; no time for today's overlay |
+| 12 | A start with an overlay does work for the whole image, not for the overlay only: a checksum over the whole overlay (198 MB today), a pass over each of the 222 894 entries of the function table and over each of the 64 034 slots of the base, a walk of each function name. The overlay holds 70 MB of lists that this start never reads. | `staticdata.c:7577`, `:3220`, `:6657`; `processor.cpp:672` | Read (audit). Measured on the IDE on 2026-11-10 (`--build-info`, the middle of 9 starts): 70 ms and a peak of 282 MB with no overlay; 164 ms and 961 MB with the overlay of a save with no change; 280 ms and 1 168 MB with the overlay of 634 changed items |
 | 13 | 81 % of the patches of an overlay change nothing: 1.33 of 1.64 million patches write the same reference to a constant object in another form. This is why a one-line edit patches 543 000 to 766 000 objects. Without them a start still copies 42 105 pages (164 MB) in place of 49 404. The real changes are 181 000 code instances that the edit made invalid, and 523 000 references to new objects, most of them new callers in the caller lists of base objects. | `staticdata.c:1676` | counted on the overlay of the IDE (audit) |
 | 14 | The run scripts rebuild before each start. A build with no edit takes 10 to 17 s, and it does a save. | `_materialize_delta` has no early exit | Read |
 
@@ -167,6 +167,7 @@ Two more causes start a whole build, and they are the common ones:
 | 20 | The ledger reads each tracked file when one change has dependents by name: 9.6 s. A new server reads them all again. | `rc_needs_all_files` | Log |
 | 21 | The apply compares each old method with each signature of the ledger. The cost grows with the square of the size of the edit. About 16 s of the apply of today are in no printed part. | `child.jl:1068-1076` | Read; the time needs a profile |
 | 31 | After a struct changed, each rebuild infers and compiles the specializations on the old struct again, which nothing can call. The cache of finding 10 adds more of them. Today 159 struct shapes changed; the part of the 38.5 s is not measured. | `precompile.jl:430`, `typeinfer.jl:1860` | Read (audit) |
+| 38 | Each save compiles 2 293 functions again that the image of the whole build does not hold as machine code, with no change of a source. A save with no change takes 6.2 s on the IDE: 1.3 s front, 1.4 s emission, 1.4 s heap, 1.6 s machine code. Its overlay patches 143 689 objects and holds 66 MB of lists. | the server log of the baseline of Step 2 | Log |
 | 32 | A save has a floor that follows the size of the image and not the edit: three walks of each specialization, one LLVM module for each code instance that answers a constant, the names of the whole image in each overlay. A save of a one-line edit of the IDE takes 3.3 to 6 s. | `precompile.jl`, `aotcompile.cpp:999`, `aotcompile.cpp:1325` | Read (audit) |
 
 ### Tests
@@ -447,6 +448,69 @@ open; Step 10 needs its answer.
   size of the overlay, at 1, 10, 100 and 600 changed items, and a profile of
   the apply and of the save (findings 21, 32). Gate C passes again or its
   bound changes with a reason (finding 24).
+
+  *The program gate (2026-11-10, b17599c0f2).* `gate_prelinked_chain.sh` has
+  the table edit, the `check` step and the `decode` step. With the writer of
+  91863c31f7 it fails: the program counts 20 marks of 64, and 32
+  specializations and 4 bindings are missing from their key sets. With the
+  corrected writer it passes, and both programs decode 24 819 sources.
+
+  *The replay gate (2026-11-10).* `tool/gate_replay.sh` clones a repository,
+  writes a small program `ReplayApp` over one package of it, founds a store at
+  an old commit, and rebuilds at each later commit through the server, as an
+  overlay. The program has the form of the build scripts. After each rebuild
+  the prelinked program and the launcher must print the same counts, and
+  `overlay_check.py` must find no wrong entry. At the end the gate compares
+  the chain with a whole build of the last commit through the oracle, decodes
+  each source in the program, and then does the same again from a new server.
+  A refused rebuild is counted, and the store founds again at that commit.
+  The roots that the chain lacks are counted and not failed, until Step 10.
+
+  *The first run: the kernel package of projectured-julia, five commits
+  (140ae8853 to 00d0f77e0), 4 min 12 s, peak 8.7 GB.* No rebuild was refused
+  and none failed. The chain is **not** equal to the whole build:
+
+  - The program of the chain counts 728 exported names and 3 381 methods;
+    that of the whole build 731 and 3 376.
+  - 103 methods have another lowered code or another count. 69 of them are
+    constructors of structs that `@cell_struct` or `@document` builds.
+  - The cause of those, shown with one struct:
+
+    ```julia
+    @cell_struct struct EmptyReference <: Reference
+        type::Any = nothing       # the macro gives the field the type `Cell`
+    end
+    # const Cell = ReactiveCell{Any}                       (ReactiveCell.jl:233)
+    # the last commit changes the struct ReactiveCell
+    # whole build:  fieldtypes(EmptyReference) == (Cell,)
+    # chain:        fieldtypes(EmptyReference) == (the ReactiveCell{Any} of before the edit,)
+    ```
+
+    The text of the item names neither `ReactiveCell` nor `Cell`, so the
+    rebuild does not evaluate it again. This is finding 3 with the type of
+    finding 5, on a real commit.
+  - The three missing names: the root file of the package exports each name
+    of `KernelModule` in a loop. A commit adds an export, and the rebuild
+    does not run the loop again (R1).
+  - One server through the five commits and a new server at the end give
+    the same image. 1 of 300 roots differs.
+
+  *The same fault stops the rebuild of the IDE now (2026-11-10 08:53).* The
+  commit that changes `ReactiveCell` is in the main checkout of
+  projectured-julia since this morning. The apply of the IDE store stops
+  with `MethodError: Cannot convert an object of type ReactiveCell{Any} to an
+  object of type Cell`, in a top-level call of `FieldReferenceStep`
+  (`ReferenceStep.jl:168`). Until D1 is built, only a whole build of the IDE
+  gives a program again.
+
+  *The baseline of the IDE store, as far as it goes.* The server listens 0.7 s
+  after its start, with 1.3 GB. A save with no change: finding 38. The starts
+  of the program: finding 12. The rebuild of 634 items at 08:10: the apply
+  41.9 s, the save 35.0 s. The profile of the apply is not measured, because
+  the apply fails now.
+
+  *Open in this step:* the replay over more commits and over the platform
+  package; the reason of the size of gate C; the profile of the apply.
 - [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
   first.** Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A
