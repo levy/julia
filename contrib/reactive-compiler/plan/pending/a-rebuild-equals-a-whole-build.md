@@ -94,13 +94,13 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 39 | A whole build copies the tracked sources into its store at its end, after the hour of the build. An edit of a tracked file during the build is in the copy and not in the image, so no later rebuild applies it. | Another session lands a commit while the IDE founds. | `reactive.jl:232-251`: `create_app`, then `_reactive_copy_sources` | Read |
 | 40 | **The image of a rebuild depends on the way to it.** One server that takes 28 commits one by one, and a new server that takes the same 28 commits at once, give two different images, and neither is the image of a whole build. | The kernel, 354c83ba6 to 0af15983d. The first image has 3 509 methods and lacks the two constructors of the new struct `RootedOperation`; the second has 3 470 and holds them; the whole build has 3 449. The commit 1df4c59c8 is refused after 28 commits in a server and applied after 3. | the replay gate of Step 2 | Seen on real commits |
 | 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
-| 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits |
+| 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits. Closed on the branch by Step 7: the replay gate gives 728 names |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
-| 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read |
-| 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10 |
-| 4 | A changed top-level statement adds to the effect of the old one. | `register!(TABLE, a)` becomes `register!(TABLE, b)`. The table of the rebuild holds `a` and `b`. A whole build holds `b`. | `child.jl:649-659` (ids `X`, `D2`) | Read |
-| 5 | A value of a struct type that changed stays inside a global, when a function made the value. | `const DEFAULT = make_default()` gives a `Theme`. `Theme` gets a field. `DEFAULT` holds an old `Theme`, and no method of the new type accepts it. | the limit that `doc/architecture.md` names | Read |
-| 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test |
+| 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
+| 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
+| 4 | A changed top-level statement adds to the effect of the old one. | `register!(TABLE, a)` becomes `register!(TABLE, b)`. The table of the rebuild holds `a` and `b`. A whole build holds `b`. | `child.jl:649-659` (ids `X`, `D2`) | Read. Closed on the branch by Step 7 for a statement that names a tracked global; another one is refused (`S1`) |
+| 5 | A value of a struct type that changed stays inside a global, when a function made the value. | `const DEFAULT = make_default()` gives a `Theme`. `Theme` gets a field. `DEFAULT` holds an old `Theme`, and no method of the new type accepts it. | the limit that `doc/architecture.md` names | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
+| 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test. The first sentence is closed on the branch by Step 7 (`gate_runs.sh`); the save and "method too new" have no test yet |
 | 7 | An apply that fails stays in the server. The server answers `error` or `refused` and serves the next request on a heap that holds half of the edit. | An edit adds a method and has a mistake in a later file. The build fails. The fix removes the method again. The method stays in the server, and in each later image. | `server.jl` `rc_serve`; `child.jl:972`, `child.jl:1001-1005` | Read |
 | 8 | The store does not record its inputs outside the tracked files: the versions of the registry packages in the Manifest, the preferences, the Julia build, the build options, the text of the workload. A change of one is not applied and not refused. | `Pkg.update` moves a registry package. The rebuild keeps the old version in the image. | `reactive.jl:252-260` is all that the store records | Read |
 | 9 | The files that a top-level item reads are a guess: each string literal that names a file. | The read list of the IDE store holds `/usr/bin/time` and `/proc/sys/kernel/perf_event_paranoid`. A file read through a computed path is not in it. | `SourceDiff.jl:429` | Read, Log |
@@ -654,15 +654,16 @@ commits. The numbers of the steps stay as they are.
   another base.
 - [ ] **Step 6: removals (D2; finding 1, refusal C5).** Test: the moved
   function of finding 1; a removed struct; a renamed module.
-- [ ] **Step 7: the code that an item runs (D1, D3; findings 2 to 6, 9, 20).**
+- [x] **Step 7: the code that an item runs (D1, D3; findings 2 to 6, 9, 20).**
   The replay of D1. The groups of the statements. The read rule skips
   `/proc`, `/sys` and `/dev`. Test: `tool/gate_runs.sh`, the tests of Step 3,
   and the count of items that the replay gate evaluates with no need.
 
-  *In work. The first form of D1, the reach by name, was measured and does
-  not hold. On 2026-11-10 the owner approved the replay in its place, and
-  D1 now states it. The reach left the tree (`reach.jl`,
-  `tool/reach_report.jl`); the commit 253973cd88 holds it.*
+  *Done on the branch `rebuild-equals-step-4`, which is not landed. The open
+  points are at the end of the step. The first form of D1, the reach by
+  name, was measured and does not hold. On 2026-11-10 the owner approved the
+  replay in its place, and D1 now states it. The reach left the tree
+  (`reach.jl`, `tool/reach_report.jl`); the commit 253973cd88 holds it.*
 
   *The test that fails first* is `tool/gate_runs.sh` with the program
   `tool/r1_runs`. One file holds six expressions, and the edit changes only
@@ -877,7 +878,30 @@ commits. The numbers of the steps stay as they are.
   `refuse` changes the call that names no global: the rebuild is refused
   with `S1`, and the program stays as it was. The chain equals the whole
   build in the four checks (23 methods, the roots, 15 lines of output, 12
-  globals).
+  globals). The gate passes in both forms: through a child with whole
+  images, and through a server with overlays.
+
+  *The other gates with the statement rule in the harness.*
+
+  - Gate I1 (`gate_harness.sh standard`) passes through a server and through
+    a child: the four checks are equal. The overlays have 24.5 MB and
+    24.1 MB with loaded sources, where they had 23.5 MB and 22.5 MB before
+    the rule. The rebuilds took 11.4 s and 6.3 s in a server and 6.5 s in a
+    child. These times do not compare with the times above: each part took
+    about two times as long as before, also the parts that the rule does
+    not touch (the save 3.3 s against 1.4 s, the scan 0.07 s against
+    0.04 s), and other jobs ran on the machine.
+  - The replay gate over the same 28 commits of the kernel gives the same
+    result as before the rule, line for line: no refused rebuild, no fault,
+    728 exported names, the globals equal, the same methods that differ, 19
+    roots of 300 not compiled (13 min 13 s, peak 9.2 GB). The rule acted in
+    no rebuild: none of the 28 commits changes or removes a statement of
+    this kind. So the rule refuses no real commit of this range, and the
+    range does not test it; `gate_runs.sh` does.
+  - *The count of what the replay evaluates* in that run, from the log of
+    the server of the chain: 25 rebuilds ran a replay, they compared 859
+    candidates in all, and 24 differ. 17 rebuilds found none. One replay
+    takes 0.21 s to 0.79 s there.
 
   *Finding 20, measured again* (`replay/ide_ledger_probe.jl` of the session,
   on the image of the IDE). The ledger of all 1 032 files takes 2.0 s in a
@@ -892,6 +916,28 @@ commits. The numbers of the steps stay as they are.
   *The read rule* skips a file under `/proc`, `/sys` or `/dev`
   (`ReactiveSourceDiff.read_paths`). A file that an item reads through a
   computed path is still not in the list (finding 9, the second half).
+
+  *Open after this step.*
+
+  - Finding 41 grew from 61 methods to 83 in the chain of one server: the
+    replay evaluates more items again, and a method with a generated name
+    that the old evaluation made stays. *Proposed by the assistant:* Step 6
+    takes it, as a removal of what the old evaluation of an item made.
+  - Finding 9, the second half: a file that an item reads through a
+    computed path. *Proposed by the assistant:* Step 5 takes it, with the
+    other inputs.
+  - A statement that writes, by a key, into a table that it does not name
+    (8 statements of the IDE). No step has it; it goes to "Not in this
+    plan" unless the owner wants a rule for it.
+  - The time of the replay on the IDE, about 16 s for an edit at the start
+    of the load order: Step 8, with the two ways that the cost paragraph
+    names.
+  - Finding 20: the 9.6 s of the log line are not found. The next rebuild of
+    the IDE shows them.
+  - The tests of Step 3 for the findings 2 to 6 and 9 as separate small
+    edits. `gate_runs.sh` holds one case of each of the findings 2 to 6
+    now. The second half of finding 6, the save that removes the old helper
+    of a generator, has no test yet.
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
   37).** First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the
