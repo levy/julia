@@ -162,7 +162,7 @@ function oracle_lowered(m::Method)
     isdefined(m, :generator) && (m = only(methods(m.generator.gen)))
     ci = Base.uncompressed_ast(m)
     code = Any[oracle_strip_lines(stmt) for stmt in ci.code]
-    return string(hash(oracle_canonical(repr(code)), hash(repr(ci.slotnames))); base = 16)
+    return string(hash(oracle_canonical(repr(code)), hash(oracle_canonical(repr(ci.slotnames)))); base = 16)
 end
 
 oracle_strip_lines(x) = x

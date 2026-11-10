@@ -92,6 +92,9 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 36 | The program matches an overlay with its base by three sizes. It applies an overlay of another whole build of the same sizes with no message. | an old `sys.<n>.so` beside a new whole build | `staticdata.c:7570` | Read |
 | 37 | Under overlays, a save that can not write an object back in its place stops the build, and each later build, until a whole build. | a `BigInt` of the base on a written page; a module with more `using` lines than its object has room for | `staticdata.c:2253`, `:2580`, `:5122` | Read (audit) |
 | 39 | A whole build copies the tracked sources into its store at its end, after the hour of the build. An edit of a tracked file during the build is in the copy and not in the image, so no later rebuild applies it. | Another session lands a commit while the IDE founds. | `reactive.jl:232-251`: `create_app`, then `_reactive_copy_sources` | Read |
+| 40 | **The image of a rebuild depends on the way to it.** One server that takes 28 commits one by one, and a new server that takes the same 28 commits at once, give two different images, and neither is the image of a whole build. | The kernel, 354c83ba6 to 0af15983d. The first image has 3 509 methods and lacks the two constructors of the new struct `RootedOperation`; the second has 3 470 and holds them; the whole build has 3 449. The commit 1df4c59c8 is refused after 28 commits in a server and applied after 3. | the replay gate of Step 2 | Seen on real commits |
+| 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
+| 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10 |
@@ -513,8 +516,44 @@ open; Step 10 needs its answer.
   41.9 s, the save 35.0 s. The profile of the apply is not measured, because
   the apply fails now.
 
-  *Open in this step:* the replay over more commits and over the platform
-  package; the reason of the size of gate C; the profile of the apply.
+  *The oracle counted false differences, and the replay has a control now
+  (2026-11-10).* The oracle hashed the names of the slots of a method with
+  their counters, which differ between any two builds: about 216 false
+  differences on the kernel. `oracle.jl` drops the counters of the slot names
+  too. The step `control` of the replay gate founds the last commit a second
+  time; a fact of the oracle that differs between the two whole builds is
+  noise, and each comparison leaves it out. On the kernel the two whole builds
+  agree in each fact.
+
+  *The replay over 30 commits of the kernel (354c83ba6 to 00d0f77e0).* The
+  whole build takes 1 min 45 s with a peak of 6.6 GB. 29 rebuilds apply 653
+  expressions and 56 removals, each in 3 to 5 s. One rebuild is refused, at
+  1df4c59c8 (`RangeReferenceStep` gets a field): "the untracked none:0
+  RangeReferenceStep names the type (found in the apply)". The replay over
+  five commits applied the same commit: finding 40.
+
+  *The replay over the 28 commits before that one, with no refused rebuild
+  and no error.* Against the whole build of the last commit (3 449 methods,
+  728 exported names):
+
+  | | one server, commit by commit | a new server, at once |
+  | --- | --- | --- |
+  | methods | 3 509 | 3 470 |
+  | exported names | 717 | 717 |
+  | methods that a macro left behind (finding 41) | 61 | 22 |
+  | constructors of `RootedOperation` | missing | there |
+  | methods of the moved function `search_documents` | in its old module | in its old module |
+  | methods with the same count and other code | 13 | 13 |
+  | constants missing from the package module | 2 | 2 |
+  | roots of 300 that are not compiled | 19 | 19 |
+
+  The 19 roots: 12 are inferred and not compiled, 7 have no method instance.
+  The 13 methods with other code are not sorted yet; at least three differ
+  only in a line number that the code holds.
+
+  *Open in this step:* the 13 methods with other code; the replay over the
+  platform package; the reason of the size of gate C; the profile of the
+  apply.
 - [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
   first.** Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A

@@ -20,6 +20,9 @@
 #              commit. A rebuild that fails in another way is a fault: the
 #              store founds again, the replay goes on, and the gate fails
 #   final    - materialize_app founds $OUT/final/replay at the last commit
+#   control  - a second whole build of the last commit; the lines of the
+#              oracle that differ between the two whole builds are the noise
+#              of the oracle, and the comparisons leave them out
 #   compare  - the chain against the founding of the last commit: the lines
 #              of the two programs, the method tables and the globals of the
 #              oracle; the roots that the chain lacks are counted, not failed
@@ -285,10 +288,28 @@ oracle() {
         { echo "=== the oracle of $1 failed; see $OUT/oracle-$1.log"; return 1; }
 }
 
+# A second whole build of the same sources. A fact of the oracle that differs
+# between two whole builds says nothing about a rebuild: its key goes to
+# noise.txt, the line without its last word.
+control() {
+    rm -rf "$OUT/control"
+    mat mat-control "$OUT/control/replay" "" || { echo "=== control: the founding failed; see $OUT/mat-control.log"; return 1; }
+    oracle control "$OUT/control/replay" && oracle final "$FINAL" || return 1
+    diff <(grep -E "^(method|global) " "$OUT/oracle-control.log") <(grep -E "^(method|global) " "$OUT/oracle-final.log") |
+        grep -E "^[<>] " | sed -E 's/^[<>] //; s/ [^ ]*$/ /' | sort -u > "$OUT/noise.txt"
+    echo "=== control: $(wc -l < "$OUT/noise.txt") facts differ between two whole builds of the same commit"
+    head -5 "$OUT/noise.txt" | cut -c1-160 | sed 's/^/    /'
+}
+
+# The lines of a file that match a pattern, without the noise of the oracle.
+facts() {
+    if [ -s "$OUT/noise.txt" ]; then grep -E "$1" "$2" | grep -v -F -f "$OUT/noise.txt"; else grep -E "$1" "$2"; fi
+}
+
 # $1 = the check, $2 = the pattern of its lines, $3 $4 = the files.
 check() {
     local a b lines
-    a=$(grep -E "$2" "$3"); b=$(grep -E "$2" "$4")
+    a=$(facts "$2" "$3"); b=$(facts "$2" "$4")
     if [ "$a" == "$b" ]; then
         echo "=== $1: equal ($(echo "$a" | grep -c .) lines)"
         return 0
@@ -338,7 +359,7 @@ stop() {
     echo "=== stop: the server of the store is stopped"
 }
 
-steps=${*:-clone app found replay final compare decode fresh stop}
+steps=${*:-clone app found replay final control compare decode fresh stop}
 status=0
 for step in $steps; do
     $step || { echo "=== step $step failed"; status=1; [ "$step" == replay ] || [ "$step" == compare ] || break; }
