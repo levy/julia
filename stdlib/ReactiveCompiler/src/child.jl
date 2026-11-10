@@ -25,15 +25,19 @@
 #   3. the diff of each matched pair by key, and the classification of every
 #      changed or removed entry with an id of the change catalog of
 #      `plan/pending/robust-incremental-compiler.md`; a refusal stops here;
-#   4. the replay (`replay.jl`): a fork of the process applies the changes,
+#   4. the statements (`rc_statement_group!`): a statement that the edit
+#      changed or removed did something that the apply must take back, so the
+#      definitions of the globals that it names join the changes, and each
+#      statement that names them runs again;
+#   5. the replay (`replay.jl`): a fork of the process applies the changes,
 #      and names each expression whose text stays and whose evaluation gives
 #      another result after them; these join the changes;
-#   5. the apply, in the load order (`RcLoadOrder`): the removals delete
+#   6. the apply, in the load order (`RcLoadOrder`): the removals delete
 #      their methods first, then every change is evaluated in its module,
 #      and the dependents that the evaluation reveals (the expressions that
 #      name a changed type, a changed binding or a changed macro, or whose
 #      names resolve differently after a changed `using`) join the queue;
-#   6. the new ledger: the methods of every new entry, from the method table
+#   7. the new ledger: the methods of every new entry, from the method table
 #      after the apply; every old method of a change is deleted — one whose
 #      signature no new method of the entry has made the change a removal
 #      too, one with a replacement is a dead entry.
@@ -762,11 +766,24 @@ function rc_stop(refusals, refusal_out)
     throw(RcRefusal(refusal_out))
 end
 
+# The statements of an edit whose effect the apply takes back (see
+# `rc_statement_group!`).
+#   definitions  - the definitions of the tracked globals that the statements
+#                  name, which the apply evaluates again
+#   old          - the statements of before the edit that the edit changed or
+#                  removed, as items of the new file list
+#   new          - the statements of the edit that replace them
+struct RcStatementGroup
+    definitions::Vector{RcItem}
+    old::Vector{RcItem}
+    new::Vector{RcItem}
+end
+
 # The state of the evaluation of the changes of one apply: the new ledger, the
 # queue and the removals, the refusals that the evaluation finds, how the
 # names of the modules with a changed `using` resolve, the method instances of
-# the old methods of the evaluated changes, and the count of the methods that
-# the filter kept.
+# the old methods of the evaluated changes, the count of the methods that the
+# filter kept, and the statements whose effect the apply takes back.
 mutable struct RcEvaluation
     items::Vector{RcItem}
     roots::Vector{Vector{Symbol}}
@@ -777,6 +794,68 @@ mutable struct RcEvaluation
     resolutions::Dict{UInt, Dict{Symbol, Any}}
     replaced::Vector{Core.MethodInstance}
     kept::Int
+    group::Union{RcStatementGroup, Nothing}
+end
+RcEvaluation(items, roots, tracked, queue, removals, refusals, group) =
+    RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
+                 Core.MethodInstance[], 0, group)
+
+# Whether the item is a statement that defines nothing: it holds no macro call
+# and no `eval`, so what it does is an effect on a value that exists. A
+# `precompile` call has no effect on a value.
+function rc_is_plain_statement(item::RcItem)
+    e = item.entry.expr
+    item.kind === :other && e isa Expr || return false
+    e.head === :call && !isempty(e.args) && (e.args[1] === :precompile || e.args[1] == :(Base.precompile)) && return false
+    return isempty(ReactiveSourceDiff.macro_heads(e)) && !(:eval in ReactiveSourceDiff.all_names(e))
+end
+
+# D3: take back what the statements `old` did, which the edit changed or
+# removed; `new` holds the statements of the edit that replace them. The state
+# of a global is made by its definition and by each statement that names it, in
+# the load order. So the definition of each tracked global that one of the
+# statements names joins the queue, and its evaluation runs each statement
+# that names it again (the dependents of a binding). A statement of the ledger
+# that names one of these globals brings the other globals that it names, until
+# no global is new. A statement that names no tracked global is refused: its
+# effect is on a value that the rebuild can not make again. Answer the group,
+# or `nothing` when no statement changed.
+function rc_statement_group!(queue::RcQueue, refusals::Vector{String}, items::Vector{RcItem},
+                             old::Vector{RcItem}, new::Vector{RcItem})
+    isempty(old) && return nothing
+    definitions = Dict{Symbol, Vector{RcItem}}()
+    for item in items
+        item.kind in RC_BINDING_KINDS && item.name !== nothing && push!(get!(definitions, item.name, RcItem[]), item)
+    end
+    named(item) = Symbol[name for name in ReactiveSourceDiff.all_names(item.entry.expr) if haskey(definitions, name)]
+    names = Set{Symbol}()
+    for statement in old
+        found = named(statement)
+        isempty(found) && rc_refuse!(refusals, "S1", statement,
+                                     "the statement changed or left, and it names no tracked global: the rebuild can not take back what it did")
+        union!(names, found)
+    end
+    for statement in new
+        union!(names, named(statement))
+    end
+    isempty(names) && return nothing
+    statements = RcItem[item for item in items if rc_is_plain_statement(item)]
+    grew = true
+    while grew
+        grew = false
+        for statement in statements
+            found = named(statement)
+            (isdisjoint(found, names) || issubset(found, names)) && continue
+            union!(names, found)
+            grew = true
+        end
+    end
+    group = RcItem[]
+    for name in sort!(collect(names)), definition in definitions[name]
+        push!(group, definition)
+        rc_enqueue!(queue, RcChange("S1", definition, "a statement that names it changed"))
+    end
+    return RcStatementGroup(group, old, new)
 end
 
 # Delete the methods of the removals.
@@ -939,6 +1018,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     refusals = String[]
     queue = RcQueue(rc_load_order(new_files, new_roots, new_items, all_files))
     removals = RcChange[]
+    old_statements = RcItem[]
+    new_statements = RcItem[]
     line_updates = 0
     # H3: a renamed file keeps its methods, under the new name.
     for (i, j) in match.renamed
@@ -996,6 +1077,14 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                             a.entry.module_path == b.entry.module_path &&
                             rc_kind_class(a.kind) === rc_kind_class(b.kind)
         for item in removed
+            # D3: a statement that the edit changed or removed, as an item of
+            # the new file, and the statements of the edit that replace it.
+            if rc_is_plain_statement(item)
+                push!(old_statements, RcItem(j, new_files[j], item.entry, item.kind, item.name, Method[]))
+                for c in changed
+                    counterpart(c, item) && rc_is_plain_statement(c) && !(c in new_statements) && push!(new_statements, c)
+                end
+            end
             any(c -> counterpart(c, item), changed) && continue
             if rc_kind_class(item.kind) === :method
                 push!(removals, RcChange("A3", nothing, RcItem[item], item.methods,
@@ -1043,6 +1132,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             end
         end
     end
+    group = rc_statement_group!(queue, refusals, new_items, old_statements, new_statements)
     if allowed !== nothing
         isempty(match.renamed) || push!(refusals, "H3 a renamed file: not taken by this apply")
         for change in vcat(removals, queue.changes)
@@ -1050,8 +1140,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
-    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals,
-                              Dict{UInt, Dict{Symbol, Any}}(), Core.MethodInstance[], 0)
+    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group)
     # The replay: the expressions whose text stays and whose result changes.
     if !isempty(queue.changes) || !isempty(removals)
         known = Set{UInt}(objectid(change) for change in queue.changes)
@@ -1061,8 +1150,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 objectid(change) in known || change.id in allowed ||
                     push!(refusals, string(change.id, " ", change.where, ": not taken by this apply"))
             end
-            isempty(refusals) || rc_stop(refusals, refusal_out)
         end
+        isempty(refusals) || rc_stop(refusals, refusal_out)
     end
     # The apply. The removals first, then the queue in the load order, with the
     # dependents that each evaluation reveals.
@@ -1380,6 +1469,21 @@ function rc_warm()
     [(candidate.item.name, candidate.expands, candidate.initializer !== nothing) for candidate in candidates] ==
         [(:C, false, true), (:h, true, false)] ||
         error("rc_warm: the candidates are ", [candidate.item.name for candidate in candidates])
+    # D3: a changed statement brings the definition of the global that it
+    # names, and a statement that names no global is refused. A `precompile`
+    # call and a definition are no statements.
+    statement_path = joinpath(dir, "warm8.jl")
+    write(statement_path, "const T = Symbol[]\npush!(T, :a)\nprecompile(sin, (Int,))\nnote(:x)\n")
+    statement_items = rc_ledger([statement_path], [statement_path])
+    [rc_is_plain_statement(item) for item in statement_items] == [false, true, false, true] ||
+        error("rc_warm: the statements are ", [rc_is_plain_statement(item) for item in statement_items])
+    statement_queue = RcQueue(rc_load_order([statement_path], roots, statement_items, false))
+    statement_refusals = String[]
+    group = rc_statement_group!(statement_queue, statement_refusals, statement_items, statement_items[[2, 4]], RcItem[])
+    group !== nothing && [item.name for item in group.definitions] == [:T] &&
+        [change.id for change in statement_queue.changes] == ["S1"] &&
+        length(statement_refusals) == 1 && startswith(statement_refusals[1], "S1 warm8.jl:4") ||
+        error("rc_warm: the statement group gives ", statement_refusals)
     # The load order: a loaded package before one that is not loaded, and a
     # `using` after the module that the include above it loads.
     root_path = joinpath(dir, "W.jl")

@@ -839,6 +839,46 @@ commits. The numbers of the steps stay as they are.
   platform package differed in that probe: the loop after it exports one
   more name in the whole program than the image holds.
 
+  *The statements, as built (D3; `rc_statement_group!` in `child.jl`,
+  `rc_check_statement_group` in `replay.jl`).* A *statement* here is a
+  top-level expression of another form that holds no macro call and no
+  `eval`, and is no `precompile` call: `push!(REGISTRY, :a)`,
+  `SEEN[:a] = 1`, a loop of such calls. When an edit changes or removes one:
+
+  - the definition of each tracked global that the old or the new statement
+    names joins the changes, with the id `S1`. Its evaluation makes the
+    global again, and the rule of the dependents of a binding then runs each
+    statement that names it, in the load order. A statement that names one
+    of these globals brings the other globals that it names;
+  - a statement that names no tracked global is refused with `S1`: the
+    rebuild can not take back what it did.
+
+  *Added in the build, by the assistant: the check of the group.* Before the
+  changes, the fork of the replay evaluates the definitions of the group
+  again with the statements of before the edit, and takes the print of the
+  value of each tracked global before and after. A global that gets another
+  value has a writer that the names do not show, and the rebuild is refused
+  with `S1`. A fork that gives no answer is a refusal too, when the edit has
+  such a group.
+
+  *The limit that stays.* A statement can write, by a key, into a table that
+  it does not name: `register_palette!(RADIX_PALETTE)` writes into the table
+  of the palettes. When such a statement changes, the old entry stays, and
+  the check does not see it, because the old statement writes the same
+  entry again. The IDE has 8 statements of this kind.
+
+  *The gate with the statements.* `tool/gate_runs.sh` has a third file,
+  `statements.jl`: a list that two statements fill, a table that one
+  statement fills, and a call that writes into a list that it does not
+  name. On the harness of before the rule, the rebuilt program printed
+  `registry = first second third` and `seen = 1`. With the rule it prints
+  `first third` and `0`, as the whole build does; the rebuild says `S1` for
+  the two definitions and runs `push!(REGISTRY, :first)` again. The step
+  `refuse` changes the call that names no global: the rebuild is refused
+  with `S1`, and the program stays as it was. The chain equals the whole
+  build in the four checks (23 methods, the roots, 15 lines of output, 12
+  globals).
+
   *Finding 20, measured again* (`replay/ide_ledger_probe.jl` of the session,
   on the image of the IDE). The ledger of all 1 032 files takes 2.0 s in a
   new process: 1.1 s for the parse and the methods of the old items, 0.2 s

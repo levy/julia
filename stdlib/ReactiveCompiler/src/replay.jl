@@ -431,6 +431,62 @@ function rc_candidate_difference(candidate::RcCandidate, before::Dict{Int, Tuple
     return candidate.generated ? 'g' : nothing
 end
 
+# The prints of the values of the tracked globals, by the index of the item
+# that defines each one.
+function rc_global_prints(evaluation::RcEvaluation)
+    prints = Dict{Int, UInt}()
+    problems = String[]
+    for (index, item) in enumerate(evaluation.items)
+        item.kind in RC_BINDING_KINDS && item.name !== nothing || continue
+        mod = Base.invokelatest(rc_module_or_nothing, rc_module_path(evaluation.roots, item))
+        mod === nothing && continue
+        Base.invokelatest(isdefined, mod, item.name) || continue
+        value = Base.invokelatest(getglobal, mod, item.name)
+        prints[index] = rc_guarded_print(printer -> rc_print(printer, value), RcPrinter(), problems, "")
+    end
+    return prints
+end
+
+# The check of the statement group of an apply (D3), before the changes: the
+# definitions of the group are evaluated again with the statements of before
+# the edit, as the apply does it with the statements of the edit, and each
+# tracked global must have the value that it had. Then the definitions and the
+# statements that name the globals make their state, and the apply can make it
+# again. Answer `nothing`, or the refusal: a global that gets another value has
+# a writer that the rebuild does not find.
+function rc_check_statement_group(evaluation::RcEvaluation)
+    group = evaluation.group::RcStatementGroup
+    before = rc_global_prints(evaluation)
+    items = RcItem[item for item in evaluation.items if !any(statement -> statement === item, group.new)]
+    append!(items, group.old)
+    queue = RcQueue(evaluation.queue.order)
+    check = RcEvaluation(items, evaluation.roots, evaluation.tracked, queue, RcChange[], String[], nothing)
+    for definition in group.definitions
+        rc_enqueue!(queue, RcChange("S1", definition, ""))
+    end
+    rc_install_filter(rc_method_filter)
+    try
+        while queue.cursor < length(queue.changes)
+            rc_evaluate_next!(check) || return first(check.refusals)
+        end
+    catch e
+        statement = first(group.old)
+        return string("S1 ", rc_where(statement), " ", rc_what(statement),
+                      ": the statements of before the edit can not run again: ", first(split(sprint(showerror, e), '\n')))
+    finally
+        rc_install_filter(nothing)
+        rc_take_kept!()
+    end
+    after = rc_global_prints(evaluation)
+    for index in sort!(collect(keys(before)))
+        get(after, index, before[index]) == before[index] && continue
+        item = evaluation.items[index]
+        return string("S1 ", rc_where(item), " ", rc_what(item),
+                      ": its value does not come back when the definitions and the statements of the changed group are evaluated again")
+    end
+    return nothing
+end
+
 # The trial of an apply: write to `report` a line `differs <index> <how>` for
 # each candidate whose result the changes of `evaluation` change. The trial
 # evaluates the changes of the queue as the apply does, and each candidate that
@@ -440,11 +496,20 @@ end
 # in the load order, or the apply removes a method: no other candidate can
 # differ. A line `problem <text>` names a candidate that the trial can not
 # compare, and a line `stopped <text>` the error or the refusal that ends the
-# trial early; the apply of the process meets the same one.
+# trial early; the apply of the process meets the same one. A line
+# `refuse <text>` is the refusal of the check of the statement group, which
+# the apply of the process takes as its own.
 function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
     queue = evaluation.queue
     order = queue.order
     problems = String[]
+    if evaluation.group !== nothing
+        refusal = rc_check_statement_group(evaluation)
+        if refusal !== nothing
+            println(report, "refuse ", refusal)
+            return nothing
+        end
+    end
     before = Dict{Int, Tuple{UInt, UInt}}()
     active = Set{Int}()
     first_change = isempty(queue.changes) ? nothing : minimum(change -> rc_order(order, change.item), queue.changes)
@@ -572,19 +637,24 @@ function rc_in_fork(produce, output::String)
 end
 
 # Run the trial of the apply in a fork, and add to the queue of `evaluation`
-# the change of each candidate that the trial names. What the evaluations of
-# the trial print goes to the file `log`: the apply prints the same for each
+# the change of each candidate that the trial names, and to its refusals the
+# refusal of the check of the statement group. What the evaluations of the
+# trial print goes to the file `log`: the apply prints the same for each
 # change, and a candidate printed it in the whole build. A trial that ends with
 # no answer leaves the queue as it is, with a warning: the image can then keep
-# a result of before the edit.
+# a result of before the edit. With a statement group, such a trial is a
+# refusal, because the group has no check.
 function rc_replay!(evaluation::RcEvaluation, log::String)
     t0 = time()
     candidates = rc_candidates(evaluation.items, evaluation.queue.order)
-    isempty(candidates) && return nothing
+    isempty(candidates) && evaluation.group === nothing && return nothing
     report = rc_in_fork(io -> rc_trial!(io, evaluation, candidates), log)
     if report === nothing
         println("rc: warning: the replay ended with no answer, see ", log,
                 "; no result of an unchanged expression is compared")
+        evaluation.group === nothing ||
+            push!(evaluation.refusals, string("S1 the replay ended with no answer, see ", log,
+                                              ": the statements of the edit have no check"))
         return nothing
     end
     for line in split(report, '\n'; keepempty = false)
@@ -593,6 +663,8 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
             item = evaluation.items[parse(Int, parts[2])]
             how = parts[3][1]
             rc_enqueue!(evaluation.queue, rc_replay_change(item, how))
+        elseif parts[1] == "refuse"
+            push!(evaluation.refusals, String(SubString(line, 8)))
         elseif parts[1] == "problem"
             println("rc: replay: ", SubString(line, 9))
         elseif parts[1] == "stopped"
