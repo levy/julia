@@ -377,7 +377,7 @@ The work is in a worktree of `merged-next`, with worktrees of
 PackageCompiler and projectured-julia beside it. Each step is a commit, with a
 test that fails before the change.
 
-- [ ] **Step 1: the constant data of an overlay (finding 33).** It is first,
+- [x] **Step 1: the constant data of an overlay (finding 33).** *Done.* It is first,
   because each rebuilt program of today can hold the fault. The writer tests
   each real page that a page of the constant data touches. The check scripts
   of the audit are in `tool/audit-2026-11-09/` and become
@@ -423,8 +423,16 @@ test that fails before the change.
     entry, where the overlay of the store has 54 root tables, 1 919
     specializations and 302 bindings. The overlay is 2.4 MB larger.
 
-  *Open:* the landing on `merged-next`, the build of that checkout, and one
-  rebuild of the IDE from a new server. They wait for the word of the owner.
+  *Landed (2026-11-10, with the word of the owner).* `merged-next` moved
+  forward to the branch (0afd58b859). The build of that checkout took 3 min
+  29 s with a peak of 6.4 GB and no warning. `bin/build_omnet_ide` then
+  rebuilt the IDE from a new server in 1 min 30 s with a peak of 7.2 GB: 634
+  expressions and 23 removals, snapshot s8, and the program started.
+  `overlay_check.py` on `lib/julia/sys.so` and the new `sys.8.so` finds no
+  wrong entry: 73 root tables grew in place and none holds old bytes, and no
+  specialization and no binding is missing. The check reads the image in its
+  file form; it does not read the prelinked copy inside the program, and it
+  says so. Not pushed: the push to `levy/julia` waits for the owner.
 - [ ] **Step 2: the two gates and the baseline (D8).** The program gate on the
   test program of gate I1; it runs `tool/overlay_check.py` after each
   rebuild. The replay gate on the smallest real program whose whole build
