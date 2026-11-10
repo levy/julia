@@ -95,6 +95,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 40 | **The image of a rebuild depends on the way to it.** One server that takes 28 commits one by one, and a new server that takes the same 28 commits at once, give two different images, and neither is the image of a whole build. | The kernel, 354c83ba6 to 0af15983d. The first image has 3 509 methods and lacks the two constructors of the new struct `RootedOperation`; the second has 3 470 and holds them; the whole build has 3 449. The commit 1df4c59c8 is refused after 28 commits in a server and applied after 3. | the replay gate of Step 2 | Seen on real commits |
 | 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
 | 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits. Closed on the branch by Step 7: the replay gate gives 728 names |
+| 43 | A line that a macro writes into the code as a number stays when the item moves. The rebuild gives a moved item its new lines in the line table, but it does not evaluate the item again. | `@warn "an evaluation observer failed"` in `_notify_evaluation`. A commit adds three lines above it. The log message of the rebuilt program names line 729, that of the whole build 732. Three methods of the kernel after 28 commits; the sources of projectured-julia hold 124 log macros in 55 files. | no case in `child.jl`; the replay takes a user of a tracked macro only | Seen on real commits. *Proposed by the assistant:* the replay takes each moved item that holds a macro call as a candidate; its two expansions differ exactly when one holds the line |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -584,12 +585,22 @@ commits. The numbers of the steps stay as they are.
   | roots of 300 that are not compiled | 19 | 19 |
 
   The 19 roots: 12 are inferred and not compiled, 7 have no method instance.
-  The 13 methods with other code are not sorted yet; at least three differ
-  only in a line number that the code holds.
 
-  *Open in this step:* the 13 methods with other code; the replay over the
-  platform package; the reason of the size of gate C; the profile of the
-  apply.
+  *The 13 methods with other code, sorted (2026-11-10).* A probe printed the
+  lowered code of each one from the rebuilt image and from the whole build.
+  Ten are noise of the comparison, and three are a real difference:
+
+  | count | what differs | what it is |
+  | --- | --- | --- |
+  | 9 | a name such as `#s131`, which the lowering gives to an argument or a type variable that the source does not name | noise: the counter of the process. `oracle.jl` drops it now |
+  | 1 | the number that `@enum` writes into the hash method of the enum type `_CellState` | noise: the hash of a type follows the build id of its module, which each compile of the package draws again. The two whole builds of the control agreed only because they took the same compiled file from one depot. The control build compiles the tracked packages again now, and the fact goes to its noise list |
+  | 3 | the line of a log macro, as a number in the code: 729 in the rebuilt image, 732 in the whole build | real: finding 43 |
+
+  With the two repairs, the kernel run of 28 commits has 3 methods with the
+  same signature and other code, in place of 13. All three are finding 43.
+
+  *Open in this step:* the replay over the platform package (the run waits
+  for memory); the reason of the size of gate C; the profile of the apply.
 - [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
   first.** Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A
