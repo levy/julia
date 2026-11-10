@@ -173,7 +173,7 @@ Two more causes start a whole build, and they are the common ones:
 
 | # | what happens | state |
 | --- | --- | --- |
-| 22 | No gate builds the program in the form of the build scripts: the image inside the program, prelinked, the overlay applied in place. The word `prelink` is in no gate script, and `test/prelink` has no overlay. The gates start the image with `julia -J`, which is another load path. On the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. | Read; the count is the audit's |
+| 22 | One gate builds the program in the form of the build scripts: `contrib/merged/gate_prelinked_chain.sh` links the image into a program, prelinks it, and starts it with the overlay of a rebuild. It compares the lines that the program prints and nothing else, and its edit is two method bodies, which grow no table of the base. So it found neither the fault of 2026-11-08 nor finding 33. It links with commands of its own, not through `ProjecturedBuilder`. The other gates start the image with `julia -J`, which is another load path; on the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. *Corrected on 2026-11-10: the first text of this row said that no such gate exists. I looked in `contrib/reactive-compiler/tool` alone.* | Read; the count is the audit's |
 | 23 | Each gate edits a small test program with edits written for the gate. No gate applies real commits. All four faults of the list above came from real commits. | Read |
 | 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09 |
 
@@ -293,10 +293,12 @@ These are my proposals. The owner approves them with the plan.
   the warm-up of the harness does for its test module now, so the image and
   the overlay hold nothing of it. A fix of the harness then reaches a store
   with the next rebuild.
-- **D8. Two new gates (R8).** The *program gate* builds the small test program
-  through `ProjecturedBuilder`, as the build scripts do, edits it, starts the
-  prelinked program with its overlay, and decodes each method source inside
-  the program. The *replay gate* makes a whole build at an old commit of a
+- **D8. The program gate checks the image, and a new gate replays commits
+  (R8).** The *program gate* is `contrib/merged/gate_prelinked_chain.sh`
+  (finding 22). It gets an edit that writes into a table of the base, the
+  check of `tool/overlay_check.py` after the rebuild, and a start of the
+  prelinked program that decodes each method source inside the program. The
+  *replay gate* is new. It makes a whole build at an old commit of a
   real package, rebuilds at each later commit, and compares the result with a
   whole build of the last commit through the oracle. It runs each chain two
   ways: one server through all commits, and a new server at the end. On
@@ -376,6 +378,10 @@ that gives property 3 with no action of a person, and it adds no mechanism.
 The work is in a worktree of `merged-next`, with worktrees of
 PackageCompiler and projectured-julia beside it. Each step is a commit, with a
 test that fails before the change.
+
+On 2026-11-10, after Step 1, the owner said "Yes and continue": the push of
+Step 1, and the work goes on with the next steps in their order. Q1 is still
+open; Step 10 needs its answer.
 
 - [x] **Step 1: the constant data of an overlay (finding 33).** *Done.* It is first,
   because each rebuilt program of today can hold the fault. The writer tests
