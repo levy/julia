@@ -16,10 +16,11 @@
 #   sizes        - the sizes of the chain: the last reverse against the first,
 #                  within the residue of the global slots
 # Pass step names to run some steps, or nothing to run all of them in order.
+# Run the gate under bounded-run: the steps take no cap of their own.
 set -u
 OUT=${OUT:-${TMPDIR:-/tmp}/reactive/gate-c}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
-JULIA=$JH/usr/bin/julia
+JULIA=${JULIA:-$JH/usr/bin/julia}
 PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 HZ=$JH/contrib/reactive-compiler/tool/m6_hazard
 THREADS=${THREADS:-8}
@@ -31,12 +32,10 @@ SO=$APP/lib/julia/sys.so
 FILE=HazardApp/src/shapes.jl
 mkdir -p "$OUT/depot"
 
-# One bounded run on the build lane. $1 = log name, $2.. = the command.
+# One run on the build lane. $1 = log name, $2.. = the command.
 lane() {
     local name=$1; shift
-    systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 \
-        nice -n 10 taskset -c "$LANE" \
-        timeout 2400s /usr/bin/time -v \
+    nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
