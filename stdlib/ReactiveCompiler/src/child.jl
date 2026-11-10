@@ -31,7 +31,8 @@
 #      statement that names them runs again;
 #   5. the replay (`replay.jl`): a fork of the process applies the changes,
 #      and names each expression whose text stays and whose evaluation gives
-#      another result after them; these join the changes;
+#      another result after them, or at the place that the edit moved it to;
+#      these join the changes;
 #   6. the apply, in the load order (`RcLoadOrder`): the removals delete
 #      their methods first, then every change is evaluated in its module,
 #      and the dependents that the evaluation reveals (the expressions that
@@ -246,18 +247,33 @@ rc_new_items(new_files::Vector{String}, indices) =
     RcItem[item for j in indices for item in rc_file_items(j, new_files[j], new_files[j])]
 
 # Whether the edit changes something that the apply evaluates: an expression
-# that one ledger has and the other has not, or a read file with another
-# content. Such an apply takes the items of every file, because a dependent of
-# a change and a candidate of the replay can be in any file. An edit of the
-# comments and of the blank lines changes nothing: the apply moves the lines
-# of the methods of the changed files, and reads no other file. `pair_of_new`
-# maps a new file index to its old one.
+# that one ledger has and the other has not, an expression at another place
+# that holds a macro call (see `rc_is_moved_macro_user`), or a read file with
+# another content. Such an apply takes the items of every file, because a
+# dependent of a change and a candidate of the replay can be in any file. An
+# edit of the comments and of the blank lines that moves no macro call changes
+# nothing: the apply moves the lines of the methods of the changed files, and
+# reads no other file. `pair_of_new` maps a new file index to its old one.
 function rc_has_change(old_items, new_items, pair_of_new::Dict{Int, Int}, old_reads)
-    old_keys = Set{Tuple{Int, UInt64}}((item.file, item.entry.key) for item in old_items)
+    old_by_key = Dict{Tuple{Int, UInt64}, RcItem}((item.file, item.entry.key) => item for item in old_items)
     new_keys = Set{Tuple{Int, UInt64}}((get(pair_of_new, item.file, 0), item.entry.key) for item in new_items)
-    old_keys == new_keys || return true
+    keys(old_by_key) == new_keys || return true
+    for item in new_items
+        old = old_by_key[(pair_of_new[item.file], item.entry.key)]
+        rc_is_moved_macro_user(item, old.entry.lines.start, old.path) && return true
+    end
     return any(((path, h),) -> !isfile(path) || rc_content_hash(path) != h, old_reads)
 end
+
+# Whether `item`, an expression that the edit leaves as it is, is at another
+# place than before the edit, when it started at the line `old_start` of the
+# file `old_path`, and holds a macro call outside a docstring. A macro can put
+# the place of its call into its expansion, as a log macro does with the line,
+# so the replay compares the expansions of the two places
+# (`rc_moved_difference`).
+rc_is_moved_macro_user(item::RcItem, old_start::Int, old_path::String) =
+    (item.entry.lines.start != old_start || item.path != old_path) && item.kind in RC_CANDIDATE_KINDS &&
+    !isempty(ReactiveSourceDiff.macro_heads(ReactiveSourceDiff.without_docstrings(item.entry.expr)))
 
 # Call f on every live method of the method table: `Base.visit` walks the
 # entries that `delete_method` disabled too, and a disabled entry has a
@@ -779,11 +795,20 @@ struct RcStatementGroup
     new::Vector{RcItem}
 end
 
+# An expression that the edit leaves as it is and moves to another place, and
+# that holds a macro call: its item of the new ledger, and its expression of
+# before the edit, with the lines and the file of before.
+struct RcMoved
+    item::RcItem
+    old::Any
+end
+
 # The state of the evaluation of the changes of one apply: the new ledger, the
 # queue and the removals, the refusals that the evaluation finds, how the
 # names of the modules with a changed `using` resolve, the method instances of
 # the old methods of the evaluated changes, the count of the methods that the
-# filter kept, and the statements whose effect the apply takes back.
+# filter kept, the statements whose effect the apply takes back, and the moved
+# expressions that hold a macro call.
 mutable struct RcEvaluation
     items::Vector{RcItem}
     roots::Vector{Vector{Symbol}}
@@ -795,10 +820,11 @@ mutable struct RcEvaluation
     replaced::Vector{Core.MethodInstance}
     kept::Int
     group::Union{RcStatementGroup, Nothing}
+    moved::Vector{RcMoved}
 end
-RcEvaluation(items, roots, tracked, queue, removals, refusals, group) =
+RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved) =
     RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
-                 Core.MethodInstance[], 0, group)
+                 Core.MethodInstance[], 0, group, moved)
 
 # Whether the item is a statement that defines nothing: it holds no macro call
 # and no `eval`, so what it does is an effect on a value that exists. A
@@ -1020,6 +1046,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     removals = RcChange[]
     old_statements = RcItem[]
     new_statements = RcItem[]
+    moved = RcMoved[]
     line_updates = 0
     # H3: a renamed file keeps its methods, under the new name.
     for (i, j) in match.renamed
@@ -1067,6 +1094,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 line_updates += 1
             end
             item.methods = old.methods
+            rc_is_moved_macro_user(item, old.entry.lines.start, old_files[i]) &&
+                push!(moved, RcMoved(item, old.entry.expr))
         end
         removed = RcItem[item for item in olds if !(item.entry.key in new_keys)]
         # A removed expression that a changed one of the same name and kind
@@ -1140,9 +1169,9 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
-    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group)
+    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group, moved)
     # The replay: the expressions whose text stays and whose result changes.
-    if !isempty(queue.changes) || !isempty(removals)
+    if !isempty(queue.changes) || !isempty(removals) || !isempty(moved)
         known = Set{UInt}(objectid(change) for change in queue.changes)
         rc_replay!(evaluation, string(refusal_out, ".replay.log"))
         if allowed !== nothing
@@ -1484,6 +1513,15 @@ function rc_warm()
         [change.id for change in statement_queue.changes] == ["S1"] &&
         length(statement_refusals) == 1 && startswith(statement_refusals[1], "S1 warm8.jl:4") ||
         error("rc_warm: the statement group gives ", statement_refusals)
+    # A moved expression: at another line, the function that holds a macro
+    # call is a moved macro user, and the function whose only macro call is its
+    # docstring is not.
+    moved_path = joinpath(dir, "warm9.jl")
+    write(moved_path, "\"doc\"\nplain() = 1\n\"doc\"\nnoted() = @__LINE__\n")
+    moved_items = rc_ledger([moved_path], [moved_path])
+    [rc_is_moved_macro_user(item, item.entry.lines.start + 1, moved_path) for item in moved_items] == [false, true] &&
+        !rc_is_moved_macro_user(moved_items[2], moved_items[2].entry.lines.start, moved_path) ||
+        error("rc_warm: the moved macro users are wrong")
     # The load order: a loaded package before one that is not loaded, and a
     # `using` after the module that the include above it loads.
     root_path = joinpath(dir, "W.jl")

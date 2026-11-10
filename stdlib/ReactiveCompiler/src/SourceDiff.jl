@@ -29,7 +29,7 @@ by the file and the lines of the entry.
 module ReactiveSourceDiff
 
 export Entry, file_entries, changed_expressions, is_module, entry_kind, defined_name, macro_heads, type_level_names, all_names,
-       read_paths, type_shape, initializer, runs_code
+       read_paths, type_shape, initializer, runs_code, without_docstrings
 
 "Strip every `LineNumberNode` from `x`, recursively, for the key only."
 strip_lines(x) = x
@@ -264,6 +264,24 @@ function macro_heads!(set, e)
         macro_heads!(set, a)
     end
     return nothing
+end
+
+"""
+    without_docstrings(e)
+
+The expression with each documented expression in place of the `@doc` call
+that wraps it. A docstring is a macro call in the syntax, and it keeps the
+line of its expression in a record of its own.
+"""
+without_docstrings(x) = x
+function without_docstrings(e::Expr)
+    e.head === :macrocall && length(e.args) == 4 && macro_name(e.args[1]) === Symbol("@doc") &&
+        return without_docstrings(e.args[4])
+    stripped = Expr(e.head)
+    for a in e.args
+        push!(stripped.args, without_docstrings(a))
+    end
+    return stripped
 end
 
 """

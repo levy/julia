@@ -26,6 +26,12 @@
 # process: no second effect of an initializer, no type of a closure, no
 # compiled code.
 #
+# An item that the edit moves has one more result that its text does not show:
+# a macro can put the place of its call into its expansion, as a log macro does
+# with the line. The trial compares the expansion of each moved item that holds
+# a macro call at its place of before and at its place of now
+# (`rc_moved_difference`), and an item that differs is a change of the edit.
+#
 # The replay runs in a world that holds the whole program, and a whole build
 # evaluates an item in a world that holds the items before it. Both prints of
 # a candidate see the same world, so the difference shows only when an edit
@@ -399,6 +405,28 @@ function rc_definitions_print(printer::RcPrinter, mod::Module, methods::Vector{M
     return print
 end
 
+# ── the moved expressions ───────────────────────────────────────────────────
+
+# Whether the moved expression expands to other code at its place of now than
+# at its place of before the edit. A line number node prints the same at each
+# line, so the two prints differ when a macro put the line or the file of its
+# call into the expansion as a value: a log macro, `@__LINE__`.
+function rc_moved_difference(moved::RcMoved, evaluation::RcEvaluation, problems::Vector{String})
+    item = moved.item
+    mod = rc_module_or_nothing(rc_module_path(evaluation.roots, item))
+    mod === nothing && return false
+    what = string(rc_where(item), " ", rc_what(item))
+    before = rc_expansion_print(mod, moved.old, problems, what)
+    return rc_expansion_print(mod, item.entry.expr, problems, what) != before
+end
+
+# The print of the expansion of `e` in `mod`, with no docstring.
+function rc_expansion_print(mod::Module, e, problems::Vector{String}, what::String)
+    return rc_guarded_print(RcPrinter(), problems, what) do printer
+        rc_print(printer, Base.invokelatest(macroexpand, mod, ReactiveSourceDiff.without_docstrings(e)))
+    end
+end
+
 # ── the trial ───────────────────────────────────────────────────────────────
 
 # How the result of a candidate differs, or `nothing`. `before` holds the
@@ -409,6 +437,8 @@ end
 #        another name; the trial keeps what the statement did
 #   'g'  a generator runs in the world of its method, so a method that a
 #        change made is new to it
+# The trial names one more, for a moved expression (`rc_moved_difference`):
+#   'l'  the expansion holds the place of the expression
 function rc_candidate_difference(candidate::RcCandidate, before::Dict{Int, Tuple{UInt, UInt}},
                                  evaluation::RcEvaluation, problems::Vector{String})
     item = candidate.item
@@ -460,7 +490,7 @@ function rc_check_statement_group(evaluation::RcEvaluation)
     items = RcItem[item for item in evaluation.items if !any(statement -> statement === item, group.new)]
     append!(items, group.old)
     queue = RcQueue(evaluation.queue.order)
-    check = RcEvaluation(items, evaluation.roots, evaluation.tracked, queue, RcChange[], String[], nothing)
+    check = RcEvaluation(items, evaluation.roots, evaluation.tracked, queue, RcChange[], String[], nothing, RcMoved[])
     for definition in group.definitions
         rc_enqueue!(queue, RcChange("S1", definition, ""))
     end
@@ -488,9 +518,10 @@ function rc_check_statement_group(evaluation::RcEvaluation)
 end
 
 # The trial of an apply: write to `report` a line `differs <index> <how>` for
-# each candidate whose result the changes of `evaluation` change. The trial
-# evaluates the changes of the queue as the apply does, and each candidate that
-# differs, so it runs in a fork and never in the process that writes an image.
+# each moved item whose expansion holds its place, and for each candidate whose
+# result the changes of `evaluation` change. The trial evaluates the changes of
+# the queue as the apply does, and each item that differs, so it runs in a fork
+# and never in the process that writes an image.
 #
 # A candidate has a print of before the changes when a change comes before it
 # in the load order, or the apply removes a method: no other candidate can
@@ -509,6 +540,16 @@ function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCa
             println(report, "refuse ", refusal)
             return nothing
         end
+    end
+    # A moved expression whose expansion holds its place is a change of the
+    # edit, in the queue before the first change is looked for.
+    differs = 0
+    for moved in evaluation.moved
+        objectid(moved.item) in queue.queued && continue
+        rc_moved_difference(moved, evaluation, problems) || continue
+        differs += 1
+        println(report, "differs ", findfirst(item -> item === moved.item, evaluation.items), " l")
+        rc_enqueue!(queue, rc_replay_change(moved.item, 'l'))
     end
     before = Dict{Int, Tuple{UInt, UInt}}()
     active = Set{Int}()
@@ -538,7 +579,6 @@ function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCa
             before[candidate.index] = rc_candidate_prints(candidate, mod, nothing, problems)
         end
     end
-    differs = 0
     next = 1
     t_trial = @elapsed try
         rc_delete_removals!(evaluation)
@@ -572,7 +612,7 @@ function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCa
         println(report, "problem ", problem)
     end
     println(report, "done ", length(candidates), " ", length(active), " ", differs, " ",
-            round(t_before; digits = 2), " ", round(t_trial; digits = 2))
+            round(t_before; digits = 2), " ", round(t_trial; digits = 2), " ", length(evaluation.moved))
     return nothing
 end
 
@@ -581,6 +621,7 @@ function rc_replay_change(item::RcItem, how::Char)
     how == 'e' && return RcChange("D1", item, "expands to other code")
     how == 'v' && return RcChange(item.kind === :const ? "C1" : "C2", item, "the initializer gives another value")
     how == 'g' && return RcChange("A6", item, "the generator can run other code")
+    how == 'l' && return RcChange("D1", item, "expands to other code at its new place")
     return RcChange("D2", item, "defines other methods or names")
 end
 
@@ -647,7 +688,7 @@ end
 function rc_replay!(evaluation::RcEvaluation, log::String)
     t0 = time()
     candidates = rc_candidates(evaluation.items, evaluation.queue.order)
-    isempty(candidates) && evaluation.group === nothing && return nothing
+    isempty(candidates) && evaluation.group === nothing && isempty(evaluation.moved) && return nothing
     report = rc_in_fork(io -> rc_trial!(io, evaluation, candidates), log)
     if report === nothing
         println("rc: warning: the replay ended with no answer, see ", log,
@@ -671,8 +712,8 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
             println("rc: replay: stopped: ", SubString(line, 9))
         elseif parts[1] == "done"
             numbers = split(line, ' ')
-            println("rc: replay: ", numbers[2], " candidates, ", numbers[3], " compared, ", numbers[4],
-                    " differ; prints ", numbers[5], " s, trial ", numbers[6], " s, in all ",
+            println("rc: replay: ", numbers[2], " candidates, ", numbers[3], " compared, ", numbers[7],
+                    " moved, ", numbers[4], " differ; prints ", numbers[5], " s, trial ", numbers[6], " s, in all ",
                     round(time() - t0; digits = 2), " s")
         end
     end
