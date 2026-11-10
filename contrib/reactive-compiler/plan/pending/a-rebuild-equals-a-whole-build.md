@@ -384,12 +384,42 @@ These are my proposals. The owner approves them with the plan.
   stretches of pages, or 333 MB when near stretches join. The address of the
   code of the overlay is not known at build time. And a rebase gives the same
   start for a large overlay.
+- **D13. A method keeps the place of the expression that defined it (finding
+  44; the owner's answer to Q2, on 2026-11-11).** The runtime knows the
+  top-level expression that it evaluates. When it defines a method, the method
+  keeps the file and the first line of that expression, in two new fields
+  (`toplevel_file`, `toplevel_line`). The file and the line that a method has
+  now stay what they are: the place of its text, which the line table and a
+  moved item need. The two differ for a method that the expansion of a macro
+  defines.
+
+  - The place is that of the source: a line number node of the form that the
+    loader gives to the evaluation sets it, and a line number node inside the
+    result of a lowering does not, so a macro that returns top-level forms
+    with its own lines changes nothing. An `eval` inside a top-level
+    expression keeps the place of that expression. Outside each top-level
+    evaluation there is no place, and a method that the program defines at run
+    time has none.
+  - The ledger takes the methods of an item from the definer: the methods
+    whose top-level place is the file and the first line of the item. A whole
+    build and a rebuild give the same answer. The harness evaluates an item
+    with its place, and a kept method takes the place of the new definition.
+  - A moved item gives its new first line to the methods that it defined, and
+    its shift to the lines of the methods whose text is inside it. These are
+    two sets now.
+  - The place is one value of the process, as the line of the last resort
+    error message is. Two tasks that evaluate top-level expressions at the
+    same time can give a method the place of the other one. A package loads in
+    one task, and so does an apply.
+
+  The image holds two more fields for each method, so a store needs one whole
+  build with the new Julia.
 
 ## The open questions
 
 Two decisions are the owner's. Q1 sets what property 3 means and what a
-rebuild costs. Q2 came with finding 44, on 2026-11-10, and sets how the
-rebuild knows the methods of an expression.
+rebuild costs, and is open. Q2 came with finding 44, on 2026-11-10, and sets
+how the rebuild knows the methods of an expression; it has its answer.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -447,6 +477,8 @@ keeps it; (b) and (c) search for it again. (a) is also the only one that
 gives the definer of an item that no apply evaluated, which the dependents of
 a changed type need, and it adds no work to a rebuild.
 
+*On 2026-11-11 the owner chose (a).* D13 states it, and Step 6 builds it.
+
 One correction needs no answer and is built: a method that an evaluation of
 the apply defines again with the same code is never deleted, whoever has it
 at its lines. It closes the first form of finding 44, where the user of the
@@ -461,8 +493,7 @@ test that fails before the change.
 
 On 2026-11-10, after Step 1, the owner said "Yes and continue": the push of
 Step 1, and the work goes on with the next steps in their order. Q1 is still
-open; Step 10 needs its answer. Q2 is open; the second form of finding 44
-needs its answer.
+open; Step 10 needs its answer. Q2 has its answer, (a), since 2026-11-11.
 
 On 2026-11-10, after the replay of Step 2 showed findings 40 to 42, the owner
 approved another order: Step 4 first, then Step 7, then the other steps in
@@ -921,8 +952,13 @@ commits. The numbers of the steps stay as they are.
   changed Manifest entry stops the build with its name; the program applies
   its overlay with the variable of finding 34 set, and stops on an overlay of
   another base.
-- [ ] **Step 6: removals (D2; finding 1, refusal C5).** Test: the moved
-  function of finding 1; a removed struct; a renamed module.
+- [ ] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
+  40, 41, 44, refusal C5).** First D13: the two fields of a method, the place
+  in the runtime, the ledger by the definer. Test: the case `@steady` of
+  `gate_runs.sh`, which the rebuild of today answers with "no method"; the
+  replay gates, where the count of the methods of the chain must come to
+  that of the whole build. Then D2. Test: the moved function of finding 1; a
+  removed struct; a renamed module.
 - [x] **Step 7: the code that an item runs (D1, D3; findings 2 to 6, 9, 20).**
   The replay of D1. The groups of the statements. The read rule skips
   `/proc`, `/sys` and `/dev`. Test: `tool/gate_runs.sh`, the tests of Step 3,
