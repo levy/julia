@@ -20,3 +20,16 @@ make_theme() = Theme(2, 5)
 
 # A generated function takes its body from this function.
 generated_body(::Type{T}) where {T} = T <: Integer ? :(x + 2) : :(x)
+
+# A loop defines one method for each row of this table.
+loop_table() = [(:loop_first, 2), (:loop_second, 3)]
+
+# A loop exports each of these names.
+exported_names() = [:TABLE, :SCALED]
+
+# Two functions of a constant call this function.
+handle(x) = 2 * x
+
+# The initializer of a constant calls this function, which gives the next
+# number at each call. No edit changes it.
+next_number(counter) = (counter[] += 1)

@@ -221,7 +221,7 @@ function rc_apply_spec(spec::String)
     s = Base.parsed_toml(spec)
     state = rc_apply_tracked(String.(s["old_files"]), rc_root_paths(s["old_roots"]), String.(s["old_copies"]),
                              String.(s["files"]), rc_root_paths(s["roots"]),
-                             rc_read_reads(s["old_reads"]), s["reads_out"], s["refusal_out"])
+                             rc_read_reads(s["old_reads"]), s["reads_out"], s["refusal_out"]; keep_ledger = true)
     rc_precompile_trace(s["trace"])
     rc_report_new(state)
     return nothing

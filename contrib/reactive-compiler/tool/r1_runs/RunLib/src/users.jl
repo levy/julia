@@ -21,3 +21,28 @@ theme_width() = DEFAULT_THEME.width
 
 # The generator runs a function.
 @generated staged(x) = generated_body(x)
+
+# A statement defines a method for each row of a table that a function makes.
+for (name, value) in loop_table()
+    @eval $name() = $value
+end
+
+# A statement exports each name that a function gives.
+for name in exported_names()
+    @eval export $name
+end
+
+# The initializer makes two functions of its own, which call a function of
+# helpers.jl by its name. Each evaluation gives a result of the same code, so
+# the constant stays as it is, and its functions call the new method.
+const HANDLERS = [x -> handle(x), x -> handle(x) + 1]
+
+# The initializer gives another value at each evaluation, and it counts its
+# evaluations. The constant stays as it is, and so does the count.
+const COUNTER = Ref(0)
+const STAMP = next_number(COUNTER)
+
+# A statement fills a table of values of the type that the edit changes. The
+# table is made again, and the statement runs again.
+const THEMES = Dict{Symbol, Theme}()
+THEMES[:default] = make_theme()

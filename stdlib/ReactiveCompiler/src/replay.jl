@@ -1,0 +1,608 @@
+# The replay of an apply: the items whose text an edit leaves as it is, and
+# whose evaluation gives another result after the edit.
+#
+# An evaluation has a result when Julia runs code for it: the expansion of a
+# macro call, the value of an initializer, the body that a generator answers,
+# and the methods and the names of an `eval` statement. The ledger compares the text of
+# an item, so it does not see an item whose text stays and whose result
+# changes, because a function that the macro, the initializer, the generator
+# or the statement runs has other code.
+#
+# The replay does such an evaluation again and compares the two results:
+#   - a *candidate* is an item with a result that tracked code can change
+#     (`rc_candidates`);
+#   - the *print* of a result is a number that two results of the same
+#     structure share (`rc_print`); it reads the fields of a value and calls
+#     no method of the program;
+#   - the *trial* takes the print of each candidate, applies the changes of
+#     the edit, and takes the print of each candidate again at its place in
+#     the load order (`rc_trial!`). A candidate whose print differs is
+#     evaluated at once, as a change, so the candidates after it see its new
+#     result. A whole build gives an item the code that it loads before the
+#     item, and the trial gives it the same.
+# The trial runs in a fork of the process (`rc_in_fork`). It writes the items
+# that differ, and the process applies the edit with those items among its
+# changes (`rc_replay!`). Nothing that the trial evaluates stays in the
+# process: no second effect of an initializer, no type of a closure, no
+# compiled code.
+#
+# The replay runs in a world that holds the whole program, and a whole build
+# evaluates an item in a world that holds the items before it. Both prints of
+# a candidate see the same world, so the difference shows only when an edit
+# changes a method that is more specific than the one that the item called
+# when it was loaded.
+
+# ── the print of a result ───────────────────────────────────────────────────
+
+# The number of each object that a print names by its identity: a type name, a
+# module, a method. Two types of the same name are two objects after a
+# redefinition, and their names have the same hash, so the number comes from
+# this table and not from `objectid`.
+const RC_IDENTITIES = IdDict{Any, Int}()
+rc_identity(@nospecialize(x)) = get!(() -> length(RC_IDENTITIES) + 1, RC_IDENTITIES, x)::Int
+
+# The print of each type that has no free variable and that no evaluation of
+# the replay made, and the print of each name.
+const RC_TYPE_PRINTS = IdDict{Any, UInt}()
+const RC_NAME_PRINTS = Dict{Symbol, UInt}()
+
+const RC_SEED_NAME = 0x6e616d65 % UInt
+const RC_SEED_STRING = 0x73747269 % UInt
+const RC_SEED_LINE = 0x6c696e65 % UInt
+const RC_SEED_REFERENCE = 0x72656665 % UInt
+const RC_SEED_IDENTITY = 0x6964656e % UInt
+const RC_SEED_SEEN = 0x7365656e % UInt
+const RC_SEED_UNDEFINED = 0x756e6465 % UInt
+const RC_SEED_TYPE = 0x74797065 % UInt
+const RC_SEED_DEFINED = 0x64656669 % UInt
+const RC_SEED_UNION = 0x756e696f % UInt
+const RC_SEED_BOTTOM = 0x626f7474 % UInt
+const RC_SEED_ERROR = 0x6572726f % UInt
+const RC_SEED_LIMIT = 0x6c696d69 % UInt
+
+# The most objects that one print reads. A larger result has the print of the
+# limit, so it compares equal, and the trial names it in its report.
+const RC_PRINT_LIMIT = 4_000_000
+
+struct RcPrintLimit <: Exception end
+
+# One walk of a result.
+#   seen       - the mutable objects of the walk, numbered in the order of the
+#                first visit: a cycle ends, and a shared part prints as shared
+#   defined    - the methods that the evaluation of the result defined, by the
+#                name of the type that they belong to
+#   variables  - the type variables of the `where` clauses that the walk is
+#                inside, the innermost last
+#   count      - the objects that the walk read
+mutable struct RcPrinter
+    seen::IdDict{Any, Int}
+    defined::IdDict{Any, Vector{Method}}
+    variables::Vector{TypeVar}
+    count::Int
+end
+RcPrinter() = RcPrinter(IdDict{Any, Int}(), IdDict{Any, Vector{Method}}(), TypeVar[], 0)
+
+# A printer for a result whose evaluation defined `methods`: the functions of
+# a top-level `->`, of a `do` block and of a comprehension.
+function RcPrinter(methods::Vector{Method})
+    printer = RcPrinter()
+    for method in methods
+        self = Base.unwrap_unionall(Base.unwrap_unionall(method.sig).parameters[1])
+        self isa DataType && push!(get!(printer.defined, self.name, Method[]), method)
+    end
+    return printer
+end
+
+# The print of a name. A name that Julia generates holds a counter, which
+# differs between two evaluations: `##x#281`, `#12#x`, `#5#6`. Its print leaves
+# the digits out.
+function rc_name_print(name::Symbol)
+    return get!(RC_NAME_PRINTS, name) do
+        text = String(name)
+        hash('#' in text ? filter(!isdigit, text) : text, RC_SEED_NAME)
+    end
+end
+
+const RcPlainNumber = Union{Bool, Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UInt128,
+                            Float16, Float32, Float64, Char}
+
+function rc_plain_print(values::Union{Array{T}, Memory{T}}, print::UInt) where {T}
+    for index in eachindex(values)
+        print = hash(@inbounds(values[index]), print)
+    end
+    return print
+end
+
+# The print of `x`: equal for two values of the same structure. The walk reads
+# fields, elements and the pairs of a `Dict`, and calls no method of the
+# program, so it runs in any world. What counts as the same:
+#   - a type, a module and a method are the same object; a type that the
+#     evaluation itself made counts by the code of its methods;
+#   - a line number is no difference, because the lines of an item move with
+#     an edit above it;
+#   - a pointer, a task, a weak reference, a file stream and a lock count by
+#     their type only: a lock of Base has a field that it never sets.
+function rc_print(printer::RcPrinter, @nospecialize(x))::UInt
+    (printer.count += 1) > RC_PRINT_LIMIT && throw(RcPrintLimit())
+    x isa Symbol && return rc_name_print(x)
+    x isa String && return hash(x, RC_SEED_STRING)
+    x isa LineNumberNode && return RC_SEED_LINE
+    x isa Type && return rc_type_print(printer, x)
+    if x isa TypeVar
+        # A variable of a `where` clause around it counts by the depth of the
+        # clause, so two types that differ in the names of their variables
+        # only have one print.
+        index = findlast(variable -> variable === x, printer.variables)
+        index === nothing || return hash(length(printer.variables) - index, RC_SEED_SEEN)
+        return hash(rc_print(printer, x.ub), hash(rc_print(printer, x.lb), rc_name_print(x.name)))
+    end
+    x isa GlobalRef && return hash(rc_name_print(x.name), hash(rc_identity(x.mod), RC_SEED_REFERENCE))
+    if x isa Module || x isa Method || x isa Core.MethodInstance || x isa Core.CodeInstance ||
+       x isa Core.TypeName || x isa Core.Binding
+        return hash(rc_identity(x), RC_SEED_IDENTITY)
+    end
+    type_print = rc_type_print(printer, typeof(x))
+    (x isa BigInt || x isa BigFloat) && return hash(x, type_print)
+    (x isa Ptr || x isa Task || x isa WeakRef || x isa IOStream || x isa Base.AbstractLock) && return type_print
+    if ismutable(x)
+        number = get(printer.seen, x, 0)
+        number > 0 && return hash(number, RC_SEED_SEEN)
+        printer.seen[x] = length(printer.seen) + 1
+    end
+    if x isa Dict || x isa IdDict
+        # The order of the pairs follows the hash of the keys, which can be
+        # an address: the sum does not depend on the order.
+        sum = UInt(0)
+        for (key, value) in x
+            sum += hash(rc_print(printer, value), rc_print(printer, key))
+        end
+        return hash(sum, hash(length(x), type_print))
+    elseif x isa Array || x isa Memory
+        print = hash(size(x), type_print)
+        if x isa Array{<:RcPlainNumber} || x isa Memory{<:RcPlainNumber}
+            printer.count += length(x)
+            return rc_plain_print(x, print)
+        end
+        for index in eachindex(x)
+            print = hash(isassigned(x, index) ? rc_print(printer, x[index]) : RC_SEED_UNDEFINED, print)
+        end
+        return print
+    elseif x isa Core.SimpleVector
+        print = hash(length(x), type_print)
+        for index in 1:length(x)
+            print = hash(isassigned(x, index) ? rc_print(printer, x[index]) : RC_SEED_UNDEFINED, print)
+        end
+        return print
+    end
+    count = nfields(x)
+    # A value with no field is a number of a primitive type, or the one value
+    # of its type, whose `objectid` is the hash of the name of the type.
+    count == 0 && return isbits(x) && sizeof(x) > 0 ? hash(objectid(x), type_print) : type_print
+    type = typeof(x)
+    print = type_print
+    for index in 1:count
+        if !isdefined(x, index)
+            print = hash(RC_SEED_UNDEFINED, print)
+        elseif Base.isfieldatomic(type, index)
+            print = hash(rc_print(printer, getfield(x, index, :sequentially_consistent)), print)
+        else
+            print = hash(rc_print(printer, getfield(x, index)), print)
+        end
+    end
+    return print
+end
+
+# The print of a type: the identity of its name and the prints of its
+# parameters. The table `RC_TYPE_PRINTS` keeps the print of a type with no free
+# variable, for a walk whose evaluation defined no method: the print of such a
+# type depends on nothing else.
+function rc_type_print(printer::RcPrinter, @nospecialize(type))::UInt
+    if type isa DataType
+        cache = isempty(printer.defined)
+        if cache
+            cached = get(RC_TYPE_PRINTS, type, nothing)
+            cached === nothing || return cached::UInt
+        end
+        methods = get(printer.defined, type.name, nothing)
+        print = methods === nothing ? hash(rc_identity(type.name), RC_SEED_TYPE) :
+                rc_defined_print(printer, type.name, methods)
+        for parameter in type.parameters
+            print = hash(rc_print(printer, parameter), print)
+        end
+        cache && !Base.has_free_typevars(type) && (RC_TYPE_PRINTS[type] = print)
+        return print
+    elseif type isa UnionAll
+        variable = type.var
+        bounds = hash(rc_print(printer, variable.ub), rc_print(printer, variable.lb))
+        push!(printer.variables, variable)
+        body = rc_print(printer, type.body)
+        pop!(printer.variables)
+        return hash(body, bounds)
+    elseif type isa Union
+        sum = UInt(0)
+        for part in Base.uniontypes(type)
+            sum += rc_print(printer, part)
+        end
+        return hash(sum, RC_SEED_UNION)
+    end
+    return RC_SEED_BOTTOM
+end
+
+# The print of a type on which the evaluation of the result defined methods:
+# its name, and the signature and the code of each of those methods. Each
+# evaluation of a top-level `->` makes a new type, and two such types of the
+# same code are the same result.
+function rc_defined_print(printer::RcPrinter, name::Core.TypeName, methods::Vector{Method})
+    number = get(printer.seen, name, 0)
+    number > 0 && return hash(number, RC_SEED_SEEN)
+    printer.seen[name] = length(printer.seen) + 1
+    print = hash(rc_name_print(name.name), RC_SEED_DEFINED)
+    for method in methods
+        code = Base.uncompressed_ir(method).code
+        print = hash(rc_print(printer, code), hash(rc_print(printer, method.sig), print))
+    end
+    return print
+end
+
+# ── the candidates ──────────────────────────────────────────────────────────
+
+# One item with a result that the replay compares.
+#   index        - of the item in the ledger
+#   expands      - the item calls a tracked macro
+#   initializer  - the expression that gives the binding of the item its
+#                  value, when it runs code and names a tracked name; else
+#                  `nothing`
+#   generated    - the item is a `@generated` method
+#   statement    - the item is a statement that defines through `eval`
+struct RcCandidate
+    index::Int
+    item::RcItem
+    expands::Bool
+    initializer::Any
+    generated::Bool
+    statement::Bool
+end
+
+const RC_NAMED_KINDS = (:method, :other, :type, :const, :global, :module)
+const RC_CANDIDATE_KINDS = (:method, :macro, :other, :type, :const, :global)
+
+# The candidates of the ledger `items`, in the load order. The macros and the
+# names are tracked by their name alone, with no module: a candidate with no
+# need costs its print, and never a wrong result.
+function rc_candidates(items::Vector{RcItem}, order::RcLoadOrder)
+    macros = Set{Symbol}()
+    names = Set{Symbol}()
+    for item in items
+        item.name === nothing && continue
+        if item.kind === :macro
+            push!(macros, item.name)
+        elseif item.kind in RC_NAMED_KINDS
+            push!(names, item.name)
+        end
+    end
+    candidates = RcCandidate[]
+    for (index, item) in enumerate(items)
+        item.kind in RC_CANDIDATE_KINDS || continue
+        e = item.entry.expr
+        heads = ReactiveSourceDiff.macro_heads(e)
+        expands = !isdisjoint(heads, macros)
+        initializer = item.kind in RC_BINDING_KINDS ? ReactiveSourceDiff.initializer(e) : nothing
+        if initializer !== nothing
+            ReactiveSourceDiff.runs_code(initializer) &&
+                !isdisjoint(ReactiveSourceDiff.all_names(initializer), names) || (initializer = nothing)
+        end
+        generated = item.kind === :method && Symbol("@generated") in heads
+        statement = item.kind === :other && (Symbol("@eval") in heads || :eval in ReactiveSourceDiff.all_names(e))
+        expands || initializer !== nothing || generated || statement || continue
+        push!(candidates, RcCandidate(index, item, expands, initializer, generated, statement))
+    end
+    sort!(candidates; by = candidate -> rc_order(order, candidate.item))
+    return candidates
+end
+
+# The expression with each line counted from `start`, the first line of its
+# item. A macro can put the line of its call into its expansion, and the line
+# of an item moves with an edit above it.
+rc_relative_lines(@nospecialize(x), start::Int) = x
+rc_relative_lines(node::LineNumberNode, start::Int) = LineNumberNode(node.line - start + 1, node.file)
+function rc_relative_lines(e::Expr, start::Int)
+    relative = Expr(e.head)
+    for argument in e.args
+        push!(relative.args, rc_relative_lines(argument, start))
+    end
+    return relative
+end
+
+# The methods that an evaluation of the trial defined: the filter of
+# `jl_method_def` records each one.
+const RC_DEFINED = Method[]
+rc_record_method(method::Method) = (push!(RC_DEFINED, method); false)
+
+# The filter of an `eval` statement of the trial: each method is recorded, and
+# a method of the same code is kept, as in the apply, so a statement that
+# defines what the table holds changes nothing.
+rc_record_and_keep_method(method::Method) = (push!(RC_DEFINED, method); rc_method_filter(method))
+
+# Print the result of `evaluate`, a function of a printer. An evaluation that
+# throws has the print of the type of its exception: an item that threw before
+# the edit and throws after it has the same result. `problems` gets a line for
+# a result that passes the limit of a print.
+function rc_guarded_print(evaluate, printer::RcPrinter, problems::Vector{String}, what::String)
+    try
+        return evaluate(printer)::UInt
+    catch e
+        e isa RcPrintLimit || return hash(rc_identity(typeof(e)), RC_SEED_ERROR)
+        push!(problems, string(what, " is too large to compare"))
+        return RC_SEED_LIMIT
+    end
+end
+
+# The prints of the candidate in the module `mod`: of the expansion of its
+# expression, and of the value of its initializer or of the definitions of its
+# statement. The evaluation runs under a filter that records its methods;
+# `filter` is the filter of the trial, which is installed again after it.
+function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, problems::Vector{String})
+    item = candidate.item
+    what = string(rc_where(item), " ", rc_what(item))
+    expansion = UInt(0)
+    if candidate.expands
+        expansion = rc_guarded_print(RcPrinter(), problems, what) do printer
+            relative = rc_relative_lines(item.entry.expr, item.entry.lines.start)
+            rc_print(printer, Base.invokelatest(macroexpand, mod, relative))
+        end
+    end
+    result = UInt(0)
+    if candidate.initializer !== nothing
+        value = rc_recorded_evaluation(mod, candidate.initializer, rc_record_method, filter)
+        result = value isa Some ? rc_guarded_print(printer -> rc_print(printer, something(value)),
+                                                   RcPrinter(copy(RC_DEFINED)), problems, what) :
+                 hash(rc_identity(typeof(value)), RC_SEED_ERROR)
+    elseif candidate.statement
+        value = rc_recorded_evaluation(mod, item.entry.expr, rc_record_and_keep_method, filter)
+        rc_take_kept!()
+        result = value isa Some ? rc_guarded_print(printer -> rc_definitions_print(printer, mod, copy(RC_DEFINED)),
+                                                   RcPrinter(copy(RC_DEFINED)), problems, what) :
+                 hash(rc_identity(typeof(value)), RC_SEED_ERROR)
+    end
+    return (expansion, result)
+end
+
+# Evaluate `e` in `mod` under the filter `record`, which fills `RC_DEFINED`, and
+# install `filter` again. Answer the value in a `Some`, or the exception of an
+# evaluation that throws.
+function rc_recorded_evaluation(mod::Module, e, record, filter)
+    empty!(RC_DEFINED)
+    rc_install_filter(record)
+    try
+        return Some{Any}(Core.eval(mod, e))
+    catch exception
+        return exception
+    finally
+        rc_install_filter(filter)
+    end
+end
+
+# The print of what a statement defined in `mod`: its methods, the names that
+# the module exports, and the names that it binds. A name that Julia generates
+# is left out: each evaluation of a top-level `->` binds a new one.
+function rc_definitions_print(printer::RcPrinter, mod::Module, methods::Vector{Method})
+    print = RC_SEED_DEFINED
+    for method in methods
+        print = hash(rc_print(printer, method.sig), print)
+    end
+    for name in Base.invokelatest(names, mod)
+        print = hash(rc_name_print(name), print)
+    end
+    for name in Base.invokelatest(names, mod; all = true)
+        '#' in String(name) || (print = hash(rc_name_print(name), print))
+    end
+    return print
+end
+
+# ── the trial ───────────────────────────────────────────────────────────────
+
+# How the result of a candidate differs, or `nothing`. `before` holds the
+# prints of the candidate of before the changes.
+#   'e'  the expansion gives other code
+#   'v'  the initializer gives another value
+#   's'  the statement defines a method of other code, or binds or exports
+#        another name; the trial keeps what the statement did
+#   'g'  a generator runs in the world of its method, so a method that a
+#        change made is new to it
+function rc_candidate_difference(candidate::RcCandidate, before::Dict{Int, Tuple{UInt, UInt}},
+                                 evaluation::RcEvaluation, problems::Vector{String})
+    item = candidate.item
+    mod = Base.invokelatest(rc_module_or_nothing, rc_module_path(evaluation.roots, item))
+    mod === nothing && return nothing
+    old = get(before, candidate.index, nothing)
+    if old !== nothing
+        now = rc_candidate_prints(candidate, mod, rc_method_filter, problems)
+        if now != old
+            # A result that differs between two evaluations of the same world is
+            # no result of the edit: a counter, a clock, a random number.
+            if rc_candidate_prints(candidate, mod, rc_method_filter, problems) != now
+                push!(problems, string(rc_where(item), " ", rc_what(item),
+                                       " gives another result at each evaluation; it stays as it is"))
+                return nothing
+            end
+            return now[1] != old[1] ? 'e' : candidate.statement ? 's' : 'v'
+        end
+    end
+    return candidate.generated ? 'g' : nothing
+end
+
+# The trial of an apply: write to `report` a line `differs <index> <how>` for
+# each candidate whose result the changes of `evaluation` change. The trial
+# evaluates the changes of the queue as the apply does, and each candidate that
+# differs, so it runs in a fork and never in the process that writes an image.
+#
+# A candidate has a print of before the changes when a change comes before it
+# in the load order, or the apply removes a method: no other candidate can
+# differ. A line `problem <text>` names a candidate that the trial can not
+# compare, and a line `stopped <text>` the error or the refusal that ends the
+# trial early; the apply of the process meets the same one.
+function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
+    queue = evaluation.queue
+    order = queue.order
+    problems = String[]
+    before = Dict{Int, Tuple{UInt, UInt}}()
+    active = Set{Int}()
+    first_change = isempty(queue.changes) ? nothing : minimum(change -> rc_order(order, change.item), queue.changes)
+    for candidate in candidates
+        isempty(evaluation.removals) && (first_change === nothing || rc_order(order, candidate.item) < first_change) &&
+            continue
+        objectid(candidate.item) in queue.queued || push!(active, candidate.index)
+    end
+    t_before = @elapsed begin
+        # A statement can do more in the whole program than it did when its
+        # package was loaded: a loop that exports the names of a module finds
+        # the names of the files after it. Each statement runs once before the
+        # prints, so the prints of before hold what the statements do here.
+        for candidate in candidates
+            candidate.statement && candidate.index in active || continue
+            mod = rc_module_or_nothing(rc_module_path(evaluation.roots, candidate.item))
+            mod === nothing && continue
+            rc_recorded_evaluation(mod, candidate.item.entry.expr, rc_record_and_keep_method, nothing)
+            rc_take_kept!()
+        end
+        for candidate in candidates
+            candidate.index in active || continue
+            candidate.expands || candidate.initializer !== nothing || candidate.statement || continue
+            mod = rc_module_or_nothing(rc_module_path(evaluation.roots, candidate.item))
+            mod === nothing && continue
+            before[candidate.index] = rc_candidate_prints(candidate, mod, nothing, problems)
+        end
+    end
+    differs = 0
+    next = 1
+    t_trial = @elapsed try
+        rc_delete_removals!(evaluation)
+        rc_record_resolutions!(evaluation)
+        rc_install_filter(rc_method_filter)
+        while true
+            change = queue.cursor < length(queue.changes) ? queue.changes[queue.cursor + 1] : nothing
+            candidate = next <= length(candidates) ? candidates[next] : nothing
+            change === nothing && candidate === nothing && break
+            if candidate !== nothing &&
+               (change === nothing || rc_order(order, candidate.item) < rc_order(order, change.item))
+                next += 1
+                candidate.index in active || continue
+                objectid(candidate.item) in queue.queued && continue
+                how = rc_candidate_difference(candidate, before, evaluation, problems)
+                how === nothing && continue
+                differs += 1
+                println(report, "differs ", candidate.index, " ", how)
+                how == 's' || rc_enqueue!(queue, rc_replay_change(candidate.item, how))
+            elseif !rc_evaluate_next!(evaluation)
+                println(report, "stopped ", first(evaluation.refusals))
+                break
+            end
+        end
+    catch e
+        println(report, "stopped ", first(split(sprint(showerror, e), '\n')))
+    finally
+        rc_install_filter(nothing)
+    end
+    for problem in unique!(problems)
+        println(report, "problem ", problem)
+    end
+    println(report, "done ", length(candidates), " ", length(active), " ", differs, " ",
+            round(t_before; digits = 2), " ", round(t_trial; digits = 2))
+    return nothing
+end
+
+# The change that evaluates again a candidate whose result differs.
+function rc_replay_change(item::RcItem, how::Char)
+    how == 'e' && return RcChange("D1", item, "expands to other code")
+    how == 'v' && return RcChange(item.kind === :const ? "C1" : "C2", item, "the initializer gives another value")
+    how == 'g' && return RcChange("A6", item, "the generator can run other code")
+    return RcChange("D2", item, "defines other methods or names")
+end
+
+# Run `produce(io)` in a fork of the process, and answer the text that it wrote
+# to `io`, or `nothing` when the fork ends with no answer. What the fork prints
+# goes to the file `output`: Julia keeps its own copies of the standard
+# streams, so the streams of Julia are redirected, and the descriptors with
+# them. The fork leaves through `_exit`, so it never comes back into the
+# caller.
+function rc_in_fork(produce, output::String)
+    pipe = zeros(Cint, 2)
+    ccall(:pipe, Cint, (Ptr{Cint},), pipe) == 0 || error("rc: pipe: ", Libc.strerror())
+    flush(stdout)
+    flush(stderr)
+    pid = ccall((:jl_reactive_fork, "libjulia-codegen"), Cint, ())
+    if pid == 0
+        status = 1
+        try
+            ccall(:close, Cint, (Cint,), pipe[1])
+            log = open(output, "w")
+            redirect_stdout(log)
+            redirect_stderr(log)
+            try
+                io = IOBuffer()
+                produce(io)
+                rc_write_all(pipe[2], String(take!(io)))
+                status = 0
+            catch e
+                showerror(log, e, catch_backtrace())
+            finally
+                flush(log)
+            end
+        catch
+        end
+        ccall(:_exit, Cvoid, (Cint,), status)
+    end
+    ccall(:close, Cint, (Cint,), pipe[2])
+    if pid < 0
+        ccall(:close, Cint, (Cint,), pipe[1])
+        return nothing
+    end
+    data = UInt8[]
+    chunk = Vector{UInt8}(undef, 1 << 16)
+    while true
+        count = ccall(:read, Cssize_t, (Cint, Ptr{UInt8}, Csize_t), pipe[1], chunk, length(chunk))
+        count < 0 && Libc.errno() == Libc.EINTR && continue
+        count > 0 || break
+        append!(data, view(chunk, 1:count))
+    end
+    ccall(:close, Cint, (Cint,), pipe[1])
+    status = Ref{Cint}(0)
+    ccall(:waitpid, Cint, (Cint, Ptr{Cint}, Cint), pid, status, 0)
+    return status[] == 0 ? String(data) : nothing
+end
+
+# Run the trial of the apply in a fork, and add to the queue of `evaluation`
+# the change of each candidate that the trial names. What the evaluations of
+# the trial print goes to the file `log`: the apply prints the same for each
+# change, and a candidate printed it in the whole build. A trial that ends with
+# no answer leaves the queue as it is, with a warning: the image can then keep
+# a result of before the edit.
+function rc_replay!(evaluation::RcEvaluation, log::String)
+    t0 = time()
+    candidates = rc_candidates(evaluation.items, evaluation.queue.order)
+    isempty(candidates) && return nothing
+    report = rc_in_fork(io -> rc_trial!(io, evaluation, candidates), log)
+    if report === nothing
+        println("rc: warning: the replay ended with no answer, see ", log,
+                "; no result of an unchanged expression is compared")
+        return nothing
+    end
+    for line in split(report, '\n'; keepempty = false)
+        parts = split(line, ' '; limit = 3)
+        if parts[1] == "differs"
+            item = evaluation.items[parse(Int, parts[2])]
+            how = parts[3][1]
+            rc_enqueue!(evaluation.queue, rc_replay_change(item, how))
+        elseif parts[1] == "problem"
+            println("rc: replay: ", SubString(line, 9))
+        elseif parts[1] == "stopped"
+            println("rc: replay: stopped: ", SubString(line, 9))
+        elseif parts[1] == "done"
+            numbers = split(line, ' ')
+            println("rc: replay: ", numbers[2], " candidates, ", numbers[3], " compared, ", numbers[4],
+                    " differ; prints ", numbers[5], " s, trial ", numbers[6], " s, in all ",
+                    round(time() - t0; digits = 2), " s")
+        end
+    end
+    return nothing
+end

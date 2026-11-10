@@ -6,9 +6,12 @@
 # of the gate replaces helpers.jl of RunLib: the function of an initializer,
 # the function that an initializer calls on a value of an unknown type, the
 # function that makes the expansion of a macro, a type whose value a constant
-# holds, and the function that gives a generated function its body. users.jl
-# holds the expressions that run them, and stays as it is. The chain is
-# compared with the founding of the edited sources.
+# and a table hold, the function that gives a generated function its body, and
+# the functions that give a loop the methods that it defines and the names
+# that it exports. users.jl holds the expressions that run them, and stays as
+# it is. Two constants of users.jl must stay as they are: one whose
+# initializer makes functions of its own, and one whose initializer counts its
+# evaluations. The chain is compared with the founding of the edited sources.
 #   copy         - the packages into $OUT/src, where the gate edits them
 #   found-chain  - materialize_app founds $OUT/chain/runapp
 #   run-s1       - the founded binary prints the values of before the edit
@@ -35,8 +38,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields"
 mkdir -p "$OUT/depot"
 
 # One run on the build lane. $1 = log name, $2.. = the command.
@@ -48,7 +51,7 @@ lane() {
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|refuse|change)|reactive: delta|materialize_app|shape: |=== " "$OUT/$name.log"
+    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|refuse|change|replay)|reactive: delta|materialize_app|shape: |=== " "$OUT/$name.log"
     return $rc
 }
 

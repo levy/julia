@@ -6,7 +6,12 @@ function shape_lines()
             "answer = $(RunLib.answer_value())",
             "answer constant = $(RunLib.ANSWER)",
             "theme = $(RunLib.theme_width()) of $(fieldcount(typeof(RunLib.DEFAULT_THEME))) fields",
-            "staged = $(RunLib.staged(1))"]
+            "staged = $(RunLib.staged(1))",
+            "loop = $(RunLib.loop_first())$(isdefined(RunLib, :loop_second) ? " and $(RunLib.loop_second())" : "")",
+            "exports = $(join(sort!(filter(!=(:RunLib), names(RunLib))), ' '))",
+            "handlers = $(RunLib.HANDLERS[2](1))",
+            "stamp = $(RunLib.STAMP) of $(RunLib.COUNTER[])",
+            "themes = $(length(RunLib.THEMES)) with $(fieldcount(valtype(RunLib.THEMES))) fields"]
 end
 
 Base.@ccallable function julia_main()::Cint

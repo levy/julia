@@ -25,12 +25,15 @@
 #   3. the diff of each matched pair by key, and the classification of every
 #      changed or removed entry with an id of the change catalog of
 #      `plan/pending/robust-incremental-compiler.md`; a refusal stops here;
-#   4. the apply, in the load order (`RcLoadOrder`): the removals delete
+#   4. the replay (`replay.jl`): a fork of the process applies the changes,
+#      and names each expression whose text stays and whose evaluation gives
+#      another result after them; these join the changes;
+#   5. the apply, in the load order (`RcLoadOrder`): the removals delete
 #      their methods first, then every change is evaluated in its module,
 #      and the dependents that the evaluation reveals (the expressions that
 #      name a changed type, a changed binding or a changed macro, or whose
 #      names resolve differently after a changed `using`) join the queue;
-#   5. the new ledger: the methods of every new entry, from the method table
+#   6. the new ledger: the methods of every new entry, from the method table
 #      after the apply; every old method of a change is deleted — one whose
 #      signature no new method of the entry has made the change a removal
 #      too, one with a replacement is a dead entry.
@@ -238,26 +241,17 @@ end
 rc_new_items(new_files::Vector{String}, indices) =
     RcItem[item for j in indices for item in rc_file_items(j, new_files[j], new_files[j])]
 
-# The kinds of expression whose change the apply follows into other files: a
-# type, a binding, a `using` and a macro have dependents by name, and a
-# module and an include change what the other expressions are.
-const RC_ITEM_KINDS_LOCAL = (:method, :other)
-
-# Whether the apply needs the items of every file, not only of the files
-# whose text changed: a changed or removed expression of a kind outside
-# `RC_ITEM_KINDS_LOCAL`, or a read file whose content changed, has its
-# dependents in any file. `pair_of_new` maps a new file index to its old one.
-function rc_needs_all_files(old_items, new_items, pair_of_new::Dict{Int, Int}, old_reads)
+# Whether the edit changes something that the apply evaluates: an expression
+# that one ledger has and the other has not, or a read file with another
+# content. Such an apply takes the items of every file, because a dependent of
+# a change and a candidate of the replay can be in any file. An edit of the
+# comments and of the blank lines changes nothing: the apply moves the lines
+# of the methods of the changed files, and reads no other file. `pair_of_new`
+# maps a new file index to its old one.
+function rc_has_change(old_items, new_items, pair_of_new::Dict{Int, Int}, old_reads)
     old_keys = Set{Tuple{Int, UInt64}}((item.file, item.entry.key) for item in old_items)
     new_keys = Set{Tuple{Int, UInt64}}((get(pair_of_new, item.file, 0), item.entry.key) for item in new_items)
-    for item in new_items
-        item.kind in RC_ITEM_KINDS_LOCAL && continue
-        (get(pair_of_new, item.file, 0), item.entry.key) in old_keys || return true
-    end
-    for item in old_items
-        item.kind in RC_ITEM_KINDS_LOCAL && continue
-        (item.file, item.entry.key) in new_keys || return true
-    end
+    old_keys == new_keys || return true
     return any(((path, h),) -> !isfile(path) || rc_content_hash(path) != h, old_reads)
 end
 
@@ -494,10 +488,8 @@ rc_content_hash(path) = string(hash(read(path, String)); base = 16)
 # items of an included file come at the line of its include. A file whose
 # include the ledger does not hold comes after the other files of its
 # package, in the order of the list. When the ledger holds the changed files
-# alone, every change is a method or an expression of another kind (see
-# `rc_needs_all_files`), and the next number is the index of the file in the
-# list: the walk of the tracked files lists a file before the files that it
-# includes, and a method does not depend on the order of the other methods.
+# alone, no expression changed (see `rc_has_change`), the queue stays empty,
+# and the next number is the index of the file in the list.
 struct RcLoadOrder
     keys::Vector{Tuple{Vararg{Int}}}
 end
@@ -770,6 +762,136 @@ function rc_stop(refusals, refusal_out)
     throw(RcRefusal(refusal_out))
 end
 
+# The state of the evaluation of the changes of one apply: the new ledger, the
+# queue and the removals, the refusals that the evaluation finds, how the
+# names of the modules with a changed `using` resolve, the method instances of
+# the old methods of the evaluated changes, and the count of the methods that
+# the filter kept.
+mutable struct RcEvaluation
+    items::Vector{RcItem}
+    roots::Vector{Vector{Symbol}}
+    tracked::Set{String}
+    queue::RcQueue
+    removals::Vector{RcChange}
+    refusals::Vector{String}
+    resolutions::Dict{UInt, Dict{Symbol, Any}}
+    replaced::Vector{Core.MethodInstance}
+    kept::Int
+end
+
+# Delete the methods of the removals.
+function rc_delete_removals!(evaluation::RcEvaluation)
+    for change in evaluation.removals, method in change.old_methods
+        rc_delete_method(method)
+        change.deleted += 1
+    end
+    return nothing
+end
+
+# C3: record how the names of every expression of a module with a changed
+# `using` resolve before the apply. A new module has no such names: the apply
+# makes it, and no expression of it ran before.
+function rc_record_resolutions!(evaluation::RcEvaluation)
+    for change in evaluation.queue.changes
+        change.item.kind === :using || continue
+        module_path = rc_module_path(evaluation.roots, change.item)
+        mod = rc_module_or_nothing(module_path)
+        mod === nothing && continue
+        for item in evaluation.items
+            rc_module_path(evaluation.roots, item) == module_path || continue
+            haskey(evaluation.resolutions, objectid(item)) && continue
+            evaluation.resolutions[objectid(item)] = rc_resolution(mod, ReactiveSourceDiff.all_names(item.entry.expr))
+        end
+    end
+    return nothing
+end
+
+# Evaluate the next change of the queue in its module, and add to the queue
+# the dependents of what the evaluation changed. Answer false when the
+# evaluation found a refusal. The method filter is installed by the caller.
+function rc_evaluate_next!(evaluation::RcEvaluation)
+    queue = evaluation.queue
+    new_roots = evaluation.roots
+    new_items = evaluation.items
+    queue.cursor += 1
+    change = queue.changes[queue.cursor]
+    item = change.item
+    item.kind === :include && return true
+    if change.id == "H2" && item.kind === :module
+        path = vcat(rc_module_path(new_roots, item), item.name)
+        Base.invokelatest(rc_set_module_doc!, Base.invokelatest(rc_resolve_module, path), item.entry.expr)
+        return true
+    end
+    # The bindings are read at the latest world: the evaluation of the changes
+    # moves it, and a module that an earlier change made is newer than the
+    # caller.
+    mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
+    old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
+               Base.invokelatest(getfield, mod, item.name) : nothing
+    Core.eval(mod, item.entry.expr)
+    # A kept method is a method of the new item, at the line the item moved
+    # it to; it is neither replaced nor deleted. Every change that names it as
+    # an old method loses it: two changes of the same name (a redefinition and
+    # a new method) share their old items.
+    for method in rc_take_kept!()
+        method in change.old_methods || continue
+        for other in queue.changes
+            filter!(m -> m !== method, other.old_methods)
+        end
+        for removal in evaluation.removals
+            filter!(m -> m !== method, removal.old_methods)
+        end
+        change.kept += 1
+        evaluation.kept += 1
+        for old in change.old_items
+            method.line in old.entry.lines || continue
+            shift = item.entry.lines.start - old.entry.lines.start
+            shift == 0 || setfield!(method, :line, Int32(method.line + shift))
+            break
+        end
+    end
+    for method in change.old_methods, mi in Base.specializations(method)
+        mi isa Core.MethodInstance && push!(evaluation.replaced, mi)
+    end
+    # The dependents of what the evaluation changed.
+    if item.kind === :type && old_type !== nothing && Base.invokelatest(getfield, mod, item.name) !== old_type
+        found = rc_methods_on_type(old_type, evaluation.tracked)
+        for method in found.outside
+            rc_refuse!(evaluation.refusals, change.id, item,
+                       string("the untracked ", basename(String(method.file)), ":", method.line,
+                              " ", method.name, " names the type (found in the apply)"))
+        end
+        isempty(evaluation.refusals) || return false
+        for dependent in new_items
+            dependent === item && continue
+            by_name = item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr)
+            by_sig = any(m in found.inside for m in dependent.methods)
+            by_name || by_sig || continue
+            rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
+        end
+    elseif item.kind in RC_BINDING_KINDS && item.name !== nothing
+        for dependent in new_items
+            dependent === item && continue
+            item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr) || continue
+            rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
+        end
+    elseif item.kind === :using
+        module_path = rc_module_path(new_roots, item)
+        for dependent in new_items
+            dependent === item && continue
+            rc_module_path(new_roots, dependent) == module_path || continue
+            before = get(evaluation.resolutions, objectid(dependent), nothing)
+            before === nothing && continue
+            after = Base.invokelatest(rc_resolution, mod, keys(before))
+            after == before && continue
+            evaluation.resolutions[objectid(dependent)] = after
+            moved = sort!(Symbol[name for (name, m) in after if before[name] !== m])
+            rc_enqueue!(queue, RcChange("C3", dependent, string("resolves ", join(moved, ", "), " differently")))
+        end
+    end
+    return true
+end
+
 # Compare every tracked file with the stored copy of the previous snapshot,
 # classify the changes, refuse what the catalog refuses, and evaluate the
 # changes and their dependents in their modules. `old_reads` holds the
@@ -777,22 +899,26 @@ end
 # could read; the new listing is written to `reads_out`. A refusal is written
 # to `refusal_out` and the child exits before any evaluation. With `allowed`,
 # the ids of the change catalog that this apply takes, every other change is
-# refused too. Answer the set of method instances that exist before the trace,
-# and whether the world moved.
+# refused too. The evaluations of the replay print to the file
+# `<refusal_out>.replay.log`. With `keep_ledger`, the ledger and the parses stay for the next
+# apply of the process, as a server needs them; a process that writes its
+# image next keeps none of them, because they would be in the image. Answer
+# the set of method instances that exist before the trace, and whether the
+# world moved.
 function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Symbol}},
                           old_copies::Vector{String},
                           new_files::Vector{String}, new_roots::Vector{Vector{Symbol}},
                           old_reads::Vector{Tuple{String, String}},
                           reads_out::String, refusal_out::String;
-                          allowed::Union{Nothing, Set{String}} = nothing)
+                          allowed::Union{Nothing, Set{String}} = nothing, keep_ledger::Bool = false)
     rc_warm()
     t0 = time()
     # The ledgers of the files whose text changed: a pair by path whose texts
     # differ, and every renamed, removed and added file. The old items come
     # from the ledger of the previous apply of this process when it has them
     # (a server), else from the stored copies with a walk of the method
-    # table. A change that has dependents in other files takes the ledgers
-    # of every file.
+    # table. An edit that changes an expression takes the ledgers of every
+    # file.
     match = rc_match_files(old_files, old_copies, new_files)
     changed_pairs = Tuple{Int, Int}[(i, j) for (i, j) in match.pairs
                                     if read(old_copies[i], String) != read(new_files[j], String)]
@@ -801,7 +927,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     pair_of_new = Dict{Int, Int}(j => i for (i, j) in vcat(match.pairs, match.renamed))
     old_items, old_ledger = rc_old_items(old_files, old_copies, old_indices)
     new_items = rc_new_items(new_files, new_indices)
-    all_files = rc_needs_all_files(old_items, new_items, pair_of_new, old_reads)
+    all_files = rc_has_change(old_items, new_items, pair_of_new, old_reads)
     if all_files
         old_items, old_ledger = rc_old_items(old_files, old_copies, eachindex(old_files))
         new_items = rc_new_items(new_files, eachindex(new_files))
@@ -924,118 +1050,42 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
+    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals,
+                              Dict{UInt, Dict{Symbol, Any}}(), Core.MethodInstance[], 0)
+    # The replay: the expressions whose text stays and whose result changes.
+    if !isempty(queue.changes) || !isempty(removals)
+        known = Set{UInt}(objectid(change) for change in queue.changes)
+        rc_replay!(evaluation, string(refusal_out, ".replay.log"))
+        if allowed !== nothing
+            for change in queue.changes
+                objectid(change) in known || change.id in allowed ||
+                    push!(refusals, string(change.id, " ", change.where, ": not taken by this apply"))
+            end
+            isempty(refusals) || rc_stop(refusals, refusal_out)
+        end
+    end
     # The apply. The removals first, then the queue in the load order, with the
     # dependents that each evaluation reveals.
+    rc_delete_removals!(evaluation)
     deleted = 0
     for change in removals
-        for method in change.old_methods
-            rc_delete_method(method)
-            change.deleted += 1
-        end
         deleted += change.deleted
         println("rc: change ", change.id, " ", change.where, " (", change.note, "), ",
                 change.deleted, " methods deleted")
     end
-    # C3: how the names of every expression of a module with a changed
-    # `using` resolve before the apply. A new module has no such names: the
-    # apply makes it, and no expression of it ran before.
-    resolutions = Dict{UInt, Dict{Symbol, Any}}()
-    for change in queue.changes
-        change.item.kind === :using || continue
-        module_path = rc_module_path(new_roots, change.item)
-        mod = rc_module_or_nothing(module_path)
-        mod === nothing && continue
-        for item in new_items
-            rc_module_path(new_roots, item) == module_path || continue
-            haskey(resolutions, objectid(item)) && continue
-            resolutions[objectid(item)] = rc_resolution(mod, ReactiveSourceDiff.all_names(item.entry.expr))
-        end
-    end
-    replaced = Core.MethodInstance[]
-    kept = 0
+    rc_record_resolutions!(evaluation)
     world_before = Base.get_world_counter()
     empty!(RC_KEPT)
     rc_install_filter(rc_method_filter)
-    t_eval = @elapsed try while queue.cursor < length(queue.changes)
-        queue.cursor += 1
-        change = queue.changes[queue.cursor]
-        item = change.item
-        item.kind === :include && continue
-        if change.id == "H2" && item.kind === :module
-            path = vcat(rc_module_path(new_roots, item), item.name)
-            Base.invokelatest(rc_set_module_doc!, Base.invokelatest(rc_resolve_module, path),
-                              item.entry.expr)
-            continue
+    t_eval = @elapsed try
+        while queue.cursor < length(queue.changes)
+            rc_evaluate_next!(evaluation) || rc_stop(refusals, refusal_out)
         end
-        # The bindings are read at the latest world: this loop moves it, and a
-        # module that an earlier change of the loop made is newer than the loop.
-        mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
-        old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
-                   Base.invokelatest(getfield, mod, item.name) : nothing
-        Core.eval(mod, item.entry.expr)
-        # A kept method is a method of the new item, at the line the item
-        # moved it to; it is neither replaced nor deleted. Every change that
-        # names it as an old method loses it: two changes of the same name
-        # (a redefinition and a new method) share their old items.
-        for method in rc_take_kept!()
-            method in change.old_methods || continue
-            for other in queue.changes
-                filter!(m -> m !== method, other.old_methods)
-            end
-            for removal in removals
-                filter!(m -> m !== method, removal.old_methods)
-            end
-            change.kept += 1
-            kept += 1
-            for old in change.old_items
-                method.line in old.entry.lines || continue
-                shift = item.entry.lines.start - old.entry.lines.start
-                shift == 0 || setfield!(method, :line, Int32(method.line + shift))
-                break
-            end
-        end
-        for method in change.old_methods, mi in Base.specializations(method)
-            mi isa Core.MethodInstance && push!(replaced, mi)
-        end
-        # The dependents of what the evaluation changed.
-        if item.kind === :type && old_type !== nothing && Base.invokelatest(getfield, mod, item.name) !== old_type
-            found = rc_methods_on_type(old_type, tracked)
-            for method in found.outside
-                rc_refuse!(refusals, change.id, item,
-                           string("the untracked ", basename(String(method.file)), ":", method.line,
-                                  " ", method.name, " names the type (found in the apply)"))
-            end
-            isempty(refusals) || rc_stop(refusals, refusal_out)
-            for dependent in new_items
-                dependent === item && continue
-                by_name = item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr)
-                by_sig = any(m in found.inside for m in dependent.methods)
-                by_name || by_sig || continue
-                rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
-            end
-        elseif item.kind in RC_BINDING_KINDS && item.name !== nothing
-            for dependent in new_items
-                dependent === item && continue
-                item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr) || continue
-                rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
-            end
-        elseif item.kind === :using
-            module_path = rc_module_path(new_roots, item)
-            for dependent in new_items
-                dependent === item && continue
-                rc_module_path(new_roots, dependent) == module_path || continue
-                before = get(resolutions, objectid(dependent), nothing)
-                before === nothing && continue
-                after = Base.invokelatest(rc_resolution, mod, keys(before))
-                after == before && continue
-                resolutions[objectid(dependent)] = after
-                moved = sort!(Symbol[name for (name, m) in after if before[name] !== m])
-                rc_enqueue!(queue, RcChange("C3", dependent, string("resolves ", join(moved, ", "), " differently")))
-            end
-        end
-    end finally
+    finally
         rc_install_filter(nothing)
     end
+    replaced = evaluation.replaced
+    kept = evaluation.kept
     world_after = Base.get_world_counter()
     # The new ledger, and the deletion of every old method of a change: the
     # ones without a replacement of the same signature made the change a
@@ -1063,7 +1113,11 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         rc_assign_methods!(kept_items, byfile, skip)
         ledger[j] = kept_items
     end
-    RC_LEDGER_CACHE[] = (copy(new_files), ledger)
+    if keep_ledger
+        RC_LEDGER_CACHE[] = (copy(new_files), ledger)
+    else
+        empty!(RC_PARSED)
+    end
     # A replacement can sit in another item of the module than the change
     # that holds the old method (two changes of the same name share their
     # old items), so the signatures of every new item count. An old method
@@ -1292,10 +1346,10 @@ function rc_warm()
     kinds == [:method, :module, :type, :method, :const, :macro, :method, :using, :include] ||
         error("rc_warm: the kinds are ", kinds)
     length(rc_new_items([new_path], [1])) == 9 || error("rc_warm: the new items of one file are not 9")
-    rc_needs_all_files(old_items, new_items, Dict(1 => 1), Tuple{String, String}[]) ||
-        error("rc_warm: a changed type and macro do not need every file")
-    rc_needs_all_files(old_items[1:1], old_items[1:1], Dict(1 => 1), Tuple{String, String}[]) &&
-        error("rc_warm: an unchanged method needs every file")
+    rc_has_change(old_items, new_items, Dict(1 => 1), Tuple{String, String}[]) ||
+        error("rc_warm: the ledgers of an edit show no change")
+    rc_has_change(old_items[1:1], old_items[1:1], Dict(1 => 1), Tuple{String, String}[]) &&
+        error("rc_warm: two equal ledgers show a change")
     old_by_key = Dict{UInt64, RcItem}(item.entry.key => item for item in old_items)
     changed = RcItem[item for item in new_items if !haskey(old_by_key, item.entry.key)]
     length(changed) == 6 || error("rc_warm: ", length(changed), " changed items")
@@ -1320,6 +1374,12 @@ function rc_warm()
         error("rc_warm: the refusals are ", refusals)
     ids = [change.id for change in queue.changes]
     ids == ["A2", "B2", "C1", "D1", "C3"] || error("rc_warm: the ids are ", ids)
+    # The candidates of the replay: the constant that a call of a tracked type
+    # gives its value, and the method that expands a tracked macro.
+    candidates = rc_candidates(new_items, queue.order)
+    [(candidate.item.name, candidate.expands, candidate.initializer !== nothing) for candidate in candidates] ==
+        [(:C, false, true), (:h, true, false)] ||
+        error("rc_warm: the candidates are ", [candidate.item.name for candidate in candidates])
     # The load order: a loaded package before one that is not loaded, and a
     # `using` after the module that the include above it loads.
     root_path = joinpath(dir, "W.jl")

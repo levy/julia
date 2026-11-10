@@ -713,8 +713,103 @@ commits. The numbers of the steps stay as they are.
     (`register_palette!(RADIX_PALETTE)`, four exports through `Core.eval`).
   - No tracked file has a `@generated` function.
 
-  *The replay* is the rule of D1. The cost that the probes give for the IDE
-  is about 3 s for one pass over the macro users and the initializers.
+  *The gate with the replay.* `tool/gate_runs.sh` passes through a child
+  with whole images: the rebuilt program prints the values of the whole
+  build, and the chain equals the whole build in the four checks (22
+  methods, the roots, 12 lines of output, 9 globals). The program has five
+  more expressions than the first form of the gate:
+
+  | expression | before the edit | after it |
+  | --- | --- | --- |
+  | a loop that defines a method for each row of `loop_table()` | 1 method | 2 methods, other values |
+  | a loop that exports each name of `exported_names()` | `TABLE` | `SCALED TABLE` |
+  | `const HANDLERS = [x -> handle(x), x -> handle(x) + 1]` | stays; its functions call the new `handle` | |
+  | `const STAMP = next_number(COUNTER)`, which counts its evaluations | 1 of 1 | stays 1 of 1 |
+  | `const THEMES = Dict{Symbol, Theme}()` and the statement that fills it | 1 value with 1 field | 1 value with 2 fields |
+
+  The rebuild says `11 candidates, 11 compared, 8 differ` and takes 0.17 s
+  for the replay. `STAMP` shows that the fork keeps the evaluations of the
+  replay out of the image: the counter of the rebuilt program is 1.
+
+  *The replay, as built* (`stdlib/ReactiveCompiler/src/replay.jl`).
+
+  - **The candidates** come from the syntax of the ledger: an item that
+    calls a tracked macro; a `const` or a `global` whose initializer holds a
+    call and names a tracked name; a `@generated` method; a statement with
+    `@eval` or `eval`. The IDE has 2 620 of them in 27 283 items: 2 196 macro
+    users, 396 initializers, 64 statements and no generated method.
+  - **The print** of a result is one number. For an expansion it is the
+    print of the expanded code, with the lines of the item counted from its
+    first line. For an initializer it is the print of its value. For a
+    statement it is the print of the methods that it defines and of the
+    names that its module binds and exports. A print reads fields, elements
+    and the pairs of a `Dict`; it calls no method of the program. A type
+    counts by the identity of its name; a type that the evaluation itself
+    made, as a top-level `->` does, counts by the code of its methods; a
+    generated name counts with no digits; a line number, a pointer, a task
+    and a lock count as nothing more than their kind.
+  - **The trial** first runs each statement once, and then takes the print
+    of each candidate. A statement can do more in the whole program than it
+    did when its package was loaded: a loop that exports the names of a
+    module finds the names of the files after it. The trial then goes through the
+    changes of the edit and the candidates together, in the load order. At
+    the turn of a candidate it takes the print again. When the two differ, it
+    takes a third one: a result that differs at each evaluation is no result
+    of the edit, and the item stays, with a line in the log. Else the
+    candidate is evaluated at once, as a change. A candidate before the
+    first change in the load order has no print, because nothing can change
+    its result.
+  - **The fork.** The trial runs in a fork of the process
+    (`jl_reactive_fork`, as the save does) and writes the items that differ
+    to a pipe. The process then applies the edit with those items among its
+    changes, and evaluates nothing else. What the fork prints goes to
+    `<refusal file>.replay.log`. A fork that ends with no answer gives a
+    warning, and the apply goes on with the changes of the edit alone.
+  - **Each edit takes the ledger of every file** (`rc_has_change`), because a
+    candidate can be in any file. An edit of comments and blank lines only
+    still reads the changed files alone.
+  - The rule that evaluates each user of a changed `macro` item stays as it
+    was. The replay finds the other users.
+
+  *Decided in the build, by the assistant.* The proposal said that the
+  results of before the edit come from the last build of the same server.
+  The replay runs in a fork in place of that, for three reasons that showed
+  in the code. An initializer that is evaluated in the process leaves its
+  effects in the image: a counter, an entry of a table. Each evaluation of a
+  top-level `->` or of a comprehension makes a new type with a method, and
+  code that Base compiles for it. And a print of before is good only for the
+  state that it was taken in. The cost is that each fork takes both prints.
+
+  *The cost on the IDE*, from two probes on its image that write no image
+  (`replay/ide_probe.jl` and `ide_trial_probe.jl` of the session): the
+  ledger of all files takes 1.0 s, the methods of its items 0.15 s, the
+  candidates 0.27 s. One pass of the prints takes 3.5 s (2.9 s for the
+  expansions), and 9 s the first time in a process, because the functions
+  that the macros and the initializers call have no compiled code in the
+  image. A whole trial in a fork takes 13.5 s for an edit at the start of
+  the load order: 8.8 s for the prints of before and 4.6 s for the rest. An
+  edit late in the load order compares few candidates. This is more than the
+  3 s of the proposal, because each fork compiles those functions again and
+  takes both prints. Two ways to lower it belong to Step 8: a fork that
+  takes the prints of before in the background after each build, and
+  compiled code in the server for what the fork compiled.
+
+  With a change that changes nothing, 0 of the 2 558 prints of the IDE
+  differ, so the replay evaluates no item with no need there.
+
+  *Finding 20, measured again* (`replay/ide_ledger_probe.jl` of the session,
+  on the image of the IDE). The ledger of all 1 032 files takes 2.0 s in a
+  new process: 1.1 s for the parse and the methods of the old items, 0.2 s
+  for the files that the items read, 0.2 s for the diff, 0.15 s for the
+  users of the macros, 0.2 s for the candidates. A later apply of the same
+  server parses the changed files only. The 9.6 s of the log are not in
+  these parts; the log line of the next rebuild of the IDE will show what
+  is left. The read list of the IDE holds two files now, a source file and
+  `/usr/bin/time`.
+
+  *The read rule* skips a file under `/proc`, `/sys` or `/dev`
+  (`ReactiveSourceDiff.read_paths`). A file that an item reads through a
+  computed path is still not in the list (finding 9, the second half).
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
   37).** First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the

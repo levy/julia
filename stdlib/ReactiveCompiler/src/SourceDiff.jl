@@ -29,7 +29,7 @@ by the file and the lines of the entry.
 module ReactiveSourceDiff
 
 export Entry, file_entries, changed_expressions, is_module, entry_kind, defined_name, macro_heads, type_level_names, all_names,
-       read_paths, type_shape
+       read_paths, type_shape, initializer, runs_code
 
 "Strip every `LineNumberNode` from `x`, recursively, for the key only."
 strip_lines(x) = x
@@ -416,6 +416,9 @@ function type_shape(e)
     return Expr(:struct, d.args[1], strip_lines(d.args[2]), body)
 end
 
+# The folders of the files that the system makes.
+const SYSTEM_ROOTS = ("/proc/", "/sys/", "/dev/")
+
 """
     read_paths(e, dir) -> Vector{String}
 
@@ -424,7 +427,8 @@ literal in it that names a file relative to `dir`, the directory of the
 source file, as `joinpath(@__DIR__, "data.txt")` and `include_dependency`
 name them. An `include` names a tracked file, not a read. A literal that can
 not be a path, such as `"\\0"` or a name longer than the system takes, names
-no file.
+no file. A file under `/proc`, `/sys` or `/dev` is no read: the system makes
+its content, which is no input of a build.
 """
 function read_paths(e, dir::AbstractString)
     paths = String[]
@@ -433,8 +437,9 @@ function read_paths(e, dir::AbstractString)
     string_literals!(literals, e)
     for s in literals
         (occursin('\n', s) || occursin('\0', s)) && continue
-        path = isabspath(s) ? s : joinpath(dir, s)
-        names_file(path) && push!(paths, normpath(path))
+        path = normpath(isabspath(s) ? s : joinpath(dir, s))
+        any(root -> startswith(path, root), SYSTEM_ROOTS) && continue
+        names_file(path) && push!(paths, path)
     end
     return unique!(paths)
 end
@@ -456,6 +461,45 @@ function string_literals!(literals, e)
         end
     end
     return nothing
+end
+
+# ── the code that an initializer runs ───────────────────────────────────────
+
+"""
+    initializer(e)
+
+The expression that gives a `const` or a `global` its value, or `nothing` for
+a declaration with no value and for an expression of another kind. A
+definition wrapped in a docstring or another macro is unwrapped.
+"""
+function initializer(e)
+    d = definition(e)
+    d isa Expr || return nothing
+    d.head in (:const, :global) && length(d.args) == 1 && (d = d.args[1])
+    d isa Expr && d.head === :(=) && length(d.args) == 2 || return nothing
+    lhs = d.args[1]
+    lhs isa Symbol || lhs isa Expr && lhs.head in (:tuple, :(::)) || return nothing
+    return d.args[2]
+end
+
+# The heads of the forms whose evaluation calls a function.
+const CALL_HEADS = (:call, :macrocall, :do, :comprehension, :typed_comprehension, :generator, :ref, :string)
+
+"""
+    runs_code(e) -> Bool
+
+Whether the evaluation of the expression can call a function: it holds a call,
+a macro call, a comprehension, an index or a string with a value in it. A
+literal, a name, and a tuple or a vector of those run no function. A quoted
+expression is data.
+"""
+function runs_code(e)
+    e isa Expr || return false
+    e.head in (:quote, :inert) && return false
+    e.head in CALL_HEADS && return true
+    # `f.(x)` is a call; `A.b` reads a name.
+    e.head === :. && length(e.args) == 2 && e.args[2] isa Expr && return true
+    return any(runs_code, e.args)
 end
 
 # ── the diff of two texts ───────────────────────────────────────────────────
