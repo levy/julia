@@ -1,5 +1,6 @@
 # The lines that the binary prints: one for each expression of RunLib that
-# runs a function of helpers.jl.
+# runs a function of helpers.jl, for the lists that the statements fill, and
+# for the function that names its own line.
 function shape_lines()
     return ["table = $(RunLib.TABLE[:answer])",
             "scaled = $(RunLib.SCALED)",
@@ -14,7 +15,8 @@ function shape_lines()
             "themes = $(length(RunLib.THEMES)) with $(fieldcount(valtype(RunLib.THEMES))) fields",
             "registry = $(join(RunLib.REGISTRY, ' '))",
             "seen = $(length(RunLib.SEEN))",
-            "notes = $(join(RunLib.NOTES, ' '))"]
+            "notes = $(join(RunLib.NOTES, ' '))",
+            "line = $(RunLib.noted_line())"]
 end
 
 Base.@ccallable function julia_main()::Cint

@@ -3,9 +3,11 @@
 # users.jl holds the expressions that run them: the text of users.jl stays as
 # it is, and a whole build of the edit gives each of its expressions another
 # result. statements.jl holds statements that fill a list and a table; the gate
-# changes one and removes one.
+# changes one and removes one. lines.jl holds a function that names its own
+# line; the gate moves it.
 module RunLib
 include("helpers.jl")
 include("users.jl")
 include("statements.jl")
+include("lines.jl")
 end

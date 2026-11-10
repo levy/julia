@@ -13,14 +13,18 @@
 # initializer makes functions of its own, and one whose initializer counts its
 # evaluations. statements.jl holds statements that fill a list and a table: the
 # edit changes one and removes one, and the rebuild takes back what they did
-# (decision D3). The chain is compared with the founding of the edited sources.
+# (decision D3). lines.jl holds a function that names its own line: the edit
+# moves it and leaves its text, and the rebuilt function must name the new
+# line (finding 43). The chain is compared with the founding of the edited
+# sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
 #   found-chain  - materialize_app founds $OUT/chain/runapp
 #   run-s1       - the founded binary prints the values of before the edit
-#   edit         - helpers-after.jl replaces helpers.jl, and
-#                  statements-after.jl replaces statements.jl
+#   edit         - helpers-after.jl replaces helpers.jl,
+#                  statements-after.jl replaces statements.jl, and
+#                  lines-after.jl replaces lines.jl
 #   mat-s2       - the rebuild of the edit
 #   run-s2       - the rebuilt binary prints the values of after the edit
 #   refuse       - statements-refused.jl changes a statement that names no
@@ -46,8 +50,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5"
 mkdir -p "$OUT/depot"
 
 # One run on the build lane. $1 = log name, $2.. = the command.
@@ -119,7 +123,8 @@ copy() { rm -rf "$SRC" && cp -a "$TOOL/r1_runs" "$SRC" && echo "=== copied the p
 edit() {
     cp "$TOOL/r1_runs/helpers-after.jl" "$SRC/RunLib/src/helpers.jl" &&
     cp "$TOOL/r1_runs/statements-after.jl" "$SRC/RunLib/src/statements.jl" &&
-    echo "=== edited helpers.jl and statements.jl of RunLib"
+    cp "$TOOL/r1_runs/lines-after.jl" "$SRC/RunLib/src/lines.jl" &&
+    echo "=== edited helpers.jl, statements.jl and lines.jl of RunLib"
 }
 
 # A changed statement that names no global: the rebuild refuses it (S1), and
