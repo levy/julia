@@ -15,8 +15,8 @@
 # edit changes one and removes one, and the rebuild takes back what they did
 # (decision D3). lines.jl holds a function that names its own line: the edit
 # moves it and leaves its text, and the rebuilt function must name the new
-# line (finding 43). The chain is compared with the founding of the edited
-# sources.
+# line (finding 43). A second edit moves the function again and changes nothing
+# else. The chain is compared with the founding of the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -30,9 +30,12 @@
 #   refuse       - statements-refused.jl changes a statement that names no
 #                  global: the rebuild refuses it (S1), and the binary prints
 #                  the same values
+#   move         - lines-moved.jl replaces lines.jl: the edit moves one
+#                  function and changes no expression; the rebuilt binary
+#                  names the new line
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/runapp at those sources
-#   run-final    - the founded binary: as run-s2
+#   run-final    - the founded binary: as the binary of the step move
 #   compare      - the four checks of the invariant: the method tables, the
 #                  roots, the output, the globals
 # Pass step names to run some steps, or nothing to run all of them in order.
@@ -127,6 +130,13 @@ edit() {
     echo "=== edited helpers.jl, statements.jl and lines.jl of RunLib"
 }
 
+# An edit that moves one function and changes no expression: the function
+# names its line, so the rebuild evaluates it again.
+move() {
+    cp "$TOOL/r1_runs/lines-moved.jl" "$SRC/RunLib/src/lines.jl" && mat mat-moved "$CHAIN" || return 1
+    runbin moved "$CHAIN" "${AFTER/line=5/line=6}"
+}
+
 # A changed statement that names no global: the rebuild refuses it (S1), and
 # the program stays as it was.
 refuse() {
@@ -177,12 +187,12 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    check 3 "output" "^shape: " "$OUT/run-s2.log" "$OUT/run-final.log" || failed=1
+    check 3 "output" "^shape: " "$OUT/run-moved.log" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -192,9 +202,10 @@ for step in $steps; do
         mat-s2) mat mat-s2 "$CHAIN" ;;
         run-s2) runbin s2 "$CHAIN" "$AFTER" ;;
         refuse) refuse ;;
+        move) move ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
-        run-final) runbin final "$FINAL" "$AFTER" ;;
+        run-final) runbin final "$FINAL" "${AFTER/line=5/line=6}" ;;
         compare) compare ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }
