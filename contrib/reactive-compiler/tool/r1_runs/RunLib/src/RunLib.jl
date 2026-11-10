@@ -4,9 +4,11 @@
 # it is, and a whole build of the edit gives each of its expressions another
 # result. statements.jl holds statements that fill a list and a table; the gate
 # changes one and removes one. lines.jl holds a function that names its own
-# line; the gate moves it.
+# line; the gate moves it. markers.jl holds a type whose values the program
+# keeps in the storage of its task; the gate changes the type in a second edit.
 module RunLib
 include("helpers.jl")
+include("markers.jl")
 include("users.jl")
 include("statements.jl")
 include("lines.jl")

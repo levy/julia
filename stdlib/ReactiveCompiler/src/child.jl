@@ -140,6 +140,26 @@ rc_module_path(roots, item::RcItem) = vcat(roots[item.file], item.entry.module_p
 rc_where(item::RcItem) = string(basename(item.path), ":", item.entry.lines.start)
 rc_what(item::RcItem) = item.name === nothing ? string(item.kind) : string(item.name)
 
+# ── the storage of the task ─────────────────────────────────────────────────
+
+# Call `f` with an empty storage of the task, and give the task its storage
+# back after it. A program can keep values in the storage of the task that runs
+# it (`task_local_storage`), as a stack of what it computes now. A start of the
+# program finds that storage empty. A server evaluates many edits in one task,
+# so each part of an apply that evaluates the program at one state of its code
+# gets an empty storage: a value of a type of before an edit never meets the
+# code of after it there.
+function rc_with_empty_task_storage(f)
+    task = current_task()
+    storage = task.storage
+    task.storage = nothing
+    try
+        return f()
+    finally
+        task.storage = storage
+    end
+end
+
 # ── the method filter ───────────────────────────────────────────────────────
 
 # The methods that the filter kept in place of an identical redefinition
@@ -151,7 +171,8 @@ const RC_KEPT = Method[]
 # whose lowered code is the same. The definition would move the world and
 # invalidate every caller of the method for nothing: an `@eval` loop with
 # one changed method, or a dependent whose expansion did not change. The
-# line table is not compared: the kept method keeps its own.
+# line table is not compared: the kept method keeps its own. The kept method
+# stands for the definition of now, so it takes the file and the line of `m`.
 function rc_method_filter(m::Method)
     isdefined(m, :generator) && return false
     isdefined(m, :source) || return false
@@ -171,6 +192,8 @@ function rc_method_filter(m::Method)
     isequal(a.code, b.code) && a.slotflags == b.slotflags && a.ssaflags == b.ssaflags &&
         isequal(a.ssavaluetypes, b.ssavaluetypes) && a.propagate_inbounds == b.propagate_inbounds &&
         a.has_fcall == b.has_fcall && a.inlining == b.inlining || return false
+    setfield!(old, :file, m.file)
+    setfield!(old, :line, m.line)
     push!(RC_KEPT, old)
     return true
 end
@@ -934,26 +957,28 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
                Base.invokelatest(getfield, mod, item.name) : nothing
     Core.eval(mod, item.entry.expr)
-    # A kept method is a method of the new item, at the line the item moved
-    # it to; it is neither replaced nor deleted. Every change that names it as
-    # an old method loses it: two changes of the same name (a redefinition and
-    # a new method) share their old items.
+    # A kept method is a method of the sources of now: this evaluation defined
+    # it again with the same code, and the filter gave it the place of that
+    # definition. It is neither replaced nor deleted. Each change and each
+    # removal that names it as an old method loses it: two changes of the same
+    # name share their old items, and the lines of a method that the expansion
+    # of a macro defines are those of the function that builds the expansion,
+    # so the change of that function names the method too.
     for method in rc_take_kept!()
-        method in change.old_methods || continue
+        named = false
         for other in queue.changes
+            method in other.old_methods || continue
             filter!(m -> m !== method, other.old_methods)
+            named = true
         end
         for removal in evaluation.removals
+            method in removal.old_methods || continue
             filter!(m -> m !== method, removal.old_methods)
+            named = true
         end
+        named || continue
         change.kept += 1
         evaluation.kept += 1
-        for old in change.old_items
-            method.line in old.entry.lines || continue
-            shift = item.entry.lines.start - old.entry.lines.start
-            shift == 0 || setfield!(method, :line, Int32(method.line + shift))
-            break
-        end
     end
     for method in change.old_methods, mi in Base.specializations(method)
         mi isa Core.MethodInstance && push!(evaluation.replaced, mi)
@@ -1171,9 +1196,11 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     isempty(refusals) || rc_stop(refusals, refusal_out)
     evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group, moved)
     # The replay: the expressions whose text stays and whose result changes.
+    replay_log = string(refusal_out, ".replay.log")
+    stopped = nothing
     if !isempty(queue.changes) || !isempty(removals) || !isempty(moved)
         known = Set{UInt}(objectid(change) for change in queue.changes)
-        rc_replay!(evaluation, string(refusal_out, ".replay.log"))
+        stopped = rc_replay!(evaluation, replay_log)
         if allowed !== nothing
             for change in queue.changes
                 objectid(change) in known || change.id in allowed ||
@@ -1196,12 +1223,20 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     empty!(RC_KEPT)
     rc_install_filter(rc_method_filter)
     t_eval = @elapsed try
-        while queue.cursor < length(queue.changes)
-            rc_evaluate_next!(evaluation) || rc_stop(refusals, refusal_out)
+        rc_with_empty_task_storage() do
+            while queue.cursor < length(queue.changes)
+                rc_evaluate_next!(evaluation) || rc_stop(refusals, refusal_out)
+            end
         end
     finally
         rc_install_filter(nothing)
     end
+    # The trial of the replay stopped at an error that this apply did not meet:
+    # the trial compared no expression after that place, so the image could
+    # keep a result of before the edit.
+    stopped === nothing ||
+        error("rc: the replay stopped (", stopped, ") and the apply did not, see ", replay_log,
+              ": no result of an unchanged expression after that place is compared")
     replaced = evaluation.replaced
     kept = evaluation.kept
     world_after = Base.get_world_counter()
@@ -1522,6 +1557,12 @@ function rc_warm()
     [rc_is_moved_macro_user(item, item.entry.lines.start + 1, moved_path) for item in moved_items] == [false, true] &&
         !rc_is_moved_macro_user(moved_items[2], moved_items[2].entry.lines.start, moved_path) ||
         error("rc_warm: the moved macro users are wrong")
+    # The storage of the task is empty inside the call, and back after it.
+    task_local_storage(:rc_warm, 1)
+    rc_with_empty_task_storage(() -> haskey(task_local_storage(), :rc_warm)) &&
+        error("rc_warm: the storage of the task is not empty inside the call")
+    haskey(task_local_storage(), :rc_warm) || error("rc_warm: the storage of the task did not come back")
+    delete!(task_local_storage(), :rc_warm)
     # The load order: a loaded package before one that is not loaded, and a
     # `using` after the module that the include above it loads.
     root_path = joinpath(dir, "W.jl")

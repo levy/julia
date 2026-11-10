@@ -38,3 +38,12 @@ next_number(counter) = (counter[] += 1)
 # does not name. No edit changes it.
 const NOTES = Symbol[]
 remember(note) = push!(NOTES, note)
+
+# A macro makes its expansion with this function: two methods, which carry the
+# lines of this quote. The edit changes the first method only.
+function accessor_code(name)
+    return quote
+        $(esc(Symbol(name, :_first)))() = 2
+        $(esc(Symbol(name, :_second)))() = 10
+    end
+end

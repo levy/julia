@@ -16,15 +16,22 @@
 # (decision D3). lines.jl holds a function that names its own line: the edit
 # moves it and leaves its text, and the rebuilt function must name the new
 # line (finding 43). A second edit moves the function again and changes nothing
-# else. The chain is compared with the founding of the edited sources.
+# else. A macro of users.jl defines two methods that carry the lines of a
+# function of helpers.jl, which builds the expansion: the edit changes that
+# function and one of the methods, and the other method must stay (finding 44).
+# markers.jl holds a type whose values the program keeps in the storage of its
+# task: a later edit changes the type, and the rebuild must not find a value of
+# the type of before in that storage (finding 46). The chain is compared with
+# the founding of the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
 #   found-chain  - materialize_app founds $OUT/chain/runapp
 #   run-s1       - the founded binary prints the values of before the edit
 #   edit         - helpers-after.jl replaces helpers.jl,
-#                  statements-after.jl replaces statements.jl, and
-#                  lines-after.jl replaces lines.jl
+#                  statements-after.jl replaces statements.jl,
+#                  lines-after.jl replaces lines.jl, and markers-after.jl
+#                  replaces markers.jl
 #   mat-s2       - the rebuild of the edit
 #   run-s2       - the rebuilt binary prints the values of after the edit
 #   refuse       - statements-refused.jl changes a statement that names no
@@ -33,9 +40,11 @@
 #   move         - lines-moved.jl replaces lines.jl: the edit moves one
 #                  function and changes no expression; the rebuilt binary
 #                  names the new line
+#   retype       - markers-retyped.jl replaces markers.jl: the type of the
+#                  values in the storage of the task gets a field
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/runapp at those sources
-#   run-final    - the founded binary: as the binary of the step move
+#   run-final    - the founded binary: as the binary of the step retype
 #   compare      - the four checks of the invariant: the method tables, the
 #                  roots, the output, the globals
 # Pass step names to run some steps, or nothing to run all of them in order.
@@ -53,8 +62,11 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields"
+# The values after the step move, and after the step retype.
+MOVED=${AFTER/line=5/line=6}
+RETYPED=${MOVED/marked=2_of_1_fields/marked=2_of_2_fields}
 mkdir -p "$OUT/depot"
 
 # One run on the build lane. $1 = log name, $2.. = the command.
@@ -127,14 +139,23 @@ edit() {
     cp "$TOOL/r1_runs/helpers-after.jl" "$SRC/RunLib/src/helpers.jl" &&
     cp "$TOOL/r1_runs/statements-after.jl" "$SRC/RunLib/src/statements.jl" &&
     cp "$TOOL/r1_runs/lines-after.jl" "$SRC/RunLib/src/lines.jl" &&
-    echo "=== edited helpers.jl, statements.jl and lines.jl of RunLib"
+    cp "$TOOL/r1_runs/markers-after.jl" "$SRC/RunLib/src/markers.jl" &&
+    echo "=== edited helpers.jl, statements.jl, lines.jl and markers.jl of RunLib"
 }
 
 # An edit that moves one function and changes no expression: the function
 # names its line, so the rebuild evaluates it again.
 move() {
     cp "$TOOL/r1_runs/lines-moved.jl" "$SRC/RunLib/src/lines.jl" && mat mat-moved "$CHAIN" || return 1
-    runbin moved "$CHAIN" "${AFTER/line=5/line=6}"
+    runbin moved "$CHAIN" "$MOVED"
+}
+
+# An edit that changes a type whose values the program keeps in the storage of
+# its task. An earlier rebuild of the same server evaluated the initializer
+# that puts a value there.
+retype() {
+    cp "$TOOL/r1_runs/markers-retyped.jl" "$SRC/RunLib/src/markers.jl" && mat mat-retyped "$CHAIN" || return 1
+    runbin retyped "$CHAIN" "$RETYPED"
 }
 
 # A changed statement that names no global: the rebuild refuses it (S1), and
@@ -187,12 +208,12 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    check 3 "output" "^shape: " "$OUT/run-moved.log" "$OUT/run-final.log" || failed=1
+    check 3 "output" "^shape: " "$OUT/run-retyped.log" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -203,9 +224,10 @@ for step in $steps; do
         run-s2) runbin s2 "$CHAIN" "$AFTER" ;;
         refuse) refuse ;;
         move) move ;;
+        retype) retype ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
-        run-final) runbin final "$FINAL" "${AFTER/line=5/line=6}" ;;
+        run-final) runbin final "$FINAL" "$RETYPED" ;;
         compare) compare ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }

@@ -46,3 +46,13 @@ const STAMP = next_number(COUNTER)
 # table is made again, and the statement runs again.
 const THEMES = Dict{Symbol, Theme}()
 THEMES[:default] = make_theme()
+
+# The expansion defines two methods with the lines of the function that builds
+# it. The edit changes one of them, and the other one must stay.
+macro accessors(name)
+    return accessor_code(name)
+end
+@accessors pair
+
+# The initializer puts a value into the storage of the task that evaluates it.
+const MARKED = mark!(1)

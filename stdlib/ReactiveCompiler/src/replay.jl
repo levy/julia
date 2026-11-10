@@ -529,8 +529,13 @@ end
 # compare, and a line `stopped <text>` the error or the refusal that ends the
 # trial early; the apply of the process meets the same one. A line
 # `refuse <text>` is the refusal of the check of the statement group, which
-# the apply of the process takes as its own.
+# the apply of the process takes as its own. The trial starts with an empty
+# storage of the task, and its part after the changes with another empty one.
 function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
+    return rc_with_empty_task_storage(() -> rc_trial_parts!(report, evaluation, candidates))
+end
+
+function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
     queue = evaluation.queue
     order = queue.order
     problems = String[]
@@ -580,6 +585,10 @@ function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCa
         end
     end
     next = 1
+    # The part before this line evaluated the code of before the changes, and
+    # the part after it evaluates the code of after them: the storage of the
+    # task is empty again, as it is for the apply (`rc_with_empty_task_storage`).
+    current_task().storage = nothing
     t_trial = @elapsed try
         rc_delete_removals!(evaluation)
         rc_record_resolutions!(evaluation)
@@ -684,11 +693,13 @@ end
 # change, and a candidate printed it in the whole build. A trial that ends with
 # no answer leaves the queue as it is, with a warning: the image can then keep
 # a result of before the edit. With a statement group, such a trial is a
-# refusal, because the group has no check.
+# refusal, because the group has no check. Answer the error or the refusal
+# that stopped the trial early, or `nothing`.
 function rc_replay!(evaluation::RcEvaluation, log::String)
     t0 = time()
+    stopped = nothing
     candidates = rc_candidates(evaluation.items, evaluation.queue.order)
-    isempty(candidates) && evaluation.group === nothing && isempty(evaluation.moved) && return nothing
+    isempty(candidates) && evaluation.group === nothing && isempty(evaluation.moved) && return stopped
     report = rc_in_fork(io -> rc_trial!(io, evaluation, candidates), log)
     if report === nothing
         println("rc: warning: the replay ended with no answer, see ", log,
@@ -709,7 +720,8 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
         elseif parts[1] == "problem"
             println("rc: replay: ", SubString(line, 9))
         elseif parts[1] == "stopped"
-            println("rc: replay: stopped: ", SubString(line, 9))
+            stopped = String(SubString(line, 9))
+            println("rc: replay: stopped: ", stopped)
         elseif parts[1] == "done"
             numbers = split(line, ' ')
             println("rc: replay: ", numbers[2], " candidates, ", numbers[3], " compared, ", numbers[7],
@@ -717,5 +729,5 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
                     round(time() - t0; digits = 2), " s")
         end
     end
-    return nothing
+    return stopped
 end
