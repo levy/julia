@@ -91,6 +91,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 35 | No save checks the room that the program keeps for an overlay: 64 MB of constant data and 256 MB of objects. The rebuild succeeds, and each start of the program stops with "no room". The overlay of today uses 30 % and 21 %. | about 2 000 changed items, or one new table of 45 MB | `staticdata.c:4566`, `:7582` | Read |
 | 36 | The program matches an overlay with its base by three sizes. It applies an overlay of another whole build of the same sizes with no message. | an old `sys.<n>.so` beside a new whole build | `staticdata.c:7570` | Read |
 | 37 | Under overlays, a save that can not write an object back in its place stops the build, and each later build, until a whole build. | a `BigInt` of the base on a written page; a module with more `using` lines than its object has room for | `staticdata.c:2253`, `:2580`, `:5122` | Read (audit) |
+| 39 | A whole build copies the tracked sources into its store at its end, after the hour of the build. An edit of a tracked file during the build is in the copy and not in the image, so no later rebuild applies it. | Another session lands a commit while the IDE founds. | `reactive.jl:232-251`: `create_app`, then `_reactive_copy_sources` | Read |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10 |
@@ -258,6 +259,9 @@ These are my proposals. The owner approves them with the plan.
   *Rejected:* one fork that does the whole of a build (apply, trace, save),
   with a server that never applies. It is simpler, but each build then applies
   and infers each change since the base again.
+- **D5a. A whole build copies the tracked sources before it loads them
+  (finding 39).** An edit that arrives later is then a change for the next
+  rebuild.
 - **D5. The store records a print of each input (R5):** the Julia build, the
   Manifest entry of each loaded package that is not tracked, the preferences
   of the loaded packages, the build options, the text of the workload and of
@@ -519,8 +523,8 @@ open; Step 10 needs its answer.
   that an older build of Julia founded applies an edit with a changed harness,
   and the overlay holds no function of the harness. This step is early so
   that each later fix reaches the stores of the owner with no whole build.
-- [ ] **Step 5: an apply is all or nothing, and each input is known (D4, D5;
-  findings 7, 8, 28 to 30, 34, 36).** The server starts with one collector
+- [ ] **Step 5: an apply is all or nothing, and each input is known (D4, D5,
+  D5a; findings 7, 8, 28 to 30, 34, 36, 39).** The server starts with one collector
   thread. A changed signature of a `@ccallable` function is refused. A build
   prints the level of its code when it is not the level of the whole build.
   Test: a failed edit, then its fix, give the image of a whole build; a
