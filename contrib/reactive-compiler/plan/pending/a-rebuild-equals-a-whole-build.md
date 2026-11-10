@@ -215,26 +215,48 @@ keep.
 
 These are my proposals. The owner approves them with the plan.
 
-- **D1. The reach by name gives the code that an item runs (R1).** The ledger
-  builds a graph from the syntax of the tracked files: each method item points
-  at the global names of its body. The *reach* of an item is each name that it
-  can arrive at through that graph, from its initializer, from its statement,
-  from the body of each macro that it expands, or from the body of its
-  generator. When an apply changes a function, a type or a binding, each item
-  whose reach holds that name is evaluated again.
+- **D1. A replay finds the items whose evaluation gives another result (R1).**
+  *The owner approved this rule on 2026-11-10, in place of the reach by name.*
+  A rebuild that changes something does again the part of an evaluation that
+  has a result, and compares the result with the one of before the edit:
+
+  - it expands each item that calls a tracked macro, and evaluates the item
+    again when the expansion differs;
+  - it evaluates each initializer that runs code and names a tracked name,
+    and binds the constant or the global again when the value differs;
+  - it evaluates each `@generated` method again, because the generator runs
+    in the world of its method;
+  - it evaluates each statement that defines through `eval`, and keeps the
+    result when a method of other code comes out of it.
 
   ```julia
-  const BINDINGS = _make_open_page_bindings()   # reach: _make_open_page_bindings,
-                                                # and each name of its body, and so on
-  # an edit of a function in that reach → `const BINDINGS` is evaluated again
+  const BINDINGS = _make_open_page_bindings()   # evaluated before and after the edit
+  # the two values differ → `const BINDINGS` is evaluated again
   ```
 
-  The reach is larger than the truth, so some items are evaluated with no
-  need. That costs little: Julia keeps a constant whose new value is equal
-  (`jl_egal`, `src/module.c:583`), keeps a struct of the same shape, and the
-  method filter keeps a method of the same code. A method that extends a
-  function of an untracked module, such as `Base.show`, counts under the
-  types of its signature too, because untracked code calls it.
+  The replay goes through the items in the load order, together with the
+  changes of the edit, so an item sees each change that a whole build loads
+  before it. Two values are compared by their structure and never by a
+  method of the program: a type counts by its identity, so a value of a
+  struct that changed differs from each old value.
+
+  The replay runs in a fork of the process, as the apply of D4 does. The fork
+  does the evaluations and tells the process which items differ. So no
+  evaluation of the replay stays in the image: no second effect of an
+  initializer, no closure type, no compiled code.
+
+  The replay is larger than the truth in one way, and smaller in two. An item
+  that differs is evaluated again with no need when Julia then keeps what it
+  had. An initializer that gives another value at each evaluation is left as
+  it is, with a line in the log. A plain call statement is not run again
+  when a function that its callee calls changes (D3 is the rule for the
+  statements).
+
+  *Rejected: the reach by name.* It was the first form of this decision: a
+  graph from the syntax of the tracked files, in which an item reaches each
+  name of the code that its evaluation can run. Step 7 has the measurement:
+  on real commits it chooses about 2 700 items for each edit, because a type
+  connects each function that prints or makes a value of it.
 
   *Rejected:* a record of the methods that each evaluation runs. It is exact,
   but the whole build loads the packages from their package images, so
@@ -633,13 +655,14 @@ commits. The numbers of the steps stay as they are.
 - [ ] **Step 6: removals (D2; finding 1, refusal C5).** Test: the moved
   function of finding 1; a removed struct; a renamed module.
 - [ ] **Step 7: the code that an item runs (D1, D3; findings 2 to 6, 9, 20).**
-  The reach graph, kept in the store by the hash of each file so that a new
-  server does not parse 1030 files. The groups of the statements. The read
-  rule skips `/proc`, `/sys` and `/dev`. Test: the tests of Step 3, and the
-  count of items that the replay gate evaluates with no need.
+  The replay of D1. The groups of the statements. The read rule skips
+  `/proc`, `/sys` and `/dev`. Test: `tool/gate_runs.sh`, the tests of Step 3,
+  and the count of items that the replay gate evaluates with no need.
 
-  *In work. The rule of D1 is measured, and it does not hold: the step waits
-  for the owner's answer on the rule that replaces it.*
+  *In work. The first form of D1, the reach by name, was measured and does
+  not hold. On 2026-11-10 the owner approved the replay in its place, and
+  D1 now states it. The reach left the tree (`reach.jl`,
+  `tool/reach_report.jl`); the commit 253973cd88 holds it.*
 
   *The test that fails first* is `tool/gate_runs.sh` with the program
   `tool/r1_runs`. One file holds six expressions, and the edit changes only
@@ -655,8 +678,8 @@ commits. The numbers of the steps stay as they are.
   | `const DEFAULT_THEME = make_theme()`, and the type gets a field | 1 field | 2 fields |
   | `@generated staged(x) = generated_body(x)` | 2 | 3 |
 
-  *The reach by name, measured.* The harness has the graph of D1
-  (`reach.jl`), and `tool/reach_report.jl` walks real commits with the
+  *The reach by name, measured.* The harness had the graph of the first D1
+  (`reach.jl`), and `tool/reach_report.jl` walked real commits with the
   tracked list of the IDE store and no build. Over 39 commits of
   projectured-julia, with 27 202 expressions in 1 030 files, each commit that
   changes code makes about 11 300 names "affected" and hits about 355
@@ -690,28 +713,8 @@ commits. The numbers of the steps stay as they are.
     (`register_palette!(RADIX_PALETTE)`, four exports through `Core.eval`).
   - No tracked file has a `@generated` function.
 
-  *Proposed by the assistant, in place of D1: replay and compare.* A rebuild
-  that moves the world does again the part of an evaluation that has a
-  result, and compares the result with the one of before the edit:
-
-  - it expands each user of a tracked macro, and evaluates the expression
-    again when the expansion differs;
-  - it evaluates each initializer that has a call and names a tracked
-    binding, and binds the constant again when the value has another
-    structure;
-  - it evaluates a `@generated` method again, and each loop that only defines
-    methods or exports names: the method filter keeps a method of the same
-    code.
-
-  The pass goes through the expressions in the load order, so a constant
-  that reads another one sees its new value. The results of before the edit
-  come from the last build of the same server, or from one more pass before
-  the apply. The cost on the IDE is about 3 s for each rebuild, and about 3 s
-  more for the first build of a process. The test is exact where the reach is
-  a guess, and it needs no graph. Its limits: an initializer that gives
-  another value at each evaluation is left as it is, with a line in the log;
-  a plain call statement is not run again when a function that its callee
-  calls changes (D3 stays as it is for the 8 of them).
+  *The replay* is the rule of D1. The cost that the probes give for the IDE
+  is about 3 s for one pass over the macro users and the initializers.
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
   37).** First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the
