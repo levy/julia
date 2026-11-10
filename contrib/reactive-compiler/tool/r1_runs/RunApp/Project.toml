@@ -1,0 +1,9 @@
+name = "RunApp"
+uuid = "7d2f9a3b-4e5c-4f70-8b9c-2d3e4f5a6b72"
+version = "0.1.0"
+
+[deps]
+RunLib = "7d2f9a3b-4e5c-4f70-8b9c-2d3e4f5a6b71"
+
+[sources]
+RunLib = {path = "../RunLib"}
