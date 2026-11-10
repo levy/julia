@@ -4,9 +4,10 @@
 # methods that grew inside their memory and hold the stale base bytes, hashed specializations
 # missing from a method's speckeyset, and bindings missing from a module's bindingkeyset.
 # Usage: python3 -I overlay_check.py BASE OVERLAY [--verbose] [--base-blob OFF,SIZE] [--overlay-blob OFF,SIZE]
-#   BASE is a base image (sys.so) or a program executable with the image linked in; OVERLAY is the
-#   overlay shared object. The blob of each file is found through the symbols jl_system_image_data
-#   and jl_system_image_size; the two --*-blob options override that.
+#   BASE is the base image in its file form: lib/julia/sys.so of a bundle, or reactive-store/founding.so.
+#   A prelinked program holds the same image with final addresses, and the check does not read that
+#   form. OVERLAY is the overlay shared object. The blob of each file is found through the symbols
+#   jl_system_image_data and jl_system_image_size; the two --*-blob options override that.
 # Exit codes: 0 when no table entry is wrong, 1 when some entry is wrong, 2 for a usage or parse error.
 import mmap, struct, sys
 from collections import Counter
@@ -128,7 +129,8 @@ class Composed:
             if nm in ('Method', 'Module', 'SimpleVector') and nm not in found:
                 found[nm] = (j, r)
         if len(found) != 3:
-            raise CheckError('the types Method, Module and SimpleVector are not among the roots of the base')
+            raise CheckError('the types Method, Module and SimpleVector are not among the roots of the base; '
+                             'a prelinked program holds the image with final addresses: give lib/julia/sys.so')
         base_index = found['Method'][0] - 84          # the first exported data pointer
         mem8 = int(roots[base_index + 73]); mem16 = int(roots[base_index + 74]); mem32 = int(roots[base_index + 75])
         method_type = found['Method'][1]; module_type = found['Module'][1]; self.svec_type = found['SimpleVector'][1]
