@@ -11,7 +11,10 @@ function shape_lines()
             "exports = $(join(sort!(filter(!=(:RunLib), names(RunLib))), ' '))",
             "handlers = $(RunLib.HANDLERS[2](1))",
             "stamp = $(RunLib.STAMP) of $(RunLib.COUNTER[])",
-            "themes = $(length(RunLib.THEMES)) with $(fieldcount(valtype(RunLib.THEMES))) fields"]
+            "themes = $(length(RunLib.THEMES)) with $(fieldcount(valtype(RunLib.THEMES))) fields",
+            "registry = $(join(RunLib.REGISTRY, ' '))",
+            "seen = $(length(RunLib.SEEN))",
+            "notes = $(join(RunLib.NOTES, ' '))"]
 end
 
 Base.@ccallable function julia_main()::Cint

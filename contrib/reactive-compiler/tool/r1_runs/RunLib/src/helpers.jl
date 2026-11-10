@@ -32,3 +32,8 @@ handle(x) = x
 # The initializer of a constant calls this function, which gives the next
 # number at each call. No edit changes it.
 next_number(counter) = (counter[] += 1)
+
+# A statement calls this function, which writes into a list that the statement
+# does not name. No edit changes it.
+const NOTES = Symbol[]
+remember(note) = push!(NOTES, note)
