@@ -741,6 +741,34 @@ commits. The numbers of the steps stay as they are.
   for the replay. `STAMP` shows that the fork keeps the evaluations of the
   replay out of the image: the counter of the rebuilt program is 1.
 
+  *The replay gate with the replay* (`tool/gate_replay.sh`, the same 28
+  commits of the kernel as in Step 2, no refused rebuild and no fault,
+  8 min 42 s, peak 8.9 GB). Against the whole build of the last commit
+  (3 449 methods, 728 exported names):
+
+  | | one server, before | one server, now | a new server, before | a new server, now |
+  | --- | --- | --- | --- | --- |
+  | exported names | 717 | 728 | 717 | 728 |
+  | constants missing from the package module | 2 | 0 | 2 | 0 |
+  | methods | 3 509 | 3 524 | 3 470 | 3 471 |
+  | methods that the whole build has not | | 102 | | 51 |
+  | of those, with a generated name (finding 41) | 61 | 83 | 22 | 32 |
+  | methods that only the whole build has | | 27 | | 29 |
+  | roots of 300 that are not compiled | 19 | 19 | 19 | 19 |
+
+  The exported names and the globals now equal the whole build: finding 42
+  is closed. The new server names what the replay found: the two loops that
+  export the names of the modules (`KernelModule.jl:15`,
+  `ProjecturedKernel.jl:56`), of 54 candidates, in 1.1 s. The methods are
+  still not equal, and the causes are those of Step 2: a method that a
+  macro made stays when its item is evaluated again (finding 41; the count
+  grew, because the replay evaluates more items again), the function
+  `search_documents` stays in the module that it left (finding 1), the two
+  constructors of `RootedOperation` are missing in the chain of one server
+  (finding 40), and about 13 methods have other code. The log of the server
+  of the 28 rebuilds was lost to the log of the new server; the gate keeps
+  it from now on (`server-replay.log`).
+
   *The replay, as built* (`stdlib/ReactiveCompiler/src/replay.jl`).
 
   - **The candidates** come from the syntax of the ledger: an item that

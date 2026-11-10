@@ -27,8 +27,9 @@
 #              of the two programs, the method tables and the globals of the
 #              oracle; the roots that the chain lacks are counted, not failed
 #   decode   - the prelinked program decodes the source of each method
-#   fresh    - the server stops, and a rebuild from a new server applies each
-#              change since the last founding at once; then compare again
+#   fresh    - the server stops, its log is kept as $OUT/server-replay.log,
+#              and a rebuild from a new server applies each change since the
+#              last founding at once; then compare again
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -347,6 +348,9 @@ decode() {
 fresh() {
     env JULIA_DEPOT_PATH="$DEPOT" "$JULIA" --startup-file=no --project="$OUT/compile-env" -e \
         'using PackageCompiler; PackageCompiler.stop_server(ARGS[1])' "$CHAIN" > "$OUT/stop.log" 2>&1
+    # The new server writes its log over the log of the server of the replay.
+    cp "$CHAIN/reactive-store/server.log" "$OUT/server-replay.log" 2>/dev/null
+    echo "=== fresh: the replay of the server of the chain: $(grep -h -o "rc: replay: [0-9]* candidates, [0-9]* compared, [0-9]* differ" "$OUT/server-replay.log" | awk '{c += $5; d += $7} END {print NR " rebuilds, " c + 0 " compared, " d + 0 " differ"}')"
     mat mat-fresh "$CHAIN" "" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 ||
         { echo "=== fresh: the rebuild failed; see $OUT/mat-fresh.log"; return 1; }
     echo "=== fresh: $(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)"
