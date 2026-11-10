@@ -5,20 +5,29 @@
 # prelink and keeps the object archive of its founding; the gate links that
 # archive with a launcher into a program that holds its image and reserves the
 # headroom of a region after it, prelinks the program, edits DepLib, rebuilds,
-# and starts the program with the chain of the rebuild.
-#   copy        - the packages into $OUT/src, where the gate edits them
+# and starts the program with the chain of the rebuild. DepLib holds a table
+# of bytes (contrib/reactive-compiler/tool/const_table), and the edit also
+# adds a statement that writes into that table of the base image.
+#   copy        - the packages into $OUT/src, where the gate edits them, with
+#                 the table
 #   found       - materialize_app founds $OUT/depapp with --sysimage-prelink=yes
 #                 and keeps the archive in $OUT/depapp.object/sys-o.a
 #   link        - the launcher and the archive into bin/depapp_prelinked, an
 #                 ET_EXEC with 320 MB of headroom after its image
 #   prelink     - the program restores once and writes itself back
-#   run-s1      - the prelinked program with no chain: leaf 3, inner 20, extra 1
-#   edit        - leaf-after.jl and inner-after.jl replace their files
+#   run-s1      - the prelinked program with no chain: leaf 3, inner 20,
+#                 extra 1, table 0
+#   edit        - leaf-after.jl and inner-after.jl replace their files, and
+#                 leaf.jl gets the statement that marks the table
 #   mat-s2      - the rebuild of the edit writes an overlay and its chain
 #                 (JULIA_REACTIVE_IMAGE_WRITE=overlay unless the caller sets it)
 #   run-s2      - the prelinked program with the chain: its base loads in
-#                 place, and leaf 6, inner 40, extra 2, as the launcher of
-#                 PackageCompiler gives from a region
+#                 place, and leaf 6, inner 40, extra 2, table 64, as the
+#                 launcher of PackageCompiler gives from a region
+#   check       - tool/overlay_check.py on the image and its overlay: no root
+#                 table and no key set of the two together is wrong
+#   decode      - the prelinked program and the launcher decode the source of
+#                 each method of the image, and count the same
 #   starts      - seven starts of each program
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
@@ -89,7 +98,12 @@ runbin() {
     fi
 }
 
-copy() { rm -rf "$SRC" "$APP" "$OUT/depapp.object" && cp -a "$TOOL/i1_dependency" "$SRC" && echo "=== copied the packages to $SRC"; }
+copy() {
+    rm -rf "$SRC" "$APP" "$OUT/depapp.object" && cp -a "$TOOL/i1_dependency" "$SRC" &&
+    cat "$TOOL/i1_dependency/DepLib/src/parts/leaf.jl" "$TOOL/const_table/table.jl" > "$SRC/DepLib/src/parts/leaf.jl" &&
+    cp "$TOOL/const_table/app-table.jl" "$SRC/DepApp/src/app.jl" &&
+    echo "=== copied the packages to $SRC, with the table"
+}
 
 found() { mat mat-found && [ -f "$ARCHIVE" ] && echo "=== found: the archive is at $ARCHIVE"; }
 
@@ -122,9 +136,10 @@ prelink() {
 }
 
 edit() {
-    cp "$TOOL/i1_dependency/leaf-after.jl" "$SRC/DepLib/src/parts/leaf.jl" &&
+    cat "$TOOL/i1_dependency/leaf-after.jl" "$TOOL/const_table/table.jl" "$TOOL/const_table/mark.jl" \
+        > "$SRC/DepLib/src/parts/leaf.jl" &&
     cp "$TOOL/i1_dependency/inner-after.jl" "$SRC/DepLib/src/inner.jl" &&
-    echo "=== edited leaf.jl and inner.jl of DepLib"
+    echo "=== edited leaf.jl and inner.jl of DepLib, with the statement that marks the table"
 }
 
 mats2() {
@@ -133,10 +148,35 @@ mats2() {
 }
 
 runs2() {
-    runbin s2 "$PROGRAM" "leaf=6 inner=40 extra=2" || return 1
+    runbin s2 "$PROGRAM" "leaf=6 inner=40 extra=2 table=64" || return 1
     grep -q "the prelinked base loads in place" "$OUT/run-s2.log" ||
         { echo "=== run-s2: the base did not load in place"; return 1; }
-    runbin s2-launcher "$APP/bin/depapp" "leaf=6 inner=40 extra=2"
+    runbin s2-launcher "$APP/bin/depapp" "leaf=6 inner=40 extra=2 table=64"
+}
+
+# The overlay that the chain names, checked with the image in its file form.
+check() {
+    local chain=$APP/lib/julia/sys.so.chain overlay
+    [ -f "$chain" ] || { echo "=== check: no chain file $chain"; return 1; }
+    overlay=$(grep -v '^#' "$chain" | grep . | tail -1)
+    python3 -I "$TOOL/overlay_check.py" "$APP/lib/julia/sys.so" "$APP/lib/julia/$overlay" > "$OUT/check.log" 2>&1
+    local rc=$?
+    sed 's/^/=== check: /' "$OUT/check.log"
+    return $rc
+}
+
+# Each program decodes the source of each method of its image.
+decode() {
+    local counts=""
+    for pair in "prelinked=$PROGRAM" "launcher=$APP/bin/depapp"; do
+        run "decode-${pair%%=*}" env DEPAPP_DECODE=1 "${pair#*=}" || return 1
+        local line
+        line=$(grep "^decoded: [0-9]* sources" "$OUT/decode-${pair%%=*}.log") ||
+            { echo "=== decode: ${pair%%=*} printed no count"; return 1; }
+        echo "=== decode: ${pair%%=*} $line"
+        counts="$counts ${line#decoded: }"
+    done
+    [ "$(echo $counts | awk '{print ($1 == $3)}')" == 1 ] || { echo "=== decode: the counts differ:$counts"; return 1; }
 }
 
 starts() {
@@ -150,10 +190,10 @@ starts() {
     done
 }
 
-steps=${*:-copy found link prelink run-s1 edit mat-s2 run-s2 starts}
+steps=${*:-copy found link prelink run-s1 edit mat-s2 run-s2 check decode starts}
 for step in $steps; do
     case $step in
-        run-s1) runbin s1 "$PROGRAM" "leaf=3 inner=20 extra=1" ;;
+        run-s1) runbin s1 "$PROGRAM" "leaf=3 inner=20 extra=1 table=0" ;;
         mat-s2) mats2 ;;
         run-s2) runs2 ;;
         *) $step ;;

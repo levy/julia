@@ -11,7 +11,7 @@
 #   copy    - the packages into $OUT/src, with the table
 #   found   - materialize_app founds $OUT/app/depapp
 #   run-s1  - the founded binary: table 0
-#   edit    - leaf-table-after.jl replaces leaf.jl: the statement that marks
+#   edit    - leaf.jl gets the statement that marks (const_table/mark.jl)
 #   mat-s2  - the rebuild of the edit, written as an overlay
 #   run-s2  - the rebuilt binary: table 64
 #   check   - tool/overlay_check.py on the image and its overlay: no root
@@ -90,15 +90,17 @@ runbin() {
     fi
 }
 
+LEAF=$TOOL/i1_dependency/DepLib/src/parts/leaf.jl
+
 copy() {
     rm -rf "$SRC" && cp -a "$TOOL/i1_dependency" "$SRC" &&
-    cp "$TOOL/const_table/leaf-table.jl" "$SRC/DepLib/src/parts/leaf.jl" &&
+    cat "$LEAF" "$TOOL/const_table/table.jl" > "$SRC/DepLib/src/parts/leaf.jl" &&
     cp "$TOOL/const_table/app-table.jl" "$SRC/DepApp/src/app.jl" &&
     echo "=== copied the packages to $SRC, with the table"
 }
 
 edit() {
-    cp "$TOOL/const_table/leaf-table-after.jl" "$SRC/DepLib/src/parts/leaf.jl" &&
+    cat "$LEAF" "$TOOL/const_table/table.jl" "$TOOL/const_table/mark.jl" > "$SRC/DepLib/src/parts/leaf.jl" &&
     echo "=== edited leaf.jl of DepLib: the statement that marks the table"
 }
 
