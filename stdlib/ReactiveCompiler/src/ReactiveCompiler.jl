@@ -19,6 +19,29 @@ package at its whole compile (`record_top_level_reads`).
 """
 module ReactiveCompiler
 
+"""
+    rc_harness_print(dir) -> String
+
+The print of the sources of a harness in the folder `dir`: one hash of its `.jl`
+files, each with its name. A client compares the print of the harness in the
+image of a store ([`HARNESS_PRINT`](@ref)) with the print of the sources that it
+has, and loads the sources when the two differ.
+"""
+function rc_harness_print(dir::AbstractString)
+    print = zero(UInt)
+    for name in sort!(filter(endswith(".jl"), readdir(dir)))
+        print = hash(read(joinpath(dir, name), String), hash(name, print))
+    end
+    return string(print; base = 16)
+end
+
+"""
+    HARNESS_PRINT
+
+The print of the sources that this module was made from ([`rc_harness_print`](@ref)).
+"""
+const HARNESS_PRINT = rc_harness_print(@__DIR__)
+
 include("SourceDiff.jl")
 include("child.jl")
 include("patch.jl")

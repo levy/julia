@@ -3,9 +3,12 @@
 #
 # This file is part of the system image, so a rebuild that boots from the
 # previous image finds the harness compiled, and the delta of an edit holds
-# the cone of the edit and nothing of this machinery. A store runs the
-# harness of the image it was founded on: a change of this file reaches a
-# store through a founding on the new image.
+# the cone of the edit and nothing of this machinery. A store whose image
+# holds the sources that its client has runs the harness of the image. For a
+# store whose image holds other sources, the client loads its sources into a
+# module of their own, and that module applies the edit; it deletes its
+# methods before the image is written (`rc_remove_harness!`), so a change of
+# this file reaches a store with its next rebuild.
 #
 # Everything that varies between rebuilds — the tracked files, their module
 # paths, the stored sources of the previous snapshot — comes in as arguments

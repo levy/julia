@@ -125,6 +125,42 @@ end
 rc_write_raw(fd::Integer, text::String) =
     ccall(:write, Cssize_t, (Cint, Ptr{UInt8}, Csize_t), fd, text, sizeof(text))
 
+# Whether this module is the harness that the image of the process holds: the
+# standard library that `Base.require` gives. A client loads the sources of
+# another version of the harness into a module of its own, for a store whose
+# image holds an older one; that module is not the harness of the image.
+rc_is_image_harness() =
+    get(Base.loaded_modules, Base.PkgId(Base.UUID("1dda119b-71a3-45fb-bd14-d17b1eb16859"), "ReactiveCompiler"),
+        nothing) === @__MODULE__
+
+# Whether `mod` is this module or a module inside it.
+function rc_is_harness_module(mod::Module)
+    while true
+        mod === (@__MODULE__) && return true
+        parent = parentmodule(mod)
+        parent === mod && return false
+        mod = parent
+    end
+end
+
+# Delete each method of this module, and of the modules inside it, when it is
+# not the harness of the image, and answer how many: the image that the process
+# writes next then holds no code of a harness that a client loaded from its
+# sources. A deletion closes a method from the next world on, so the code that
+# runs now, in an earlier world, calls the harness as before. The list of the
+# modules that have documentation holds these modules no more, because the list
+# is a root of the image.
+function rc_remove_harness!()
+    rc_is_image_harness() && return 0
+    found = Method[]
+    rc_each_live_method() do method
+        rc_is_harness_module(method.module) && push!(found, method)
+    end
+    foreach(Base.delete_method, found)
+    filter!(!rc_is_harness_module, Base.Docs.modules)
+    return length(found)
+end
+
 function rc_save(archive::String; trim::Bool = false, overrides::String = "")
     flush(stdout)
     flush(stderr)
@@ -151,6 +187,7 @@ function rc_save(archive::String; trim::Bool = false, overrides::String = "")
                 ccall(:jl_reactive_set_trim_memo, Cvoid, (Cstring,), joinpath(dirname(dirname(archive)), "trim-memo.txt"))
                 ccall(:jl_reactive_set_trim, Cvoid, (Cint,), 1)
             end
+            rc_remove_harness!()
             ccall(:jl_reactive_set_output, Cvoid, (Cstring,), archive)
             ccall(:jl_write_compiler_output, Cvoid, ())
         catch e
