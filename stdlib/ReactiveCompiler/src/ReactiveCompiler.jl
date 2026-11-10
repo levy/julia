@@ -44,6 +44,7 @@ const HARNESS_PRINT = rc_harness_print(@__DIR__)
 
 include("SourceDiff.jl")
 include("child.jl")
+include("reach.jl")
 include("patch.jl")
 include("entrypoints.jl")
 include("server.jl")
