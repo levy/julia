@@ -467,6 +467,20 @@ static int reactive_pages_dirty(const char *addr) JL_NOTSAFEPOINT
     return reactive_pages_bits[(addr - reactive_dirty_start) / jl_page_size];
 }
 
+// Whether the process wrote a byte of `lo..lo+len` since the load. The range
+// can start between two page limits: the const data starts at a cache line,
+// so a page of it, counted from its start, lies in two pages of the memory.
+static int reactive_range_dirty(const char *lo, size_t len) JL_NOTSAFEPOINT
+{
+    size_t page = jl_page_size;
+    const char *end = lo + len;
+    for (const char *p = (const char*)((uintptr_t)lo & ~(uintptr_t)(page - 1)); p < end; p += page) {
+        if (reactive_pages_dirty(p))
+            return 1;
+    }
+    return 0;
+}
+
 // The liveness test of the prunes: queued, or an object of the base when
 // the save writes by pages (the base stays whole).
 static inline int reactive_pages_live(jl_value_t *v) JL_NOTSAFEPOINT
@@ -4238,9 +4252,9 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
         reactive_base.sysimg_size = reactive_objects_end;
         ios_trunc(const_data, reactive_const_len);
         for (size_t off = 0; off < reactive_const_len; off += page) {
-            if (reactive_pages_dirty(reactive_const_base + off))
-                memcpy(const_data->buf + off, reactive_const_base + off,
-                       off + page <= reactive_const_len ? page : reactive_const_len - off);
+            size_t n = off + page <= reactive_const_len ? page : reactive_const_len - off;
+            if (reactive_range_dirty(reactive_const_base + off, n))
+                memcpy(const_data->buf + off, reactive_const_base + off, n);
         }
     }
     else {
@@ -4303,8 +4317,10 @@ static void reactive_pages_end(void)
 }
 
 // The pages of `lo..lo+len` that this save writes: their indices in `out`.
-// The const data and its headroom lie inside the sysimg extent of the
-// region; the sysimg loop leaves them to the const loop.
+// A page is counted from `lo`, which is a page limit for the sysimg and is
+// not one for the const data, so a page counts as written when the process
+// wrote a byte of it. The const data and its headroom lie inside the sysimg
+// extent of the region; the sysimg loop leaves them to the const loop.
 static size_t reactive_overlay_dirty_pages(const char *lo, size_t len, arraylist_t *out, int skip_const)
 {
     size_t page = jl_page_size;
@@ -4313,7 +4329,8 @@ static size_t reactive_overlay_dirty_pages(const char *lo, size_t len, arraylist
         const char *addr = lo + k * page;
         if (skip_const && addr >= reactive_region_const && addr < reactive_region_const_limit)
             continue;
-        if (reactive_pages_dirty(addr))
+        size_t left = len - k * page;
+        if (reactive_range_dirty(addr, left < page ? left : page))
             arraylist_push(out, (void*)k);
     }
     return out->len;
