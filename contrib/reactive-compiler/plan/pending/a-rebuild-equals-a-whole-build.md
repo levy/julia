@@ -786,16 +786,20 @@ commits. The numbers of the steps stay as they are.
   candidates 0.27 s. One pass of the prints takes 3.5 s (2.9 s for the
   expansions), and 9 s the first time in a process, because the functions
   that the macros and the initializers call have no compiled code in the
-  image. A whole trial in a fork takes 13.5 s for an edit at the start of
-  the load order: 8.8 s for the prints of before and 4.6 s for the rest. An
-  edit late in the load order compares few candidates. This is more than the
+  image. A whole trial in a fork takes 16.5 s for an edit at the start of
+  the load order: 11.7 s for the statements and the prints of before, and
+  4.8 s for the rest. Other jobs ran on the machine at that time. An edit
+  late in the load order compares few candidates. This is more than the
   3 s of the proposal, because each fork compiles those functions again and
   takes both prints. Two ways to lower it belong to Step 8: a fork that
   takes the prints of before in the background after each build, and
   compiled code in the server for what the fork compiled.
 
-  With a change that changes nothing, 0 of the 2 558 prints of the IDE
-  differ, so the replay evaluates no item with no need there.
+  With a change that changes nothing, 0 of the 2 620 candidates of the IDE
+  differ, so the replay evaluates no item with no need there. Before the
+  trial ran each statement once ahead of the prints, one statement of the
+  platform package differed in that probe: the loop after it exports one
+  more name in the whole program than the image holds.
 
   *Finding 20, measured again* (`replay/ide_ledger_probe.jl` of the session,
   on the image of the IDE). The ledger of all 1 032 files takes 2.0 s in a
