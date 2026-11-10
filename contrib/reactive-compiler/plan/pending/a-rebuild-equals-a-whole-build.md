@@ -729,6 +729,14 @@ commits. The numbers of the steps stay as they are.
   | `const STAMP = next_number(COUNTER)`, which counts its evaluations | 1 of 1 | stays 1 of 1 |
   | `const THEMES = Dict{Symbol, Theme}()` and the statement that fills it | 1 value with 1 field | 1 value with 2 fields |
 
+  Gate I1 passes with the replay in the harness too, through a server and
+  through a child (`gate_harness.sh standard`): the four checks are equal. With
+  loaded sources its overlays have 23.5 MB and 22.5 MB, where Step 4 had
+  19.0 MB and 19.3 MB: the code that Base compiles for the types of the
+  loaded harness grew with the harness. Its rebuilds take 6.0 s and then
+  3.2 s in a server, and 5.8 s in a child, where Step 4 had 4.9 s, 2.7 s and
+  4.8 s.
+
   The rebuild says `11 candidates, 11 compared, 8 differ` and takes 0.17 s
   for the replay. `STAMP` shows that the fork keeps the evaluations of the
   replay out of the image: the counter of the rebuilt program is 1.
