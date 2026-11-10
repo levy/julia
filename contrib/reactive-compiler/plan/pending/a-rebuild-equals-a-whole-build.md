@@ -96,6 +96,9 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
 | 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits. Closed on the branch by Step 7: the replay gate gives 728 names |
 | 43 | A line that a macro writes into the code as a number stays when the item moves. The rebuild gives a moved item its new lines in the line table, but it does not evaluate the item again. | `@warn "an evaluation observer failed"` in `_notify_evaluation`. A commit adds three lines above it. The log message of the rebuilt program names line 729, that of the whole build 732. Three methods of the kernel after 28 commits; the sources of projectured-julia hold 124 log macros in 55 files. | no case in `child.jl`; the replay takes a user of a tracked macro only | Seen on real commits. Closed on the branch `rebuild-equals-moved-lines`: the replay compares the expansion of each moved item that holds a macro call at its two places (Step 2) |
+| 44 | **The ledger gives a method to the item at its lines, and the item that defined the method can be another one.** A method that the expansion of a macro defines carries the lines of the function that builds the expansion. When that function changes, the apply deletes the method with the old methods of the function. Findings 40 and 41 are two faces of this. | `_emit_accessors` builds `getproperty` for each `@document` struct. A commit changes `_emit_accessors`. The rebuilt image has no `getproperty` for four structs, and a read of a field of such a struct takes the general method. | `rc_assign_methods!`, `rc_owns`, and the end of `rc_apply_tracked`, in `child.jl` | Seen on real commits, and both forms in the gate program. The first form, where the user of the macro is evaluated again, is closed on the branch `rebuild-equals-moved-lines`; the second form waits for Q2 |
+| 45 | A rebuild that loads the sources of the harness leaves the code that Base compiled for the types of that harness in the image: 465 functions and about 2 MB. A chain of whole images adds them at each rebuild. | Gate C in a tree whose Julia holds an older harness: 175.9 MB, then 2 MB more after each rebuild. | `rc_remove_harness!` | Measured. *Proposed by the assistant:* Step 10 takes it, with the test that says that a type is dead |
+| 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -181,7 +184,7 @@ Two more causes start a whole build, and they are the common ones:
 | --- | --- | --- |
 | 22 | One gate builds the program in the form of the build scripts: `contrib/merged/gate_prelinked_chain.sh` links the image into a program, prelinks it, and starts it with the overlay of a rebuild. It compares the lines that the program prints and nothing else, and its edit is two method bodies, which grow no table of the base. So it found neither the fault of 2026-11-08 nor finding 33. It links with commands of its own, not through `ProjecturedBuilder`. The other gates start the image with `julia -J`, which is another load path; on the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. *Corrected on 2026-11-10: the first text of this row said that no such gate exists. I looked in `contrib/reactive-compiler/tool` alone.* | Read; the count is the audit's |
 | 23 | Each gate edits a small test program with edits written for the gate. No gate applies real commits. All four faults of the list above came from real commits. | Read |
-| 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09 |
+| 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09; in a tree whose rebuilds load the harness, finding 45 covers it (Step 2) |
 
 ## The model
 
@@ -382,10 +385,11 @@ These are my proposals. The owner approves them with the plan.
   code of the overlay is not known at build time. And a rebase gives the same
   start for a large overlay.
 
-## The open question
+## The open questions
 
-One decision is the owner's, because it sets what property 3 means and what a
-rebuild costs.
+Two decisions are the owner's. Q1 sets what property 3 means and what a
+rebuild costs. Q2 came with finding 44, on 2026-11-10, and sets how the
+rebuild knows the methods of an expression.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -411,6 +415,44 @@ a run of the program can find those.
 My recommendation is (a), with an option that turns it off. It is the only one
 that gives property 3 with no action of a person, and it adds no mechanism.
 
+**Q2. How does the rebuild know which expression defined a method (finding
+44)?** The ledger finds the methods of an item by file and line. A method that
+the expansion of a macro defines carries the lines of the function that builds
+the expansion, so the ledger gives it to that function. Two relations are
+mixed here. The *place* of a method is where its text is; the line table and
+a moved item need it, and the file and the line of the method give it. The
+*definer* is the top-level expression whose evaluation made the method; the
+apply needs it when it deletes the old methods of a changed or removed item,
+and when it looks for the items that define a method on a changed type.
+
+- (a) **Julia records the definer.** When the runtime defines a method, it
+  knows the top-level expression that it evaluates: it prints "in expression
+  starting at" from the same fact. The method keeps the file and the first
+  line of that expression. The ledger then reads the definer of each method,
+  after a whole build as after a rebuild. The cost: a change of the runtime
+  and of the image, a `make`, and one whole build of each store.
+- (b) **The replay finds the definer again.** The fork of the replay
+  evaluates the form of before the edit of each changed or removed item under
+  a filter that records what it defines, and reports those methods. No change
+  of the runtime. The cost: one more evaluation for each changed item in each
+  rebuild, and the definer of an item that the apply does not evaluate stays
+  a guess by lines.
+- (c) **A narrower line rule.** An item owns a method at its lines only when
+  the method is of the function that the item defines. No evaluation and no
+  change of the runtime. It is a rule about names, and a macro or a statement
+  that defines methods has no name to compare.
+
+My recommendation is (a). The fact exists when the method is defined, and (a)
+keeps it; (b) and (c) search for it again. (a) is also the only one that
+gives the definer of an item that no apply evaluated, which the dependents of
+a changed type need, and it adds no work to a rebuild.
+
+One correction needs no answer and is built: a method that an evaluation of
+the apply defines again with the same code is never deleted, whoever has it
+at its lines. It closes the first form of finding 44, where the user of the
+macro is evaluated again. The second form, where the user is not evaluated
+again, waits for Q2.
+
 ## Steps
 
 The work is in a worktree of `merged-next`, with worktrees of
@@ -419,7 +461,8 @@ test that fails before the change.
 
 On 2026-11-10, after Step 1, the owner said "Yes and continue": the push of
 Step 1, and the work goes on with the next steps in their order. Q1 is still
-open; Step 10 needs its answer.
+open; Step 10 needs its answer. Q2 is open; the second form of finding 44
+needs its answer.
 
 On 2026-11-10, after the replay of Step 2 showed findings 40 to 42, the owner
 approved another order: Step 4 first, then Step 7, then the other steps in
@@ -642,11 +685,180 @@ commits. The numbers of the steps stay as they are.
   above the function and changes nothing else: the rebuild says `0
   compared, 1 moved, 1 differ`, evaluates the function again as `D1`, and
   the program names line 6. The gate passes in both forms, through a child
-  with whole images and through a server with overlays. The run on the
-  harness of before the rule, which must print line 3, waits for memory.
+  with whole images and through a server with overlays. With the harness of
+  before the rule, the same gate stops at the rebuilt program: it prints
+  `line = 3`, where line 5 is expected.
 
-  *Open in this step:* the replay over the platform package (the run waits
-  for memory); the reason of the size of gate C; the profile of the apply.
+  *Finding 40, found: the ledger gives a method to the item at its lines
+  (finding 44).* The log of the replay over the 28 commits shows where the
+  missing methods went:
+
+  ```
+  rc: change A4 DocumentMacro.jl:294 _emit_accessors, 1 methods, 4 deleted
+  ```
+
+  `_emit_accessors` is a function of the `@document` macro. It builds the
+  `getproperty` method of a struct inside a `quote`, so that method carries
+  the file and the line of the quote. The ledger gives an item each method
+  whose line is inside the lines of the item, so the item `_emit_accessors`
+  has the `getproperty` methods of four structs as its own methods. A commit
+  changes `_emit_accessors`. The apply deletes each old method of a changed
+  item. The four structs were evaluated again, and the filter kept their
+  `getproperty`, because its code is the same; the change of
+  `_emit_accessors` deleted it after that. The image of the new server
+  lacks `getproperty` for `SelectionDocument`, `FieldReferenceStep`,
+  `RangeReferenceStep` and `TypeReferenceStep`.
+
+  The two constructors of `RootedOperation`, which the chain of one server
+  lacks, went the same way. The list of the commits is not one line of
+  history: the checkout of commit 20 takes the struct away, and commit 21
+  brings it back. The removal is not applied (finding 1), so the two
+  constructors stay at their lines, and the ledger gives them to the item
+  that is at those lines in the file of commit 20. At commit 21 the struct
+  defines them again, the filter keeps them, and the change of that other
+  item deletes them.
+
+  *The two forms of finding 44, in the gate program.* Two macros define
+  methods inside a `quote` of a function of `helpers.jl`, and the edit
+  changes that function:
+
+  ```julia
+  function accessor_code(name)          # the edit changes the first method
+      return quote
+          $(esc(Symbol(name, :_first)))() = 1        # 2 after the edit
+          $(esc(Symbol(name, :_second)))() = 10
+      end
+  end
+  function steady_code(name)            # the edit adds a check, and the
+      return quote                      # expansion stays the same
+          $(esc(name))() = 7
+      end
+  end
+  # users.jl, which no edit changes:  @accessors pair      @steady steady_value
+  ```
+
+  | | a whole build | the rebuild, before the corrections |
+  | --- | --- | --- |
+  | `pair_first()`, `pair_second()` | 2 and 10 | 2 and *no method* |
+  | `steady_value()` | 7 | *no method* |
+
+  The rebuild says `change A4 helpers.jl:44 accessor_code, 2 methods, 1
+  deleted` and `change A4 helpers.jl:53 steady_code, 1 methods, 1 deleted`.
+  `pair_second` is the first form: its user is evaluated again, the filter
+  keeps the method, and the change of `accessor_code` deletes it.
+  `steady_value` is the second form: its user is not evaluated again, and
+  the change of `steady_code` deletes its method.
+
+  *The kept methods, as built (the first form; decided in the build, by the
+  assistant).* A method that an evaluation of the apply defines again with
+  the same code is a method of the sources of now. The filter gives it the
+  file and the line of the new definition, and each change and each removal
+  that names it as an old method loses it (`rc_method_filter`,
+  `rc_evaluate_next!` in `child.jl`). Before, only the change that
+  evaluated it let it go. With this, the rebuilt program prints `2 and 10`.
+  The case `@steady` is out of the gate program until Q2 has its answer;
+  the session keeps it as a patch.
+
+  *Gate C grows by 2 MB for each rebuild in this tree, and the cause is the
+  loaded harness (finding 45).* Gate C ran with a census of the image after
+  each rebuild (4 cycles, 8 rebuilds). The loadable size goes from 175.9 MB
+  to 189.4 MB: 1.9 MB to 2.0 MB more after each rebuild, in each part of the
+  image (the image data 12.0 MB, the code 1.0 MB). Nothing of the tracked
+  package grows: 121 bindings, 52 of them with a generated name, 69
+  methods, each count the same after each rebuild. Each rebuild emits 465
+  functions for an edit of 6 expressions. They are functions of Base that
+  were compiled for the types of the harness: after 10 rebuilds the image
+  holds 10 copies of each one, as
+  `_collect(Type{RcItem}, Generator{Filter{…}, Vector{RcItem}})`, each for
+  the types of another loaded harness. The Julia of the worktree holds the
+  harness of its last `make`, so each rebuild of a store of this tree loads
+  the sources of the harness (Step 4), and `rc_remove_harness!` deletes the
+  methods of the harness, and not the code that Base compiled for its
+  types. An overlay holds that code once: the 4.5 MB that Step 4 measured.
+  A chain of whole images adds it at each rebuild.
+
+  So gate C can not judge finding 24 in this tree until a `make` gives the
+  Julia of the tree the harness of the tree. The run of 2026-11-09, with
+  100 568 bytes after 9 cycles, was before Step 4. Gate C now runs under
+  `bounded-run` and edits a copy of its program in `$OUT/src`.
+
+  *The replay over the platform package (2026-11-10; 25 commits, e0f6014fb
+  to 406d4f868, the kernel and the platform tracked; 35 min, peak 14.0 GB of
+  a cap of 14 GB).* The whole build takes 6 min with a peak of 12.6 GB. The
+  program counts 4 480 names and 23 692 methods.
+
+  - 24 rebuilds apply, none is refused, and one fails: finding 46. The
+    commit 1df4c59c8, which the chain of the kernel refused, applies.
+  - The rebuild time follows the distance from the whole build: 7 s to 11 s
+    for the first six commits, then 28 s to 37 s from commit 8 on, where a
+    struct gets a field. After the store founds again at commit 18, the
+    rebuilds take 6 s to 20 s. The replay is 2.0 s to 4.4 s of each one
+    (1 212 candidates; one run compares 1 206 of them in 4.4 s).
+  - Against the whole build of the last commit, the seven commits after
+    commit 18 give: the same 4 489 names, the same 148 globals, the same
+    state of each root (1 313 compiled, 46 not there, 4 inferred, in both),
+    and 27 400 methods against 27 350. The 50 more methods are those of
+    finding 44: closures and methods of an expansion that an evaluation
+    left behind (as 110 closures of `print_document` against 96), and three
+    methods on the type `StartSettings` of before its change. One method
+    has other code.
+  - The control found the hash methods of two enum types as noise, as on
+    the kernel.
+
+  Two faults of the gate itself showed and are corrected. The oracle read a
+  root in `Main`, where no package of the platform has a name, so 1 356 of
+  its roots did not resolve; it now reads a root in a module that binds
+  each loaded package. And the log of the server of a failed rebuild was
+  lost when the store founded again; the gate keeps it now.
+
+  *Finding 46: the server keeps what the program stores in its task.* The
+  rebuild of 00d0f77e0, which changes the struct `ReactiveCell`, stops:
+
+  ```
+  TypeError: in typeassert, expected Vector{ReactiveCell},
+  got a value of type Vector{@world(ReactiveCell, 39759:43325)}
+  ```
+
+  The kernel keeps the stack of the cells that compute in the storage of
+  the task: `get!(() -> ReactiveCell[], task_local_storage(), …)::Vector{ReactiveCell}`.
+  The server evaluates each apply in its one task, so a vector that an
+  evaluation of before the change made is still there, with the element
+  type of before the change. The log of that server is lost, so the
+  evaluation that made the vector is not named. A whole build and a child
+  start with an empty storage. The fork of the replay has the same fault
+  inside one apply: it evaluates code of before the changes and code of
+  after them in one task.
+
+  *The gate case.* `markers.jl` of the gate program keeps a
+  `Vector{Marker}` in the storage of the task, and an initializer of
+  `users.jl` puts a value there. The first edit changes the function that
+  makes the value, so the server evaluates the initializer in its task.
+  The step `retype` then gives `Marker` a field. Through a server, on the
+  harness of before the rule, the rebuild stops as the real one did:
+  `TypeError: in typeassert, expected Vector{RunLib.Marker}, got a value of
+  type Vector{@world(RunLib.Marker, 39759:40492)}`, in the apply, and the
+  trial of the replay stops with the same error for a vector that it made
+  itself.
+
+  *The storage of the task, as built (decided in the build, by the
+  assistant).* Each part of an apply that evaluates the program at one
+  state of its code gets an empty storage of the task
+  (`rc_with_empty_task_storage`): the evaluation of the queue in the apply;
+  the part of the trial before the changes; the part of the trial after
+  them. The task gets its storage back after the call. A second rule
+  closes a hole that the fault showed: a trial that stops at an error is no
+  proof that the apply meets the same error. When the trial stopped and the
+  apply ends with no error, the apply now fails, because the trial compared
+  no expression after the place where it stopped. A trial that ends with no
+  answer at all is still a warning; Step 5 decides both together, with the
+  apply in a fork.
+
+  With the two rules, `gate_runs.sh` passes in both forms, with each step
+  as expected and the four checks equal (34 methods, the roots, 18 lines of
+  output, 13 globals).
+
+  *Open in this step:* the reason of the size of gate C after a `make`; the
+  profile of the apply.
 - [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
   first.** Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A
