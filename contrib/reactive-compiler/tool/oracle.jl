@@ -201,6 +201,17 @@ function oracle_root_state(sig, world::UInt)
     return "absent"
 end
 
+# The module in which a statement of the trace is read: it binds each loaded
+# package by its name, as the process that wrote the statement printed it.
+function oracle_scope()
+    scope = Module(:OracleScope)
+    for (pkgid, loaded) in Base.loaded_modules
+        name = Symbol(pkgid.name)
+        isdefined(scope, name) || Core.eval(scope, :(const $name = $loaded))
+    end
+    return scope
+end
+
 function oracle_main(args)
     tracked, trace = oracle_args(args)
     roots = Module[oracle_module(path) for path in tracked]
@@ -247,12 +258,13 @@ function oracle_main(args)
     # no image has to know that name. Its state is `gensym`, not compared.
     gensym_of = [Regex(string("\\b", mod, "\\.(?:[A-Za-z_]\\w*\\.)*var\"[^\"]*#\\d")) for mod in roots]
     if trace !== nothing
+        scope = oracle_scope()
         for line in eachline(trace)
             startswith(line, "precompile(") || continue
             text = line[12:end-1]
             ex = Meta.parse(line)
             sig = try
-                Core.eval(Main, ex.args[2])
+                Core.eval(scope, ex.args[2])
             catch
                 nothing
             end

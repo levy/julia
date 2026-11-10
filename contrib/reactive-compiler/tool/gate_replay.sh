@@ -17,7 +17,7 @@
 #              then the prelinked program and the launcher print the same
 #              lines, and tool/overlay_check.py finds no wrong entry. A
 #              refused rebuild is counted and the store founds again at that
-#              commit. A rebuild that fails in another way is a fault: the
+#              commit; the log of its server is kept as $OUT/server-<n>.log. A rebuild that fails in another way is a fault: the
 #              store founds again, the replay goes on, and the gate fails
 #   final    - materialize_app founds $OUT/final/replay at the last commit
 #   control  - a second whole build of the last commit, which compiles the
@@ -270,6 +270,8 @@ replay() {
             faults=$((faults + 1)); echo "$n $short the rebuild failed; see mat-$n.log" >> "$OUT/faults.txt"
             echo "=== $n $short: the rebuild FAILED: $(grep -m1 -E "ERROR|error " "$OUT/mat-$n.log" | cut -c1-200)"
         fi
+        # The server of a store that founds again writes a new log.
+        cp "$CHAIN/reactive-store/server.log" "$OUT/server-$n.log" 2>/dev/null
         found_chain "mat-$n-found" again && verify "$n-$short-found" || return 1
     done
     echo "=== replay: $n commits, $refused refused, $faults faults"
@@ -357,7 +359,7 @@ fresh() {
         'using PackageCompiler; PackageCompiler.stop_server(ARGS[1])' "$CHAIN" > "$OUT/stop.log" 2>&1
     # The new server writes its log over the log of the server of the replay.
     cp "$CHAIN/reactive-store/server.log" "$OUT/server-replay.log" 2>/dev/null
-    echo "=== fresh: the replay of the server of the chain: $(grep -h -o "rc: replay: [0-9]* candidates, [0-9]* compared, [0-9]* differ" "$OUT/server-replay.log" | awk '{c += $5; d += $7} END {print NR " rebuilds, " c + 0 " compared, " d + 0 " differ"}')"
+    echo "=== fresh: the replay of the server of the chain: $(grep -h -o "rc: replay: [0-9]* candidates, [0-9]* compared, [0-9]* moved, [0-9]* differ" "$OUT/server-replay.log" | awk '{c += $5; m += $7; d += $9} END {print NR " rebuilds, " c + 0 " compared, " m + 0 " moved, " d + 0 " differ"}')"
     mat mat-fresh "$CHAIN" "" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 ||
         { echo "=== fresh: the rebuild failed; see $OUT/mat-fresh.log"; return 1; }
     echo "=== fresh: $(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)"

@@ -2,8 +2,10 @@
 # Gate C of Stage C (plan/pending/robust-incremental-compiler.md): the
 # image of a chain does not grow with the edits, and holds one definition
 # per live function. On the HazardApp package (tool/m6_hazard), with the
-# edit of M6 (shapes-after.jl) and its reverse.
-#   full         - materialize_app founds $OUT/hazard at the sources S0
+# edit of M6 (shapes-after.jl) and its reverse. The gate edits a copy of the
+# package in $OUT/src.
+#   full         - the package into $OUT/src, and materialize_app founds
+#                  $OUT/hazard at the sources S0
 #   format       - the image is version 3: one function table in the
 #                  metadata, no per-shard function table, no duplicate
 #                  text definition; prints the loadable size
@@ -23,6 +25,7 @@ JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
 JULIA=${JULIA:-$JH/usr/bin/julia}
 PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 HZ=$JH/contrib/reactive-compiler/tool/m6_hazard
+SRC=$OUT/src
 THREADS=${THREADS:-8}
 TIMINGS=${TIMINGS:-1}
 LANE=${LANE:-16-23}
@@ -49,9 +52,9 @@ write_mat() {
     cat > "$OUT/mat.jl" <<EOF
 import Pkg; Pkg.instantiate()
 using PackageCompiler
-materialize_app("$HZ/HazardApp", "$APP";
-    tracked = ["$HZ/$FILE" => "HazardApp"],
-    workload = "$HZ/workload.jl",
+materialize_app("$SRC/HazardApp", "$APP";
+    tracked = ["$SRC/$FILE" => "HazardApp"],
+    workload = "$SRC/workload.jl",
     executables = ["hazard" => "julia_main"],
     force = true,
     incremental = true,
@@ -133,8 +136,8 @@ heap() {
     grep -q "^info dead 0 closed entries, 0 invalid code instances" "$OUT/heap.log"
 }
 
-edit() { cp "$HZ/shapes-after.jl" "$HZ/$FILE" && echo "=== edited $FILE"; }
-restore() { git -C "$JH" checkout -- "contrib/reactive-compiler/tool/m6_hazard/$FILE" && echo "=== restored $FILE"; }
+edit() { cp "$HZ/shapes-after.jl" "$SRC/$FILE" && echo "=== edited $FILE"; }
+restore() { cp "$HZ/$FILE" "$SRC/$FILE" && echo "=== restored $FILE"; }
 
 cycle() {
     local i
@@ -181,7 +184,7 @@ sizes() {
 steps=${*:-full format cycle noedit heap sizes}
 for step in $steps; do
     case $step in
-        full) rm -rf "$APP" "$OUT/sizes.txt" && mat mat-full && record full && runbin full before ;;
+        full) rm -rf "$APP" "$SRC" "$OUT/sizes.txt" && cp -a "$HZ" "$SRC" && mat mat-full && record full && runbin full before ;;
         format) format ;;
         cycle) cycle ;;
         noedit) noedit ;;
