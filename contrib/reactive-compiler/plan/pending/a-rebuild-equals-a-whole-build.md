@@ -301,6 +301,13 @@ These are my proposals. The owner approves them with the plan.
   the warm-up of the harness does for its test module now, so the image and
   the overlay hold nothing of it. A fix of the harness then reaches a store
   with the next rebuild.
+
+  *As built (Step 4):* the rebuild child loads the sources too, not only the
+  server, because a build with no server has the same need. The overlay holds
+  no method of the loaded module. It does hold the code that Base compiled for
+  the types of the module in that build, about 390 small functions and 4 MB
+  in the gate. They do not add up from build to build. The dead-type test of
+  Step 10 can remove them.
 - **D8. The program gate checks the image, and a new gate replays commits
   (R8).** The *program gate* is `contrib/merged/gate_prelinked_chain.sh`
   (finding 22). It gets an edit that writes into a table of the base, the
@@ -390,6 +397,13 @@ test that fails before the change.
 On 2026-11-10, after Step 1, the owner said "Yes and continue": the push of
 Step 1, and the work goes on with the next steps in their order. Q1 is still
 open; Step 10 needs its answer.
+
+On 2026-11-10, after the replay of Step 2 showed findings 40 to 42, the owner
+approved another order: Step 4 first, then Step 7, then the other steps in
+their order. Step 4 is first because each later fix of the harness then
+reaches the stores with no whole build. Step 7 is next because the rule that
+finds what an item runs closes the faults that the replay showed on real
+commits. The numbers of the steps stay as they are.
 
 - [x] **Step 1: the constant data of an overlay (finding 33).** *Done.* It is first,
   because each rebuilt program of today can hold the fault. The writer tests
@@ -558,10 +572,56 @@ open; Step 10 needs its answer.
   first.** Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A
   finding whose test passes on the branch leaves the plan, with a note.
-- [ ] **Step 4: the server runs the installed harness (D7).** Test: a store
+- [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
+  branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
+  PackageCompiler; not landed.* Test: a store
   that an older build of Julia founded applies an edit with a changed harness,
   and the overlay holds no function of the harness. This step is early so
   that each later fix reaches the stores of the owner with no whole build.
+
+  *How it works.* The harness says the print of its sources
+  (`ReactiveCompiler.HARNESS_PRINT`, one hash of its `.jl` files). A whole
+  build records the print of the harness of its image as `harness` in
+  `store.toml`. A rebuild compares it with the print of the sources that its
+  Julia has. When the two differ, the rebuild loads the sources into a module
+  of their own, `ReactiveHarness.ReactiveCompiler`:
+
+  - the script of a rebuild child binds the module to `rc_harness`, calls it
+    in place of the standard library, and ends with `rc_remove_harness!()`;
+  - the server starts with a program, `serve.jl` in the store, in place of
+    `--reactive-server`; the program opens the standard streams first, because
+    the output mode runs no `__init__`;
+  - `rc_save` calls `rc_remove_harness!()` in its fork, before the image is
+    written. The function deletes each method of the loaded module and takes
+    the module out of the list of the modules with documentation. The code
+    that runs keeps its methods, because a deletion counts from the next
+    world on.
+
+  A store with no `harness` record, such as each store of before this step,
+  loads the sources at each rebuild until its next whole build. A server
+  starts again when the sources change. `JULIA_REACTIVE_HARNESS` names another
+  folder of sources, for a test.
+
+  *The gate* is `tool/gate_harness.sh`. It runs gate I1 four times with
+  overlays: through a server and through a child, each with a copy of the
+  sources that has another print, and each with the sources of the tree. It
+  passed on the image of before the change, whose harness has no print and no
+  `rc_remove_harness!`, and on the image of after it:
+
+  | | server | child |
+  | --- | --- | --- |
+  | the chain against the whole build, four checks | equal | equal |
+  | functions of the harness in the overlay | 0 | 0 |
+  | wrong entries (`overlay_check.py`) | 0 | 0 |
+  | the overlay, with the harness of the image | 15.0 MB | 14.6 MB |
+  | the overlay, with loaded sources | 19.0 MB | 19.3 MB |
+  | a rebuild, with the harness of the image | 3.0 s | 3.0 s |
+  | a rebuild, with loaded sources | 4.9 s, then 2.7 s | 4.8 s each |
+
+  The cost of loaded sources is about 2 s for each process that loads them,
+  because the process compiles the harness, and about 4 MB in the overlay
+  (see D7). The owner's IDE store has no `harness` record, so it loads the
+  sources until its next whole build.
 - [ ] **Step 5: an apply is all or nothing, and each input is known (D4, D5,
   D5a; findings 7, 8, 28 to 30, 34, 36, 39).** The server starts with one collector
   thread. A changed signature of a `@ccallable` function is refused. A build
@@ -577,6 +637,81 @@ open; Step 10 needs its answer.
   server does not parse 1030 files. The groups of the statements. The read
   rule skips `/proc`, `/sys` and `/dev`. Test: the tests of Step 3, and the
   count of items that the replay gate evaluates with no need.
+
+  *In work. The rule of D1 is measured, and it does not hold: the step waits
+  for the owner's answer on the rule that replaces it.*
+
+  *The test that fails first* is `tool/gate_runs.sh` with the program
+  `tool/r1_runs`. One file holds six expressions, and the edit changes only
+  the functions that they run, in another file. The rebuild of today leaves
+  all six as they were:
+
+  | expression | today | a whole build |
+  | --- | --- | --- |
+  | `const TABLE = make_table()` | 1 | 2 |
+  | `const SCALED = scale(BOX[])`, a call on a value of an unknown type | 6 | 9 |
+  | `answer_value() = @answer 10`, the macro expands through a function | 11 | 12 |
+  | `const ANSWER = @answer 100` | 101 | 102 |
+  | `const DEFAULT_THEME = make_theme()`, and the type gets a field | 1 field | 2 fields |
+  | `@generated staged(x) = generated_body(x)` | 2 | 3 |
+
+  *The reach by name, measured.* The harness has the graph of D1
+  (`reach.jl`), and `tool/reach_report.jl` walks real commits with the
+  tracked list of the IDE store and no build. Over 39 commits of
+  projectured-julia, with 27 202 expressions in 1 030 files, each commit that
+  changes code makes about 11 300 names "affected" and hits about 355
+  constants, 32 globals, 429 statements, 595 methods and 1 269 types. The
+  rule would evaluate about 2 700 expressions again for each edit. Three
+  repairs were tried together: the scope rules of Julia, so that a local and
+  a field are no name; a quote counts as data; a method of a Base function is
+  filed under the types of its signature only. The count stays the same
+  (8 800 names, 2 350 hits). The reason is in the code and not in the rule: a
+  type is a hub. Each document type reaches `Base.show` of `Document`, which
+  reaches the print functions, which reach each projection. So the reach by
+  name can not choose the expressions; it can not be the test.
+
+  *What the real code holds* (probes on the image of the IDE, read only):
+
+  - The ledger of all 1 032 files parses in 0.97 s. Finding 20 gives 9.6 s
+    for "the ledger reads each file"; the parse is not that time.
+  - 29 tracked macros have 2 196 users. One pass of `macroexpand` over all of
+    them takes 2.07 s. Two passes give the same expansions, after the
+    generated names get numbers in their order.
+  - 557 constants have an initializer with a call. 333 of them name a binding
+    of a tracked module; these evaluate in 0.52 s (1.67 s the first time).
+    Two evaluations give a value of the same structure for 515 of 560; the
+    other 45 need care: a lock, a `gensym`, a closure, the free slots of a
+    `Dict` of plain data.
+  - The expansions hold 958 top-level calls, and each one is
+    `Base.Docs.doc!`. About 80 expansions hold an initializer with a call
+    (`@compile_ahead`, a `let`).
+  - 443 statements: 420 are macro calls that define methods, 63 are loops
+    (`@eval` definitions and exports), 8 are plain calls
+    (`register_palette!(RADIX_PALETTE)`, four exports through `Core.eval`).
+  - No tracked file has a `@generated` function.
+
+  *Proposed by the assistant, in place of D1: replay and compare.* A rebuild
+  that moves the world does again the part of an evaluation that has a
+  result, and compares the result with the one of before the edit:
+
+  - it expands each user of a tracked macro, and evaluates the expression
+    again when the expansion differs;
+  - it evaluates each initializer that has a call and names a tracked
+    binding, and binds the constant again when the value has another
+    structure;
+  - it evaluates a `@generated` method again, and each loop that only defines
+    methods or exports names: the method filter keeps a method of the same
+    code.
+
+  The pass goes through the expressions in the load order, so a constant
+  that reads another one sees its new value. The results of before the edit
+  come from the last build of the same server, or from one more pass before
+  the apply. The cost on the IDE is about 3 s for each rebuild, and about 3 s
+  more for the first build of a process. The test is exact where the reach is
+  a guess, and it needs no graph. Its limits: an initializer that gives
+  another value at each evaluation is left as it is, with a line in the log;
+  a plain call statement is not run again when a function that its callee
+  calls changes (D3 stays as it is for the 8 of them).
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
   37).** First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the
