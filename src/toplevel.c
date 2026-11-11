@@ -39,8 +39,9 @@ JL_DLLEXPORT _Atomic(const char *) jl_filename = "none"; // need to update jl_fp
 // place. A line number node inside the result of a lowering does not, so a
 // macro that returns top-level forms with its own lines changes nothing:
 // `jl_toplevel_expr_lowered` counts the evaluations of lowered code that are
-// open. An `eval` keeps the place of the expression that calls it, and gives
-// the place back when it returns. One value of the process, as `jl_lineno`:
+// open. The body of a module is the exception: its forms set the place, also
+// inside a macro call. An `eval` keeps the place of the expression that calls
+// it, and gives the place back when it returns. One value of the process, as `jl_lineno`:
 // not thread safe.
 jl_sym_t *jl_toplevel_expr_file = NULL;
 int jl_toplevel_expr_line = 0;
@@ -261,14 +262,20 @@ static jl_value_t *jl_eval_module_expr(jl_module_t *parent_module, jl_expr_t *ex
 
     jl_module_t *newm = jl_begin_new_module(parent_module, name, std_imports, filename, lineno);
     JL_GC_PROMISE_ROOTED(newm); // Rooted in jl_current_modules
-    // The forms of the body set the place of the top-level expression. After
-    // the body, the place is that of the module expression again, so what the
-    // end of the module runs (`__init__`) has not the place of the last form.
+    // The forms of the body set the place of the top-level expression, also
+    // when a macro call holds the module, as a docstring does: the body of a
+    // module is source that the macro passes on, so the count of the lowered
+    // code starts at 0 for it. After the body, the place is that of the module
+    // expression again, so what the end of the module runs (`__init__`) has
+    // not the place of the last form.
     jl_sym_t *module_expr_file = jl_toplevel_expr_file;
     int module_expr_line = jl_toplevel_expr_line;
+    int module_expr_lowered = jl_toplevel_expr_lowered;
+    jl_toplevel_expr_lowered = 0;
     jl_eval_toplevel_stmts(newm, stmts, 1, 0, toplevel_filename, toplevel_lineno);
     jl_toplevel_expr_file = module_expr_file;
     jl_toplevel_expr_line = module_expr_line;
+    jl_toplevel_expr_lowered = module_expr_lowered;
     jl_end_new_module(newm);
 
     return (jl_value_t*)newm;
