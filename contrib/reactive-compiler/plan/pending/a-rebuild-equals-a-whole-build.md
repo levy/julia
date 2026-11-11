@@ -959,6 +959,62 @@ commits. The numbers of the steps stay as they are.
   replay gates, where the count of the methods of the chain must come to
   that of the whole build. Then D2. Test: the moved function of finding 1; a
   removed struct; a renamed module.
+
+  *D13, as built (2026-11-11; d17f1c03a7 the runtime, 3e06951cc9 the
+  harness, on the branch `rebuild-equals-step-4`).*
+
+  - **The runtime.** `Method` has the fields `toplevel_file` and
+    `toplevel_line`. The top-level evaluation keeps the place of the
+    expression that it evaluates now in two values of the process
+    (`jl_toplevel_expr_file`, `jl_toplevel_expr_line` in `toplevel.c`), and
+    `jl_method_def` copies them into the method. A count of the open
+    evaluations of lowered code tells a line number node of the source from
+    one of an expansion. `Core.eval` keeps the place and gives it back; the
+    C loader of a file sets it for each form; the body of a module gives
+    the place of the module expression back.
+  - **A direct test** (`replay/definer_test.jl` of the session) loads two
+    files and checks 16 cases: a plain method, a documented one (the line
+    of the docstring), a method of an expansion (the place of the user, the
+    text in the macro file), a method of an `@eval` in a loop (the place of
+    the loop), a method in a module, a keyword method with its body and its
+    closure (one place), a macro that returns top-level forms with its own
+    lines (the place of the call), the constructors of a struct, a
+    generated method and the method of its generator, a method after an
+    `include` (its own line again), and a method that the program defines
+    outside a top-level evaluation (no place). All pass. Each of the 10 079
+    methods of Base has a place.
+  - **The harness.** The ledger takes the methods of an item from the
+    definer (`rc_methods_by_definer`, `rc_assign_methods!`): the methods
+    whose top-level place is the file and the first line of the item.
+    `rc_owns`, which gave a macro its methods by their names, is gone. The
+    harness evaluates an item with its place (`rc_evaluate_item`). A kept
+    method takes both places of the new definition. An unchanged item that
+    moved gives its new first line to the methods that it defined, and its
+    shift to the methods whose text is inside it (`rc_methods_by_text`). The
+    methods on a changed type count as inside when a tracked expression
+    defined them: a method that a macro of another package made no longer
+    refuses the change, as it did for 1df4c59c8 in the chain of the kernel.
+  - **The oracle** prints the definer in each method line, so each gate
+    compares it with the whole build.
+  - **The gate.** `gate_runs.sh` has the case `@steady` again. The rebuild
+    says `change A2 helpers.jl:53 steady_code, 1 methods`, with no method
+    deleted, and `steady_value()` gives 7. The gate passes in both forms,
+    with each step as expected and the four checks equal (37 methods with
+    their definers, the roots, 19 lines of output, 13 globals). After the
+    step `move`, the moved function has the definer `lines.jl:6` in the
+    chain and in the whole build.
+
+  *A trap of the build.* A change of the layout of `Method` needs the image
+  files of the build made again from the compiler: `sysimage.mk` makes the
+  compiler image from the sources of the compiler only, so a `make` loaded
+  the image of the old layout with the new runtime and waited on the lock
+  of a method without end. Before the `make`: remove
+  `usr/lib/julia/basecompiler*`, `sysbase*`, `sys-o.a` and `sys.so`. The
+  same is needed in the worktree of the installed Julia when this lands.
+
+  *Limits.* The place is one value of the process (D13). The package patch
+  of Stage J (`patch.jl`) records the moved lines of the text of a method
+  and not yet the moved line of its definer; Stage J is not in this plan.
 - [x] **Step 7: the code that an item runs (D1, D3; findings 2 to 6, 9, 20).**
   The replay of D1. The groups of the statements. The read rule skips
   `/proc`, `/sys` and `/dev`. Test: `tool/gate_runs.sh`, the tests of Step 3,
