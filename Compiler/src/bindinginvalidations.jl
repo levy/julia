@@ -147,6 +147,12 @@ function invalidate_code_for_globalref!(b::Core.Binding, invalidated_bpart::Core
                 latest_bpart = user_binding.partitions
                 latest_bpart.max_world == typemax(UInt) || continue
                 is_some_implicit(binding_kind(latest_bpart)) || continue
+                # Modules that use each other, or two paths of `using` to one module, lead
+                # to the same binding two times. A partition that starts after
+                # `new_max_world` is one that this pass made: the pass resolved the binding
+                # and queued it, and the partition is not valid in `new_max_world`, so
+                # there is nothing to compare it with there.
+                latest_bpart.min_world > new_max_world && continue
                 new_bpart = ccall(:jl_maybe_reresolve_implicit, Any, (Any, Csize_t), user_binding, new_max_world)
                 if need_to_invalidate_code || new_bpart !== latest_bpart
                     push!(queued_bindings, (convert(Core.Binding, user_binding), latest_bpart, new_bpart))

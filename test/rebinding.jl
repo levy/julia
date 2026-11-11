@@ -443,3 +443,26 @@ module Invalidate61745_indirect
     Core.eval(M, :(const foo = "changed!"))
     @test caller() == "changed!"
 end
+
+# Test that the declaration of an exported name is resolved in two modules that
+# use each other: the invalidation reaches the binding of each module two
+# times, through the cycle of `using`.
+module InvalidateUsingCycle
+    using Test
+    module Source
+        export cycled
+    end
+    module Inner
+        using ..Source
+        using ..InvalidateUsingCycle
+        export cycled
+    end
+    using .Inner
+    export cycled
+    @test !isdefined(Inner, :cycled)
+    @test !isdefined(InvalidateUsingCycle, :cycled)
+    Core.eval(Source, :(global cycled))
+    Core.eval(Source, :(cycled() = 1))
+    @test invokelatest(() -> Inner.cycled()) == 1
+    @test invokelatest(() -> cycled()) == 1
+end
