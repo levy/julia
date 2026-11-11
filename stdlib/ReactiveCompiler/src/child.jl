@@ -545,18 +545,29 @@ function rc_import_conflicts(mod::Module, e::Expr)
             bound isa Symbol && source isa Symbol || continue
             Base.binding_kind(mod, bound) in RC_EXPLICIT_KINDS || continue
             target !== nothing && isdefined(target, source) &&
-                Base.binding_module(mod, bound) === Base.binding_module(target, source) && continue
+                rc_resolved(mod, bound) === rc_resolved(target, source) && continue
             push!(conflicts, bound)
         end
     end
     return conflicts
 end
 
-# The module that binds each name for `mod`, or nothing.
+# What `name` is for `mod`: nothing when `mod` has no such name, the value of
+# a constant, and for a global the module that binds it. Two modules that give
+# a function or a type of the same name give two values, so the value says
+# which one the name is. A module can take one constant from several modules,
+# and then no single module binds the name.
+function rc_resolved(mod::Module, name::Symbol)
+    isdefined(mod, name) || return nothing
+    isconst(mod, name) && return getglobal(mod, name)
+    return Base.binding_module(mod, name)
+end
+
+# What each name is for `mod` (`rc_resolved`).
 function rc_resolution(mod::Module, names)
     resolution = Dict{Symbol, Any}()
     for name in names
-        resolution[name] = isdefined(mod, name) ? Base.binding_module(mod, name) : nothing
+        resolution[name] = rc_resolved(mod, name)
     end
     return resolution
 end
@@ -1185,24 +1196,29 @@ function rc_drop_replaced_imports!(evaluation::RcEvaluation, mod::Module, item::
     return nothing
 end
 
-# C3: record how the names of every expression resolve before the apply: in
-# each module with a changed `using`, and in every module when a name leaves a
+# C3: record how the names of the expressions resolve before the apply. In a
+# module with a changed `using`, or with a `using` that left, each name of each
+# expression is recorded. A name that leaves a module is recorded in every
 # module, because an expression of another module can take that name through a
 # `using`. A new module has no such names: the apply makes it, and no
 # expression of it ran before.
 function rc_record_resolutions!(evaluation::RcEvaluation)
-    everywhere = any(removal -> removal.how !== :replaced, evaluation.names)
-    modules = Dict{Vector{Symbol}, Union{Module, Nothing}}()
+    leaving = Set{Symbol}(removal.name for removal in evaluation.names
+                          if removal.how in (:bound, :imported, :exported))
+    whole = Set{Vector{Symbol}}(removal.path for removal in evaluation.names if removal.how === :used)
     for change in evaluation.queue.changes
-        change.item.kind === :using || continue
-        path = rc_module_path(evaluation.roots, change.item)
-        haskey(modules, path) || (modules[path] = rc_module_or_nothing(path))
+        change.item.kind === :using && push!(whole, rc_module_path(evaluation.roots, change.item))
     end
+    isempty(leaving) && isempty(whole) && return nothing
+    modules = Dict{Vector{Symbol}, Union{Module, Nothing}}()
     for item in evaluation.items
         path = rc_module_path(evaluation.roots, item)
-        mod = everywhere ? get!(() -> rc_module_or_nothing(path), modules, path) : get(modules, path, nothing)
+        names = ReactiveSourceDiff.all_names(item.entry.expr)
+        path in whole || intersect!(names, leaving)
+        isempty(names) && continue
+        mod = get!(() -> rc_module_or_nothing(path), modules, path)
         mod === nothing && continue
-        evaluation.resolutions[objectid(item)] = rc_resolution(mod, ReactiveSourceDiff.all_names(item.entry.expr))
+        evaluation.resolutions[objectid(item)] = Base.invokelatest(rc_resolution, mod, names)
     end
     return nothing
 end
@@ -1221,9 +1237,9 @@ function rc_enqueue_resolved_differently!(evaluation::RcEvaluation, module_path,
         mod = get!(() -> Base.invokelatest(rc_module_or_nothing, path), modules, path)
         mod === nothing && continue
         after = Base.invokelatest(rc_resolution, mod, keys(before))
-        after == before && continue
+        moved = sort!(Symbol[name for (name, what) in after if before[name] !== what])
+        isempty(moved) && continue
         evaluation.resolutions[objectid(dependent)] = after
-        moved = sort!(Symbol[name for (name, m) in after if before[name] !== m])
         rc_enqueue!(evaluation.queue, RcChange("C3", dependent, string("resolves ", join(moved, ", "), " differently")))
     end
     return nothing
@@ -1981,7 +1997,7 @@ function rc_warm()
     Base.invokelatest(rc_set_module_doc!, documented, plain_header.entry.expr)
     Base.invokelatest(module_doc, documented) === nothing ||
         error("rc_warm: a header without a docstring keeps the docstring of the module")
-    rc_resolution(Base, [:sin, :nosuchname])[:sin] === Base || error("rc_warm: sin does not resolve in Base")
+    rc_resolution(Base, [:sin, :nosuchname])[:sin] === sin || error("rc_warm: sin does not resolve in Base")
     rc_new_dependency(Base, :(using NoSuchPackage)) === :NoSuchPackage ||
         error("rc_warm: a new dependency is not seen")
     rc_new_dependency(Base, :(using .Math: sin)) === nothing || error("rc_warm: a relative path is a dependency")

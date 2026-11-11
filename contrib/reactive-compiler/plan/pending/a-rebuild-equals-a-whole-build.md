@@ -100,7 +100,10 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 45 | A rebuild that loads the sources of the harness leaves the code that Base compiled for the types of that harness in the image: 465 functions and about 2 MB. A chain of whole images adds them at each rebuild. | Gate C in a tree whose Julia holds an older harness: 175.9 MB, then 2 MB more after each rebuild. | `rc_remove_harness!` | Measured. *Proposed by the assistant:* Step 10 takes it, with the test that says that a type is dead |
 | 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
 | 47 | The id of a log statement counts its expansions in the process. A server that evaluates a function with a log macro a second time gives the statement the next id, and a whole build has the first one. Two prints of the replay for one user of a macro whose expansion logs never compare equal. | `_notify_evaluation` of the kernel after three commits that move it: other code in the chain of one server, the same code from a new server. | `Base.CoreLogging.log_record_id` | Seen on real commits. Closed on the branch: an apply and each print of the replay start with an empty registry of log ids (Step 6) |
-| 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen on a real commit (the replay over the platform, Step 6); open |
+| 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen one time on a real commit (the replay over the platform, Step 6). Not reproduced on 2026-11-11 in two tries: one rebuild of the commit alone, and the same chain of 18 rebuilds with the harness of that day (0 of 862 tables). Open |
+| 49 | A function that changes places between the module that defines it and a module that imports it by its name stops the rebuild. In one direction the rebuild fails with an error of Julia, in the other one it is refused. | `ReferenceModule` had `import ..DocumentModule: search_documents`; the commit takes the function out of `DocumentModule` and defines it in `ReferenceModule`. The rebuild says "invalid method definition in ReferenceModule: exported function DocumentModule.search_documents does not exist". The commit that moves it back is refused: "the module binds search_documents already; Julia ignores a conflicting import". | `child.jl`: `rc_name_removals` kept the import of before when the module defines the name now; the check of an import ran before the name removals | Seen on three real commits (the replay over the kernel with the removals, Step 6); closed on the branch |
+| 50 | A method of another module that names a moved struct in its signature stays a method for the struct of before. The expression of the method has the same text, so nothing evaluated it again. | `struct Token` moves from the module `Left` to the module `Right`; `Both` uses the two and has `weigh(token::Token) = token.weight`. After the rebuild `Both.weigh(Right.Token(8))` is a `MethodError`; a whole build gives 8. | `child.jl`: the check of how the names of an expression resolve covered only a module with a changed `using` | Found by reading, confirmed by a gate case that failed first (Step 6); closed on the branch |
+| 51 | **Julia fails when it resolves a declared name again in modules that use each other.** The pass that follows a changed binding to the modules that use its module comes back to a binding that it resolved already, and an assertion fails. The error that the person sees is "MethodError: no method matching string(::Expr)", because the message of the assertion is made in the world of the compiler. The released Julia 1.13.1 does the same. | `module R; export f; end`, `module K; using ..R; using ..P; export f; end`, the parent `P` has `using .K`, and both resolved `f`. Then `global f` in `R` fails. In the kernel, `KernelModule` uses each module of its parent and the parent too, and the parent uses `KernelModule`; the rebuild that defines `search_documents` again in the module that exports it reaches the case. | `Compiler/src/bindinginvalidations.jl`, `invalidate_code_for_globalref!` | Seen on the three commits of finding 49, after its correction; a script of ten lines shows it; closed on the branch (ec197346b0), with a test in `test/rebinding.jl`. A report to upstream Julia is the decision of the owner |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1164,6 +1167,173 @@ commits. The numbers of the steps stay as they are.
     leaves RunLib.Left`, `the bound name travel leaves RunLib.Left`, `the
     using leaves RunLib.Onlooker`, `the bound name Gone leaves RunLib`, and
     so on, with `change B2 moved.jl:27 Gone (removed), 2 methods deleted`.
+
+  *The replay over the kernel with the removals, and the names that
+  change their source (2026-11-11; findings 49 and 50).* The same 28
+  commits of the kernel, with D2 in the harness. The image of the chain is
+  the image of a whole build for the first time: 3 448 method lines, the
+  output and the 13 globals are equal, for one server and for a new server.
+  But three commits did not apply, and the gate made a whole build for each
+  one. All three move `search_documents` between `DocumentModule` and
+  `ReferenceModule`, which imported it by its name:
+
+  ```julia
+  # before the commit                           # after the commit
+  module ReferenceModule                        module ReferenceModule
+  using ..DocumentModule                        using ..DocumentModule
+  import ..DocumentModule: search_documents     export search_documents
+  end                                           search_documents(obj, predicate) = ...
+                                                end
+  ```
+
+  | commit | the direction | the rebuild, before | a whole build |
+  | --- | --- | --- | --- |
+  | a375217d6, 660b68779 | to the module that imported it | fails: "exported function DocumentModule.search_documents does not exist" | `ReferenceModule` has its own function |
+  | 55d18341c | back to the module that it came from | refused, C3: "the module binds search_documents already" | `ReferenceModule` imports the function |
+
+  D2 as built took a name of an import out only when no expression of the
+  edited sources gave the name in any way. Here an expression gives it in
+  another way: the module defines it now. The model is the one of D2,
+  stated for this case too: *after the apply, each name of a module has the
+  source that the edited sources give it, and each expression that
+  resolves a name in another way than before is evaluated again.*
+
+  - **An import that left takes its name with it also when the module
+    defines the name now.** A method or a macro of a name that the module
+    imports is a method of the function of another module, so it binds no
+    name; the binding of a function that the module defined goes when the
+    module imports the name now (`rc_given_names`, `rc_name_removals`).
+  - **A name that an import of the edited sources gives again** stays
+    until that import is evaluated. The import of before goes there, and
+    only when the import of now names another binding, because Julia
+    ignores an import that conflicts with one that exists
+    (`rc_drop_replaced_imports!`). So an import line that gets one more
+    name takes no name out, and no code that uses the other names is
+    compiled again. The first import of the load order that gives a name
+    decides it, as in a whole build.
+  - **The check of an import against the names of its module** (the C3
+    refusal) runs after the name removals are known, and does not count a
+    name that the apply takes out before the evaluation
+    (`rc_refuse_import_conflicts!`). An import of a name that the module
+    still defines by an expression that stays is refused as before.
+  - **How the names resolve is recorded before the removals** and compared
+    after them, in every module when a name leaves a module, and as before
+    in a module with a changed `using` (`rc_record_resolutions!`,
+    `rc_enqueue_resolved_differently!`). Each expression that resolves a
+    name in another way joins the queue at its place in the load order. A
+    method that an unchanged expression gave the imported function is
+    defined again for the function of its module, and the method of before
+    is deleted. A method of a third module that names a moved struct in its
+    signature is defined again for the struct of the new module (finding
+    50). An expression that only calls a moved function is evaluated again
+    too; the filter keeps its method, because the code and the signature
+    are the same.
+
+  The gate program has both cases in `moved.jl`. The modules `Early` and
+  `Late` hand over two functions, one in each direction, and `Late` gives
+  each one a method whose text stays. The module `Left` gives the struct
+  `Token` to `Right`, and `Both` names it in a signature. With the harness
+  of before, the rebuild of the first case fails with the error of the
+  kernel commits, and the second case prints `token = MethodError of
+  Right`, where a whole build prints `token = 8 of Right`. The rebuild
+  says now: `the imported name carry leaves RunLib.Late`, `the bound name
+  bring leaves RunLib.Late`, `change C3 moved.jl:46 carry (resolves carry
+  differently), 1 methods, 1 deleted`, `change C3 moved.jl:21 weigh
+  (resolves Token differently), 1 methods, 1 deleted`, `change C3
+  moved.jl:20 journey (resolves travel differently), 1 methods, 1 kept`.
+
+  *A defect of Julia in the way (finding 51).* With the two corrections
+  the gate passed, and the three commits of the kernel still failed, with
+  "MethodError: no method matching string(::Expr)" in the definition of the
+  moved function. The cause is in Julia and not in the fork. When a binding
+  changes, `invalidate_code_for_globalref!`
+  (`Compiler/src/bindinginvalidations.jl`) resolves the name again in each
+  module that uses the module of the binding, and goes on to the modules
+  that use that one. Two cases bring it to a partition that it must not
+  walk, and an assertion fails; the text of the assertion is made in the
+  world of the compiler, which has no `string` for it, so the person sees
+  the `MethodError`.
+
+  ```julia
+  # 1. modules that use each other          # 2. a module that imported the name before
+  module P                                   module Source; export moved; moved() = 1; end
+  module R; export f; end                    module User; using ..Source; import ..Source: moved; end
+  module K; using ..R; using ..P; export f; end   Base.delete_binding(User, :moved)
+  using .K; export f                         Base.delete_binding(Source, :moved)
+  end                                        isdefined(User, :moved)
+  isdefined(P.K, :f); isdefined(P, :f)       @eval Source global moved
+  @eval P.R global f     # fails             @eval Source moved() = 2     # fails
+  ```
+
+  | | Julia 1.13.1, and the fork before | the fork now |
+  | --- | --- | --- |
+  | case 1 | `MethodError: no method matching string(::Expr)` | `P.K.f()` and `P.f()` give 1 |
+  | case 2 | the same error | `User.moved()` gives 2 |
+
+  - *Case 1.* The pass comes back to a binding that it resolved already in
+    this pass. The kernel has the cycle: `KernelModule` uses each module of
+    its parent, the parent is among them, and the parent uses
+    `KernelModule`. The pass now skips a partition that starts after the
+    world of before the change (ec197346b0).
+  - *Case 2.* Only an explicit import records an edge on the binding that
+    it imports, and the edge stays when the import goes. The pass queued
+    such a binding with its latest partition as the old and the new one,
+    and then closed that partition. The loop over the edges now skips a
+    binding whose latest partition is an implicit import; the loop over
+    the modules resolves it (4f46c3669b).
+  - `test/rebinding.jl` has both cases and passes 76 of 76. A report of the
+    two cases to upstream Julia is a decision of the owner.
+
+  *One fault of the first form of the check for every module.* It read the
+  module that binds each name of each expression. Julia refuses that for a
+  constant that a module takes from several modules ("Constant binding was
+  imported from multiple modules"), and the platform has such constants:
+  four rebuilds of the platform chain failed. The check now records only
+  the names that leave, in every module, and each name in a module with a
+  changed `using` or with a `using` that left. A constant is compared by
+  its value and a global by the module that binds it (`rc_resolved`): two
+  modules that give a function or a type of one name give two values.
+
+  *The replay over the kernel with all corrections (2026-11-11).*
+
+  | | before D2 | D2 as built | with findings 49 to 51 |
+  | --- | --- | --- | --- |
+  | commits that the chain applied | 28 of 28 | 25 of 28 | 28 of 28 |
+  | refused, failed | 0, 0 | 1, 2 | 0, 0 |
+  | method lines that differ, one server | 39 | 0, after 3 whole builds | 0 |
+  | method lines that differ, a new server | 30 | 0, after 3 whole builds | 0 |
+  | output, globals | equal | equal | equal |
+
+  This is the first replay over real commits in which each commit applies
+  and the image of the chain is the image of a whole build. The control
+  still shows 1 fact that differs between two whole builds of one commit
+  (the place of `Base.Enums._enum_hash` for `_CellState`), and the roots
+  differ in 23 of 300 tables, counted and not failed.
+
+  *The chain of 18 commits of the platform, to the commit that changes
+  `ReactiveCell` (e0f6014fb to 00d0f77e0), with all corrections.* Each of
+  the 18 rebuilds applies, with no refusal and no fault, and the overlay
+  check of each one is clean. The last rebuild evaluates 2 294 expressions
+  in 2 min 33 s. This chain is the one that showed finding 48 the day
+  before: then 2 of 857 root tables held stale bytes, with the constant
+  data 384 bytes into a page; now 0 of 862 do, with the constant data
+  2 688 bytes into a page. One rebuild of that commit from a whole build
+  of the commit before it is clean too. So finding 48 is not reproduced in
+  two tries, and it stays open: the place of the constant data in its page
+  is the one difference that the two runs show.
+
+  *The gate* passes through a child and through a server with the last
+  form of the harness: each step as expected, and the four checks equal (58
+  method lines, 3 roots, 27 lines of output, 13 globals). With the harness
+  of before finding 49 the rebuild of the gate edit is refused ("the module
+  binds bring already").
+
+  *Open, from this work.* A plain statement that names a moved name is
+  evaluated again like each other expression, and what it did before is
+  not taken back: D3 takes back the statements that changed or left, and
+  this one has the same text. No commit of the two replays has such a
+  statement. The check of an import against the names of its module reads
+  the form `import A: f` and not the form `import A.f`.
 
   *A trap of the build.* A change of the layout of `Method` needs the image
   files of the build made again from the compiler: `sysimage.mk` makes the
