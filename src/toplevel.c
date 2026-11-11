@@ -30,6 +30,22 @@ JL_DLLEXPORT _Atomic(int) jl_lineno = 0; // need to update jl_fprint_critical_er
 // current file name
 JL_DLLEXPORT _Atomic(const char *) jl_filename = "none"; // need to update jl_fprint_critical_error if this is TLS
 
+// The place of the top-level expression that is evaluated now, as the source
+// gives it: its file and its first line, or NULL and 0 outside each top-level
+// evaluation. A method keeps the place of the expression that defined it
+// (`toplevel_file`, `toplevel_line`), so a tool finds that expression also for
+// a method that carries the lines of a macro.
+// A line number node of a form that a loader gives to the evaluation sets the
+// place. A line number node inside the result of a lowering does not, so a
+// macro that returns top-level forms with its own lines changes nothing:
+// `jl_toplevel_expr_lowered` counts the evaluations of lowered code that are
+// open. An `eval` keeps the place of the expression that calls it, and gives
+// the place back when it returns. One value of the process, as `jl_lineno`:
+// not thread safe.
+jl_sym_t *jl_toplevel_expr_file = NULL;
+int jl_toplevel_expr_line = 0;
+static int jl_toplevel_expr_lowered = 0;
+
 static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t *stmts, int fast, int need_value, const char **toplevel_filename, int *toplevel_lineno);
 
 htable_t jl_current_modules;
@@ -245,7 +261,14 @@ static jl_value_t *jl_eval_module_expr(jl_module_t *parent_module, jl_expr_t *ex
 
     jl_module_t *newm = jl_begin_new_module(parent_module, name, std_imports, filename, lineno);
     JL_GC_PROMISE_ROOTED(newm); // Rooted in jl_current_modules
+    // The forms of the body set the place of the top-level expression. After
+    // the body, the place is that of the module expression again, so what the
+    // end of the module runs (`__init__`) has not the place of the last form.
+    jl_sym_t *module_expr_file = jl_toplevel_expr_file;
+    int module_expr_line = jl_toplevel_expr_line;
     jl_eval_toplevel_stmts(newm, stmts, 1, 0, toplevel_filename, toplevel_lineno);
+    jl_toplevel_expr_file = module_expr_file;
+    jl_toplevel_expr_line = module_expr_line;
     jl_end_new_module(newm);
 
     return (jl_value_t*)newm;
@@ -577,12 +600,17 @@ static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t 
     int i;
     for (i = 0; i < jl_array_nrows(stmts); i++) {
         root = jl_array_ptr_ref(stmts, i);
-        if (jl_needs_lowering(root)) {
+        // A form that is lowered here is one expression of the source, and each
+        // line number node inside its result is a line of an expansion.
+        int lowered = jl_needs_lowering(root);
+        if (lowered) {
             root = jl_svecref(jl_lower(root, m, *toplevel_filename, *toplevel_lineno, ~(size_t)0,
                                        need_value), 0);
         }
         ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+        jl_toplevel_expr_lowered += lowered;
         res = jl_toplevel_eval_flex(m, root, fast, 1, toplevel_filename, toplevel_lineno);
+        jl_toplevel_expr_lowered -= lowered;
     }
     ct->world_age = last_age;
     JL_GC_POP();
@@ -613,6 +641,12 @@ JL_DLLEXPORT jl_value_t *jl_toplevel_eval_flex(jl_module_t *JL_NONNULL m, jl_val
             // Not thread safe. For debugging and last resort error messages (jl_fprint_critical_error) only.
             jl_atomic_store_relaxed(&jl_filename, *toplevel_filename);
             jl_atomic_store_relaxed(&jl_lineno, *toplevel_lineno);
+            if (jl_toplevel_expr_lowered == 0) {
+                // The first line of the next expression of the source.
+                if (file != jl_nothing)
+                    jl_toplevel_expr_file = (jl_sym_t*)file;
+                jl_toplevel_expr_line = *toplevel_lineno;
+            }
             return jl_nothing;
         }
         return jl_interpret_toplevel_expr_in(m, e, NULL, NULL);
@@ -751,7 +785,13 @@ JL_DLLEXPORT jl_value_t *jl_toplevel_eval(jl_module_t *m, jl_value_t *v)
 {
     const char *filename = jl_atomic_load_relaxed(&jl_filename);
     int lineno = jl_atomic_load_relaxed(&jl_lineno);
-    return jl_toplevel_eval_flex(m, v, 1, 0, &filename, &lineno);
+    // An expression that is lowered in this call is one expression: no line
+    // number node inside its result sets the place of the top-level expression.
+    int lowered = jl_needs_lowering(v);
+    jl_toplevel_expr_lowered += lowered;
+    jl_value_t *result = jl_toplevel_eval_flex(m, v, 1, 0, &filename, &lineno);
+    jl_toplevel_expr_lowered -= lowered;
+    return result;
 }
 
 // Check module `m` is open for `eval/include`, or throw an error.
@@ -790,6 +830,13 @@ JL_DLLEXPORT jl_value_t *jl_toplevel_eval_in(jl_module_t *m, jl_value_t *ex)
     jl_value_t *v = NULL;
     int last_lineno = jl_atomic_load_relaxed(&jl_lineno);
     const char *last_filename = jl_atomic_load_relaxed(&jl_filename);
+    // The evaluation keeps the place of the top-level expression that calls
+    // it, until a form of its own gives another one. It is no lowered code of
+    // that expression, so the count starts at 0.
+    jl_sym_t *last_expr_file = jl_toplevel_expr_file;
+    int last_expr_line = jl_toplevel_expr_line;
+    int last_expr_lowered = jl_toplevel_expr_lowered;
+    jl_toplevel_expr_lowered = 0;
     jl_task_t *ct = jl_current_task;
     jl_atomic_store_relaxed(&jl_lineno, 1);
     jl_atomic_store_relaxed(&jl_filename, "none");
@@ -801,10 +848,16 @@ JL_DLLEXPORT jl_value_t *jl_toplevel_eval_in(jl_module_t *m, jl_value_t *ex)
     JL_CATCH {
         jl_atomic_store_relaxed(&jl_lineno, last_lineno);
         jl_atomic_store_relaxed(&jl_filename, last_filename);
+        jl_toplevel_expr_file = last_expr_file;
+        jl_toplevel_expr_line = last_expr_line;
+        jl_toplevel_expr_lowered = last_expr_lowered;
         jl_rethrow();
     }
     jl_atomic_store_relaxed(&jl_lineno, last_lineno);
     jl_atomic_store_relaxed(&jl_filename, last_filename);
+    jl_toplevel_expr_file = last_expr_file;
+    jl_toplevel_expr_line = last_expr_line;
+    jl_toplevel_expr_lowered = last_expr_lowered;
     ct->world_age = last_age;
     assert(v);
     return v;
@@ -842,6 +895,13 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
     jl_atomic_store_relaxed(&jl_lineno, 0);
     const char *filename_str = jl_string_data(filename);
     jl_atomic_store_relaxed(&jl_filename, filename_str);
+    // Each form of the file is an expression of the source: its line number
+    // node gives the place of the top-level expression.
+    jl_sym_t *last_expr_file = jl_toplevel_expr_file;
+    int last_expr_line = jl_toplevel_expr_line;
+    int last_expr_lowered = jl_toplevel_expr_lowered;
+    jl_toplevel_expr_lowered = 0;
+    jl_sym_t *expr_file = jl_symbol(filename_str);
 
     JL_TRY {
         size_t last_age = ct->world_age;
@@ -852,11 +912,16 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
                 // filename is already set above.
                 lineno = jl_linenode_line(expression);
                 jl_atomic_store_relaxed(&jl_lineno, lineno);
+                jl_toplevel_expr_file = expr_file;
+                jl_toplevel_expr_line = lineno;
                 continue;
             }
+            int lowered = jl_needs_lowering(expression);
             expression = jl_svecref(jl_lower(expression, module, jl_string_data(filename), lineno, ~(size_t)0, 1), 0);
             ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+            jl_toplevel_expr_lowered += lowered;
             result = jl_toplevel_eval_flex(module, expression, 1, 1, &filename_str, &lineno);
+            jl_toplevel_expr_lowered -= lowered;
         }
         ct->world_age = last_age;
     }
@@ -864,6 +929,9 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
         result = jl_box_long(lineno); // (ab)use result to root error line
         jl_atomic_store_relaxed(&jl_lineno, last_lineno);
         jl_atomic_store_relaxed(&jl_filename, last_filename);
+        jl_toplevel_expr_file = last_expr_file;
+        jl_toplevel_expr_line = last_expr_line;
+        jl_toplevel_expr_lowered = last_expr_lowered;
         if (jl_loaderror_type == NULL)
             jl_rethrow();
         else
@@ -872,6 +940,9 @@ static jl_value_t *jl_parse_eval_all(jl_module_t *module, jl_value_t *text,
     }
     jl_atomic_store_relaxed(&jl_lineno, last_lineno);
     jl_atomic_store_relaxed(&jl_filename, last_filename);
+    jl_toplevel_expr_file = last_expr_file;
+    jl_toplevel_expr_line = last_expr_line;
+    jl_toplevel_expr_lowered = last_expr_lowered;
     JL_GC_POP();
     return result;
 }

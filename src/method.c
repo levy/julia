@@ -1087,6 +1087,8 @@ JL_DLLEXPORT jl_method_t *jl_new_method_uninit(jl_module_t *module)
     m->constprop = 0;
     m->purity.bits = 0;
     m->max_varargs = UINT8_MAX;
+    m->toplevel_file = jl_empty_sym;
+    m->toplevel_line = 0;
     JL_MUTEX_INIT(&m->writelock, "method->writelock");
     return m;
 }
@@ -1396,6 +1398,10 @@ JL_DLLEXPORT jl_method_t* jl_method_def(jl_svec_t *argdata,
     m->nargs = nargs;
     m->file = file;
     m->line = line;
+    if (jl_toplevel_expr_file != NULL) {
+        m->toplevel_file = jl_toplevel_expr_file;
+        m->toplevel_line = jl_toplevel_expr_line;
+    }
     jl_method_set_source(m, f);
 
     jl_value_t *filter = jl_atomic_load_acquire(&jl_reactive_method_filter);

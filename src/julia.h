@@ -387,6 +387,14 @@ typedef struct _jl_method_t {
     // forcing the conclusion to always true.
     _jl_purity_overrides_t purity;
 
+    // The file and the first line of the top-level expression whose evaluation
+    // defined this method, or an empty symbol and 0 when no top-level
+    // expression was evaluated. `file` and `line` are the place of the text of
+    // the method: for a method that the expansion of a macro defines, that is a
+    // line of the macro, and the two places differ.
+    jl_sym_t *toplevel_file;
+    int32_t toplevel_line;
+
 // hidden fields:
     jl_mutex_t writelock;
 } jl_method_t;

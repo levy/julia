@@ -1372,6 +1372,9 @@ JL_DLLEXPORT jl_genericmemory_t *jl_idtable_rehash(jl_genericmemory_t *a, size_t
 _Atomic(jl_value_t*) *jl_table_peek_bp(jl_genericmemory_t *a, jl_value_t *key) JL_NOTSAFEPOINT;
 
 JL_DLLEXPORT jl_method_t *jl_new_method_uninit(jl_module_t*);
+// The place of the top-level expression that is evaluated now (toplevel.c).
+extern jl_sym_t *jl_toplevel_expr_file;
+extern int jl_toplevel_expr_line;
 
 jl_module_t *jl_new_module_(jl_sym_t *name, jl_module_t *parent, uint8_t default_using_core, uint8_t self_name);
 jl_module_t *jl_add_standard_imports(jl_module_t *m);
