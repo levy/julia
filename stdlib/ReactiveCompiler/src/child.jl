@@ -1058,7 +1058,8 @@ end
 # filter kept, the statements whose effect the apply takes back, the moved
 # expressions that hold a macro call, the names that the edit removes, and the
 # names of the imports that left which an import of the edited sources gives
-# again and no evaluation decided yet.
+# again and no evaluation decided yet, and the items by the names that their
+# evaluation resolves, made at the first evaluation that binds a constant again.
 mutable struct RcEvaluation
     items::Vector{RcItem}
     roots::Vector{Vector{Symbol}}
@@ -1073,12 +1074,14 @@ mutable struct RcEvaluation
     moved::Vector{RcMoved}
     names::Vector{RcNameRemoval}
     replaced_imports::Set{Tuple{Vector{Symbol}, Symbol}}
+    named::Union{Nothing, Dict{Symbol, Vector{RcItem}}}
 end
 RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved, names) =
     RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
                  Core.MethodInstance[], 0, group, moved, names,
                  Set{Tuple{Vector{Symbol}, Symbol}}((removal.path, removal.name) for removal in names
-                                                    if removal.how === :replaced))
+                                                    if removal.how === :replaced),
+                 nothing)
 
 # Whether the item is a statement that defines nothing: it holds no macro call
 # and no `eval`, so what it does is an effect on a value that exists. A
@@ -1245,6 +1248,70 @@ function rc_enqueue_resolved_differently!(evaluation::RcEvaluation, module_path,
     return nothing
 end
 
+# The value that the binding has as a constant in `world`, or nothing when it
+# is no constant there. The partitions of the binding are read as they are:
+# a lookup would make a partition for a world that has none. Julia dates a new
+# constant back to the worlds before its definition; the name was no constant
+# in those worlds.
+function rc_constant_in(binding::Core.Binding, world::UInt)
+    isdefined(binding, :partitions) || return nothing
+    partition = binding.partitions
+    while partition.min_world > world
+        isdefined(partition, :next) || return nothing
+        partition = @atomic partition.next
+    end
+    partition.max_world >= world || return nothing
+    kind = Base.binding_kind(partition)
+    Base.is_defined_const_binding(kind) && kind != Base.PARTITION_KIND_BACKDATED_CONST || return nothing
+    return Base.partition_restriction(partition)
+end
+
+# The constants of the module that have another value now than in `world`:
+# each name with the value of that world, or nothing when the name was no
+# constant there. A type that a definition makes is a constant too. Julia
+# keeps the binding of a constant whose new value is identical to the old one,
+# so a type that is defined again with the same fields is not in the list.
+function rc_rebound_constants(mod::Module, world::UInt)
+    rebound = Tuple{Symbol, Any}[]
+    Base.get_world_counter() == world && return rebound
+    for name in Base.unsorted_names(mod; all = true)
+        binding = ccall(:jl_get_module_binding_or_nothing, Any, (Any, Any), mod, name)
+        binding isa Core.Binding && isdefined(binding, :partitions) || continue
+        latest = binding.partitions
+        latest.min_world > world || continue
+        Base.binding_kind(latest) == Base.PARTITION_KIND_CONST || continue
+        before = rc_constant_in(binding, world)
+        Base.partition_restriction(latest) === before || push!(rebound, (name, before))
+    end
+    return rebound
+end
+
+# Whether the value is a type as its definition made it: `S` of `struct S` and
+# of `struct S{T}`, and neither `S{Int}` nor the alias of a union.
+function rc_is_defined_type(@nospecialize(value))
+    value isa Type || return false
+    body = Base.unwrap_unionall(value)
+    return body isa DataType && body.name.wrapper === value
+end
+
+# The items of the ledger by the names that their evaluation resolves into
+# what they define: a name of the signature, of the fields or of the
+# initializer, and the function or the type that a method definition adds its
+# method to. The names are those of the source, with no module.
+function rc_items_by_name!(evaluation::RcEvaluation)
+    named = evaluation.named
+    named === nothing || return named
+    named = Dict{Symbol, Vector{RcItem}}()
+    for item in evaluation.items
+        names = ReactiveSourceDiff.type_level_names(item.entry.expr)
+        item.kind === :method && item.name !== nothing && push!(names, item.name)
+        for name in names
+            push!(get!(() -> RcItem[], named, name), item)
+        end
+    end
+    return evaluation.named = named
+end
+
 # Evaluate the next change of the queue in its module, and add to the queue
 # the dependents of what the evaluation changed. Answer false when the
 # evaluation found a refusal. The method filter is installed by the caller.
@@ -1265,8 +1332,7 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     # moves it, and a module that an earlier change made is newer than the
     # caller.
     mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
-    old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
-               Base.invokelatest(getfield, mod, item.name) : nothing
+    world = Base.get_world_counter()
     item.kind === :using && Base.invokelatest(rc_drop_replaced_imports!, evaluation, mod, item)
     rc_evaluate_item(mod, item)
     # A kept method is a method of the sources of now: this evaluation defined
@@ -1295,31 +1361,46 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     for method in change.old_methods, mi in Base.specializations(method)
         mi isa Core.MethodInstance && push!(evaluation.replaced, mi)
     end
-    # The dependents of what the evaluation changed.
-    if item.kind === :type && old_type !== nothing && Base.invokelatest(getfield, mod, item.name) !== old_type
-        found = rc_methods_on_type(old_type, evaluation.tracked)
+    # The dependents of what the evaluation changed. The constants come from the
+    # bindings of the module and not from the name of the item: the call of a
+    # macro binds names that its source does not show, as the second type of a
+    # macro that defines two.
+    rebound = Base.invokelatest(rc_rebound_constants, mod, world)
+    on_types = Base.IdDict{Method, Symbol}()
+    for (name, before) in rebound
+        rc_is_defined_type(before) || continue
+        found = rc_methods_on_type(before, evaluation.tracked)
         for method in found.outside
             rc_refuse!(evaluation.refusals, change.id, item,
                        string("the untracked ", basename(String(method.file)), ":", method.line,
-                              " ", method.name, " names the type (found in the apply)"))
+                              " ", method.name, " names the type ", name, " (found in the apply)"))
         end
-        isempty(evaluation.refusals) || return false
-        for dependent in new_items
-            dependent === item && continue
-            by_name = item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr)
-            by_sig = any(m in found.inside for m in dependent.methods)
-            by_name || by_sig || continue
-            rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
+        for method in found.inside
+            on_types[method] = name
         end
-    elseif item.kind in RC_BINDING_KINDS && item.name !== nothing
-        for dependent in new_items
-            dependent === item && continue
-            item.name in ReactiveSourceDiff.type_level_names(dependent.entry.expr) || continue
-            rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
-        end
-    elseif item.kind === :using
-        rc_enqueue_resolved_differently!(evaluation, rc_module_path(new_roots, item), item)
     end
+    isempty(evaluation.refusals) || return false
+    names = Set{Symbol}(name for (name, _) in rebound)
+    # The value of a global that is no constant can change with no new binding.
+    item.kind === :global && item.name !== nothing && push!(names, item.name)
+    if !isempty(names)
+        by_name = rc_items_by_name!(evaluation)
+        reasons = Base.IdDict{RcItem, Symbol}()
+        for name in sort!(collect(names)), dependent in get(by_name, name, ())
+            get!(reasons, dependent, name)
+        end
+        for dependent in new_items
+            dependent === item && continue
+            named = get(reasons, dependent, nothing)
+            if named === nothing && !isempty(on_types)
+                index = findfirst(method -> haskey(on_types, method), dependent.methods)
+                index === nothing || (named = on_types[dependent.methods[index]])
+            end
+            named === nothing && continue
+            rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", named)))
+        end
+    end
+    item.kind === :using && rc_enqueue_resolved_differently!(evaluation, rc_module_path(new_roots, item), item)
     return true
 end
 
@@ -2009,6 +2090,17 @@ function rc_warm()
     rc_import_conflicts(Base, :(using Core.Intrinsics: sin)) == [:sin] || error("rc_warm: sin does not conflict in Base")
     rc_mentions(Tuple{typeof(sin), Vector{Int}}, Base.unwrap_unionall(Vector).name) ||
         error("rc_warm: the signature does not mention Vector")
+    # The constants that an evaluation binds again: a new value and a new name
+    # are in the list, an identical value is not.
+    rebinds = Module(:RcWarmRebinds)
+    Core.eval(rebinds, :(const same = 1; const other = [1]))
+    rebinds_world = Base.get_world_counter()
+    Core.eval(rebinds, :(const same = 1; const other = [2]; const added = Int))
+    rebound = sort!(Base.invokelatest(rc_rebound_constants, rebinds, rebinds_world); by = first)
+    length(rebound) == 2 && rebound[1] == (:added, nothing) && rebound[2] == (:other, [1]) ||
+        error("rc_warm: the constants bound again are ", rebound)
+    rc_is_defined_type(Array) && !rc_is_defined_type(Vector) && !rc_is_defined_type(Union{Int, Nothing}) &&
+        !rc_is_defined_type(nothing) || error("rc_warm: the types that a definition makes are not told from their aliases")
     rc_content_hash(new_path)
     rm(dir; recursive = true)
     # Warm both branches of the module resolver: a name that Main binds, and

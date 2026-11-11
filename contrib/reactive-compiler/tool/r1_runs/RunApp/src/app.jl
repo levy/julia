@@ -1,8 +1,8 @@
 # The lines that the binary prints: one for each expression of RunLib that
 # runs a function of helpers.jl, for the lists that the statements fill, for
 # the function that names its own line, for the methods that the expansion of
-# a macro defines, and for the value that an initializer puts into the storage
-# of its task.
+# a macro defines, for the value that an initializer puts into the storage
+# of its task, and for the types that the call of a macro defines.
 shown_call(f) = hasmethod(f, Tuple{}) ? f() : "no method"
 
 # The value of the call, or the name of the error that it throws.
@@ -53,7 +53,8 @@ function shape_lines()
             "removed = $(bound_names(RunLib, :Gone, :GONE, :Before, :After))",
             "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))",
             "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.bring(1))) of " *
-            "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :bring))$(bound_names(RunLib.Early, :carry, :bring))"]
+            "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :bring))$(bound_names(RunLib.Early, :carry, :bring))",
+            "badge = $(shown_result(() -> RunLib.badge_sum(RunLib.MarkedBadge(3))))"]
 end
 
 Base.@ccallable function julia_main()::Cint

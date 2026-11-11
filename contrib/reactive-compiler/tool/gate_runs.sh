@@ -30,8 +30,12 @@
 # `using` line, a struct, a constant, and a module that gets another name; no
 # name of before must stay (finding 1, decision D2). Two functions of moved.jl
 # change places between a module that defines one and a module that imports it
-# by its name: each must be the function of its new module (finding 49). The
-# chain is compared with the founding of the edited sources.
+# by its name: each must be the function of its new module (finding 49). A
+# macro of markers.jl defines two types and an alias from one struct, and the
+# second type has a field of the type that the step retype changes: the
+# methods of users.jl that name the second type and the alias must be those of
+# the new type (finding 52). The chain is compared with the founding of the
+# edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -71,8 +75,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}

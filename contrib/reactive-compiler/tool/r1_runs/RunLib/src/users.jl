@@ -71,3 +71,10 @@ macro steady(name)
     return steady_code(name)
 end
 @steady steady_value
+
+# A method that names the second type of the macro `@paired` in its signature,
+# and a method of the alias that the macro defines. The edit of the type Marker
+# gives both names a new value, and the source of the call of the macro shows
+# neither name.
+badge_sum(badge::ScaledBadge) = badge.base.id + badge.mark.id
+MarkedBadge(id::Int) = ScaledBadge(Badge(id), make_marker(id), 0)
