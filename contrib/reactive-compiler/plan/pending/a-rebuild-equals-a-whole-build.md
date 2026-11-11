@@ -101,7 +101,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
 | 47 | The id of a log statement counts its expansions in the process. A server that evaluates a function with a log macro a second time gives the statement the next id, and a whole build has the first one. Two prints of the replay for one user of a macro whose expansion logs never compare equal. | `_notify_evaluation` of the kernel after three commits that move it: other code in the chain of one server, the same code from a new server. | `Base.CoreLogging.log_record_id` | Seen on real commits. Closed on the branch: an apply and each print of the replay start with an empty registry of log ids (Step 6) |
 | 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen on a real commit (the replay over the platform, Step 6); open |
-| 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
+| 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 4 | A changed top-level statement adds to the effect of the old one. | `register!(TABLE, a)` becomes `register!(TABLE, b)`. The table of the rebuild holds `a` and `b`. A whole build holds `b`. | `child.jl:649-659` (ids `X`, `D2`) | Read. Closed on the branch by Step 7 for a statement that names a tracked global; another one is refused (`S1`) |
@@ -1112,6 +1112,58 @@ commits. The numbers of the steps stay as they are.
   image data moves by tens of KB between two rebuilds with no growth of
   what the program holds. What the 54 objects are is not found; the writer
   has no count by type. It stays open, for Step 10.
+
+  *D2, as built (2026-11-11; c337037a86 the runtime, 54f9305f14 the
+  harness).* The test that fails first is the file `moved.jl` of the gate
+  program:
+
+  ```julia
+  module Left;  export travel;  travel() = 1;  end   # the edit moves travel to Right
+  module Right; export stay;    stay() = 2;    end
+  module Both;  using ..Left, ..Right;  journey() = travel() + stay();  end
+  module Onlooker;  using ..Right;  end              # the edit removes the using line
+  struct Gone;  value::Int;  end                     # the edit removes these two
+  const GONE = Gone(1)
+  module Before;  inside() = 4;  end                 # the edit names it After
+  ```
+
+  | | a whole build | the rebuild, before D2 |
+  | --- | --- | --- |
+  | `Both.journey()` | 3 | `UndefVarError`: two modules export `travel` |
+  | `names(Left)`, `isdefined(Left, :travel)` | no `travel`, false | `travel`, true |
+  | `Gone`, `GONE`, `Before` in the package | not there | all three there |
+
+  - **The methods.** Each removed expression is a removal of the methods
+    that it defined: also a struct with its constructors, a constant with
+    the closures of its initializer, and a statement that defined methods.
+    Before, only a method was one. D13 gives these methods; the lines of an
+    expression could not.
+  - **The names.** The names that the removed expressions gave their
+    modules leave when no expression of the edited sources gives them again
+    (`rc_name_removals`, `rc_remove_name!` in `child.jl`). A type, a
+    constant, a global, a function, a macro and a module lose their binding
+    (`Base.delete_binding`); a function goes only when the module defined
+    it, so a method that extended a function of another module takes
+    nothing with it. An exported name loses its export; a name of a `using`
+    with names or of an `import` loses its binding; a `using` line with no
+    names loses its entry in the using list. The names inside a removed
+    module go before the module. An expression that moved to another file
+    of the same module gives its name again there, so the name stays.
+  - **The runtime** has the two functions of the decision
+    (`jl_reactive_module_unexport`, `jl_reactive_module_unuse` in
+    `src/module.c`). Each one makes its change in a new world, and the
+    names that came through the export or through the using list resolve
+    again, as they do when an `export` or a `using` is added.
+  - **A renamed module** is the removal of the old module and a new module.
+    A header that changes and keeps its name (`module` to `baremodule`) is
+    still refused with C5: the expressions inside have the same path and
+    the same text, so nothing says that they must be evaluated again.
+  - **The gate** passes in both forms, with each step as expected and the
+    four checks equal (46 methods, the roots, 25 lines of output, 13
+    globals). The rebuild says, for one edit: `the exported name travel
+    leaves RunLib.Left`, `the bound name travel leaves RunLib.Left`, `the
+    using leaves RunLib.Onlooker`, `the bound name Gone leaves RunLib`, and
+    so on, with `change B2 moved.jl:27 Gone (removed), 2 methods deleted`.
 
   *A trap of the build.* A change of the layout of `Method` needs the image
   files of the build made again from the compiler: `sysimage.mk` makes the
