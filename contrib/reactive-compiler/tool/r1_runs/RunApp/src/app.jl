@@ -23,7 +23,9 @@ function shape_lines()
             "line = $(RunLib.noted_line())",
             "accessors = $(shown_call(RunLib.pair_first)) and $(shown_call(RunLib.pair_second))",
             "marked = $(RunLib.MARKED) of $(fieldcount(RunLib.Marker)) fields",
-            "steady = $(shown_call(RunLib.steady_value))"]
+            "steady = $(shown_call(RunLib.steady_value))",
+            "height = $(RunLib.theme_height(RunLib.DEFAULT_THEME))",
+            "logged = $(RunLib.logged_line())"]
 end
 
 Base.@ccallable function julia_main()::Cint

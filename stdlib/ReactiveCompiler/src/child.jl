@@ -161,6 +161,31 @@ function rc_with_empty_task_storage(f)
     end
 end
 
+# ── the ids of the log statements ───────────────────────────────────────────
+
+# Call `f` with an empty registry of log ids, and give the registry its content
+# back after it. A log macro gives its statement an id from the hash of its
+# module, its level and its message, and takes the next number when the
+# registry of the process holds that id (`Base.CoreLogging.log_record_id`). A
+# whole build expands a statement one time, in the process that compiles its
+# package. A server expands it at each evaluation, and the replay at each
+# print, so the id would count the expansions. The evaluations of one apply
+# share one registry, as the forms of a package do; each print of the replay
+# has its own. Two statements of one package with the same module, level and
+# message keep one id when only one of them is evaluated again: a whole build
+# gives the second one the next number.
+function rc_with_fresh_log_ids(f)
+    ids = Base.CoreLogging._log_record_ids
+    saved = copy(ids)
+    empty!(ids)
+    try
+        return f()
+    finally
+        empty!(ids)
+        union!(ids, saved)
+    end
+end
+
 # ── the method filter ───────────────────────────────────────────────────────
 
 # The methods that the filter kept in place of an identical redefinition
@@ -928,11 +953,15 @@ function rc_statement_group!(queue::RcQueue, refusals::Vector{String}, items::Ve
     return RcStatementGroup(group, old, new)
 end
 
-# Evaluate the expression of the item in `mod`, as the loader of a file does:
-# with the file and the first line of the expression before it, so each method
-# that the evaluation defines keeps that place as its definer.
-rc_evaluate_item(mod::Module, item::RcItem) =
-    Core.eval(mod, Expr(:toplevel, LineNumberNode(item.entry.lines.start, Symbol(item.path)), item.entry.expr))
+# Evaluate the expression of the item in `mod`, as the loader of a file does.
+rc_evaluate_item(mod::Module, item::RcItem) = rc_evaluate_at(mod, item, item.entry.expr)
+
+# Evaluate `e`, the expression of the item or a part of it, in `mod`, as the
+# loader of a file does: with the file and the first line of the item before
+# it, so each method that the evaluation defines keeps that place as its
+# definer.
+rc_evaluate_at(mod::Module, item::RcItem, e) =
+    Core.eval(mod, Expr(:toplevel, LineNumberNode(item.entry.lines.start, Symbol(item.path)), e))
 
 # Delete the methods of the removals.
 function rc_delete_removals!(evaluation::RcEvaluation)
@@ -1282,8 +1311,10 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     rc_install_filter(rc_method_filter)
     t_eval = @elapsed try
         rc_with_empty_task_storage() do
-            while queue.cursor < length(queue.changes)
-                rc_evaluate_next!(evaluation) || rc_stop(refusals, refusal_out)
+            rc_with_fresh_log_ids() do
+                while queue.cursor < length(queue.changes)
+                    rc_evaluate_next!(evaluation) || rc_stop(refusals, refusal_out)
+                end
             end
         end
     finally

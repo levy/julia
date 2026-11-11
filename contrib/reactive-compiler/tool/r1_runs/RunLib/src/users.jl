@@ -57,6 +57,13 @@ end
 # The initializer puts a value into the storage of the task that evaluates it.
 const MARKED = mark!(1)
 
+# A statement defines a method on the type that the edit changes. The method
+# has the statement as its definer, so the rebuild evaluates the statement
+# again for the new type.
+for name in (:theme_height,)
+    @eval $name(theme::Theme) = fieldcount(typeof(theme))
+end
+
 # The expansion defines a method with a line of the function that builds it.
 # The edit changes that function and not the expansion, so the rebuild does not
 # evaluate this expression again, and its method must stay.

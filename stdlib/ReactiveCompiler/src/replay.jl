@@ -354,17 +354,17 @@ function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, proble
     if candidate.expands
         expansion = rc_guarded_print(RcPrinter(), problems, what) do printer
             relative = rc_relative_lines(item.entry.expr, item.entry.lines.start)
-            rc_print(printer, Base.invokelatest(macroexpand, mod, relative))
+            rc_print(printer, rc_with_fresh_log_ids(() -> Base.invokelatest(macroexpand, mod, relative)))
         end
     end
     result = UInt(0)
     if candidate.initializer !== nothing
-        value = rc_recorded_evaluation(mod, candidate.initializer, rc_record_method, filter)
+        value = rc_recorded_evaluation(mod, item, candidate.initializer, rc_record_method, filter)
         result = value isa Some ? rc_guarded_print(printer -> rc_print(printer, something(value)),
                                                    RcPrinter(copy(RC_DEFINED)), problems, what) :
                  hash(rc_identity(typeof(value)), RC_SEED_ERROR)
     elseif candidate.statement
-        value = rc_recorded_evaluation(mod, item.entry.expr, rc_record_and_keep_method, filter)
+        value = rc_recorded_evaluation(mod, item, item.entry.expr, rc_record_and_keep_method, filter)
         rc_take_kept!()
         result = value isa Some ? rc_guarded_print(printer -> rc_definitions_print(printer, mod, copy(RC_DEFINED)),
                                                    RcPrinter(copy(RC_DEFINED)), problems, what) :
@@ -373,14 +373,16 @@ function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, proble
     return (expansion, result)
 end
 
-# Evaluate `e` in `mod` under the filter `record`, which fills `RC_DEFINED`, and
-# install `filter` again. Answer the value in a `Some`, or the exception of an
-# evaluation that throws.
-function rc_recorded_evaluation(mod::Module, e, record, filter)
+# Evaluate `e`, the expression of the item or its initializer, in `mod` under
+# the filter `record`, which fills `RC_DEFINED`, and install `filter` again.
+# The evaluation has the place of the item, as that of the apply has: a method
+# that it defines, or that the filter keeps for it, has the item as its definer.
+# Answer the value in a `Some`, or the exception of an evaluation that throws.
+function rc_recorded_evaluation(mod::Module, item::RcItem, e, record, filter)
     empty!(RC_DEFINED)
     rc_install_filter(record)
     try
-        return Some{Any}(Core.eval(mod, e))
+        return Some{Any}(rc_with_fresh_log_ids(() -> rc_evaluate_at(mod, item, e)))
     catch exception
         return exception
     finally
@@ -423,7 +425,8 @@ end
 # The print of the expansion of `e` in `mod`, with no docstring.
 function rc_expansion_print(mod::Module, e, problems::Vector{String}, what::String)
     return rc_guarded_print(RcPrinter(), problems, what) do printer
-        rc_print(printer, Base.invokelatest(macroexpand, mod, ReactiveSourceDiff.without_docstrings(e)))
+        stripped = ReactiveSourceDiff.without_docstrings(e)
+        rc_print(printer, rc_with_fresh_log_ids(() -> Base.invokelatest(macroexpand, mod, stripped)))
     end
 end
 
@@ -532,7 +535,9 @@ end
 # the apply of the process takes as its own. The trial starts with an empty
 # storage of the task, and its part after the changes with another empty one.
 function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
-    return rc_with_empty_task_storage(() -> rc_trial_parts!(report, evaluation, candidates))
+    return rc_with_empty_task_storage() do
+        rc_with_fresh_log_ids(() -> rc_trial_parts!(report, evaluation, candidates))
+    end
 end
 
 function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
@@ -573,7 +578,7 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
             candidate.statement && candidate.index in active || continue
             mod = rc_module_or_nothing(rc_module_path(evaluation.roots, candidate.item))
             mod === nothing && continue
-            rc_recorded_evaluation(mod, candidate.item.entry.expr, rc_record_and_keep_method, nothing)
+            rc_recorded_evaluation(mod, candidate.item, candidate.item.entry.expr, rc_record_and_keep_method, nothing)
             rc_take_kept!()
         end
         for candidate in candidates
@@ -587,8 +592,10 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     next = 1
     # The part before this line evaluated the code of before the changes, and
     # the part after it evaluates the code of after them: the storage of the
-    # task is empty again, as it is for the apply (`rc_with_empty_task_storage`).
+    # task and the registry of the log ids are empty again, as they are for the
+    # apply (`rc_with_empty_task_storage`, `rc_with_fresh_log_ids`).
     current_task().storage = nothing
+    empty!(Base.CoreLogging._log_record_ids)
     t_trial = @elapsed try
         rc_delete_removals!(evaluation)
         rc_record_resolutions!(evaluation)
