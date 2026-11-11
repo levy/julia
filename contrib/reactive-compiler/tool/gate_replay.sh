@@ -18,8 +18,11 @@
 #              lines, and tool/overlay_check.py finds no wrong entry. A
 #              refused rebuild is counted and the store founds again at that
 #              commit; the log of its server is kept as $OUT/server-<n>.log,
-#              and the images of a rebuild that failed in $OUT/fault-<n>. A rebuild that fails in another way is a fault: the
-#              store founds again, the replay goes on, and the gate fails
+#              and the images of a rebuild that failed in $OUT/fault-<n>. A
+#              rebuild that fails in another way is a fault: the store founds
+#              again, the replay goes on, and the gate fails. A store whose
+#              image grew past its bound founds again by itself: the gate
+#              links the program again and counts the commit
 #   final    - materialize_app founds $OUT/final/replay at the last commit
 #   control  - a second whole build of the last commit, which compiles the
 #              tracked packages again; the lines of the oracle that differ
@@ -31,7 +34,10 @@
 #   decode   - the prelinked program decodes the source of each method
 #   fresh    - the server stops, its log is kept as $OUT/server-replay.log,
 #              and a rebuild from a new server applies each change since the
-#              last founding at once; then compare again
+#              last founding at once; then compare again. When the store
+#              founds again by itself at that rebuild, the gate links the
+#              program again and compares nothing: JULIA_REACTIVE_COMPACT
+#              sets the bound of the store
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -251,12 +257,22 @@ found() {
 }
 
 replay() {
-    local n=0 refused=0 faults=0 commit short
+    local n=0 refused=0 faults=0 grown=0 commit short
     : > "$OUT/refusals.txt"; : > "$OUT/faults.txt"
     for commit in $(tail -n +2 "$OUT/commits.txt"); do
         n=$((n + 1)); short=$(echo "$commit" | cut -c1-9)
         checkout "$commit" || return 1
-        if mat "mat-$n" "$CHAIN" "" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1; then
+        if mat "mat-$n" "$CHAIN" "$ARCHIVE" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1; then
+            # A store whose image grew past its bound founds again by itself.
+            # The base is new then, so the program is linked again from the
+            # archive of that founding, as the build scripts do.
+            if grep -q "materialize_app: the store founds again" "$OUT/mat-$n.log"; then
+                grown=$((grown + 1))
+                link || return 1
+                verify "$n-$short" || return 1
+                echo "    $n $short the store founded again by itself: $(grep -A 1 "the store founds again" "$OUT/mat-$n.log" | grep -o 'reason = .*' | cut -c1-120)"
+                continue
+            fi
             local line; line=$(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)
             if verify "$n-$short"; then
                 echo "    $n $short ${line:-rc: applied nothing}, $(grep -o 'Elapsed (wall clock) time.*' "$OUT/mat-$n.log" | awk '{print $NF}')"
@@ -280,7 +296,7 @@ replay() {
         fi
         found_chain "mat-$n-found" again && verify "$n-$short-found" || return 1
     done
-    echo "=== replay: $n commits, $refused refused, $faults faults"
+    echo "=== replay: $n commits, $refused refused, $faults faults, $grown founded again by the store"
     [ "$faults" == 0 ]
 }
 
@@ -366,8 +382,16 @@ fresh() {
     # The new server writes its log over the log of the server of the replay.
     cp "$CHAIN/reactive-store/server.log" "$OUT/server-replay.log" 2>/dev/null
     echo "=== fresh: the replay of the server of the chain: $(grep -h -o "rc: replay: [0-9]* candidates, [0-9]* compared, [0-9]* moved, [0-9]* differ" "$OUT/server-replay.log" | awk '{c += $5; m += $7; d += $9} END {print NR " rebuilds, " c + 0 " compared, " m + 0 " moved, " d + 0 " differ"}')"
-    mat mat-fresh "$CHAIN" "" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 ||
+    mat mat-fresh "$CHAIN" "$ARCHIVE" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 ||
         { echo "=== fresh: the rebuild failed; see $OUT/mat-fresh.log"; return 1; }
+    # A store whose image grew past its bound founds again by itself, and no
+    # server applies a change: the program is linked again from the archive
+    # of that founding, and there is no rebuild to compare.
+    if grep -q "materialize_app: the store founds again" "$OUT/mat-fresh.log"; then
+        link && verify fresh || return 1
+        echo "=== fresh: the store founded again by itself, so no new server applied the changes: $(grep -A 1 "the store founds again" "$OUT/mat-fresh.log" | grep -o 'reason = .*' | cut -c1-120)"
+        return 0
+    fi
     echo "=== fresh: $(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)"
     verify fresh && compare_with_final fresh
 }
