@@ -6,8 +6,8 @@
 # changes one and removes one. lines.jl holds a function that names its own
 # line; the gate moves it. markers.jl holds a type whose values the program
 # keeps in the storage of its task; the gate changes the type in a second edit.
-# moved.jl holds what an edit removes or moves: a function that goes to another
-# module, a struct, a constant, a module that gets another name, and two
+# moved.jl holds what an edit removes or moves: a function and a struct that go
+# to another module, a struct, a constant, a module that gets another name, and two
 # functions that change places between the module that defines one and the
 # module that imports it by its name.
 module RunLib

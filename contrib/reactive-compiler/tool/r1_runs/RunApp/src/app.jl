@@ -21,6 +21,11 @@ bound_names(mod::Module, names::Symbol...) = join((isdefined(mod, name) ? "+$nam
 # when `mod` has no such name.
 owner_name(mod::Module, name::Symbol) = isdefined(mod, name) ? nameof(parentmodule(getfield(mod, name))) : "none"
 
+# The module of RunLib that defines the struct Token, and the weight that the
+# method of Both reads from a value of that struct.
+token_module() = isdefined(RunLib.Left, :Token) ? RunLib.Left : RunLib.Right
+token_weight() = RunLib.Both.weigh(getfield(token_module(), :Token)(8))
+
 function shape_lines()
     return ["table = $(RunLib.TABLE[:answer])",
             "scaled = $(RunLib.SCALED)",
@@ -43,11 +48,12 @@ function shape_lines()
             "height = $(RunLib.theme_height(RunLib.DEFAULT_THEME))",
             "logged = $(RunLib.logged_line())",
             "journey = $(shown_result(RunLib.Both.journey))",
+            "token = $(shown_result(token_weight)) of $(nameof(token_module()))",
             "left = $(join(filter(!=(:Left), names(RunLib.Left)), ' '))$(bound_names(RunLib.Left, :travel))",
             "removed = $(bound_names(RunLib, :Gone, :GONE, :Before, :After))",
             "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))",
-            "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.fetch(1))) of " *
-            "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :fetch))$(bound_names(RunLib.Early, :carry, :fetch))"]
+            "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.bring(1))) of " *
+            "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :bring))$(bound_names(RunLib.Early, :carry, :bring))"]
 end
 
 Base.@ccallable function julia_main()::Cint

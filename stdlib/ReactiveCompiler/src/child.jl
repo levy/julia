@@ -1140,9 +1140,11 @@ rc_evaluate_at(mod::Module, item::RcItem, e) =
 # Delete the methods of the removals, and take out the names that the edit
 # removes. The modules come last: the names inside a module go while its path
 # still leads to it. How the names resolve is recorded first, and each
-# expression of a module that lost a name and that resolves a name in another
-# way afterwards joins the queue: a method that an unchanged expression gave an
-# imported function is a method of another function when the import is gone.
+# expression that resolves a name in another way afterwards joins the queue,
+# in every module: a method that an unchanged expression gave an imported
+# function is a method of another function when the import is gone, and a
+# method of another module that names a moved struct in its signature is a
+# method for the struct of the new module.
 function rc_delete_removals!(evaluation::RcEvaluation)
     rc_record_resolutions!(evaluation)
     for change in evaluation.removals, method in change.old_methods
@@ -1151,18 +1153,15 @@ function rc_delete_removals!(evaluation::RcEvaluation)
     end
     is_module(removal) = removal.how === :bound &&
                          rc_module_or_nothing(vcat(removal.path, removal.name)) !== nothing
-    changed = Set{Vector{Symbol}}()
+    changed = false
     for removal in sort(evaluation.names; by = removal -> is_module(removal) ? -length(removal.path) : typemin(Int))
         Base.invokelatest(rc_remove_name!, removal) || continue
-        push!(changed, removal.path)
+        changed = true
         println("rc: removed ", removal.where, ": the ",
                 removal.how === :used ? "using" : string(removal.how, " name ", removal.name), " leaves ",
                 join(removal.path, '.'))
     end
-    for path in changed
-        mod = Base.invokelatest(rc_module_or_nothing, path)
-        mod === nothing || rc_enqueue_resolved_differently!(evaluation, mod, path, nothing)
-    end
+    changed && rc_enqueue_resolved_differently!(evaluation, nothing, nothing)
     return nothing
 end
 
@@ -1186,36 +1185,41 @@ function rc_drop_replaced_imports!(evaluation::RcEvaluation, mod::Module, item::
     return nothing
 end
 
-# C3: record how the names of every expression resolve before the apply, in
-# each module with a changed `using` and in each module that loses a name. A
-# new module has no such names: the apply makes it, and no expression of it
-# ran before.
+# C3: record how the names of every expression resolve before the apply: in
+# each module with a changed `using`, and in every module when a name leaves a
+# module, because an expression of another module can take that name through a
+# `using`. A new module has no such names: the apply makes it, and no
+# expression of it ran before.
 function rc_record_resolutions!(evaluation::RcEvaluation)
-    paths = Dict{Vector{Symbol}, Union{Module, Nothing}}()
+    everywhere = any(removal -> removal.how !== :replaced, evaluation.names)
+    modules = Dict{Vector{Symbol}, Union{Module, Nothing}}()
     for change in evaluation.queue.changes
         change.item.kind === :using || continue
         path = rc_module_path(evaluation.roots, change.item)
-        haskey(paths, path) || (paths[path] = rc_module_or_nothing(path))
-    end
-    for removal in evaluation.names
-        haskey(paths, removal.path) || (paths[removal.path] = rc_module_or_nothing(removal.path))
+        haskey(modules, path) || (modules[path] = rc_module_or_nothing(path))
     end
     for item in evaluation.items
-        mod = get(paths, rc_module_path(evaluation.roots, item), nothing)
+        path = rc_module_path(evaluation.roots, item)
+        mod = everywhere ? get!(() -> rc_module_or_nothing(path), modules, path) : get(modules, path, nothing)
         mod === nothing && continue
         evaluation.resolutions[objectid(item)] = rc_resolution(mod, ReactiveSourceDiff.all_names(item.entry.expr))
     end
     return nothing
 end
 
-# C3: each expression of the module at `module_path`, other than `except`,
-# whose names resolve in another way than at the last record joins the queue.
-function rc_enqueue_resolved_differently!(evaluation::RcEvaluation, mod::Module, module_path, except)
+# C3: each expression whose names resolve in another way than at the last
+# record joins the queue: the expressions of the module at `module_path` other
+# than `except`, or those of every module when `module_path` is nothing.
+function rc_enqueue_resolved_differently!(evaluation::RcEvaluation, module_path, except)
+    modules = Dict{Vector{Symbol}, Union{Module, Nothing}}()
     for dependent in evaluation.items
         dependent === except && continue
-        rc_module_path(evaluation.roots, dependent) == module_path || continue
         before = get(evaluation.resolutions, objectid(dependent), nothing)
         before === nothing && continue
+        path = rc_module_path(evaluation.roots, dependent)
+        module_path === nothing || path == module_path || continue
+        mod = get!(() -> Base.invokelatest(rc_module_or_nothing, path), modules, path)
+        mod === nothing && continue
         after = Base.invokelatest(rc_resolution, mod, keys(before))
         after == before && continue
         evaluation.resolutions[objectid(dependent)] = after
@@ -1298,7 +1302,7 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
             rc_enqueue!(queue, RcChange(change.id, dependent, string("names ", item.name)))
         end
     elseif item.kind === :using
-        rc_enqueue_resolved_differently!(evaluation, mod, rc_module_path(new_roots, item), item)
+        rc_enqueue_resolved_differently!(evaluation, rc_module_path(new_roots, item), item)
     end
     return true
 end

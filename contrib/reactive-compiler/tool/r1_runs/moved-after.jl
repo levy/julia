@@ -1,20 +1,24 @@
 # The parts that an edit removes or moves (decision D2), after the edit of the
-# gate: the function is in the module Right, the struct and the constant are
-# gone, and the last module has another name.
+# gate: the function and the struct Token are in the module Right, the struct
+# Gone and the constant are gone, and the last module has another name.
 
-# The function left this module, with its export.
+# The function and the struct left this module, with their exports.
 module Left
 end
 
 module Right
-export stay, travel
+export stay, travel, Token
 stay() = 2
 travel() = 1
+struct Token
+    weight::Int
+end
 end
 
 module Both
 using ..Left, ..Right
 journey() = travel() + stay()
+weigh(token::Token) = token.weight
 end
 
 # The module that used another one.
@@ -30,15 +34,15 @@ end
 # module that imported the first function defines it and imports the second
 # one.
 module Early
-export fetch
-fetch() = 6
+export bring
+bring() = 6
 end
 
 module Late
 using ..Early
-import ..Early: fetch
+import ..Early: bring
 export carry
 carry() = 5
 carry(x) = x + carry()
-fetch(x) = x + fetch()
+bring(x) = x + bring()
 end

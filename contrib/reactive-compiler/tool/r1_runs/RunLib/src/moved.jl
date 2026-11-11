@@ -1,11 +1,15 @@
 # The parts that an edit removes or moves (decision D2). The gate replaces this
 # file with moved-after.jl.
 
-# A function that the edit moves from the module Left to the module Right, with
-# its export. Both uses the two modules and calls the function by its name.
+# A function and a struct that the edit moves from the module Left to the
+# module Right, with their exports. Both uses the two modules: it calls the
+# function by its name, and it names the struct in the signature of a method.
 module Left
-export travel
+export travel, Token
 travel() = 1
+struct Token
+    weight::Int
+end
 end
 
 module Right
@@ -16,6 +20,7 @@ end
 module Both
 using ..Left, ..Right
 journey() = travel() + stay()
+weigh(token::Token) = token.weight
 end
 
 # A module that uses another one. The edit removes the `using` line.
@@ -47,8 +52,8 @@ end
 module Late
 using ..Early
 import ..Early: carry
-export fetch
+export bring
 carry(x) = x + carry()
-fetch() = 6
-fetch(x) = x + fetch()
+bring() = 6
+bring(x) = x + bring()
 end
