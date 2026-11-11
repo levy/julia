@@ -125,6 +125,12 @@ function invalidate_code_for_globalref!(b::Core.Binding, invalidated_bpart::Core
                 latest_bpart = edge.partitions
                 latest_bpart.max_world == typemax(UInt) || continue
                 is_some_imported(binding_kind(latest_bpart)) || continue
+                # Only an explicit import records a binding edge. An edge whose binding
+                # is an implicit import now had an explicit import before. The loop over
+                # the modules that use this module resolves that binding again and
+                # closes its partition, so it must not be queued here with that
+                # partition as the new one.
+                is_some_implicit(binding_kind(latest_bpart)) && continue
                 if is_some_binding_imported(binding_kind(latest_bpart))
                     partition_restriction(latest_bpart) === b || continue
                 end

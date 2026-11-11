@@ -466,3 +466,24 @@ module InvalidateUsingCycle
     @test invokelatest(() -> Inner.cycled()) == 1
     @test invokelatest(() -> cycled()) == 1
 end
+
+# Test that the definition of a name is resolved in a module that imported the
+# name before and takes it through `using` now: the binding of that module is
+# still an edge of the binding that it imported.
+module InvalidateFormerImport
+    using Test
+    module Source
+        export moved
+        moved() = 1
+    end
+    module User
+        using ..Source
+        import ..Source: moved
+    end
+    Base.delete_binding(User, :moved)
+    Base.delete_binding(Source, :moved)
+    @test !isdefined(User, :moved)
+    Core.eval(Source, :(global moved))
+    Core.eval(Source, :(moved() = 2))
+    @test invokelatest(() -> User.moved()) == 2
+end
