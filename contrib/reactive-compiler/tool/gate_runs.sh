@@ -34,8 +34,11 @@
 # macro of markers.jl defines two types and an alias from one struct, and the
 # second type has a field of the type that the step retype changes: the
 # methods of users.jl that name the second type and the alias must be those of
-# the new type (finding 52). The chain is compared with the founding of the
-# edited sources.
+# the new type (finding 52). The program calls the first of these methods
+# through a dynamic call, so the trace has a statement that names the second
+# type: after the step retype the statement has the same text and another
+# type, and the rebuild must compile it for the new type (finding 10). The
+# chain is compared with the founding of the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them

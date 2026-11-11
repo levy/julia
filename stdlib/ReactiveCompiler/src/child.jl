@@ -1175,7 +1175,12 @@ function rc_delete_removals!(evaluation::RcEvaluation)
                 removal.how === :used ? "using" : string(removal.how, " name ", removal.name), " leaves ",
                 join(removal.path, '.'))
     end
-    changed && rc_enqueue_resolved_differently!(evaluation, nothing, nothing)
+    if changed
+        # A statement of the trace that names a name that left resolves no more.
+        empty!(RC_TRACE_CACHE)
+        empty!(RC_TRACE_FAILED)
+        rc_enqueue_resolved_differently!(evaluation, nothing, nothing)
+    end
     return nothing
 end
 
@@ -1248,11 +1253,11 @@ function rc_enqueue_resolved_differently!(evaluation::RcEvaluation, module_path,
     return nothing
 end
 
-# The value that the binding has as a constant in `world`, or nothing when it
-# is no constant there. The partitions of the binding are read as they are:
-# a lookup would make a partition for a world that has none. Julia dates a new
-# constant back to the worlds before its definition; the name was no constant
-# in those worlds.
+# The value that the binding has as a constant in `world`, in a `Some`, or
+# nothing when it is no constant there. The partitions of the binding are read
+# as they are: a lookup would make a partition for a world that has none. Julia
+# dates a new constant back to the worlds before its definition; the name was
+# no constant in those worlds.
 function rc_constant_in(binding::Core.Binding, world::UInt)
     isdefined(binding, :partitions) || return nothing
     partition = binding.partitions
@@ -1263,16 +1268,17 @@ function rc_constant_in(binding::Core.Binding, world::UInt)
     partition.max_world >= world || return nothing
     kind = Base.binding_kind(partition)
     Base.is_defined_const_binding(kind) && kind != Base.PARTITION_KIND_BACKDATED_CONST || return nothing
-    return Base.partition_restriction(partition)
+    return Some{Any}(Base.partition_restriction(partition))
 end
 
 # The constants of the module that have another value now than in `world`:
-# each name with the value of that world, or nothing when the name was no
-# constant there. A type that a definition makes is a constant too. Julia
-# keeps the binding of a constant whose new value is identical to the old one,
-# so a type that is defined again with the same fields is not in the list.
+# each name with the value of that world in a `Some`, or with nothing when the
+# name was no constant there. A type that a definition makes is a constant
+# too. Julia keeps the binding of a constant whose new value is identical to
+# the old one, so a type that is defined again with the same fields is not in
+# the list.
 function rc_rebound_constants(mod::Module, world::UInt)
-    rebound = Tuple{Symbol, Any}[]
+    rebound = Tuple{Symbol, Union{Some{Any}, Nothing}}[]
     Base.get_world_counter() == world && return rebound
     for name in Base.unsorted_names(mod; all = true)
         binding = ccall(:jl_get_module_binding_or_nothing, Any, (Any, Any), mod, name)
@@ -1281,17 +1287,39 @@ function rc_rebound_constants(mod::Module, world::UInt)
         latest.min_world > world || continue
         Base.binding_kind(latest) == Base.PARTITION_KIND_CONST || continue
         before = rc_constant_in(binding, world)
-        Base.partition_restriction(latest) === before || push!(rebound, (name, before))
+        before !== nothing && Base.partition_restriction(latest) === something(before) && continue
+        push!(rebound, (name, before))
     end
     return rebound
 end
 
-# Whether the value is a type as its definition made it: `S` of `struct S` and
-# of `struct S{T}`, and neither `S{Int}` nor the alias of a union.
-function rc_is_defined_type(@nospecialize(value))
+# Whether the value of before is a type as its definition made it: `S` of
+# `struct S` and of `struct S{T}`, and neither `S{Int}` nor the alias of a
+# union.
+rc_is_defined_type(::Nothing) = false
+function rc_is_defined_type(before::Some)
+    value = something(before)
     value isa Type || return false
     body = Base.unwrap_unionall(value)
     return body isa DataType && body.name.wrapper === value
+end
+
+# What the session keeps of the statements of the trace holds for one state of
+# the bindings of the program: a statement resolves through them. A constant
+# that has another value now makes each kept type doubtful, because a
+# statement that names the constant has the same text and another type. A new
+# name can make a statement resolve that did not. A name that Julia generates
+# has a counter, and no statement of before names the new one.
+function rc_forget_statements!(rebound)
+    for (name, before) in rebound
+        if before !== nothing
+            empty!(RC_TRACE_CACHE)
+            empty!(RC_TRACE_FAILED)
+            return nothing
+        end
+        startswith(String(name), '#') || empty!(RC_TRACE_FAILED)
+    end
+    return nothing
 end
 
 # The items of the ledger by the names that their evaluation resolves into
@@ -1367,9 +1395,10 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     # macro that defines two.
     rebound = Base.invokelatest(rc_rebound_constants, mod, world)
     on_types = Base.IdDict{Method, Symbol}()
+    rc_forget_statements!(rebound)
     for (name, before) in rebound
         rc_is_defined_type(before) || continue
-        found = rc_methods_on_type(before, evaluation.tracked)
+        found = rc_methods_on_type(something(before), evaluation.tracked)
         for method in found.outside
             rc_refuse!(evaluation.refusals, change.id, item,
                        string("the untracked ", basename(String(method.file)), ":", method.line,
@@ -2097,10 +2126,24 @@ function rc_warm()
     rebinds_world = Base.get_world_counter()
     Core.eval(rebinds, :(const same = 1; const other = [2]; const added = Int))
     rebound = sort!(Base.invokelatest(rc_rebound_constants, rebinds, rebinds_world); by = first)
-    length(rebound) == 2 && rebound[1] == (:added, nothing) && rebound[2] == (:other, [1]) ||
-        error("rc_warm: the constants bound again are ", rebound)
-    rc_is_defined_type(Array) && !rc_is_defined_type(Vector) && !rc_is_defined_type(Union{Int, Nothing}) &&
-        !rc_is_defined_type(nothing) || error("rc_warm: the types that a definition makes are not told from their aliases")
+    length(rebound) == 2 && rebound[1] == (:added, nothing) && rebound[2][1] === :other &&
+        something(rebound[2][2]) == [1] || error("rc_warm: the constants bound again are ", rebound)
+    rc_is_defined_type(Some{Any}(Array)) && !rc_is_defined_type(Some{Any}(Vector)) &&
+        !rc_is_defined_type(Some{Any}(Union{Int, Nothing})) && !rc_is_defined_type(nothing) ||
+        error("rc_warm: the types that a definition makes are not told from their aliases")
+    # A constant with another value drops what the session keeps of the
+    # statements of the trace; a new name drops only the statements that failed.
+    kept_cache = copy(RC_TRACE_CACHE)
+    kept_failed = copy(RC_TRACE_FAILED)
+    RC_TRACE_CACHE["rc-warm"] = Int
+    push!(RC_TRACE_FAILED, "rc-warm")
+    rc_forget_statements!(rebound[1:1])
+    haskey(RC_TRACE_CACHE, "rc-warm") && isempty(RC_TRACE_FAILED) ||
+        error("rc_warm: a new name does not drop only the statements that failed")
+    rc_forget_statements!(rebound)
+    isempty(RC_TRACE_CACHE) || error("rc_warm: a constant with another value keeps the types of the statements")
+    merge!(RC_TRACE_CACHE, kept_cache)
+    union!(RC_TRACE_FAILED, kept_failed)
     rc_content_hash(new_path)
     rm(dir; recursive = true)
     # Warm both branches of the module resolver: a name that Main binds, and

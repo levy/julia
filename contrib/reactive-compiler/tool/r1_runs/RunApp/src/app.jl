@@ -2,7 +2,9 @@
 # runs a function of helpers.jl, for the lists that the statements fill, for
 # the function that names its own line, for the methods that the expansion of
 # a macro defines, for the value that an initializer puts into the storage
-# of its task, and for the types that the call of a macro defines.
+# of its task, and for the types that the call of a macro defines. The call
+# with a value of such a type goes through `invokelatest`, so it is a dynamic
+# one, and the trace of the workload has a statement that names the type.
 shown_call(f) = hasmethod(f, Tuple{}) ? f() : "no method"
 
 # The value of the call, or the name of the error that it throws.
@@ -54,7 +56,7 @@ function shape_lines()
             "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))",
             "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.bring(1))) of " *
             "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :bring))$(bound_names(RunLib.Early, :carry, :bring))",
-            "badge = $(shown_result(() -> RunLib.badge_sum(RunLib.MarkedBadge(3))))"]
+            "badge = $(shown_result(() -> Base.invokelatest(RunLib.badge_sum, RunLib.MarkedBadge(3))))"]
 end
 
 Base.@ccallable function julia_main()::Cint
