@@ -46,3 +46,11 @@ function accessor_code(name)
         $(esc(Symbol(name, :_second)))() = 10
     end
 end
+
+# A macro makes its expansion with this function: one method, which carries a
+# line of this quote. The edit changes the function and not the expansion.
+function steady_code(name)
+    return quote
+        $(esc(name))() = 7
+    end
+end

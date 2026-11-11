@@ -56,3 +56,11 @@ end
 
 # The initializer puts a value into the storage of the task that evaluates it.
 const MARKED = mark!(1)
+
+# The expansion defines a method with a line of the function that builds it.
+# The edit changes that function and not the expansion, so the rebuild does not
+# evaluate this expression again, and its method must stay.
+macro steady(name)
+    return steady_code(name)
+end
+@steady steady_value

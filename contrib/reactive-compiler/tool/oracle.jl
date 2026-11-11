@@ -4,9 +4,14 @@
 #   julia -J <bundle>/lib/julia/sys.so oracle.jl --tracked Mod[,Mod...] [--trace trace.jl]
 #
 # One line per fact, sorted, so that `diff` compares two images:
-#   method <signature> <hash of the lowered code>   a method of a tracked
+#   method <signature> @<file>:<line> <hash of the lowered code>
+#                                                   a method of a tracked
 #                                                   module, valid in the
-#                                                   current world; without
+#                                                   current world, with the
+#                                                   file name and the first
+#                                                   line of the top-level
+#                                                   expression that defined
+#                                                   it; the hash is without
 #                                                   gensym counters and
 #                                                   quoted line numbers
 #   root <signature> compiled|inferred|absent|unresolved|gensym
@@ -244,7 +249,8 @@ function oracle_main(args)
                 ci = isdefined(ci, :next) ? ci.next : nothing
             end
         end
-        push!(lines, string("method ", oracle_canonical(string(m.sig)), " ", oracle_lowered(m)))
+        push!(lines, string("method ", oracle_canonical(string(m.sig)), " @", basename(String(m.toplevel_file)), ":",
+                            m.toplevel_line, " ", oracle_lowered(m)))
     end
     for mod in roots, name in names(mod; all = true, imported = false)
         startswith(string(name), '#') && continue

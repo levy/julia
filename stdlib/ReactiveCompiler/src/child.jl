@@ -19,7 +19,8 @@
 #   1. the ledgers: the entries of the stored copy of every tracked file of
 #      the previous snapshot, and of every tracked file on disk (see
 #      `ReactiveSourceDiff`); the methods of an old entry are the methods of
-#      the method table with the entry's file and a line inside the entry;
+#      the method table that the entry defined: a method keeps the file and
+#      the first line of the top-level expression that defined it;
 #   2. the match of the two file lists: by path, then by content (a renamed
 #      file), then a lone leftover pair (a renamed and edited file);
 #   3. the diff of each matched pair by key, and the classification of every
@@ -172,7 +173,9 @@ const RC_KEPT = Method[]
 # invalidate every caller of the method for nothing: an `@eval` loop with
 # one changed method, or a dependent whose expansion did not change. The
 # line table is not compared: the kept method keeps its own. The kept method
-# stands for the definition of now, so it takes the file and the line of `m`.
+# stands for the definition of now, so it takes the two places of `m`: the
+# file and the line of its text, and those of the top-level expression that
+# defines it.
 function rc_method_filter(m::Method)
     isdefined(m, :generator) && return false
     isdefined(m, :source) || return false
@@ -194,6 +197,8 @@ function rc_method_filter(m::Method)
         a.has_fcall == b.has_fcall && a.inlining == b.inlining || return false
     setfield!(old, :file, m.file)
     setfield!(old, :line, m.line)
+    setfield!(old, :toplevel_file, m.toplevel_file)
+    setfield!(old, :toplevel_line, m.toplevel_line)
     push!(RC_KEPT, old)
     return true
 end
@@ -207,15 +212,15 @@ function rc_take_kept!()
     return kept
 end
 
-# Delete a method; with a generated method, the method of its generator
-# too. The generator is an anonymous function at `none:0`, so no item of the
-# ledger owns it, and nothing calls it once the method is gone: left alone,
-# it stays in the table as dead code that a founding does not have.
+# Delete a method. The method of the generator of a generated method is a
+# method of the item that defines the generated one, so the item deletes it
+# with its other methods. A generator method with no top-level place has no
+# item, and nothing calls it once the method is gone: it goes here.
 function rc_delete_method(method::Method)
     Base.delete_method(method)
     isdefined(method, :generator) && method.generator isa Core.GeneratedFunctionStub || return
     for gen_method in methods(method.generator.gen)
-        Base.delete_method(gen_method)
+        gen_method.toplevel_file === Symbol("") && Base.delete_method(gen_method)
     end
 end
 
@@ -261,7 +266,7 @@ function rc_old_items(old_files::Vector{String}, old_copies::Vector{String}, ind
         end
         append!(items, found)
     end
-    isempty(parsed) || rc_assign_methods!(parsed, rc_methods_by_file(Set(item.path for item in parsed)))
+    isempty(parsed) || rc_assign_methods!(parsed, rc_methods_by_definer(Set(item.path for item in parsed)))
     return items, byindex
 end
 
@@ -333,8 +338,27 @@ function rc_visit_entries(f, level::Core.TypeMapLevel)
     rc_visit_entries(f, level.any)
 end
 
-# The live methods of the method table whose file is one of `paths`.
-function rc_methods_by_file(paths)
+# A method has two places. Its *definer* is the top-level expression whose
+# evaluation defined it (`toplevel_file`, `toplevel_line`): the item that owns
+# the method, which deletes or replaces it. Its *text* is where its code is
+# written (`file`, `line`): the line table needs it, and it moves with the
+# item that holds it. The two differ for a method that the expansion of a
+# macro defines: its text is in the macro, and its definer is the user.
+
+# The live methods of the method table that a top-level expression of one of
+# the files `paths` defined, by file.
+function rc_methods_by_definer(paths)
+    byfile = Dict{String, Vector{Method}}(path => Method[] for path in paths)
+    rc_each_live_method() do method
+        found = get(byfile, String(method.toplevel_file), nothing)
+        found === nothing || push!(found, method)
+    end
+    return byfile
+end
+
+# The live methods of the method table whose text is in one of the files
+# `paths`, by file.
+function rc_methods_by_text(paths)
     byfile = Dict{String, Vector{Method}}(path => Method[] for path in paths)
     rc_each_live_method() do method
         found = get(byfile, String(method.file), nothing)
@@ -343,25 +367,20 @@ function rc_methods_by_file(paths)
     return byfile
 end
 
-# Give every item the methods with its file and a line inside its lines,
-# except the methods of `skip`: after the apply, the old methods of a changed
-# expression can still sit at lines inside the new one.
-function rc_assign_methods!(items::Vector{RcItem}, byfile, skip = Base.IdSet{Method}())
+# Give every item the methods that it defined: those whose top-level place is
+# the file and the first line of the item, except the methods of `skip`.
+# After the apply, the old methods of a changed expression still have the
+# place of the expression, when its first line stayed.
+function rc_assign_methods!(items::Vector{RcItem}, bydefiner, skip = Base.IdSet{Method}())
     for item in items
         empty!(item.methods)
-        for method in get(byfile, item.path, Method[])
+        for method in get(bydefiner, item.path, Method[])
             method in skip && continue
-            method.line in item.entry.lines && rc_owns(item, method) && push!(item.methods, method)
+            method.toplevel_line == item.entry.lines.start && push!(item.methods, method)
         end
     end
     return nothing
 end
-
-# A macro owns its method and the methods of the functions of its body, whose
-# signatures name the macro. Every other method at its lines comes from an
-# expansion of the macro, which carries the lines of the macro body.
-rc_owns(item::RcItem, method::Method) =
-    item.kind !== :macro || item.name === nothing || occursin(String(item.name::Symbol), string(method.sig))
 
 # Match the old file list with the new one: `pairs` by path, `renamed` by
 # content or as the lone leftover pair, then the removed and the added. A
@@ -419,14 +438,16 @@ function rc_mentions(@nospecialize(t), typename::Core.TypeName)
 end
 
 # The methods of the method table whose signature mentions the type, split by
-# whether their file is tracked.
+# whether a top-level expression of a tracked file defined them. A method that
+# the expansion of a macro of another package defines for a tracked expression
+# is inside: the apply evaluates that expression again.
 function rc_methods_on_type(@nospecialize(type), tracked::Set{String})
     typename = Base.unwrap_unionall(type).name
     inside = Method[]
     outside = Method[]
     rc_each_live_method() do method
         if rc_mentions(method.sig, typename)
-            push!(String(method.file) in tracked ? inside : outside, method)
+            push!(String(method.toplevel_file) in tracked ? inside : outside, method)
         end
     end
     return (inside = inside, outside = outside)
@@ -907,6 +928,12 @@ function rc_statement_group!(queue::RcQueue, refusals::Vector{String}, items::Ve
     return RcStatementGroup(group, old, new)
 end
 
+# Evaluate the expression of the item in `mod`, as the loader of a file does:
+# with the file and the first line of the expression before it, so each method
+# that the evaluation defines keeps that place as its definer.
+rc_evaluate_item(mod::Module, item::RcItem) =
+    Core.eval(mod, Expr(:toplevel, LineNumberNode(item.entry.lines.start, Symbol(item.path)), item.entry.expr))
+
 # Delete the methods of the removals.
 function rc_delete_removals!(evaluation::RcEvaluation)
     for change in evaluation.removals, method in change.old_methods
@@ -956,7 +983,7 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
     old_type = item.kind === :type && item.name !== nothing && Base.invokelatest(isdefined, mod, item.name) ?
                Base.invokelatest(getfield, mod, item.name) : nothing
-    Core.eval(mod, item.entry.expr)
+    rc_evaluate_item(mod, item)
     # A kept method is a method of the sources of now: this evaluation defined
     # it again with the same code, and the filter gave it the place of that
     # definition. It is neither replaced nor deleted. Each change and each
@@ -1073,16 +1100,26 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     new_statements = RcItem[]
     moved = RcMoved[]
     line_updates = 0
+    # The methods whose text is in a file that changed, by the old path: they
+    # take the new name of a renamed file and the shift of a moved expression.
+    # The methods of an item are those that it defined, and their text can be
+    # in another file.
+    text_methods = rc_methods_by_text(Set{String}(old_files[i] for i in old_indices))
     # H3: a renamed file keeps its methods, under the new name.
     for (i, j) in match.renamed
         renamed = 0
+        new_file = Symbol(new_files[j])
         for item in old_items
             item.file == i || continue
             item.path = new_files[j]
             for method in item.methods
-                setfield!(method, :file, Symbol(new_files[j]))
-                renamed += 1
+                setfield!(method, :toplevel_file, new_file)
             end
+        end
+        for method in text_methods[old_files[i]]
+            method.file === new_file && continue
+            setfield!(method, :file, new_file)
+            renamed += 1
         end
         println("rc: change H3 ", basename(old_files[i]), " -> ", basename(new_files[j]), ", ",
                 renamed, " methods renamed")
@@ -1099,9 +1136,21 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     # The diff of every matched pair.
+    shifted = Base.IdSet{Method}()
     for (i, j) in vcat(match.pairs, match.renamed)
         olds = RcItem[item for item in old_items if item.file == i]
         news = RcItem[item for item in new_items if item.file == j]
+        # The methods whose text is inside each old expression, taken before a
+        # line moves: a moved line can be inside the old lines of the next
+        # expression.
+        text_of = IdDict{RcItem, Vector{Method}}()
+        for method in get(text_methods, old_files[i], Method[])
+            for old in olds
+                method.line in old.entry.lines || continue
+                push!(get!(() -> Method[], text_of, old), method)
+                break
+            end
+        end
         old_by_key = Dict{UInt64, RcItem}(item.entry.key => item for item in olds)
         new_keys = Set{UInt64}(item.entry.key for item in news)
         changed = RcItem[]
@@ -1111,12 +1160,21 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 push!(changed, item)
                 continue
             end
-            # H1: an unchanged expression keeps its methods, at their new lines.
+            # H1: an unchanged expression keeps the methods that it defined, at
+            # its new first line, and the methods whose text is inside it move
+            # with it. A file that two modules include has its methods in two
+            # items: a method moves once.
             shift = item.entry.lines.start - old.entry.lines.start
-            for method in old.methods
-                shift == 0 && break
-                setfield!(method, :line, Int32(method.line + shift))
-                line_updates += 1
+            if shift != 0
+                for method in old.methods
+                    setfield!(method, :toplevel_line, Int32(item.entry.lines.start))
+                end
+                for method in get(text_of, old, Method[])
+                    method in shifted && continue
+                    push!(shifted, method)
+                    setfield!(method, :line, Int32(method.line + shift))
+                    line_updates += 1
+                end
             end
             item.methods = old.methods
             rc_is_moved_macro_user(item, old.entry.lines.start, old_files[i]) &&
@@ -1248,7 +1306,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     for change in vcat(removals, queue.changes), method in change.old_methods
         push!(skip, method)
     end
-    byfile = rc_methods_by_file(tracked)
+    byfile = rc_methods_by_definer(tracked)
     rc_assign_methods!(new_items, byfile, skip)
     # The ledger for the next apply: the new items, and the old items of each
     # file whose text stayed, under the file's new index.
@@ -1281,9 +1339,12 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         item = change.item
         replaced_sigs = 0
         for method in change.old_methods
+            # A method of a function with a generated name (a closure, the body
+            # of a keyword method, a generator) has a new name at each
+            # evaluation: it is no method that the edit removed.
             if any(sig -> sig == method.sig, new_sigs)
                 replaced_sigs += 1
-            else
+            elseif !('#' in String(method.name))
                 change.deleted += 1
             end
             method in gone && continue
@@ -1660,21 +1721,29 @@ function rc_warm()
         break
     end
     # The method filter: an identical redefinition keeps the method and the
-    # world, a changed one does not.
+    # world, a changed one does not. The loop is evaluated with a place, as an
+    # item is: a method keeps the place of the top-level expression that
+    # defined it, also when an `eval` inside that expression defines it, and a
+    # kept method takes the place of the new definition.
     warm = Module(:RcWarm)
-    warm_loop(three) = Meta.parse("for (name, k) in ((:two, 2), (:three, $three)); @eval \$name(x) = \$k * x; end")
-    Core.eval(warm, warm_loop(3))
+    warm_file = Symbol("rc-warm.jl")
+    warm_loop(three, line) = Expr(:toplevel, LineNumberNode(line, warm_file),
+        Meta.parse("for (name, k) in ((:two, 2), (:three, $three)); @eval \$name(x) = \$k * x; end"))
+    Core.eval(warm, warm_loop(3, 7))
     warm_two = only(methods(Base.invokelatest(getfield, warm, :two)))
     warm_three = only(methods(Base.invokelatest(getfield, warm, :three)))
+    (warm_two.toplevel_file, warm_two.toplevel_line, warm_three.toplevel_line) == (warm_file, 7, 7) ||
+        error("rc_warm: a method has the top-level place ", warm_two.toplevel_file, ":", warm_two.toplevel_line)
     world = Base.get_world_counter()
     rc_install_filter(rc_method_filter)
     try
-        Core.eval(warm, warm_loop(30))
+        Core.eval(warm, warm_loop(30, 9))
     finally
         rc_install_filter(nothing)
     end
     warm_kept = rc_take_kept!()
     warm_kept == [warm_two] || error("rc_warm: the filter kept ", length(warm_kept), " methods")
+    warm_two.toplevel_line == 9 || error("rc_warm: a kept method keeps the top-level line ", warm_two.toplevel_line)
     only(methods(Base.invokelatest(getfield, warm, :two))) === warm_two ||
         error("rc_warm: the filter did not keep two")
     warm_three_new = only(methods(Base.invokelatest(getfield, warm, :three)))
