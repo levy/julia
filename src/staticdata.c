@@ -4229,9 +4229,27 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
         }
         reactive_pages_ndirty += reactive_pages_bits[i];
     }
+    // A save changes fields of its own: the prune of the method tables takes
+    // a closed entry out of its chain by a change of the pointer that leads
+    // to it (`record_field_change`). The object that holds the pointer can
+    // be on a page that the process did not write, so the page is written
+    // too: the bytes of the base would lead to the closed entry.
+    size_t changed = 0;
+    for (size_t i = 0; i < field_replace.size; i += 2) {
+        const char *addr = (const char*)field_replace.table[i];
+        if (addr == (const char*)HT_NOTFOUND || addr < reactive_dirty_start ||
+            addr >= reactive_dirty_start + reactive_dirty_len)
+            continue;
+        size_t page = (addr - reactive_dirty_start) / jl_page_size;
+        if (!reactive_pages_bits[page]) {
+            reactive_pages_bits[page] = 1;
+            reactive_pages_ndirty++;
+            changed++;
+        }
+    }
     if (jl_reactive_timings())
-        jl_safe_printf("reactive: pages: %zu pages written, %zu of them as at the load\n",
-                       reactive_pages_ndirty + restored, restored);
+        jl_safe_printf("reactive: pages: %zu pages written, %zu of them as at the load; %zu more for a field that the save changes\n",
+                       reactive_pages_ndirty - changed + restored, restored, changed);
     reactive_pages_rewritten = (uint8_t*)calloc(reactive_base.gctags.len, 1);
     reactive_pages_ends = (size_t*)calloc(reactive_base.gctags.len, sizeof(size_t));
     reactive_pages_nrewritten = 0;
