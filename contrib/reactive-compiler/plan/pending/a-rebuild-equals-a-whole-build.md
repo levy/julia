@@ -96,9 +96,10 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
 | 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits. Closed on the branch by Step 7: the replay gate gives 728 names |
 | 43 | A line that a macro writes into the code as a number stays when the item moves. The rebuild gives a moved item its new lines in the line table, but it does not evaluate the item again. | `@warn "an evaluation observer failed"` in `_notify_evaluation`. A commit adds three lines above it. The log message of the rebuilt program names line 729, that of the whole build 732. Three methods of the kernel after 28 commits; the sources of projectured-julia hold 124 log macros in 55 files. | no case in `child.jl`; the replay takes a user of a tracked macro only | Seen on real commits. Closed on the branch `rebuild-equals-moved-lines`: the replay compares the expansion of each moved item that holds a macro call at its two places (Step 2) |
-| 44 | **The ledger gives a method to the item at its lines, and the item that defined the method can be another one.** A method that the expansion of a macro defines carries the lines of the function that builds the expansion. When that function changes, the apply deletes the method with the old methods of the function. Findings 40 and 41 are two faces of this. | `_emit_accessors` builds `getproperty` for each `@document` struct. A commit changes `_emit_accessors`. The rebuilt image has no `getproperty` for four structs, and a read of a field of such a struct takes the general method. | `rc_assign_methods!`, `rc_owns`, and the end of `rc_apply_tracked`, in `child.jl` | Seen on real commits, and both forms in the gate program. The first form, where the user of the macro is evaluated again, is closed on the branch `rebuild-equals-moved-lines`; the second form waits for Q2 |
+| 44 | **The ledger gives a method to the item at its lines, and the item that defined the method can be another one.** A method that the expansion of a macro defines carries the lines of the function that builds the expansion. When that function changes, the apply deletes the method with the old methods of the function. Findings 40 and 41 are two faces of this. | `_emit_accessors` builds `getproperty` for each `@document` struct. A commit changes `_emit_accessors`. The rebuilt image has no `getproperty` for four structs, and a read of a field of such a struct takes the general method. | `rc_assign_methods!`, `rc_owns`, and the end of `rc_apply_tracked`, in `child.jl` | Seen on real commits, and both forms in the gate program. Closed on the branch by D13: an item owns the methods that it defined (Step 6) |
 | 45 | A rebuild that loads the sources of the harness leaves the code that Base compiled for the types of that harness in the image: 465 functions and about 2 MB. A chain of whole images adds them at each rebuild. | Gate C in a tree whose Julia holds an older harness: 175.9 MB, then 2 MB more after each rebuild. | `rc_remove_harness!` | Measured. *Proposed by the assistant:* Step 10 takes it, with the test that says that a type is dead |
 | 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
+| 47 | The id of a log statement counts its expansions in the process. A server that evaluates a function with a log macro a second time gives the statement the next id, and a whole build has the first one. Two prints of the replay for one user of a macro whose expansion logs never compare equal. | `_notify_evaluation` of the kernel after three commits that move it: other code in the chain of one server, the same code from a new server. | `Base.CoreLogging.log_record_id` | Seen on real commits. Closed on the branch: an apply and each print of the replay start with an empty registry of log ids (Step 6) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1003,6 +1004,78 @@ commits. The numbers of the steps stay as they are.
     their definers, the roots, 19 lines of output, 13 globals). After the
     step `move`, the moved function has the definer `lines.jl:6` in the
     chain and in the whole build.
+
+  *The replay gates with D13 (2026-11-11).* Each method line of the oracle
+  holds the definer now, so the comparison is more strict than before. The
+  counts of the kernel of before D13 are also of before the two repairs of
+  the oracle, which took 20 lines away.
+
+  | | the kernel, 28 commits | | the platform, 7 commits after a whole build | |
+  | --- | --- | --- | --- | --- |
+  | | before D13 | with D13 | before D13 | with D13 |
+  | methods of the chain | 3 524 | 3 455 | 27 400 | 27 352 |
+  | methods of the whole build | 3 449 | 3 449 | 27 350 | 27 350 |
+  | method lines that differ, one server | 129 | 39 | 52 | 4 |
+  | method lines that differ, a new server | 80 | 30 | 49 | 2 |
+  | methods that the chain lacks, other than the moved `search_documents` | 2 (one server), 4 (a new server) | 0 | 0 | 0 |
+
+  The constructors of `RootedOperation` and the four `getproperty` methods
+  are there. What still differs has three causes, and one of them is new:
+
+  - *Finding 1, for D2:* `search_documents` is still in the module that it
+    left, with its keyword methods and the closures of the old functions
+    (most of the 39 lines of the kernel); the constructor of a struct that
+    a commit removed stays (`_PlaceBlocks`, 1 line of the platform).
+  - *A fault of the first form of D13, corrected:* the forms in the body of
+    a module with a docstring had the place of the docstring. A docstring
+    is a macro call, and the body of the module is inside its result, so no
+    line number node of the body set the place. In the whole build
+    `ReferenceModule.__init__` had the definer `ReferenceModule.jl:1`, and
+    in the chain, where the harness evaluated it with its place, line 145;
+    a closure of a statement of such a body stayed after its statement was
+    evaluated again (`KernelModule.jl:1`, `PlatformModule.jl:16`). The body
+    of a module now sets the place also inside a macro call: the ledger
+    takes the forms of such a body as items too.
+  - *Finding 47, new:* the three log functions of the kernel and one of the
+    platform have other code in the chain of one server, and the same code
+    from a new server.
+
+  *Finding 47: the id of a log statement counts its expansions.* A log
+  macro gives its statement an id: the hash of the module, the level and
+  the message, and the next free number when the registry of the process
+  already holds that id (`Base.CoreLogging.log_record_id`). A whole build
+  expands each statement one time in the process that compiles its package.
+  A server evaluates `_notify_evaluation` at each commit that moves it, so
+  the id in its code is the second or the third one. The replay has the
+  same fault in its prints: two expansions of one user of a macro whose
+  expansion holds a log statement never compare equal. *As built, by the
+  assistant:* the evaluations of one apply share one registry of log ids
+  that starts empty, as the forms of a package do, and each print of the
+  replay has its own (`rc_with_fresh_log_ids`). The limit: two statements
+  of one package with the same module, level and message keep one id when
+  only one of them is evaluated again.
+
+  *The failed rebuild of the platform, the second time.* The rebuild of
+  00d0f77e0 no longer stops with the `TypeError` of finding 46. It stopped
+  at the new check of a stopped trial: the trial refused `B2 Geometry.jl:8
+  Inset: the untracked Theme.jl:86 convert names the type`, and the apply
+  did not. The trial evaluates a statement that defines methods to take
+  its print, and it did that with no place, so the kept method got the
+  place of the script of the server as its definer, and then counted as a
+  method of no tracked file. Each evaluation of the trial has the place of
+  its item now (`rc_evaluate_at`). `gate_runs.sh` has a statement that
+  defines a method on the type that the edit changes.
+
+  *Gate C with the installed harness (finding 24).* After a `make`, the
+  rebuilds of gate C load no sources of the harness. Ten cycles give
+  108 120 bytes of growth between the first and the last reverse, against
+  a bound of 35 136: about 6 KB for each rebuild, as on 2026-11-09. Each
+  rebuild adds 45 slots and about 54 objects of the image; the function
+  count stays (39 660 text symbols). Two rebuilds with no edit add 70 KB
+  and 4 KB, and the next cycle takes 56 KB away again: the size of the
+  image data moves by tens of KB between two rebuilds with no growth of
+  what the program holds. What the 54 objects are is not found; the writer
+  has no count by type. It stays open, for Step 10.
 
   *A trap of the build.* A change of the layout of `Method` needs the image
   files of the build made again from the compiler: `sysimage.mk` makes the
