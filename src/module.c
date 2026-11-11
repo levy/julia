@@ -1408,7 +1408,8 @@ JL_DLLEXPORT void jl_module_using(jl_module_t *to, jl_module_t *from)
     JL_LOCK(&world_counter_lock);
     JL_LOCK(&to->lock);
     for (size_t i = 0; i < module_usings_length(to); i++) {
-        if (from == module_usings_getmod(to, i)) {
+        // An entry that `jl_reactive_module_unuse` closed is no `using` of now.
+        if (from == module_usings_getmod(to, i) && module_usings_getidx(to, i)->max_world == ~(size_t)0) {
             JL_UNLOCK(&to->lock);
             JL_UNLOCK(&world_counter_lock);
             return;
@@ -1456,6 +1457,84 @@ JL_DLLEXPORT void jl_module_using(jl_module_t *to, jl_module_t *from)
 
     jl_atomic_store_release(&jl_world_counter, new_world);
     JL_UNLOCK(&world_counter_lock);
+}
+
+// Each binding of `to` that is an implicit import of a name that `from`
+// exports resolves again in `new_world`. The caller holds the world counter
+// lock.
+static void jl_reresolve_implicit_imports(jl_module_t *to, jl_module_t *from, size_t new_world)
+{
+    jl_svec_t *table = jl_atomic_load_relaxed(&from->bindings);
+    for (size_t i = 0; i < jl_svec_len(table); i++) {
+        jl_binding_t *b = (jl_binding_t*)jl_svecref(table, i);
+        if ((void*)b == jl_nothing)
+            break;
+        jl_binding_partition_t *frombpart = jl_get_binding_partition(b, new_world);
+        if (frombpart->kind & PARTITION_FLAG_EXPORTED) {
+            jl_sym_t *var = b->globalref->name;
+            jl_binding_t *tob = jl_get_module_binding(to, var, 0);
+            if (tob) {
+                jl_binding_partition_t *tobpart = jl_atomic_load_relaxed(&tob->partitions);
+                if (tobpart) {
+                    enum jl_partition_kind kind = jl_binding_kind(tobpart);
+                    if (jl_bkind_is_some_implicit(kind)) {
+                        jl_replace_binding_locked(tob, tobpart, NULL, PARTITION_FAKE_KIND_IMPLICIT_RECOMPUTE, new_world);
+                    }
+                }
+            }
+        }
+        table = jl_atomic_load_relaxed(&from->bindings);
+    }
+}
+
+// Close the `using` of the module `from` in the module `to`, in a new world,
+// as a whole build of sources that no longer hold the `using` line has none:
+// the entry of the list ends at the world of before, and each name that `to`
+// took from the exports of `from` resolves again. Answer 1 when `to` used
+// `from`.
+JL_DLLEXPORT int jl_reactive_module_unuse(jl_module_t *to, jl_module_t *from)
+{
+    JL_LOCK(&world_counter_lock);
+    size_t new_world = jl_atomic_load_acquire(&jl_world_counter) + 1;
+    int closed = 0;
+    JL_LOCK(&to->lock);
+    for (size_t i = 0; i < module_usings_length(to); i++) {
+        struct _jl_module_using *entry = module_usings_getidx(to, i);
+        if (entry->mod == from && entry->max_world == ~(size_t)0) {
+            entry->max_world = new_world - 1;
+            closed = 1;
+        }
+    }
+    JL_UNLOCK(&to->lock);
+    if (closed) {
+        jl_reresolve_implicit_imports(to, from, new_world);
+        jl_atomic_store_release(&jl_world_counter, new_world);
+    }
+    JL_UNLOCK(&world_counter_lock);
+    return closed;
+}
+
+// Take the export and the public mark of `var` in the module `m` back, in a
+// new world, as a whole build of sources that no longer export the name has
+// none. The binding keeps what it holds. Answer 1 when the name had one of
+// the two.
+JL_DLLEXPORT int jl_reactive_module_unexport(jl_module_t *m, jl_sym_t *var)
+{
+    jl_binding_t *b = jl_get_module_binding(m, var, 0);
+    if (b == NULL)
+        return 0;
+    JL_LOCK(&world_counter_lock);
+    size_t new_world = jl_atomic_load_acquire(&jl_world_counter) + 1;
+    int changed = (jl_atomic_fetch_and_relaxed(&b->flags, (uint8_t)~BINDING_FLAG_PUBLICP) & BINDING_FLAG_PUBLICP) != 0;
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, new_world);
+    if (bpart->kind & PARTITION_FLAG_EXPORTED) {
+        jl_replace_binding_locked2(b, bpart, bpart->restriction,
+                                   bpart->kind & ~(size_t)PARTITION_FLAG_EXPORTED, new_world);
+        jl_atomic_store_release(&jl_world_counter, new_world);
+        changed = 1;
+    }
+    JL_UNLOCK(&world_counter_lock);
+    return changed;
 }
 
 JL_DLLEXPORT jl_value_t *jl_get_module_usings_backedges(jl_module_t *m)
