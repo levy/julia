@@ -33,3 +33,22 @@ const GONE = Gone(1)
 module Before
 inside() = 4
 end
+
+# A function that the edit moves from the module Early to the module Late,
+# which imported it by its name and gave it a method. A second function goes
+# the other way: Late defined it, and Late imports it by its name after the
+# edit. The method that Late gives each function has the same text before and
+# after the edit.
+module Early
+export carry
+carry() = 5
+end
+
+module Late
+using ..Early
+import ..Early: carry
+export fetch
+carry(x) = x + carry()
+fetch() = 6
+fetch(x) = x + fetch()
+end

@@ -599,7 +599,6 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     empty!(Base.CoreLogging._log_record_ids)
     t_trial = @elapsed try
         rc_delete_removals!(evaluation)
-        rc_record_resolutions!(evaluation)
         rc_install_filter(rc_method_filter)
         while true
             change = queue.cursor < length(queue.changes) ? queue.changes[queue.cursor + 1] : nothing

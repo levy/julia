@@ -25,3 +25,20 @@ end
 module After
 inside() = 4
 end
+
+# The module that defined the first function defines the second one, and the
+# module that imported the first function defines it and imports the second
+# one.
+module Early
+export fetch
+fetch() = 6
+end
+
+module Late
+using ..Early
+import ..Early: fetch
+export carry
+carry() = 5
+carry(x) = x + carry()
+fetch(x) = x + fetch()
+end

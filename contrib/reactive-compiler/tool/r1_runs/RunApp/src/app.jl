@@ -17,6 +17,10 @@ end
 # The names of `names` that the module binds, each with a mark.
 bound_names(mod::Module, names::Symbol...) = join((isdefined(mod, name) ? "+$name" : "-$name" for name in names), "")
 
+# The name of the module that defines the function `name` of `mod`, or a mark
+# when `mod` has no such name.
+owner_name(mod::Module, name::Symbol) = isdefined(mod, name) ? nameof(parentmodule(getfield(mod, name))) : "none"
+
 function shape_lines()
     return ["table = $(RunLib.TABLE[:answer])",
             "scaled = $(RunLib.SCALED)",
@@ -41,7 +45,9 @@ function shape_lines()
             "journey = $(shown_result(RunLib.Both.journey))",
             "left = $(join(filter(!=(:Left), names(RunLib.Left)), ' '))$(bound_names(RunLib.Left, :travel))",
             "removed = $(bound_names(RunLib, :Gone, :GONE, :Before, :After))",
-            "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))"]
+            "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))",
+            "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.fetch(1))) of " *
+            "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :fetch))$(bound_names(RunLib.Early, :carry, :fetch))"]
 end
 
 Base.@ccallable function julia_main()::Cint
