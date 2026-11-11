@@ -17,7 +17,8 @@
 #              then the prelinked program and the launcher print the same
 #              lines, and tool/overlay_check.py finds no wrong entry. A
 #              refused rebuild is counted and the store founds again at that
-#              commit; the log of its server is kept as $OUT/server-<n>.log. A rebuild that fails in another way is a fault: the
+#              commit; the log of its server is kept as $OUT/server-<n>.log,
+#              and the images of a rebuild that failed in $OUT/fault-<n>. A rebuild that fails in another way is a fault: the
 #              store founds again, the replay goes on, and the gate fails
 #   final    - materialize_app founds $OUT/final/replay at the last commit
 #   control  - a second whole build of the last commit, which compiles the
@@ -270,8 +271,13 @@ replay() {
             faults=$((faults + 1)); echo "$n $short the rebuild failed; see mat-$n.log" >> "$OUT/faults.txt"
             echo "=== $n $short: the rebuild FAILED: $(grep -m1 -E "ERROR|error " "$OUT/mat-$n.log" | cut -c1-200)"
         fi
-        # The server of a store that founds again writes a new log.
+        # The server of a store that founds again writes a new log, and the
+        # founding writes new images: the log and the images of a rebuild that
+        # went wrong stay in $OUT/fault-<n>, for a look at them.
         cp "$CHAIN/reactive-store/server.log" "$OUT/server-$n.log" 2>/dev/null
+        if grep -q "^$n " "$OUT/faults.txt"; then
+            mkdir -p "$OUT/fault-$n" && cp -a "$CHAIN/lib/julia/." "$OUT/fault-$n/" 2>/dev/null
+        fi
         found_chain "mat-$n-found" again && verify "$n-$short-found" || return 1
     done
     echo "=== replay: $n commits, $refused refused, $faults faults"

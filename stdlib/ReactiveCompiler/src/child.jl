@@ -864,6 +864,143 @@ struct RcStatementGroup
     new::Vector{RcItem}
 end
 
+# ── the names that an edit removes ──────────────────────────────────────────
+
+# The kinds of an item that binds its name in its module.
+const RC_NAMING_KINDS = (:method, :macro, :type, :const, :global, :module)
+
+# The partition kinds of a name that a module took from another one by a
+# `using` with names or an `import`.
+const RC_IMPORT_KINDS = (Base.PARTITION_KIND_EXPLICIT, Base.PARTITION_KIND_IMPORTED,
+                         Base.PARTITION_KIND_CONST_IMPORT)
+
+# The partition kinds of a name that a module defines by itself.
+const RC_OWN_KINDS = (Base.PARTITION_KIND_CONST, Base.PARTITION_KIND_GLOBAL, Base.PARTITION_KIND_DECLARED,
+                      Base.PARTITION_KIND_UNDEF_CONST, Base.PARTITION_KIND_BACKDATED_CONST)
+
+# What a `using` or `import` expression takes into its module: the module
+# paths of a `using` line with no names, and the names that a `using` with
+# names or an `import` binds. `using A.B` uses the module and binds its name.
+function rc_using_parts(e::Expr)
+    used = Expr[]
+    imported = Symbol[]
+    for spec in e.args
+        spec isa Expr || continue
+        if spec.head === :(:)
+            for entry in spec.args[2:end]
+                bound = entry isa Expr && entry.head === :. ? entry.args[end] :
+                        entry isa Expr && entry.head === :as ? entry.args[2] : nothing
+                bound isa Symbol && push!(imported, bound)
+            end
+        elseif spec.head === :as
+            spec.args[2] isa Symbol && push!(imported, spec.args[2])
+        elseif spec.head === :.
+            e.head === :using && push!(used, spec)
+            spec.args[end] isa Symbol && spec.args[end] !== :. && push!(imported, spec.args[end])
+        end
+    end
+    return (used = used, imported = imported)
+end
+
+# The id of the removal of an item, by its kind.
+rc_removal_id(kind::Symbol) = rc_kind_class(kind) === :method ? "A3" : kind === :type ? "B2" :
+                              kind === :const ? "C1" : kind === :global ? "C2" : kind === :module ? "C5" : "C3"
+
+# A name that an edit takes out of a module, when no expression of the edited
+# sources gives it again (decision D2). A whole build of the edited sources has
+# no such name, so the apply takes it out:
+#   :bound     - a type, a constant, a global, a function, a macro or a module
+#                that the module defined
+#   :imported  - a name that the module took by a `using` with names or an
+#                `import`
+#   :exported  - a name of an `export` or a `public` line
+#   :used      - a module of a `using` line with no names, in `target`
+struct RcNameRemoval
+    id::String
+    how::Symbol
+    path::Vector{Symbol}
+    name::Symbol
+    target::Union{Expr, Nothing}
+    where::String
+end
+
+# What the items give their modules, as sets of the module path and the name:
+# the names that they bind, export and import, and the `using` paths.
+function rc_given_names(items, path_of)
+    bound = Set{Tuple{Vector{Symbol}, Symbol}}()
+    exported = Set{Tuple{Vector{Symbol}, Symbol}}()
+    imported = Set{Tuple{Vector{Symbol}, Symbol}}()
+    used = Set{Tuple{Vector{Symbol}, Expr}}()
+    for item in items
+        path = path_of(item)
+        e = item.entry.expr
+        if item.kind in RC_NAMING_KINDS
+            item.name === nothing || push!(bound, (path, item.name))
+        elseif item.kind === :export && e isa Expr
+            for name in e.args
+                name isa Symbol && push!(exported, (path, name))
+            end
+        elseif item.kind === :using && e isa Expr
+            parts = rc_using_parts(e)
+            foreach(name -> push!(imported, (path, name)), parts.imported)
+            foreach(target -> push!(used, (path, target)), parts.used)
+        end
+    end
+    return (bound = bound, exported = exported, imported = imported, used = used)
+end
+
+# The names that the removed items gave their modules and that no item of the
+# edited sources gives: `removed` holds each removed item with its module
+# path, and `given` what the new items give.
+function rc_name_removals(removed::Vector{Tuple{RcItem, Vector{Symbol}}}, given)
+    names = RcNameRemoval[]
+    for (item, path) in removed
+        e = item.entry.expr
+        place = string(rc_where(item), " ", rc_what(item))
+        if item.kind in RC_NAMING_KINDS
+            item.name === nothing || (path, item.name) in given.bound ||
+                push!(names, RcNameRemoval(rc_removal_id(item.kind), :bound, path, item.name, nothing, place))
+        elseif item.kind === :export && e isa Expr
+            for name in e.args
+                name isa Symbol && !((path, name) in given.exported) &&
+                    push!(names, RcNameRemoval("C3", :exported, path, name, nothing, place))
+            end
+        elseif item.kind === :using && e isa Expr
+            parts = rc_using_parts(e)
+            for name in parts.imported
+                (path, name) in given.imported || (path, name) in given.bound ||
+                    push!(names, RcNameRemoval("C3", :imported, path, name, nothing, place))
+            end
+            for target in parts.used
+                (path, target) in given.used ||
+                    push!(names, RcNameRemoval("C3", :used, path, Symbol(""), target, place))
+            end
+        end
+    end
+    return unique!(removal -> (removal.how, removal.path, removal.name, removal.target), names)
+end
+
+# Take one name out of its module. A name that the module does not hold in
+# the form of the removal stays: a function of another module that the item
+# extended, a name that the module binds in another way now. Answer whether
+# the module changed.
+function rc_remove_name!(removal::RcNameRemoval)
+    mod = rc_module_or_nothing(removal.path)
+    mod === nothing && return false
+    name = removal.name
+    if removal.how === :exported
+        return ccall(:jl_reactive_module_unexport, Cint, (Any, Any), mod, name) != 0
+    elseif removal.how === :used
+        target = rc_import_target(mod, removal.target::Expr)
+        target === nothing && return false
+        return ccall(:jl_reactive_module_unuse, Cint, (Any, Any), mod, target) != 0
+    end
+    kind = Base.binding_kind(mod, name)
+    kind in (removal.how === :bound ? RC_OWN_KINDS : RC_IMPORT_KINDS) || return false
+    Base.delete_binding(mod, name)
+    return true
+end
+
 # An expression that the edit leaves as it is and moves to another place, and
 # that holds a macro call: its item of the new ledger, and its expression of
 # before the edit, with the lines and the file of before.
@@ -876,8 +1013,8 @@ end
 # queue and the removals, the refusals that the evaluation finds, how the
 # names of the modules with a changed `using` resolve, the method instances of
 # the old methods of the evaluated changes, the count of the methods that the
-# filter kept, the statements whose effect the apply takes back, and the moved
-# expressions that hold a macro call.
+# filter kept, the statements whose effect the apply takes back, the moved
+# expressions that hold a macro call, and the names that the edit removes.
 mutable struct RcEvaluation
     items::Vector{RcItem}
     roots::Vector{Vector{Symbol}}
@@ -890,10 +1027,11 @@ mutable struct RcEvaluation
     kept::Int
     group::Union{RcStatementGroup, Nothing}
     moved::Vector{RcMoved}
+    names::Vector{RcNameRemoval}
 end
-RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved) =
+RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved, names) =
     RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
-                 Core.MethodInstance[], 0, group, moved)
+                 Core.MethodInstance[], 0, group, moved, names)
 
 # Whether the item is a statement that defines nothing: it holds no macro call
 # and no `eval`, so what it does is an effect on a value that exists. A
@@ -963,11 +1101,21 @@ rc_evaluate_item(mod::Module, item::RcItem) = rc_evaluate_at(mod, item, item.ent
 rc_evaluate_at(mod::Module, item::RcItem, e) =
     Core.eval(mod, Expr(:toplevel, LineNumberNode(item.entry.lines.start, Symbol(item.path)), e))
 
-# Delete the methods of the removals.
+# Delete the methods of the removals, and take out the names that the edit
+# removes. The modules come last: the names inside a module go while its path
+# still leads to it.
 function rc_delete_removals!(evaluation::RcEvaluation)
     for change in evaluation.removals, method in change.old_methods
         rc_delete_method(method)
         change.deleted += 1
+    end
+    is_module(removal) = removal.how === :bound &&
+                         rc_module_or_nothing(vcat(removal.path, removal.name)) !== nothing
+    for removal in sort(evaluation.names; by = removal -> is_module(removal) ? -length(removal.path) : typemin(Int))
+        Base.invokelatest(rc_remove_name!, removal) || continue
+        println("rc: removed ", removal.where, ": the ",
+                removal.how === :used ? "using" : string(removal.how, " name ", removal.name), " leaves ",
+                join(removal.path, '.'))
     end
     return nothing
 end
@@ -1128,6 +1276,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     old_statements = RcItem[]
     new_statements = RcItem[]
     moved = RcMoved[]
+    removed_named = Tuple{RcItem, Vector{Symbol}}[]
     line_updates = 0
     # The methods whose text is in a file that changed, by the old path: they
     # take the new name of a renamed file and the shift of a moved expression.
@@ -1157,6 +1306,9 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     for i in match.removed
         methods = Method[m for item in old_items if item.file == i for m in item.methods]
         push!(removals, RcChange("C4", nothing, RcItem[], methods, basename(old_files[i]), "removed file", 0, 0))
+        for item in old_items
+            item.file == i && push!(removed_named, (item, vcat(old_roots[i], item.entry.module_path)))
+        end
     end
     for j in match.added
         for item in new_items
@@ -1227,13 +1379,14 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 end
             end
             any(c -> counterpart(c, item), changed) && continue
-            if rc_kind_class(item.kind) === :method
-                push!(removals, RcChange("A3", nothing, RcItem[item], item.methods,
-                                         string(rc_where(item), " ", rc_what(item)), "removed", 0, 0))
-            elseif item.kind !== :include
-                println("rc: removed ", rc_where(item), " ", rc_what(item), " (", item.kind,
-                        "): not applied, the binding stays")
-            end
+            item.kind === :include && continue
+            # D2: an expression that left. The methods that it defined go, and
+            # so do the names that it gave its module, when no expression of
+            # the edited sources gives them again (`rc_name_removals`).
+            push!(removed_named, (item, vcat(new_roots[j], item.entry.module_path)))
+            isempty(item.methods) && rc_kind_class(item.kind) !== :method && continue
+            push!(removals, RcChange(rc_removal_id(item.kind), nothing, RcItem[item], item.methods,
+                                     string(rc_where(item), " ", rc_what(item)), "removed", 0, 0))
         end
         for item in changed
             old = RcItem[o for o in removed if counterpart(o, item)]
@@ -1274,18 +1427,26 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     end
     group = rc_statement_group!(queue, refusals, new_items, old_statements, new_statements)
+    # D2: the names that the removed expressions gave, and that no expression
+    # of the edited sources gives. A removal is a change, so the ledger holds
+    # every file.
+    names = isempty(removed_named) ? RcNameRemoval[] :
+            rc_name_removals(removed_named, rc_given_names(new_items, item -> rc_module_path(new_roots, item)))
     if allowed !== nothing
         isempty(match.renamed) || push!(refusals, "H3 a renamed file: not taken by this apply")
         for change in vcat(removals, queue.changes)
             change.id in allowed || push!(refusals, string(change.id, " ", change.where, ": not taken by this apply"))
         end
+        for removal in names
+            push!(refusals, string(removal.id, " ", removal.where, ": a name leaves its module, not taken by this apply"))
+        end
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
-    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group, moved)
+    evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group, moved, names)
     # The replay: the expressions whose text stays and whose result changes.
     replay_log = string(refusal_out, ".replay.log")
     stopped = nothing
-    if !isempty(queue.changes) || !isempty(removals) || !isempty(moved)
+    if !isempty(queue.changes) || !isempty(removals) || !isempty(moved) || !isempty(names)
         known = Set{UInt}(objectid(change) for change in queue.changes)
         stopped = rc_replay!(evaluation, replay_log)
         if allowed !== nothing

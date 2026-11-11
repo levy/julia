@@ -24,8 +24,11 @@
 # evaluate the user again, and its method must stay (finding 44).
 # markers.jl holds a type whose values the program keeps in the storage of its
 # task: a later edit changes the type, and the rebuild must not find a value of
-# the type of before in that storage (finding 46). The chain is compared with
-# the founding of the edited sources.
+# the type of before in that storage (finding 46). moved.jl holds what the edit
+# removes or moves: a function that goes to another module with its export, a
+# `using` line, a struct, a constant, and a module that gets another name; no
+# name of before must stay (finding 1, decision D2). The chain is compared with the founding of
+# the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -33,8 +36,8 @@
 #   run-s1       - the founded binary prints the values of before the edit
 #   edit         - helpers-after.jl replaces helpers.jl,
 #                  statements-after.jl replaces statements.jl,
-#                  lines-after.jl replaces lines.jl, and markers-after.jl
-#                  replaces markers.jl
+#                  lines-after.jl replaces lines.jl, markers-after.jl
+#                  replaces markers.jl, and moved-after.jl replaces moved.jl
 #   mat-s2       - the rebuild of the edit
 #   run-s2       - the rebuilt binary prints the values of after the edit
 #   refuse       - statements-refused.jl changes a statement that names no
@@ -65,8 +68,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 left=travel+travel removed=+Gone+GONE+Before-After onlooker=+stay"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 left=-travel removed=-Gone-GONE-Before+After onlooker=-stay"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}
@@ -144,7 +147,8 @@ edit() {
     cp "$TOOL/r1_runs/statements-after.jl" "$SRC/RunLib/src/statements.jl" &&
     cp "$TOOL/r1_runs/lines-after.jl" "$SRC/RunLib/src/lines.jl" &&
     cp "$TOOL/r1_runs/markers-after.jl" "$SRC/RunLib/src/markers.jl" &&
-    echo "=== edited helpers.jl, statements.jl, lines.jl and markers.jl of RunLib"
+    cp "$TOOL/r1_runs/moved-after.jl" "$SRC/RunLib/src/moved.jl" &&
+    echo "=== edited helpers.jl, statements.jl, lines.jl, markers.jl and moved.jl of RunLib"
 }
 
 # An edit that moves one function and changes no expression: the function

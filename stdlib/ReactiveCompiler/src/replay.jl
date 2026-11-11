@@ -493,7 +493,8 @@ function rc_check_statement_group(evaluation::RcEvaluation)
     items = RcItem[item for item in evaluation.items if !any(statement -> statement === item, group.new)]
     append!(items, group.old)
     queue = RcQueue(evaluation.queue.order)
-    check = RcEvaluation(items, evaluation.roots, evaluation.tracked, queue, RcChange[], String[], nothing, RcMoved[])
+    check = RcEvaluation(items, evaluation.roots, evaluation.tracked, queue, RcChange[], String[], nothing, RcMoved[],
+                         RcNameRemoval[])
     for definition in group.definitions
         rc_enqueue!(queue, RcChange("S1", definition, ""))
     end
@@ -565,8 +566,8 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     active = Set{Int}()
     first_change = isempty(queue.changes) ? nothing : minimum(change -> rc_order(order, change.item), queue.changes)
     for candidate in candidates
-        isempty(evaluation.removals) && (first_change === nothing || rc_order(order, candidate.item) < first_change) &&
-            continue
+        isempty(evaluation.removals) && isempty(evaluation.names) &&
+            (first_change === nothing || rc_order(order, candidate.item) < first_change) && continue
         objectid(candidate.item) in queue.queued || push!(active, candidate.index)
     end
     t_before = @elapsed begin

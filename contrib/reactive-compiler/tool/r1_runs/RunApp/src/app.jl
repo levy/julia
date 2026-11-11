@@ -5,6 +5,18 @@
 # of its task.
 shown_call(f) = hasmethod(f, Tuple{}) ? f() : "no method"
 
+# The value of the call, or the name of the error that it throws.
+function shown_result(f)
+    try
+        return string(f())
+    catch e
+        return string(nameof(typeof(e)))
+    end
+end
+
+# The names of `names` that the module binds, each with a mark.
+bound_names(mod::Module, names::Symbol...) = join((isdefined(mod, name) ? "+$name" : "-$name" for name in names), "")
+
 function shape_lines()
     return ["table = $(RunLib.TABLE[:answer])",
             "scaled = $(RunLib.SCALED)",
@@ -25,7 +37,11 @@ function shape_lines()
             "marked = $(RunLib.MARKED) of $(fieldcount(RunLib.Marker)) fields",
             "steady = $(shown_call(RunLib.steady_value))",
             "height = $(RunLib.theme_height(RunLib.DEFAULT_THEME))",
-            "logged = $(RunLib.logged_line())"]
+            "logged = $(RunLib.logged_line())",
+            "journey = $(shown_result(RunLib.Both.journey))",
+            "left = $(join(filter(!=(:Left), names(RunLib.Left)), ' '))$(bound_names(RunLib.Left, :travel))",
+            "removed = $(bound_names(RunLib, :Gone, :GONE, :Before, :After))",
+            "onlooker = $(bound_names(RunLib.Onlooker, :stay))"]
 end
 
 Base.@ccallable function julia_main()::Cint
