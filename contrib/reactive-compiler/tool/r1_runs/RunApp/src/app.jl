@@ -41,7 +41,7 @@ function shape_lines()
             "journey = $(shown_result(RunLib.Both.journey))",
             "left = $(join(filter(!=(:Left), names(RunLib.Left)), ' '))$(bound_names(RunLib.Left, :travel))",
             "removed = $(bound_names(RunLib, :Gone, :GONE, :Before, :After))",
-            "onlooker = $(bound_names(RunLib.Onlooker, :stay))"]
+            "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))"]
 end
 
 Base.@ccallable function julia_main()::Cint

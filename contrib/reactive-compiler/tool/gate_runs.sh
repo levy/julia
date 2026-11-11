@@ -68,8 +68,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 left=travel+travel removed=+Gone+GONE+Before-After onlooker=+stay"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 left=-travel removed=-Gone-GONE-Before+After onlooker=-stay"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 left=travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}
