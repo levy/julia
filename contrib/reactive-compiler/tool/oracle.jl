@@ -167,8 +167,13 @@ function oracle_lowered(m::Method)
     isdefined(m, :generator) && (m = only(methods(m.generator.gen)))
     ci = Base.uncompressed_ast(m)
     code = Any[oracle_strip_lines(stmt) for stmt in ci.code]
-    return string(hash(oracle_canonical(repr(code)), hash(oracle_canonical(repr(ci.slotnames)))); base = 16)
+    slots = Symbol[oracle_slot(name) for name in ci.slotnames]
+    return string(hash(oracle_canonical(repr(code)), hash(oracle_canonical(repr(slots)))); base = 16)
 end
+
+# The lowering keeps a function with no name that captures a variable in a
+# slot, and the name of that slot is the gensym counter alone (`Symbol("1843")`).
+oracle_slot(name::Symbol) = !isempty(String(name)) && all(isdigit, String(name)) ? Symbol("#") : name
 
 oracle_strip_lines(x) = x
 oracle_strip_lines(::LineNumberNode) = LineNumberNode(0)
