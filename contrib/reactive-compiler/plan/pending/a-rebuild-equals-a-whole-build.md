@@ -100,6 +100,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 45 | A rebuild that loads the sources of the harness leaves the code that Base compiled for the types of that harness in the image: 465 functions and about 2 MB. A chain of whole images adds them at each rebuild. | Gate C in a tree whose Julia holds an older harness: 175.9 MB, then 2 MB more after each rebuild. | `rc_remove_harness!` | Measured. *Proposed by the assistant:* Step 10 takes it, with the test that says that a type is dead |
 | 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
 | 47 | The id of a log statement counts its expansions in the process. A server that evaluates a function with a log macro a second time gives the statement the next id, and a whole build has the first one. Two prints of the replay for one user of a macro whose expansion logs never compare equal. | `_notify_evaluation` of the kernel after three commits that move it: other code in the chain of one server, the same code from a new server. | `Base.CoreLogging.log_record_id` | Seen on real commits. Closed on the branch: an apply and each print of the replay start with an empty registry of log ids (Step 6) |
+| 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen on a real commit (the replay over the platform, Step 6); open |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1065,6 +1066,41 @@ commits. The numbers of the steps stay as they are.
   method of no tracked file. Each evaluation of the trial has the place of
   its item now (`rc_evaluate_at`). `gate_runs.sh` has a statement that
   defines a method on the type that the edit changes.
+
+  *The two corrections, seen to fail first.* Through a server, with the
+  harness of before the place in the trial, the first rebuild of the gate
+  stops as the rebuild of the platform did: `the replay stopped (B2
+  helpers.jl:15 Theme: the untracked users.jl:64 theme_height names the
+  type (found in the apply)) and the apply did not`. With the rule of the
+  log ids taken out, the gate ends with one method of other code in the
+  chain, `logged_line`.
+
+  *The kernel again, with the corrections.* The chain of one server has
+  3 454 methods against 3 448, and 30 method lines differ; a new server
+  gives 3 451 and 27 lines. 24 of the lines are the moved
+  `search_documents`. The others are closures with the place
+  `ReferenceSearch.jl:17`, which is no first line of an expression in the
+  last commit: an expression that a commit removed left them. No log
+  function and no method of the body of a module differs. What stays is
+  for D2.
+
+  *The platform again, with the corrections.* The rebuild of 00d0f77e0, the
+  commit that changes `ReactiveCell`, applies now. The gate still counts it
+  as a fault, for another reason: `overlay_check.py` finds wrong entries in
+  its overlay (finding 48), so the store founds again there. For the seven
+  commits after it, one method line differs from the whole build, in the
+  chain of one server and from a new server: the constructor of the struct
+  `_PlaceBlocks`, which a commit removed (finding 1, for D2). The names,
+  the 148 globals and the roots are as before.
+
+  *Finding 48: the overlay of a large rebuild has stale root tables.* The
+  check of the overlay of 00d0f77e0 says: `root tables: 857 grew inside
+  their memory, 2 of them hold stale bytes`. The overlays of the 17 commits
+  before it have none (128 grown tables in the one before). This is the
+  kind of fault of finding 33, which Step 1 closed for the case that it
+  had; two tables of 857 still lose a write. The replay gate keeps the
+  images of a rebuild that goes wrong now (`$OUT/fault-<n>`), for a look
+  at the two tables.
 
   *Gate C with the installed harness (finding 24).* After a `make`, the
   rebuilds of gate C load no sources of the harness. Ten cycles give
