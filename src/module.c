@@ -1514,6 +1514,31 @@ JL_DLLEXPORT int jl_reactive_module_unuse(jl_module_t *to, jl_module_t *from)
     return closed;
 }
 
+// Take the name `var` out of the module `m`, in a new world, as a whole build
+// of sources that no longer bind the name has it: the binding is then that of
+// a name that the module never bound, so the export of a module that `m` uses
+// gives the name again. `jl_disable_binding` leaves a guard, which hides such
+// an export. The binding keeps its export mark. Answer 1 when the module
+// bound the name.
+JL_DLLEXPORT int jl_reactive_binding_leave(jl_module_t *m, jl_sym_t *var)
+{
+    jl_binding_t *b = jl_get_module_binding(m, var, 0);
+    if (b == NULL)
+        return 0;
+    JL_LOCK(&world_counter_lock);
+    size_t new_world = jl_atomic_load_acquire(&jl_world_counter) + 1;
+    jl_binding_partition_t *bpart = jl_get_binding_partition(b, new_world);
+    int bound = !jl_bkind_is_some_implicit(jl_binding_kind(bpart));
+    if (bound) {
+        jl_replace_binding_locked(b, bpart, NULL,
+                                  PARTITION_FAKE_KIND_IMPLICIT_RECOMPUTE | (bpart->kind & PARTITION_MASK_FLAG),
+                                  new_world);
+        jl_atomic_store_release(&jl_world_counter, new_world);
+    }
+    JL_UNLOCK(&world_counter_lock);
+    return bound;
+}
+
 // Take the export and the public mark of `var` in the module `m` back, in a
 // new world, as a whole build of sources that no longer export the name has
 // none. The binding keeps what it holds. Answer 1 when the name had one of

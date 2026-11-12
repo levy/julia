@@ -946,7 +946,10 @@ function rc_given_names(items, path_of)
         path = path_of(item)
         e = item.entry.expr
         if item.kind in RC_NAMING_KINDS
-            item.name === nothing || push!(item.kind in (:method, :macro) ? callable : bound, (path, item.name))
+            # A method of a function that the definition names through a
+            # module (`Base.iterate(x) = ...`) binds no name here.
+            item.name === nothing || (item.kind === :method && ReactiveSourceDiff.is_qualified_method(e)) ||
+                push!(item.kind in (:method, :macro) ? callable : bound, (path, item.name))
         elseif item.kind === :export && e isa Expr
             for name in e.args
                 name isa Symbol && push!(exported, (path, name))
@@ -974,6 +977,7 @@ function rc_name_removals(removed::Vector{Tuple{RcItem, Vector{Symbol}}}, given)
         place = string(rc_where(item), " ", rc_what(item))
         if item.kind in RC_NAMING_KINDS
             item.name === nothing || (path, item.name) in given.bound ||
+                (item.kind === :method && ReactiveSourceDiff.is_qualified_method(e)) ||
                 push!(names, RcNameRemoval(rc_removal_id(item.kind), :bound, path, item.name, nothing, place))
         elseif item.kind === :export && e isa Expr
             for name in e.args
@@ -1019,8 +1023,10 @@ function rc_remove_name!(removal::RcNameRemoval)
     end
     removal.how === :replaced && return false
     rc_holds_name(mod, removal) || return false
-    Base.delete_binding(mod, name)
-    return true
+    # The binding is then that of a name that the module never bound: the
+    # export of a module that it uses gives the name again, which the guard of
+    # `Base.delete_binding` hides.
+    return ccall(:jl_reactive_binding_leave, Cint, (Any, Any), mod, name) != 0
 end
 
 # C3: refuse each `using` of the queue with a name that its module binds
@@ -1340,6 +1346,29 @@ function rc_items_by_name!(evaluation::RcEvaluation)
     return evaluation.named = named
 end
 
+# Before the evaluation of a changed `const` or `global`: the binding of
+# before leaves when the declaration of now is of another kind. Julia makes no
+# constant of a global and no global of a constant in a module that holds the
+# name, and it gives a typed global no other type. A whole build has only the
+# declaration of now, so the name of before goes first, as the name of an
+# expression that left does. Answer whether the binding left.
+function rc_drop_other_declaration!(mod::Module, change::RcChange)
+    item = change.item
+    item.kind in RC_BINDING_KINDS && item.name !== nothing || return false
+    kind = Base.binding_kind(mod, item.name)
+    declared = ReactiveSourceDiff.declared_type(item.entry.expr)
+    other = item.kind === :const ? kind == Base.PARTITION_KIND_GLOBAL :
+            kind == Base.PARTITION_KIND_CONST ||
+            (kind == Base.PARTITION_KIND_GLOBAL &&
+             any(old -> old.kind === :global && ReactiveSourceDiff.declared_type(old.entry.expr) != declared,
+                 change.old_items))
+    other || return false
+    Base.delete_binding(mod, item.name)
+    println("rc: removed ", change.where, ": the declaration of ", item.name, " of before leaves ", mod,
+            ", because the one of now is of another kind")
+    return true
+end
+
 # Evaluate the next change of the queue in its module, and add to the queue
 # the dependents of what the evaluation changed. Answer false when the
 # evaluation found a refusal. The method filter is installed by the caller.
@@ -1362,6 +1391,7 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     mod = Base.invokelatest(rc_resolve_module, rc_module_path(new_roots, item))
     world = Base.get_world_counter()
     item.kind === :using && Base.invokelatest(rc_drop_replaced_imports!, evaluation, mod, item)
+    Base.invokelatest(rc_drop_other_declaration!, mod, change)
     rc_evaluate_item(mod, item)
     # A kept method is a method of the sources of now: this evaluation defined
     # it again with the same code, and the filter gave it the place of that

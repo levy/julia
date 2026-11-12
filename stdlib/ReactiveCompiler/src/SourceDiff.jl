@@ -28,7 +28,7 @@ by the file and the lines of the entry.
 """
 module ReactiveSourceDiff
 
-export Entry, file_entries, changed_expressions, is_module, entry_kind, defined_name, macro_heads, type_level_names, all_names,
+export Entry, file_entries, changed_expressions, is_module, entry_kind, defined_name, macro_heads, type_level_names, all_names, declared_type, is_qualified_method,
        read_paths, type_shape, initializer, runs_code, without_docstrings
 
 "Strip every `LineNumberNode` from `x`, recursively, for the key only."
@@ -240,6 +240,36 @@ function defined_name(e)
         return signature_name(lhs)
     end
     return nothing
+end
+
+"""
+    is_qualified_method(e) -> Bool
+
+Whether the method definition gives its function through a module:
+`A.f(x) = ...`. Such a definition adds a method to a function of `A`, and
+binds no name in the module that holds it.
+"""
+function is_qualified_method(e)
+    d = definition(e)
+    d isa Expr && d.head in (:function, :(=)) || return false
+    signature = d.args[1]
+    while signature isa Expr && signature.head in (:call, :where, :(::), :curly)
+        signature = signature.args[1]
+    end
+    return signature isa Expr && signature.head === :. && length(signature.args) == 2 && signature.args[2] isa QuoteNode
+end
+
+"""
+    declared_type(e)
+
+The type expression that a `global` or a `const` item declares for its binding
+(`global x::T = v`, `x::T = v`), or `nothing` when it declares none.
+"""
+function declared_type(e)
+    d = definition(e)
+    d isa Expr && d.head in (:global, :const) && (d = d.args[1])
+    d isa Expr && d.head === :(=) && (d = d.args[1])
+    return d isa Expr && d.head === :(::) && length(d.args) == 2 ? strip_lines(d.args[2]) : nothing
 end
 
 """
