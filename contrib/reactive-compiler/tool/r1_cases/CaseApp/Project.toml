@@ -1,0 +1,9 @@
+name = "CaseApp"
+uuid = "5c1e8d2a-9b3f-4a6e-8d7c-1f2e3a4b5c62"
+version = "0.1.0"
+
+[deps]
+CaseLib = "5c1e8d2a-9b3f-4a6e-8d7c-1f2e3a4b5c61"
+
+[sources]
+CaseLib = {path = "../CaseLib"}
