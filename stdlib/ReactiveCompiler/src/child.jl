@@ -1615,7 +1615,13 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                     counterpart(c, item) && rc_is_plain_statement(c) && !(c in new_statements) && push!(new_statements, c)
                 end
             end
-            any(c -> counterpart(c, item), changed) && continue
+            if any(c -> counterpart(c, item), changed)
+                # The changed counterpart takes the methods. The name leaves
+                # when the counterpart gives none: a method that the edit writes
+                # with the module of its function (`Base.iterate(x) = ...`).
+                push!(removed_named, (item, vcat(new_roots[j], item.entry.module_path)))
+                continue
+            end
             item.kind === :include && continue
             # D2: an expression that left. The methods that it defined go, and
             # so do the names that it gave its module, when no expression of
