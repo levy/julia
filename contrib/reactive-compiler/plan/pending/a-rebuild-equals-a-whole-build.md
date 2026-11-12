@@ -100,11 +100,13 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 45 | A rebuild that loads the sources of the harness leaves the code that Base compiled for the types of that harness in the image: 465 functions and about 2 MB. A chain of whole images adds them at each rebuild. | Gate C in a tree whose Julia holds an older harness: 175.9 MB, then 2 MB more after each rebuild. | `rc_remove_harness!` | Measured. *Proposed by the assistant:* Step 10 takes it, with the test that says that a type is dead |
 | 46 | The compiler server evaluates each apply in its one task, so what the program stores in the task stays from one apply to the next. After a struct changes, the new code finds a value of the old type there. | The kernel keeps a `Vector{ReactiveCell}` in `task_local_storage()`. The rebuild of the commit that changes `ReactiveCell` stops with a `TypeError`. | `rc_serve` in `server.jl`; `rc_trial!` in `replay.jl` | Seen on a real commit (the replay over the platform, Step 2). Closed on the branch `rebuild-equals-moved-lines`: an apply and each part of the trial evaluate with an empty storage of the task |
 | 47 | The id of a log statement counts its expansions in the process. A server that evaluates a function with a log macro a second time gives the statement the next id, and a whole build has the first one. Two prints of the replay for one user of a macro whose expansion logs never compare equal. | `_notify_evaluation` of the kernel after three commits that move it: other code in the chain of one server, the same code from a new server. | `Base.CoreLogging.log_record_id` | Seen on real commits. Closed on the branch: an apply and each print of the replay start with an empty registry of log ids (Step 6) |
-| 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen one time on a real commit (the replay over the platform, Step 6). Not reproduced on 2026-11-11 in two tries: one rebuild of the commit alone, and the same chain of 18 rebuilds with the harness of that day (0 of 862 tables). Open |
+| 48 | The overlay of a large rebuild has root tables with stale bytes: two of 857 tables that grew inside their memory. It is the kind of fault of finding 33, in a case that Step 1 did not close. | The rebuild of the commit that changes the struct `ReactiveCell`, 17 commits after the whole build of the platform. | `staticdata.c`, the writer of the constant data of an overlay; `tool/overlay_check.py` finds it | Seen one time on a real commit (the replay over the platform, Step 6), and a second time on 2026-11-12 with the images kept. **It is a fault of the check and not of the overlay:** each grown table has the new block of roots, and the base holds the same two numbers at that place in 2 tables. The check is corrected (82d3089eaa, Step 6). Closed |
 | 49 | A function that changes places between the module that defines it and a module that imports it by its name stops the rebuild. In one direction the rebuild fails with an error of Julia, in the other one it is refused. | `ReferenceModule` had `import ..DocumentModule: search_documents`; the commit takes the function out of `DocumentModule` and defines it in `ReferenceModule`. The rebuild says "invalid method definition in ReferenceModule: exported function DocumentModule.search_documents does not exist". The commit that moves it back is refused: "the module binds search_documents already; Julia ignores a conflicting import". | `child.jl`: `rc_name_removals` kept the import of before when the module defines the name now; the check of an import ran before the name removals | Seen on three real commits (the replay over the kernel with the removals, Step 6); closed on the branch |
 | 50 | A method of another module that names a moved struct in its signature stays a method for the struct of before. The expression of the method has the same text, so nothing evaluated it again. | `struct Token` moves from the module `Left` to the module `Right`; `Both` uses the two and has `weigh(token::Token) = token.weight`. After the rebuild `Both.weigh(Right.Token(8))` is a `MethodError`; a whole build gives 8. | `child.jl`: the check of how the names of an expression resolve covered only a module with a changed `using` | Found by reading, confirmed by a gate case that failed first (Step 6); closed on the branch |
 | 51 | **Julia fails when it resolves a declared name again in modules that use each other.** The pass that follows a changed binding to the modules that use its module comes back to a binding that it resolved already, and an assertion fails. The error that the person sees is "MethodError: no method matching string(::Expr)", because the message of the assertion is made in the world of the compiler. The released Julia 1.13.1 does the same. | `module R; export f; end`, `module K; using ..R; using ..P; export f; end`, the parent `P` has `using .K`, and both resolved `f`. Then `global f` in `R` fails. In the kernel, `KernelModule` uses each module of its parent and the parent too, and the parent uses `KernelModule`; the rebuild that defines `search_documents` again in the module that exports it reaches the case. | `Compiler/src/bindinginvalidations.jl`, `invalidate_code_for_globalref!` | Seen on the three commits of finding 49, after its correction; a script of ten lines shows it; closed on the branch (ec197346b0), with a test in `test/rebinding.jl`. A report to upstream Julia is the decision of the owner |
 | 52 | A name that the call of a macro binds and its source does not show gets a new value, and the expressions that name it stay as they were. The harness knew one name for each expression: the name that the source shows. | `@theme struct ConversationTheme … end` defines `ConversationTheme` and `ScaledConversationTheme`. A change of `ReactiveCell` gives the second type a new identity and leaves the first. `AgentWorkToWidget(theme::Union{ConversationTheme, ScaledConversationTheme})` in another module keeps the type of before in its signature, so a call with a value of the new type is a `MethodError`; a whole build has the new type. The same for the alias `ICCellVector` that `@document struct CellVector` defines, and the methods `ICCellVector(…) = …`. | `child.jl`, `rc_evaluate_next!`: the dependents of an evaluation came from the name of the item | Found by the replay over 18 platform commits with the comparison (24 method lines of 27 297); confirmed by a gate case that failed first; closed on the branch (Step 6) |
+| 53 | **An expression that the rebuild evaluates again sees the definitions that come after it in the load order.** A whole build evaluates an expression with the code that it loads before the expression. A rebuild evaluates it in a process that holds the whole program. The result differs when the evaluation calls a function that a later expression gives a method. | `@document struct CellVector` is at line 32 of `CellVector.jl`. The macro asks `get_cell_layout_field_type(Val(:Vector))` for each field that is a `Vector`, and line 150 of the same file has the method that answers `CellVector`. A whole build expands line 32 before that method exists. The rebuild of the commit that changes `ReactiveCell` expands line 32 again, gets `CellVector`, and the constructor wraps its own vector: `CellVector(Any[1, 2])` throws `DeclaredTypeMismatchException` in the rebuilt image and gives a list of 2 elements in a whole build. | `replay.jl` names the limit in its header; no rule of the harness covers it | Found by the comparison of the replay over the platform (4 method lines of `CellVector.jl:32`), confirmed by a call in both images. **Open: it needs a decision** (Step 6) |
+| 54 | A deleted method stays in the method table of an overlay. The save takes a closed entry out of its chain by a recorded change of the pointer that leads to it, and a save by pages writes only the objects of the pages that the process wrote. A pointer in an object of another page keeps the bytes of the base. Dispatch does not use a closed entry, so no call goes wrong; `Base.visit` counts it. | After the rebuild of the commit that changes `ReactiveCell`, 2 of 2 754 deleted methods are still in the table: the program counts 23 824 methods, a whole build 23 822. | `staticdata.c`, `reactive_pages_begin`: the recorded field changes did not mark their pages | Found by the comparison of the replay over the platform (the output of the program); closed on the branch (d7a821790b), see Step 6 for the test |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -130,7 +132,7 @@ depend on an address.
 
 | # | what happens | example | where | state |
 | --- | --- | --- | --- | --- |
-| 10 | The harness keeps a cache from the text of each statement of the trace to the type that the text gave in the whole build. After an edit changes a struct, the cache still gives the old struct. The statement fails, or it compiles code for the old struct, and the new struct gets no compiled code. `--refresh-trace` does not heal it, because the new statement has the same text. | 150 statements failed today, 137 of them in the owner's packages. 63 are functions of the SDL backend: `_compute_dirty_change`, `_record_painted_element!`, `_take_wheel_run!`. They name `SdlBackend` and `SdlWindowResources`, which changed and have no type parameter, so the text of each statement is still right. The program compiles its paint path at each start. | `child.jl:1136-1159` | Read, Log |
+| 10 | The harness keeps a cache from the text of each statement of the trace to the type that the text gave in the whole build. After an edit changes a struct, the cache still gives the old struct. The statement fails, or it compiles code for the old struct, and the new struct gets no compiled code. `--refresh-trace` does not heal it, because the new statement has the same text. | 150 statements failed today, 137 of them in the owner's packages. 63 are functions of the SDL backend: `_compute_dirty_change`, `_record_painted_element!`, `_take_wheel_run!`. They name `SdlBackend` and `SdlWindowResources`, which changed and have no type parameter, so the text of each statement is still right. The program compiles its paint path at each start. | `child.jl:1136-1159` | Read, Log. Measured on the platform: 1 136 of 2 268 roots after the commit that changes `ReactiveCell`. The table is closed on the branch (86b5d06977, see Step 6): the session drops it when a constant gets another value |
 | 11 | A statement whose text is no longer right stays lost. A struct with one type parameter for each field, as each `@document` struct has, changes its text with each new field. New code behind a dynamic call has no statement at all. Both wait for a person who runs `--refresh-trace`. The rebuild writes the count into the server log and nowhere else. | `collect_ini_file_entries(::LegacyProjectIniFiles{ReactiveCell{Any}, …})` after the struct got a field | `child.jl:1197`, `reactive.jl:285` | Log |
 | 25 | An edited method starts with no compiled code. It gets code from the trace and from the callers that the rebuild compiles again. Code that the whole build compiled for the old method by another way is not compiled for the new one: a finalizer, a callback, a dynamic call from an unchanged caller. The old method still lists those specializations when the apply replaces it. | Edit the body of a function that only a `finalizer(f, x)` of an unchanged function names. | `child.jl:994`, `typeinfer.jl:1939` | Read (audit) |
 | 26 | In the overlay form, new code calls an old function with boxed arguments through `jl_invoke`. A whole build makes a direct call. The same path cost 43 ns against 2.6 ns in the bench of gate M6. Most functions on mutable documents have boxed arguments. The count line of the build prints 0 for these calls. | An edited function calls an unchanged `handle!(document, event, context)` in a loop. | `codegen.cpp:5378` ("TODO: Add !specsig support"), `aotcompile.cpp:504` | Read; the cost in the owner's code needs a measurement |
@@ -958,8 +960,11 @@ commits. The numbers of the steps stay as they are.
   changed Manifest entry stops the build with its name; the program applies
   its overlay with the variable of finding 34 set, and stops on an overlay of
   another base.
-- [ ] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
-  40, 41, 44, refusal C5).** First D13: the two fields of a method, the place
+- [x] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
+  40, 41, 44, refusal C5).** *Done on the branch (2026-11-12): D13 and D2
+  are built, and the replays over the kernel and the platform apply each
+  commit. One difference from a whole build stays, finding 53, which is no
+  part of D13 or D2 and needs a decision.* First D13: the two fields of a method, the place
   in the runtime, the ledger by the definer. Test: the case `@steady` of
   `gate_runs.sh`, which the rebuild of today answers with "no method"; the
   replay gates, where the count of the methods of the chain must come to
@@ -1328,6 +1333,241 @@ commits. The numbers of the steps stay as they are.
   method lines, 3 roots, 27 lines of output, 13 globals). With the harness
   of before finding 49 the rebuild of the gate edit is refused ("the module
   binds bring already").
+
+  *The replay over the platform with the comparison (2026-11-11).* The
+  chain of 18 platform commits ran with the whole gate: the last commit
+  founded at a whole build, a control build, and the comparison.
+
+  | | harness a57094b4d1, 18 commits | with finding 52, the last commit alone |
+  | --- | --- | --- |
+  | commits applied, refused, failed | 18, 0, 0 | 1, 0, 0 |
+  | method lines that differ, of 27 297 | 24 | 5 |
+  | globals (147), roots (2 268) | equal, 1 136 roots differ | equal, 0 roots differ |
+  | methods that the program counts | 23 822, as the whole build | 23 824 against 23 822 |
+
+  All 24 lines come from the last commit, which changes `ReactiveCell`: the
+  rebuild evaluates 2 294 expressions. A replay over 25 commits did not show
+  them, because its store founded again by itself one commit later. The 24
+  lines have four causes, and the work on them closed three older findings
+  too. The paragraphs below give each one; the last table of this part has
+  the result with all corrections.
+
+  *Finding 52: a name that the call of a macro binds.* 13 lines are
+  methods with a type of before in their signature
+  (`@world(ScaledConversationTheme, 39978:53111)`), and 6 are the methods
+  of the aliases `ICCellVector` and `MCCellVector`, which
+  `@document struct CellVector` defines. The harness took the dependents of
+  an evaluation from the one name that the source of the item shows.
+
+  ```julia
+  @theme struct ConversationTheme … end       # binds ConversationTheme and ScaledConversationTheme
+  AgentWorkToWidget(theme::Union{ConversationTheme, ScaledConversationTheme}) = …
+  # ReactiveCell changes → ScaledConversationTheme is a new type, ConversationTheme stays
+  # before: the method keeps the type of before        now: the method is evaluated again
+  ```
+
+  *The constants that an evaluation binds again, as built (decided in the
+  build, by the assistant).* After the evaluation of an item, the harness
+  reads the bindings of the module of the item (`rc_rebound_constants`): a
+  constant whose partition started after the world of before the
+  evaluation, and whose value is not identical to the value of that world,
+  is bound again. Julia starts no partition for an identical value, so a
+  struct that is defined again with the same fields is not in the list, and
+  an alias of the same structure is not. A constant that Julia dates back to
+  the worlds before its definition was no constant there
+  (`rc_constant_in`). Each such name gives its dependents:
+  - the items that resolve the name into what they define, from one index
+    of the items by name for each apply (`rc_items_by_name!`): a name of
+    the signature, of the fields or of the initializer, and the function or
+    the type of a method definition, so a method of an alias follows the
+    alias;
+  - when the value of before is a type as its definition made it
+    (`rc_is_defined_type`), the methods that mention that type in their
+    signature, as before; a method of an untracked file refuses the apply.
+  A global that is no constant keeps the rule by the name of its item,
+  because its value can change with no new binding. The rule replaces the
+  two rules of before: a type by the name of its item, and each constant
+  item with no check of its value. The module of the item is the limit: a
+  constant that an evaluation binds in another module through `eval` is not
+  read.
+
+  *The gate case.* A macro of `markers.jl` defines two types and an alias
+  from one struct (`@paired struct Badge`: `Badge`, `ScaledBadge`,
+  `MarkedBadge`). The second type has a field of the type `Marker`, which
+  the step `retype` changes. `users.jl` has a method that names the second
+  type in its signature and a method of the alias. With the harness of
+  before, the binary prints `badge = MethodError` after the step `retype`.
+  With the rule, each step is as expected through a server, and the four
+  checks are equal (67 method lines, 3 roots, 28 lines of output, 13
+  globals).
+
+  *A fault of the oracle.* One line is the method `print_document` of a
+  tree, with the same statements on both sides. The lowering keeps a
+  function with no name that captures a variable in a slot whose name is the
+  gensym counter alone (`Symbol("1843")`), and the digest of the oracle did
+  not drop that counter. It does now (55531e697c).
+
+  *Finding 54: a deleted method that an overlay keeps.* The program counts
+  2 methods more than a whole build: `_make_row_band` and
+  `make_slot_store_operation` with types of before in their signatures,
+  closed by the apply. The save takes a closed entry out of its chain by a
+  recorded change of the pointer that leads to it (`record_field_change`),
+  and a save by pages or as an overlay writes only the objects of the pages
+  that the process wrote. A pointer in an object of another page kept the
+  bytes of the base. Dispatch does not use a closed entry; `Base.visit` and
+  the count of the program do. `reactive_pages_begin` now marks the page of
+  each recorded field change inside the tracked region (d7a821790b). The
+  changes that the walk of the save records later (the chain of the code
+  instances of a method instance, the lists of a module) are not marked:
+  no run showed a code instance of this kind. The run that kept the 2
+  entries, made again on the new runtime, writes 1 page more "for a field
+  that the save changes", keeps no closed entry, and the program counts
+  23 822 methods, as a whole build. The fault needs an object on a page that
+  the process did not write, so it shows in some runs only: the same commit
+  with the harness of the build keeps no entry with or without the rule.
+
+  *Finding 10 shows in the roots, and the rule of finding 52 closes its
+  first part.* The founding precompiles the trace through the harness, so
+  its image holds the table from the text of each statement to the type
+  that the text gave (`RC_TRACE_CACHE`), and the statements that failed
+  (`RC_TRACE_FAILED`). A server that starts from that image precompiles a
+  statement by a lookup in the table. After the rebuild that changes
+  `ReactiveCell`, each statement that names a changed type has the same
+  text, and the table gives the type of before.
+
+  | the one commit, from a whole build of the commit before | harness of the build | harness loaded from its folder |
+  | --- | --- | --- |
+  | statements precompiled, not resolved | 1 754, 514 in 12.7 s | 1 861, 407 in 27.0 s |
+  | method instances that the trace made | 23 696 | 44 344 |
+  | roots that differ from a whole build, of 2 268 | 1 136 (1 131 absent) | 0 |
+
+  A harness that is loaded from its folder is a new module with an empty
+  table, so it resolves each statement again. This is why the run with
+  `JULIA_REACTIVE_HARNESS` hid the fault, and why a build of the owner,
+  which uses the harness of the build, has it: the program compiles half of
+  its roots again at each start after such a rebuild.
+
+  *The table of the statements, as built (decided in the build, by the
+  assistant; it is the first use of D10 in a wider form).* What the
+  session keeps of the statements holds for one state of the bindings. When
+  an evaluation gives a constant another value (`rc_rebound_constants`), or
+  a name leaves a module, the harness drops the table and the statements
+  that failed (`rc_forget_statements!`). A new name drops only the
+  statements that failed, and a name that Julia generates drops nothing: it
+  has a counter, and no statement of before names the new one. D10 asks for
+  a test of each kept type ("a type is dead when its name no longer gives
+  it"). The rule here drops the whole table in the same case, and it also
+  covers a statement that names a function or a constant with another
+  value. Step 10 can replace it with the test of D10 when it builds that
+  test for its two other uses. Findings 11, 25 and 27 are not touched: a
+  statement whose text is no longer right stays lost.
+
+  *The gate case.* The program calls `badge_sum` through `invokelatest`,
+  so the trace has the statement
+  `precompile(Tuple{typeof(RunLib.badge_sum), RunLib.ScaledBadge{Int64}})`,
+  and the step `retype` gives `ScaledBadge` a new identity. A plain call or
+  a call behind `Base.inferencebarrier` gives no statement: Julia compiles
+  the one method into its caller. With the harness of the build of before,
+  the server log has `rc: trace unresolved` for the statement, and the
+  roots check of the gate fails: the root is absent in the chain and
+  compiled in the whole build. The fault shows only with the harness of the
+  build, so this case needs a gate run with no `JULIA_REACTIVE_HARNESS`.
+
+  *Finding 48 is a fault of the check (2026-11-12).* The run that tested the
+  table of the statements stopped at the overlay check: `root tables: 1171
+  grew inside their memory, 2 of them hold stale bytes`, with the constant
+  data 3 072 bytes into a page. The gate kept the two images this time.
+
+  ```
+  root table of method at 155193808: length 2 -> 4, new elements [0, 2],
+      base bytes there [0, 2], roots of the base 2
+  ```
+
+  A process that precompiles no package gives a method one block of roots
+  with the key 0, which starts after the roots of the base
+  (`add_root_block` in `method.c`). So the two new elements of a grown
+  table are known: 0 and the count of the roots of the base. All 1 171
+  grown tables of this overlay have exactly that block. In 1 169 the base
+  holds other bytes at that place, and in 2 it holds the same two numbers,
+  in the unused part of the memory of the table. The check counted a table
+  as stale when its new bytes equal those of the base, so it failed on
+  those 2. The overlay is right. The check now compares the new elements
+  with the block that they must be (82d3089eaa), and passes on the kept
+  images. A table that grew by more than one block, or whose count of roots
+  the check can not read, keeps the rule of before. The first sighting had
+  the same count of 2 and no detail; the two tries that did not reproduce
+  it had no table over equal bytes.
+
+  *Finding 53: an expression that is evaluated again sees the definitions
+  that come after it. Open.* 4 lines are methods that
+  `@document struct CellVector` defines at line 32 of `CellVector.jl`, with
+  other code than in a whole build.
+
+  ```julia
+  @document struct CellVector{T} <: ListDocument      # line 32
+      elements::Vector = Cell[]
+  end
+  get_cell_layout_field_type(::Val{:Vector}) = CellVector   # line 150
+  ```
+
+  The macro asks `get_cell_layout_field_type(Val(:Vector))` for the field.
+  A whole build expands line 32 before line 150 exists, so the field holds
+  a plain vector. The rebuild expands line 32 again in a process that holds
+  the whole program, so the answer is `CellVector`, and the constructor
+  wraps its own vector.
+
+  | `CellVector(Any[1, 2])` | result |
+  | --- | --- |
+  | in the image of a whole build | a list of 2 elements |
+  | in the image of the rebuild | `DeclaredTypeMismatchException` |
+
+  So the rebuilt program is wrong, and not only another image. The fault is
+  older than this work: the header of `replay.jl` names the limit ("the
+  replay runs in a world that holds the whole program"), and the run with
+  the harness of before has the same 4 lines. No expression of the two
+  replays showed it before, because the gate program counts names and
+  methods and calls nothing of the platform. Of the 2 309 expressions that
+  this rebuild evaluated, this is the only one whose methods differ from
+  those of a whole build.
+
+  A live process can not give an expression the state of its place in the
+  load order: each method of the base has the world of the load. So the
+  rule that is in reach finds such an expression and refuses the apply; the
+  store then founds again, which is always right.
+
+  *A proposal (by the assistant, not approved).* Before the apply
+  evaluates an item whose text the edit leaves as it is, the trial
+  evaluates the item in its fork, in the state of before the changes, and
+  compares the methods that it defines with the methods that the program
+  holds for it, by the digest that the oracle uses. An item that does not
+  give again what the program holds depends on something that the harness
+  can not give it (a later definition, a counter, the time): the apply
+  refuses, and the store founds again. A census over each candidate of the
+  platform comes first: it says how many items the rule refuses with no
+  need. One hole stays: an edited text that gets a new dependence on a
+  later definition has no result of before to compare with.
+
+  *The replay over the 18 platform commits with all corrections
+  (2026-11-12, the harness of the build at 86b5d06977, the runtime at
+  d7a821790b, the check at 82d3089eaa).*
+
+  | | 2026-11-11, harness a57094b4d1 | with all corrections |
+  | --- | --- | --- |
+  | commits applied, refused, failed | 18, 0, 0 | 18, 0, 0 |
+  | method lines that differ, of 27 297 | 24 | 4, all of finding 53 |
+  | output of the program, globals (147) | equal | equal |
+  | roots that differ, of 2 268 | 1 136 | 0 |
+  | closed entries in the method table | 0 | 0; 17 of the 18 saves wrote a page for a field that the save changes |
+  | the overlay check of the last rebuild | not run with the new rule | 1 161 grown tables, each with its new block |
+  | the last rebuild | 2 294 expressions in 2 min 37 s | 2 309 expressions in 3 min 9 s, 1 876 statements precompiled |
+
+  The last rebuild takes 32 s more: it evaluates 15 expressions more, and
+  it compiles the roots of the changed types, which the rebuild of before
+  left to each start of the program. The step `fresh` of this run founded
+  again by itself (the image grew 58.3 %), so no new server applied the 18
+  changes at once; `JULIA_REACTIVE_COMPACT` can give a run with that
+  comparison. The gate ends with a failure, as it must while finding 53 is
+  open.
 
   *Open, from this work.* A plain statement that names a moved name is
   evaluated again like each other expression, and what it did before is
