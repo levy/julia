@@ -56,7 +56,8 @@ function shape_lines()
             "onlooker = $(bound_names(RunLib.Onlooker, :stay, :Right))",
             "handover = $(shown_result(() -> RunLib.Late.carry(1))) and $(shown_result(() -> RunLib.Late.bring(1))) of " *
             "$(owner_name(RunLib.Late, :carry)) and $(owner_name(RunLib.Late, :bring))$(bound_names(RunLib.Early, :carry, :bring))",
-            "badge = $(shown_result(() -> Base.invokelatest(RunLib.badge_sum, RunLib.MarkedBadge(3))))"]
+            "badge = $(shown_result(() -> Base.invokelatest(RunLib.badge_sum, RunLib.MarkedBadge(3))))",
+            "layout = $(shown_result(() -> RunLib.crate_layout(RunLib.Crate(1))))"]
 end
 
 Base.@ccallable function julia_main()::Cint

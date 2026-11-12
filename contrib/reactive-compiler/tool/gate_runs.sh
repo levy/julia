@@ -37,8 +37,13 @@
 # the new type (finding 52). The program calls the first of these methods
 # through a dynamic call, so the trace has a statement that names the second
 # type: after the step retype the statement has the same text and another
-# type, and the rebuild must compile it for the new type (finding 10). The
-# chain is compared with the founding of the edited sources.
+# type, and the rebuild must compile it for the new type (finding 10).
+# order.jl holds the use of a macro that reads a definition that comes after
+# it in the load order: a whole build expands the use before that definition
+# exists, and a rebuild that evaluates the use again would expand it with the
+# definition. The step order changes a struct that the use names, and the
+# rebuild must refuse (finding 53). The chain is compared with the founding of
+# the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -58,6 +63,9 @@
 #                  names the new line
 #   retype       - markers-retyped.jl replaces markers.jl: the type of the
 #                  values in the storage of the task gets a field
+#   order        - order-after.jl replaces order.jl: the rebuild refuses to
+#                  evaluate again the use of a macro that reads a later
+#                  definition, and the binary prints the same values
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/runapp at those sources
 #   run-final    - the founded binary: as the binary of the step retype
@@ -78,8 +86,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6 layout=plain"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6 layout=plain"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}
@@ -176,6 +184,23 @@ retype() {
     runbin retyped "$CHAIN" "$RETYPED"
 }
 
+# An edit that makes the rebuild evaluate again an expression that reads a
+# definition that comes after it: the rebuild refuses it, and the program stays
+# as it was.
+order() {
+    cp "$TOOL/r1_runs/order-after.jl" "$SRC/RunLib/src/order.jl"
+    if mat mat-order "$CHAIN"; then
+        echo "=== order: the rebuild of an expression that reads a later definition passed"
+        runbin after-order "$CHAIN" "$RETYPED"
+        return 1
+    fi
+    grep -q "defines other methods than the program holds" "$OUT/mat-order.log" ||
+        { echo "=== order: no refusal of the expression in the log"; return 1; }
+    echo "=== order: the rebuild refused the expression that reads a later definition"
+    cp "$TOOL/r1_runs/RunLib/src/order.jl" "$SRC/RunLib/src/order.jl"
+    runbin after-order "$CHAIN" "$RETYPED"
+}
+
 # A changed statement that names no global: the rebuild refuses it (S1), and
 # the program stays as it was.
 refuse() {
@@ -231,7 +256,7 @@ compare() {
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -243,6 +268,7 @@ for step in $steps; do
         refuse) refuse ;;
         move) move ;;
         retype) retype ;;
+        order) order ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
         run-final) runbin final "$FINAL" "$RETYPED" ;;

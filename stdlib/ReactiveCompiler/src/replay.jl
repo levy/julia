@@ -37,6 +37,16 @@
 # a candidate see the same world, so the difference shows only when an edit
 # changes a method that is more specific than the one that the item called
 # when it was loaded.
+#
+# The apply has the same limit: it evaluates an item again in a process that
+# holds the whole program, and a live process can not give the item the state
+# of its place in the load order. So the items that the apply evaluates again
+# with the text of before have a check (`rc_again_check!`): each one is
+# evaluated in a second fork, in the state of before the changes, and the
+# methods that it defines there must be the methods that the program holds for
+# it. An item that fails reads something that the apply can not give it again:
+# a definition that comes after it, a counter, the time. The apply refuses,
+# and a whole build evaluates the item at its place.
 
 # ── the print of a result ───────────────────────────────────────────────────
 
@@ -533,7 +543,9 @@ end
 # compare, and a line `stopped <text>` the error or the refusal that ends the
 # trial early; the apply of the process meets the same one. A line
 # `refuse <text>` is the refusal of the check of the statement group, which
-# the apply of the process takes as its own. The trial starts with an empty
+# the apply of the process takes as its own. A line `again <index> <id>` names
+# a change that evaluates an item with the text of before; the process checks
+# each one in a second fork (`rc_again_check!`). The trial starts with an empty
 # storage of the task, and its part after the changes with another empty one.
 function rc_trial!(report::IO, evaluation::RcEvaluation, candidates::Vector{RcCandidate})
     return rc_with_empty_task_storage() do
@@ -591,6 +603,7 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
         end
     end
     next = 1
+    indices = IdDict{RcItem, Int}(item => index for (index, item) in enumerate(evaluation.items))
     # The part before this line evaluated the code of before the changes, and
     # the part after it evaluates the code of after them: the storage of the
     # task and the registry of the log ids are empty again, as they are for the
@@ -614,9 +627,13 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
                 differs += 1
                 println(report, "differs ", candidate.index, " ", how)
                 how == 's' || rc_enqueue!(queue, rc_replay_change(candidate.item, how))
-            elseif !rc_evaluate_next!(evaluation)
-                println(report, "stopped ", first(evaluation.refusals))
-                break
+            else
+                rc_is_evaluated_again(change) && haskey(indices, change.item) &&
+                    println(report, "again ", indices[change.item], " ", change.id)
+                if !rc_evaluate_next!(evaluation)
+                    println(report, "stopped ", first(evaluation.refusals))
+                    break
+                end
             end
         end
     catch e
@@ -629,6 +646,118 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     end
     println(report, "done ", length(candidates), " ", length(active), " ", differs, " ",
             round(t_before; digits = 2), " ", round(t_trial; digits = 2), " ", length(evaluation.moved))
+    return nothing
+end
+
+# Whether the change evaluates an item with the text of before: a dependent, a
+# candidate whose result differs, a moved expression. Its old item is the item
+# itself. A `using`, an `export`, an `include` and the header of a module
+# define no method.
+const RC_AGAIN_KINDS = (:method, :macro, :other, :type, :const, :global)
+rc_is_evaluated_again(change::RcChange) =
+    change.item !== nothing && change.item.kind in RC_AGAIN_KINDS &&
+    length(change.old_items) == 1 && change.old_items[1] === change.item
+
+# The print of the methods of one evaluation: the same for two evaluations
+# that define methods of the same signatures and the same code. A type on
+# which these methods are defined counts by their code (`RcPrinter`), so a
+# function with no name has the same print at each evaluation. The methods are
+# put in the order of the text of their signatures, with the counters of the
+# generated names left out, so the order of their definition is no difference,
+# and each method has a walk of its own.
+function rc_methods_print(methods::Vector{Method}, problems::Vector{String}, what::String)
+    sorted = sort(methods; by = method -> replace(Base.invokelatest(string, method.sig), r"#+s?\d+" => "#"))
+    sum = UInt(0)
+    for method in sorted
+        sum += rc_guarded_print(RcPrinter(sorted), problems, what) do printer
+            code = isdefined(method, :source) ? Base.uncompressed_ir(method).code : nothing
+            hash(rc_print(printer, code), rc_print(printer, method.sig))
+        end
+    end
+    return hash(length(sorted), sum)
+end
+
+# The check of the items that the apply evaluates again with the text of
+# before, in the state of before the changes: write to `report` a line
+# `unlike <index> <text>` for each item that does not define the methods that
+# the program holds for it, and a line `checked <count> <unlike> <seconds>` at
+# the end. `again` holds the index of each item, in the load order. A moved
+# item is evaluated with its expression of before, which holds its lines of
+# before. An item after one that differs can differ because of it: the
+# evaluation of the first one stays in this fork.
+function rc_again_check!(report::IO, evaluation::RcEvaluation, again::Vector{Int})
+    problems = String[]
+    moved = IdDict{RcItem, Any}(move.item => move.old for move in evaluation.moved)
+    unlike = 0
+    seconds = @elapsed for index in again
+        item = evaluation.items[index]
+        mod = Base.invokelatest(rc_module_or_nothing, rc_module_path(evaluation.roots, item))
+        mod === nothing && continue
+        what = string(rc_where(item), " ", rc_what(item))
+        held = rc_methods_print(item.methods, problems, what)
+        value = rc_recorded_evaluation(mod, item, get(moved, item, item.entry.expr), rc_record_and_keep_method, nothing)
+        rc_take_kept!()
+        if !(value isa Some)
+            unlike += 1
+            println(report, "unlike ", index, " its evaluation throws ", nameof(typeof(value)),
+                    " in the program of before the edit")
+        elseif rc_methods_print(copy(RC_DEFINED), problems, what) != held
+            unlike += 1
+            println(report, "unlike ", index, " its evaluation in the program of before the edit defines other methods ",
+                    "than the program holds for it")
+        end
+    end
+    for problem in unique!(problems)
+        println(report, "problem ", problem)
+    end
+    println(report, "checked ", length(again), " ", unlike, " ", round(seconds; digits = 2))
+    return nothing
+end
+
+# Run the check of the items that the apply evaluates again in a fork, and add
+# a refusal for the first item that the check names. `again` holds the index and
+# the id of the change of each item, as the trial wrote them. What the
+# evaluations of the check print goes to the file `log`. A check that ends
+# with no answer is a refusal: the apply would evaluate those items with no
+# check.
+function rc_check_again!(evaluation::RcEvaluation, again::Vector{Tuple{Int, String}}, log::String)
+    order = evaluation.queue.order
+    ids = Dict{Int, String}(again)
+    indices = sort!(collect(keys(ids)); by = index -> rc_order(order, evaluation.items[index]))
+    report = rc_in_fork(log) do io
+        rc_with_empty_task_storage(() -> rc_again_check!(io, evaluation, indices))
+    end
+    if report === nothing
+        first_item = evaluation.items[first(indices)]
+        push!(evaluation.refusals, string(ids[first(indices)], " ", rc_where(first_item), " ", rc_what(first_item),
+                                          ": the check of the expressions that the apply evaluates again ended with ",
+                                          "no answer, see ", log))
+        return nothing
+    end
+    unlike = 0
+    for line in split(report, '\n'; keepempty = false)
+        parts = split(line, ' '; limit = 3)
+        if parts[1] == "unlike"
+            # The first item in the load order is the one to name: the check
+            # keeps what it evaluated, so an item after it can differ because
+            # of it.
+            unlike += 1
+            index = parse(Int, parts[2])
+            item = evaluation.items[index]
+            if unlike == 1
+                push!(evaluation.refusals, string(ids[index], " ", rc_where(item), " ", rc_what(item), ": ", parts[3],
+                                                  "; only a whole build evaluates it at its place in the load order"))
+            else
+                println("rc: replay: after it, ", rc_where(item), " ", rc_what(item), " differs too")
+            end
+        elseif parts[1] == "problem"
+            println("rc: replay: ", SubString(line, 9))
+        elseif parts[1] == "checked"
+            numbers = split(line, ' ')
+            println("rc: replay: ", numbers[2], " expressions that the apply evaluates again were evaluated in the ",
+                    "program of before the edit, ", numbers[3], " give other methods; ", numbers[4], " s")
+        end
+    end
     return nothing
 end
 
@@ -716,12 +845,15 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
                                               ": the statements of the edit have no check"))
         return nothing
     end
+    again = Tuple{Int, String}[]
     for line in split(report, '\n'; keepempty = false)
         parts = split(line, ' '; limit = 3)
         if parts[1] == "differs"
             item = evaluation.items[parse(Int, parts[2])]
             how = parts[3][1]
             rc_enqueue!(evaluation.queue, rc_replay_change(item, how))
+        elseif parts[1] == "again"
+            push!(again, (parse(Int, parts[2]), String(parts[3])))
         elseif parts[1] == "refuse"
             push!(evaluation.refusals, String(SubString(line, 8)))
         elseif parts[1] == "problem"
@@ -736,5 +868,7 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
                     round(time() - t0; digits = 2), " s")
         end
     end
+    stopped === nothing && isempty(evaluation.refusals) && !isempty(again) &&
+        rc_check_again!(evaluation, again, string(log, ".again"))
     return stopped
 end
