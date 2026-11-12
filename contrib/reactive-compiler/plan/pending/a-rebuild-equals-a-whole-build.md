@@ -109,6 +109,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 54 | A deleted method stays in the method table of an overlay. The save takes a closed entry out of its chain by a recorded change of the pointer that leads to it, and a save by pages writes only the objects of the pages that the process wrote. A pointer in an object of another page keeps the bytes of the base. Dispatch does not use a closed entry, so no call goes wrong; `Base.visit` counts it. | After the rebuild of the commit that changes `ReactiveCell`, 2 of 2 754 deleted methods are still in the table: the program counts 23 824 methods, a whole build 23 822. | `staticdata.c`, `reactive_pages_begin`: the recorded field changes did not mark their pages | Found by the comparison of the replay over the platform (the output of the program); closed on the branch (d7a821790b), see Step 6 for the test |
 | 55 | A declaration that changes its kind stops the rebuild with an error of Julia: a global that becomes a constant, a constant that becomes a global, a typed global that gets another type. Julia changes no such declaration in a module that holds the name. | `global StringType = String` becomes `const StringType = AbstractString`. The server answers "cannot declare StringType constant; it was already declared global", and the build stops. | `child.jl`, `rc_evaluate_next!`: the changed item was evaluated over the binding of before | Found by the gate of the edit cases (the test set "Global binding invalidation" of Revise); closed on the branch (ca86d3657f, Step 3) |
 | 56 | A name that leaves a module does not give the name back to the export of a used module that it hid. `Base.delete_binding` leaves a guard, which no export passes. And a method that an edit writes with the module of its function counted as a binding of the name in its own module. | An edit removes `const view = "shadow"`: `view` is then not defined, where a whole build has the `view` of Base. An edit writes `Base.iterate(x::Foo) = …` in place of `iterate(x::Foo) = …`: the function of the module stays with no method, and a caller gets a `MethodError`. | `child.jl`, `rc_remove_name!`, `rc_given_names`, and the pairing of an old expression with a changed one | Found by the gate of the edit cases (the test sets "Retract removed bindings" and "Orphaned binding realias" of Revise); closed on the branch (ca86d3657f, 14f260af38, Step 3) |
+| 57 | A rebuild that is refused, or whose trial stops, wrote the new lines of the methods of the moved expressions into the server before it refused. The server kept them, and the next save wrote them into the image. | The step `order` of `gate_runs.sh` is refused, and its text is 4 lines longer above the methods of `order.jl`. After the next save, those methods have the place `order.jl:13` where a whole build has `order.jl:9`. | `child.jl`, the pairing of the ledgers in `rc_apply_tracked` | Found by the gate step for finding 7; closed on the branch (6f1972c48c, Step 5) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1090,6 +1091,45 @@ commits. The numbers of the steps stay as they are.
   changed Manifest entry stops the build with its name; the program applies
   its overlay with the variable of finding 34 set, and stops on an overlay of
   another base.
+
+  *The owner's goal for this part (2026-11-12): a merged branch that gives
+  correct incremental builds and passes the tests; a public version is not
+  important now.* So Step 5 comes before the steps for the rebuild time.
+
+  *As built (2026-11-12; the Julia fork 6f1972c48c, 637ec89ea8, 871b4ebe58;
+  PackageCompiler, branch `live-harness`, 7474fc67 and a8f16459).*
+
+  | finding | what the build does now | where | test |
+  | --- | --- | --- | --- |
+  | 7 | The trial of the replay evaluates each change in a fork, for each apply that has one. When it stops or ends with no answer, the process evaluates nothing and answers the error. A server whose request fails while its heap holds an apply that no save wrote exits (`RC_APPLY_OPEN`). | `replay.jl`, `child.jl`, `server.jl` | `gate_runs.sh`, step `fail` |
+  | 57 (new) | A refused rebuild had written the new lines of the methods of moved expressions, and the new name of a renamed file, before it refused; the next save wrote them. The apply writes them when it begins. | `child.jl`, `place_moves` | `gate_runs.sh`: the steps `order`, `fail` and the comparison |
+  | 8 | The whole build records a print of each input: the build of Julia, the project file, the Manifest entry of each package, the preferences files, the workload, each statements file. A rebuild whose inputs differ stops with their names and the option of a whole build. | PackageCompiler `_reactive_inputs` | `gate_runs.sh`, step `input` |
+  | 39 | A whole build copies the tracked sources before the first load of the packages, and a rebuild before its request. | PackageCompiler `_materialize_full`, `_materialize_delta` | none of its own |
+  | 28 | A rebuild whose code level differs from the level of the whole build prints both. | PackageCompiler `_materialize_rebuild` | none |
+  | 29 | A changed signature of a `@ccallable` function is refused (A4). | `child.jl`, `rc_classify` | `gate_cases.sh`, the case `c_entry_signature`, which must be refused |
+  | 30 | The server starts with `--gcthreads=1`. | PackageCompiler | none |
+  | 34 | The mode of the image write comes from the flag `--reactive-image` alone, so a program loads its image and its chain in one way. | `staticdata.c` | `gate_prelinked_chain.sh`, step `environment` |
+  | 36 | An overlay records the checksum of its base image, and the loader stops on another base. | `staticdata.c` | `gate_prelinked_chain.sh`, step `other-base` |
+
+  *Finding 7, before and after.* With the harness of before, the chain of
+  the gate holds the method of the failed edit and the lines of the refused
+  edit: 10 method lines differ from a whole build. With the apply that is
+  all or nothing, the four checks are equal through a server and through a
+  child.
+
+  *What stays open in this step.*
+  - PackageCompiler has the two commits on the branch `live-harness`. The
+    build environments of the owner take PackageCompiler from another branch
+    by its address, so a real build gets findings 8, 28, 30 and 39 only
+    after a push and an update of those environments.
+  - The print of the build of Julia is the commit of its binaries. A store
+    that was founded by another commit stops and asks for a whole build.
+    This is what D5 says, and it ends the rebuild of an old store with the
+    harness of a new Julia (Step 4) outside a test: after each landing, each
+    store needs a whole build.
+  - A failure of the client after the save of the server (the link of an
+    overlay) leaves a server whose last save the store does not name.
+  - Finding 39 has no test: it needs an edit during a build.
 - [x] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
   40, 41, 44, refusal C5).** *Done (2026-11-12): D13 and D2 are built, and
   the replays over the kernel and the platform apply each commit. The owner
