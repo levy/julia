@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # overlay_check: read-only check of a Julia system image overlay composed over its base image.
 # It reports the tables of the composed image that are wrong: root_blocks arrays of base
-# methods that grew inside their memory and hold the stale base bytes, hashed specializations
+# methods that grew inside their memory and lack the new block of roots, hashed specializations
 # missing from a method's speckeyset, and bindings missing from a module's bindingkeyset.
 # Usage: python3 -I overlay_check.py BASE OVERLAY [--verbose] [--base-blob OFF,SIZE] [--overlay-blob OFF,SIZE]
 #   BASE is the base image in its file form: lib/julia/sys.so of a bundle, or reactive-store/founding.so.
@@ -288,12 +288,22 @@ def check_root_blocks(c):
         r0 = W(m + 120, False)
         if r0 and (r0 >> TAG) == 0 and (r0 & MASK) < c.sys_end:
             nroots0 = W((r0 & MASK) + 16, False)
-        same = bool((new == old).all())
-        if same:
+        # A process that precompiles no package gives a method one block of
+        # roots with the key 0, which starts after the roots of the base
+        # (`add_root_block`): the new elements are that block, or the write is
+        # lost. The unused part of the memory of the base can hold the same
+        # two numbers, so bytes that equal those of the base prove nothing.
+        # A table that grew in another way has no known value: there, equal
+        # bytes count as a lost write.
+        if len1 - len0 == 2 and nroots0 is not None:
+            wrong = [int(x) for x in vals_new] != [0, int(nroots0)]
+        else:
+            wrong = bool((new == old).all())
+        if wrong:
             lost += 1
         else:
             carried += 1
-        examples.append((m, len0, len1, [int(x) for x in vals_new], [int(x) for x in vals_old], nroots0, (c.const_start + start) % PAGE, same))
+        examples.append((m, len0, len1, [int(x) for x in vals_new], [int(x) for x in vals_old], nroots0, (c.const_start + start) % PAGE, wrong))
     return grown, lost, carried, replaced, newarr, examples
 
 
@@ -410,7 +420,7 @@ def run(argv):
     wrong = lost + mres[2] + bres[2]
 
     print('const data: starts %d bytes into a page' % (c.const_start % PAGE))
-    print('root tables: %d grew inside their memory, %d of them hold stale bytes' % (grown, lost))
+    print('root tables: %d grew inside their memory, %d of them lack the new block' % (grown, lost))
     print('specializations: %d missing from the key set of %d methods' % (mres[2], mres[3]))
     print('bindings: %d missing from the key set of %d modules' % (bres[2], bres[3]))
     if verbose:
@@ -419,7 +429,7 @@ def run(argv):
         print('detail: methods checked %d, specializations %d, key sets not read %d' % (mres[0], mres[1], mres[4]))
         print('detail: modules checked %d, bindings %d, key sets not read %d' % (bres[0], bres[1], bres[4]))
         for ex in [e for e in rexamples if e[7]][:LIMIT]:
-            print('  root table of method at %d: length %d -> %d, new elements %s, base bytes there %s, roots of the base %s, %d bytes into the real page, stale %s' % ex)
+            print('  root table of method at %d: length %d -> %d, new elements %s, base bytes there %s, roots of the base %s, %d bytes into the real page, wrong %s' % ex)
         for m, i, x, ln, nv, coff in mres[5][:LIMIT]:
             print('  method at %d: specialization %d (word %#x) of %d, key set of %d values at const offset %d (%d bytes into its real page)' % (m, i, x, ln, nv, coff, (c.const_start + coff) % PAGE))
         for ex in bres[5][:LIMIT]:
