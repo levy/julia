@@ -15,8 +15,9 @@
 #   cases        - each case in its turn: its text of after replaces its text
 #                  of before, and one rebuild follows. A rebuild that is refused
 #                  is no fault: the case keeps its text of before, and the gate
-#                  counts it. $CASES names the cases to take, by file name with
-#                  no extension; the default is all of them
+#                  counts it. A case that r1_cases/must-refuse.txt names must
+#                  be refused. $CASES names the cases to take, by file name
+#                  with no extension; the default is all of them
 #   run-chain    - the rebuilt binary prints the line of each case
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/caseapp at those sources
@@ -136,6 +137,11 @@ cases() {
         if mat "mat-$name" "$CHAIN"; then
             applied=$((applied + 1))
             echo "    $name: $(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$OUT/mat-$name.log" "$CHAIN/reactive-store/server.log" 2>/dev/null | tail -1)"
+            if grep -qx "$name" "$TOOL/r1_cases/must-refuse.txt"; then
+                faults=$((faults + 1))
+                echo "    $name: FAULT: the rebuild applied a case that it must refuse"
+                echo "$name" >> "$OUT/faults.txt"
+            fi
         elif grep -q "the rebuild is refused" "$OUT/mat-$name.log"; then
             refused=$((refused + 1))
             cp "$TOOL/r1_cases/CaseLib/src/cases/$name.jl" "$SRC/CaseLib/src/cases/$name.jl"

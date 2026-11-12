@@ -754,6 +754,18 @@ function rc_classify(item::RcItem, old::Vector{RcItem}, new_roots, tracked, refu
     end
     if kind === :method
         d = ReactiveSourceDiff.definition(e)
+        # A whole build makes the C entry of a `@ccallable` function, by the
+        # name of the function. With another signature, the program would
+        # keep the entry of before.
+        if Symbol("@ccallable") in heads && !isempty(old) && d isa Expr && !isempty(d.args)
+            signature_of(x) = x isa Expr && !isempty(x.args) ? ReactiveSourceDiff.strip_lines(x.args[1]) : nothing
+            now = signature_of(d)
+            if all(o -> signature_of(ReactiveSourceDiff.definition(o.entry.expr)) != now, old)
+                rc_refuse!(refusals, "A4", item,
+                           "the signature of a @ccallable function changed, and a whole build makes its C entry")
+                return nothing
+            end
+        end
         callable = d isa Expr && d.head in (:function, :(=)) &&
                    d.args[1] isa Expr && d.args[1].head === :call &&
                    d.args[1].args[1] isa Expr && d.args[1].args[1].head === :(::)
