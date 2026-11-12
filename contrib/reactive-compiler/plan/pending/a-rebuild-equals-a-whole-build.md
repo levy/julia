@@ -985,6 +985,15 @@ commits. The numbers of the steps stay as they are.
   | method lines (151), globals | equal | equal |
   | roots that the chain lacks | 9 | 9 |
 
+  *All gates on the build at fbf0b0c1df (2026-11-12), with the harness of
+  the build.* The gate of the edit cases with 36 cases: 35 applied, 1
+  refused, no fault, and the method tables (157 lines), the output (36
+  lines) and the globals equal. `gate_runs.sh` through a server and through
+  a child: each step as expected, the four checks equal. The replay over
+  the 28 commits of the kernel: no refusal, no fault, the chain and a new
+  server equal a whole build. The replay over the 18 commits of the
+  platform: 17 applied, 1 refused (finding 53), no fault, each check equal.
+
   The refused case changes a `baremodule` into a `module` (C5, the header
   of a module). The cases found two faults:
 
