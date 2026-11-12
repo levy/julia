@@ -166,7 +166,7 @@ static arraylist_t serialization_queue;
 static arraylist_t layout_table;     // cache of `position(s)` for each `id` in `serialization_order`
 
 // ── the image written by pages (Stage F of the reactive plan) ──────────
-// `JULIA_REACTIVE_IMAGE_WRITE=pages`: the loader protects the pages of the
+// `--reactive-image=pages`: the loader protects the pages of the
 // sysimg section and the fault handler marks the pages the process writes
 // (reactive_dirty_protect, jl_reactive_dirty_fault). A save then copies the
 // clean pages from the file of the base image, rewrites the objects of the
@@ -193,15 +193,14 @@ static int reactive_option_level(int8_t flag, const char *var, int absent) JL_NO
         return absent;
     return env[0] - '0';
 }
-// How a save writes the image: 0 whole, 1 pages, 2 overlay.
+// How a save writes the image: 0 whole, 1 pages, 2 overlay. The flag
+// `--reactive-image` alone sets it, and no variable of the environment: the
+// mode also decides how the process loads its image, and a program must load
+// its image and its chain in one way, whatever its environment holds. A build
+// tool gives the flag to each process that it starts.
 static int reactive_image_write(void) JL_NOTSAFEPOINT
 {
-    if (jl_options.reactive_image_write >= 0)
-        return jl_options.reactive_image_write;
-    const char *env = getenv("JULIA_REACTIVE_IMAGE_WRITE");
-    if (env == NULL)
-        return 0;
-    return strcmp(env, "overlay") == 0 ? 2 : strcmp(env, "pages") == 0 ? 1 : 0;
+    return jl_options.reactive_image_write >= 0 ? jl_options.reactive_image_write : 0;
 }
 
 // A trimmed write is a whole write (Stage E): the trimmed product prunes
@@ -300,8 +299,15 @@ typedef struct {
     uint32_t ngvars;
     uint64_t off_delta_relocs;   // the lists of the pointers that a start on a prelinked base converts
     uint64_t delta_relocs_size;  // zero in an overlay written before the lists
-    uint64_t reserved[2];
+    uint64_t base_checksum;      // the mark and the checksum of the base image; zero in an overlay written before the field
+    uint64_t reserved;
 } reactive_overlay_header_t;
+// The checksum that the base image of this process carries
+// (`jl_system_image_checksum`). An overlay records the one of the base that
+// its writer loaded, and the loader applies the overlay to that base only:
+// two whole builds can have the three sizes of the header in common.
+#define REACTIVE_BASE_CHECKSUM_MARK ((uint64_t)0x62617365 << 32)
+static uint32_t reactive_base_checksum = 0;
 static int reactive_overlay_on = 0;                 // this save writes an overlay
 static reactive_overlay_header_t reactive_overlay_header;
 static size_t reactive_overlay_blob_start = 0;      // the position of the blob in the output stream
@@ -4463,6 +4469,7 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     h->base_sysimg_size = reactive_sysimg_size;
     h->base_const_size = reactive_const_len;
     h->base_syms_size = reactive_syms_len;
+    h->base_checksum = REACTIVE_BASE_CHECKSUM_MARK | reactive_base_checksum;
     h->external_fns_begin = external_fns_begin;
     h->ngvars = gvar->size / sizeof(reloc_t);
     reactive_overlay_blob_start = ios_pos(f);
@@ -7607,6 +7614,9 @@ static void reactive_chain_load(jl_image_t *image)
             jl_errorf("reactive: overlay %s extends another state (sysimg %zu, const %zu, symbols %zu; loaded %zu, %zu, %zu)", path,
                       (size_t)h->base_sysimg_size, (size_t)h->base_const_size, (size_t)h->base_syms_size,
                       reactive_sections.sysimg.size, reactive_sections.const_data.size, reactive_sections.symbols.size);
+        if (h->base_checksum != 0 && h->base_checksum != (REACTIVE_BASE_CHECKSUM_MARK | reactive_base_checksum))
+            jl_errorf("reactive: overlay %s extends another base image (its base has the checksum %08x, the loaded image %08x); a founding build makes a new one",
+                      path, (unsigned)(h->base_checksum & 0xffffffff), (unsigned)reactive_base_checksum);
         if (reactive_chain_n >= REACTIVE_CHAIN_MAX)
             jl_errorf("reactive: the chain holds more than %d overlays", REACTIVE_CHAIN_MAX);
         reactive_chain_crc = jl_crc32c(reactive_chain_crc, (const char*)ob.data, ob.size);
@@ -7751,6 +7761,8 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     if (buf.kind == JL_IMAGE_KIND_NONE)
         return;
     reactive_chain_n = 0;
+    if (buf.kind == JL_IMAGE_KIND_SO)
+        reactive_base_checksum = buf.checksum;
     if (buf.kind == JL_IMAGE_KIND_SO && !reactive_overlay_mode() && reactive_chain_exists() &&
         reactive_inplace_load(buf)) {
         reactive_chain_load(image);

@@ -365,7 +365,6 @@ static const char opts_hidden[]  =
     " --reactive-image-format                       Write the image in the reactive format, version 3\n"
     "                                               (JULIA_REACTIVE_IMAGE=1; implied by --reactive-reuse)\n"
     " --reactive-image={whole|pages|overlay}        How a reactive save writes the image\n"
-    "                                               (JULIA_REACTIVE_IMAGE_WRITE)\n"
     " --reactive-delta-opt=<n>                      The optimization level of the delta's code, 0 to 3\n"
     "                                               (JULIA_REACTIVE_DELTA_OPT)\n"
     " --reactive-timings=<n>                        The timing report of a reactive build, 0 to 2\n"

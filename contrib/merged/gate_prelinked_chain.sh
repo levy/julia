@@ -28,6 +28,12 @@
 #                 table and no key set of the two together is wrong
 #   decode      - the prelinked program and the launcher decode the source of
 #                 each method of the image, and count the same
+#   environment - the prelinked program with JULIA_REACTIVE_IMAGE_WRITE=overlay
+#                 in its environment, as a shell of a build has it: the same
+#                 values, with the base in place
+#   other-base  - a copy of the program with a chain that names a copy of the
+#                 overlay whose header holds the checksum of another base: the
+#                 program stops and names the overlay
 #   starts      - seven starts of each program
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
@@ -179,6 +185,36 @@ decode() {
     [ "$(echo $counts | awk '{print ($1 == $3)}')" == 1 ] || { echo "=== decode: the counts differ:$counts"; return 1; }
 }
 
+# A variable of the environment that a build left does not change how the
+# program loads its image and its chain.
+environment() {
+    run run-environment env JULIA_REACTIVE_TIMINGS=1 JULIA_REACTIVE_IMAGE_WRITE=overlay "$PROGRAM" || return 1
+    local want got
+    want=$(grep "^shape: " "$OUT/run-s2.log"); got=$(grep "^shape: " "$OUT/run-environment.log")
+    [ -n "$want" ] && [ "$want" == "$got" ] ||
+        { echo "=== environment: the program prints other values with the variable set"; diff <(echo "$want") <(echo "$got") | grep "^[<>]"; return 1; }
+    grep -q "the prelinked base loads in place" "$OUT/run-environment.log" ||
+        { echo "=== environment: the base did not load in place"; return 1; }
+    echo "=== environment: the same values with the variable of a build in the environment"
+}
+
+# An overlay of another base: the checksum of the base in the header of a copy
+# of the overlay gets another value (tool/overlay_other_base.py).
+other_base() {
+    local chain=$APP/lib/julia/sys.so.chain overlay copy=$APP/bin/depapp_other_base
+    overlay=$(grep -v '^#' "$chain" | grep . | tail -1)
+    cp "$PROGRAM" "$copy" && cp "$APP/lib/julia/$overlay" "$OUT/other-base.so" || return 1
+    python3 -I -B "$TOOL/overlay_other_base.py" "$OUT/other-base.so" || return 1
+    echo "$OUT/other-base.so" > "$copy.chain"
+    if run run-other-base "$copy"; then
+        echo "=== other-base: the program ran with an overlay of another base"; return 1
+    fi
+    grep -q "extends another base image" "$OUT/run-other-base.log" ||
+        { echo "=== other-base: the program did not name the overlay of another base"; return 1; }
+    rm -f "$copy" "$copy.chain"
+    echo "=== other-base: the program stopped on an overlay of another base"
+}
+
 starts() {
     for program in "$PROGRAM" "$APP/bin/depapp"; do
         echo -n "=== starts of $(basename "$program") (ms):"
@@ -190,12 +226,13 @@ starts() {
     done
 }
 
-steps=${*:-copy found link prelink run-s1 edit mat-s2 run-s2 check decode starts}
+steps=${*:-copy found link prelink run-s1 edit mat-s2 run-s2 check decode environment other-base starts}
 for step in $steps; do
     case $step in
         run-s1) runbin s1 "$PROGRAM" "leaf=3 inner=20 extra=1 table=0" ;;
         mat-s2) mats2 ;;
         run-s2) runs2 ;;
+        other-base) other_base ;;
         *) $step ;;
     esac || { echo "=== $step failed"; exit 1; }
 done

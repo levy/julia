@@ -83,7 +83,7 @@ typedef struct {
     // through either and the flag wins.
     int8_t reactive_reuse;            // JULIA_REACTIVE_REUSE
     int8_t reactive_image_format;     // JULIA_REACTIVE_IMAGE
-    int8_t reactive_image_write;      // JULIA_REACTIVE_IMAGE_WRITE: 0 whole, 1 pages, 2 overlay
+    int8_t reactive_image_write;      // --reactive-image: 0 whole, 1 pages, 2 overlay; no variable of the environment
     int8_t reactive_delta_opt;        // JULIA_REACTIVE_DELTA_OPT: 0 to 3
     int8_t reactive_timings;          // JULIA_REACTIVE_TIMINGS: 0 to 2
     const char *reactive_trim_memo;   // JULIA_REACTIVE_TRIM_MEMO
