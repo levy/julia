@@ -96,6 +96,8 @@ function rc_before_write()
     # the server; in the image they are the parsed sources of every file.
     RC_LEDGER_CACHE[] = nothing
     empty!(RC_PARSED)
+    # The image is the save of the apply that the process holds.
+    RC_APPLY_OPEN[] = false
     empty!(Base.Filesystem.TEMP_CLEANUP)
     empty!(Core.ARGS)
     empty!(Base.ARGS)
@@ -232,15 +234,20 @@ function rc_dispatch(request::String, saves::Ref{Int})
     command = parts[1]
     argument = length(parts) == 2 ? String(parts[2]) : ""
     if command == "apply"
+        # An apply that no save followed is still in the heap: the client
+        # counts from the last save, so this request would apply it again.
+        RC_APPLY_OPEN[] && error("rc: the server holds an apply that no save wrote")
         rc_apply_spec(argument)
         return "ok"
     elseif command == "save"
         rc_save(argument)
+        RC_APPLY_OPEN[] = false
         saves[] += 1
         return "ok"
     elseif command == "trim"
         parts = split(argument, ' '; limit = 2)
         rc_save(String(parts[1]); trim = true, overrides = length(parts) == 2 ? String(parts[2]) : "")
+        RC_APPLY_OPEN[] = false
         return "ok"
     elseif command == "status"
         return string("ok world=", Base.get_world_counter(), " saves=", saves[], " rss_kb=", rc_resident_kb())
@@ -277,6 +284,13 @@ function rc_serve(socket::String)
         rc_write_all(client, reply * "\n")
         ccall(:close, Cint, (Cint,), client)
         startswith(request, "quit") && break
+        # D4: a request that fails while the heap holds an apply that no save
+        # wrote leaves a heap that is not the image of the last save. The
+        # server exits, and the next build starts one from that image.
+        if startswith(reply, "error") && RC_APPLY_OPEN[]
+            println("rc: the server exits: its heap holds an apply that no save wrote")
+            break
+        end
     end
     ccall(:close, Cint, (Cint,), fd)
     rm(socket; force = true)

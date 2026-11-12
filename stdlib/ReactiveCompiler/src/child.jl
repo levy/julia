@@ -812,6 +812,12 @@ end
 
 # ── the apply ───────────────────────────────────────────────────────────────
 
+# Whether the process holds an apply that no save wrote: an apply that began to
+# change the process and did not end, or one that ended and whose image is not
+# written yet. A server whose request fails in that state exits, because its
+# heap is then not the image of its last save (decision D4).
+const RC_APPLY_OPEN = Ref(false)
+
 # The queue of changes, kept in the load order. A change that joins the queue
 # behind the cursor is evaluated in its turn; one that belongs before the
 # cursor goes to the end.
@@ -1529,6 +1535,12 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     moved = RcMoved[]
     removed_named = Tuple{RcItem, Vector{Symbol}}[]
     line_updates = 0
+    # The new places of the methods of the expressions that an edit moves, and
+    # the new paths of the items of a renamed file. The apply writes them when
+    # it begins: a refusal or a trial that stops leaves each method and each
+    # item of the ledger of before at its place (decision D4).
+    place_moves = Tuple{Method, Symbol, Any}[]
+    path_moves = Tuple{RcItem, String}[]
     # The methods whose text is in a file that changed, by the old path: they
     # take the new name of a renamed file and the shift of a moved expression.
     # The methods of an item are those that it defined, and their text can be
@@ -1540,14 +1552,14 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         new_file = Symbol(new_files[j])
         for item in old_items
             item.file == i || continue
-            item.path = new_files[j]
+            push!(path_moves, (item, new_files[j]))
             for method in item.methods
-                setfield!(method, :toplevel_file, new_file)
+                push!(place_moves, (method, :toplevel_file, new_file))
             end
         end
         for method in text_methods[old_files[i]]
             method.file === new_file && continue
-            setfield!(method, :file, new_file)
+            push!(place_moves, (method, :file, new_file))
             renamed += 1
         end
         println("rc: change H3 ", basename(old_files[i]), " -> ", basename(new_files[j]), ", ",
@@ -1599,12 +1611,12 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             shift = item.entry.lines.start - old.entry.lines.start
             if shift != 0
                 for method in old.methods
-                    setfield!(method, :toplevel_line, Int32(item.entry.lines.start))
+                    push!(place_moves, (method, :toplevel_line, Int32(item.entry.lines.start)))
                 end
                 for method in get(text_of, old, Method[])
                     method in shifted && continue
                     push!(shifted, method)
-                    setfield!(method, :line, Int32(method.line + shift))
+                    push!(place_moves, (method, :line, Int32(method.line + shift)))
                     line_updates += 1
                 end
             end
@@ -1727,9 +1739,21 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             end
         end
         isempty(refusals) || rc_stop(refusals, refusal_out)
+        # D4: the trial evaluated the edit in a fork and stopped. The process
+        # evaluated nothing of the edit, so it is as before the request.
+        stopped === nothing ||
+            error("rc: the edit is not applied, because its trial stopped: ", stopped, "; see ", replay_log)
     end
     # The apply. The removals first, then the queue in the load order, with the
-    # dependents that each evaluation reveals.
+    # dependents that each evaluation reveals. From here the process holds a
+    # part of the edit until the apply ends.
+    RC_APPLY_OPEN[] = true
+    for (method, field, place) in place_moves
+        setfield!(method, field, place)
+    end
+    for (item, path) in path_moves
+        item.path = path
+    end
     rc_delete_removals!(evaluation)
     deleted = 0
     for change in removals
@@ -1751,12 +1775,6 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     finally
         rc_install_filter(nothing)
     end
-    # The trial of the replay stopped at an error that this apply did not meet:
-    # the trial compared no expression after that place, so the image could
-    # keep a result of before the edit.
-    stopped === nothing ||
-        error("rc: the replay stopped (", stopped, ") and the apply did not, see ", replay_log,
-              ": no result of an unchanged expression after that place is compared")
     replaced = evaluation.replaced
     kept = evaluation.kept
     world_after = Base.get_world_counter()

@@ -826,25 +826,17 @@ end
 # the change of each candidate that the trial names, and to its refusals the
 # refusal of the check of the statement group. What the evaluations of the
 # trial print goes to the file `log`: the apply prints the same for each
-# change, and a candidate printed it in the whole build. A trial that ends with
-# no answer leaves the queue as it is, with a warning: the image can then keep
-# a result of before the edit. With a statement group, such a trial is a
-# refusal, because the group has no check. Answer the error or the refusal
-# that stopped the trial early, or `nothing`.
+# change, and a candidate printed it in the whole build. The trial evaluates
+# each change of the queue, so it runs for each apply that has one: an edit
+# that can not be evaluated stops in the fork, and the process stays as it
+# was (decision D4). Answer the error or the refusal that stopped the trial
+# early, also for a trial that ends with no answer, or `nothing`.
 function rc_replay!(evaluation::RcEvaluation, log::String)
     t0 = time()
     stopped = nothing
     candidates = rc_candidates(evaluation.items, evaluation.queue.order)
-    isempty(candidates) && evaluation.group === nothing && isempty(evaluation.moved) && return stopped
     report = rc_in_fork(io -> rc_trial!(io, evaluation, candidates), log)
-    if report === nothing
-        println("rc: warning: the replay ended with no answer, see ", log,
-                "; no result of an unchanged expression is compared")
-        evaluation.group === nothing ||
-            push!(evaluation.refusals, string("S1 the replay ended with no answer, see ", log,
-                                              ": the statements of the edit have no check"))
-        return nothing
-    end
+    report === nothing && return string("the trial ended with no answer, see ", log)
     again = Tuple{Int, String}[]
     for line in split(report, '\n'; keepempty = false)
         parts = split(line, ' '; limit = 3)

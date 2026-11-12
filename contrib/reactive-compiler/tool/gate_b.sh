@@ -173,7 +173,7 @@ categories() {
         "rc: change C4 HazardApp.jl:[0-9]+ include \(includes extra.jl\), 0 methods" \
         "rc: change A4 changes.jl:[0-9]+ resig, 1 methods, 1 deleted" \
         "rc: change A6 changes.jl:[0-9]+ s, 1 methods" \
-        "rc: change A6 changes.jl:[0-9]+ gen_times, 1 methods" \
+        "rc: change A6 changes.jl:[0-9]+ gen_times, 2 methods" \
         "rc: change B2 changes.jl:[0-9]+ Box, 2 methods, 2 deleted" \
         "rc: change A4 changes.jl:[0-9]+ area_of( \(names Box\))?, 1 methods, 1 deleted" \
         "rc: change B2 changes.jl:[0-9]+ UNIT_BOX \(names Box\), 0 methods" \

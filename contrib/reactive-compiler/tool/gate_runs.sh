@@ -42,8 +42,11 @@
 # it in the load order: a whole build expands the use before that definition
 # exists, and a rebuild that evaluates the use again would expand it with the
 # definition. The step order changes a struct that the use names, and the
-# rebuild must refuse (finding 53). The chain is compared with the founding of
-# the edited sources.
+# rebuild must refuse (finding 53). The step fail makes an edit that throws
+# at its evaluation, and then its fix: a server must hold nothing of the edit
+# that failed (finding 7, decision D4). The step input changes an input that
+# no tracked source holds, and the build must stop with its name (finding 8,
+# decision D5). The chain is compared with the founding of the edited sources.
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -66,6 +69,11 @@
 #   order        - order-after.jl replaces order.jl: the rebuild refuses to
 #                  evaluate again the use of a macro that reads a later
 #                  definition, and the binary prints the same values
+#   fail         - an edit adds a method and a constant whose initializer
+#                  throws: the build fails. The fix takes both out, and the
+#                  next rebuild holds nothing of the failed edit
+#   input        - the Manifest entry of a package changes, then the text of
+#                  the workload: each build stops and names the input
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/runapp at those sources
 #   run-final    - the founded binary: as the binary of the step retype
@@ -201,6 +209,51 @@ order() {
     runbin after-order "$CHAIN" "$RETYPED"
 }
 
+# An edit with a mistake: a new method in a file that loads early, and a
+# constant whose initializer throws in a file that loads late. The build
+# fails. The fix takes both out again, and the rebuild that follows must hold
+# nothing of the failed edit: the comparison at the end finds a method that
+# stayed in a server.
+fail() {
+    cp "$SRC/RunLib/src/helpers.jl" "$OUT/helpers-good.jl" && cp "$SRC/RunLib/src/order.jl" "$OUT/order-good.jl" || return 1
+    echo 'stray_of_a_failed_edit() = 1' >> "$SRC/RunLib/src/helpers.jl"
+    echo 'const BROKEN_BY_THE_EDIT = no_such_function_of_the_edit()' >> "$SRC/RunLib/src/order.jl"
+    if mat mat-fail "$CHAIN"; then
+        echo "=== fail: the rebuild of an edit that throws passed"; return 1
+    fi
+    grep -q "no_such_function_of_the_edit" "$OUT/mat-fail.log" ||
+        { echo "=== fail: the log does not name the error of the edit"; return 1; }
+    echo "=== fail: the rebuild of an edit that throws failed, as it must"
+    cp "$OUT/helpers-good.jl" "$SRC/RunLib/src/helpers.jl" && cp "$OUT/order-good.jl" "$SRC/RunLib/src/order.jl" || return 1
+    mat mat-fixed "$CHAIN" || return 1
+    runbin fixed "$CHAIN" "$RETYPED"
+}
+
+# An input of the store outside its tracked sources changes: the Manifest
+# entry of a package, then the text of the workload. The image holds the input
+# of its whole build, so each build stops and names the input, and the program
+# stays as it was.
+input() {
+    local manifest=$SRC/RunApp/Manifest.toml
+    cp "$manifest" "$OUT/Manifest-good.toml" && cp "$SRC/workload.jl" "$OUT/workload-good.jl" || return 1
+    sed -i '/^\[\[deps.RunLib\]\]/,/^$/ s/^version = .*/version = "0.1.1"/' "$manifest"
+    if mat mat-input-manifest "$CHAIN"; then
+        echo "=== input: the rebuild with another Manifest entry passed"; return 1
+    fi
+    grep -q "an input of the store changed: the Manifest entry of RunLib" "$OUT/mat-input-manifest.log" ||
+        { echo "=== input: the log does not name the Manifest entry"; return 1; }
+    cp "$OUT/Manifest-good.toml" "$manifest"
+    echo '# a line that the whole build did not read' >> "$SRC/workload.jl"
+    if mat mat-input-workload "$CHAIN"; then
+        echo "=== input: the rebuild with another workload passed"; return 1
+    fi
+    grep -q "an input of the store changed: the workload" "$OUT/mat-input-workload.log" ||
+        { echo "=== input: the log does not name the workload"; return 1; }
+    cp "$OUT/workload-good.jl" "$SRC/workload.jl"
+    echo "=== input: the build stopped for the Manifest entry and for the workload, and named each"
+    runbin after-input "$CHAIN" "$RETYPED"
+}
+
 # A changed statement that names no global: the rebuild refuses it (S1), and
 # the program stays as it was.
 refuse() {
@@ -251,12 +304,15 @@ compare() {
     local failed=0
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    check 3 "output" "^shape: " "$OUT/run-retyped.log" "$OUT/run-final.log" || failed=1
+    # The last binary of the chain: the one of the step fail, or of the step retype.
+    local last=$OUT/run-retyped.log
+    [ -f "$OUT/run-fixed.log" ] && last=$OUT/run-fixed.log
+    check 3 "output" "^shape: " "$last" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail input trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -269,6 +325,8 @@ for step in $steps; do
         move) move ;;
         retype) retype ;;
         order) order ;;
+        fail) fail ;;
+        input) input ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
         run-final) runbin final "$FINAL" "$RETYPED" ;;
