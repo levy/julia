@@ -1093,8 +1093,10 @@ commits. The numbers of the steps stay as they are.
 - [x] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
   40, 41, 44, refusal C5).** *Done (2026-11-12): D13 and D2 are built, and
   the replays over the kernel and the platform apply each commit. The owner
-  asked for the landing: `merged-next` is at 8b35e07154, with the built
-  libraries and images of that commit. One difference from a whole build
+  asked for the landing two times on 2026-11-12: `merged-next` got
+  8b35e07154, and then the check of finding 53, the gate of the edit cases
+  and findings 55 and 56 (95c23ad112), each time with the built libraries
+  and images of the commit. One difference from a whole build
   stays, finding 53, which is no part of D13 or D2.* First D13: the two fields of a method, the place
   in the runtime, the ledger by the definer. Test: the case `@steady` of
   `gate_runs.sh`, which the rebuild of today answers with "no method"; the
