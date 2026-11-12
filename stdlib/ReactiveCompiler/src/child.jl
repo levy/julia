@@ -1346,27 +1346,41 @@ function rc_items_by_name!(evaluation::RcEvaluation)
     return evaluation.named = named
 end
 
+# Whether the item is a `const` or a `global` in plain text: no macro call
+# holds the declaration, other than its docstring. The kind of an item is read
+# from its text, and the argument of a macro call can look like a declaration
+# and be none (`@insertion TextBlock = ...`).
+function rc_is_plain_declaration(item::RcItem)
+    item.kind in RC_BINDING_KINDS && item.name !== nothing || return false
+    e = ReactiveSourceDiff.without_docstrings(item.entry.expr)
+    return e isa Expr && e.head in (:const, :global, :(=))
+end
+
 # Before the evaluation of a changed `const` or `global`: the binding of
-# before leaves when the declaration of now is of another kind. Julia makes no
-# constant of a global and no global of a constant in a module that holds the
-# name, and it gives a typed global no other type. A whole build has only the
-# declaration of now, so the name of before goes first, as the name of an
-# expression that left does. Answer whether the binding left.
+# before leaves when the text of before declared the name in another kind.
+# Julia makes no constant of a global and no global of a constant in a module
+# that holds the name, and it gives a typed global no other type. A whole
+# build has only the declaration of now, so the name of before goes first, as
+# the name of an expression that left does. The rule takes a plain declaration
+# of before and one of now, and a binding that is what the text of before
+# declared. Answer whether the binding left.
 function rc_drop_other_declaration!(mod::Module, change::RcChange)
     item = change.item
-    item.kind in RC_BINDING_KINDS && item.name !== nothing || return false
-    kind = Base.binding_kind(mod, item.name)
+    rc_is_plain_declaration(item) || return false
     declared = ReactiveSourceDiff.declared_type(item.entry.expr)
-    other = item.kind === :const ? kind == Base.PARTITION_KIND_GLOBAL :
-            kind == Base.PARTITION_KIND_CONST ||
-            (kind == Base.PARTITION_KIND_GLOBAL &&
-             any(old -> old.kind === :global && ReactiveSourceDiff.declared_type(old.entry.expr) != declared,
-                 change.old_items))
-    other || return false
-    Base.delete_binding(mod, item.name)
-    println("rc: removed ", change.where, ": the declaration of ", item.name, " of before leaves ", mod,
-            ", because the one of now is of another kind")
-    return true
+    held = Base.binding_kind(mod, item.name)
+    for old in change.old_items
+        old === item && continue
+        rc_is_plain_declaration(old) && old.name === item.name || continue
+        old.kind !== item.kind ||
+            (item.kind === :global && ReactiveSourceDiff.declared_type(old.entry.expr) != declared) || continue
+        held == (old.kind === :const ? Base.PARTITION_KIND_CONST : Base.PARTITION_KIND_GLOBAL) || continue
+        Base.delete_binding(mod, item.name)
+        println("rc: removed ", change.where, ": the declaration of ", item.name, " of before leaves ", mod,
+                ", because the one of now is of another kind")
+        return true
+    end
+    return false
 end
 
 # Evaluate the next change of the queue in its module, and add to the queue

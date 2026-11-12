@@ -107,6 +107,8 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 52 | A name that the call of a macro binds and its source does not show gets a new value, and the expressions that name it stay as they were. The harness knew one name for each expression: the name that the source shows. | `@theme struct ConversationTheme … end` defines `ConversationTheme` and `ScaledConversationTheme`. A change of `ReactiveCell` gives the second type a new identity and leaves the first. `AgentWorkToWidget(theme::Union{ConversationTheme, ScaledConversationTheme})` in another module keeps the type of before in its signature, so a call with a value of the new type is a `MethodError`; a whole build has the new type. The same for the alias `ICCellVector` that `@document struct CellVector` defines, and the methods `ICCellVector(…) = …`. | `child.jl`, `rc_evaluate_next!`: the dependents of an evaluation came from the name of the item | Found by the replay over 18 platform commits with the comparison (24 method lines of 27 297); confirmed by a gate case that failed first; closed on the branch (Step 6) |
 | 53 | **An expression that the rebuild evaluates again sees the definitions that come after it in the load order.** A whole build evaluates an expression with the code that it loads before the expression. A rebuild evaluates it in a process that holds the whole program. The result differs when the evaluation calls a function that a later expression gives a method. | `@document struct CellVector` is at line 32 of `CellVector.jl`. The macro asks `get_cell_layout_field_type(Val(:Vector))` for each field that is a `Vector`, and line 150 of the same file has the method that answers `CellVector`. A whole build expands line 32 before that method exists. The rebuild of the commit that changes `ReactiveCell` expands line 32 again, gets `CellVector`, and the constructor wraps its own vector: `CellVector(Any[1, 2])` throws `DeclaredTypeMismatchException` in the rebuilt image and gives a list of 2 elements in a whole build. | `replay.jl` names the limit in its header; no rule of the harness covered it | Found by the comparison of the replay over the platform (4 method lines of `CellVector.jl:32`), confirmed by a call in both images. The owner said to go on with it on 2026-11-12. Closed on the branch for an expression whose text the edit leaves as it is: the apply finds it and refuses (Step 6). Open for an edited text that gets a new dependence on a later definition |
 | 54 | A deleted method stays in the method table of an overlay. The save takes a closed entry out of its chain by a recorded change of the pointer that leads to it, and a save by pages writes only the objects of the pages that the process wrote. A pointer in an object of another page keeps the bytes of the base. Dispatch does not use a closed entry, so no call goes wrong; `Base.visit` counts it. | After the rebuild of the commit that changes `ReactiveCell`, 2 of 2 754 deleted methods are still in the table: the program counts 23 824 methods, a whole build 23 822. | `staticdata.c`, `reactive_pages_begin`: the recorded field changes did not mark their pages | Found by the comparison of the replay over the platform (the output of the program); closed on the branch (d7a821790b), see Step 6 for the test |
+| 55 | A declaration that changes its kind stops the rebuild with an error of Julia: a global that becomes a constant, a constant that becomes a global, a typed global that gets another type. Julia changes no such declaration in a module that holds the name. | `global StringType = String` becomes `const StringType = AbstractString`. The server answers "cannot declare StringType constant; it was already declared global", and the build stops. | `child.jl`, `rc_evaluate_next!`: the changed item was evaluated over the binding of before | Found by the gate of the edit cases (the test set "Global binding invalidation" of Revise); closed on the branch (ca86d3657f, Step 3) |
+| 56 | A name that leaves a module does not give the name back to the export of a used module that it hid. `Base.delete_binding` leaves a guard, which no export passes. And a method that an edit writes with the module of its function counted as a binding of the name in its own module. | An edit removes `const view = "shadow"`: `view` is then not defined, where a whole build has the `view` of Base. An edit writes `Base.iterate(x::Foo) = …` in place of `iterate(x::Foo) = …`: the function of the module stays with no method, and a caller gets a `MethodError`. | `child.jl`, `rc_remove_name!`, `rc_given_names`, and the pairing of an old expression with a changed one | Found by the gate of the edit cases (the test sets "Retract removed bindings" and "Orphaned binding realias" of Revise); closed on the branch (ca86d3657f, 14f260af38, Step 3) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -952,14 +954,75 @@ commits. The numbers of the steps stay as they are.
     documented binding", "Docstring attached to signatures", "Macro
     docstrings", "Line numbers".
 
-  *The form of the test (proposed by the assistant).* One gate with a table
-  of cases: a package with one file for each case, the text of before and
-  the text of after, and a program that prints one line for each case. One
-  whole build of the texts of before, one rebuild of all edits at once, one
-  whole build of the texts of after, and the four checks of the oracle. A
-  case that the rebuild must refuse runs alone, as the step `refuse` of
-  `gate_runs.sh` does. Each case of Revise becomes a file pair that says the
-  same edit in the words of this gate; no code of Revise is copied.
+  *The gate of the edit cases, as built (`tool/gate_cases.sh`,
+  `tool/r1_cases`; the owner agreed to the use of the cases on
+  2026-11-12).* The application `CaseApp` loads the path package `CaseLib`.
+  Each file of `CaseLib/src/cases` holds one module with a function `shown`,
+  and the file of the same name in `cases-after` holds the module after its
+  edit. The gate founds the program, takes each case in its turn with one
+  rebuild through a server, founds the edited sources two times (the second
+  one is the control of the noise of the oracle), and compares the method
+  tables, the output and the globals. A refusal keeps the text of before
+  for its case and is counted. Another failure founds the chain again and
+  fails the gate at its end. The roots are counted and not failed: an edit
+  gives the program values of other types to print, and only a new trace
+  names their methods (Step 10, Q1).
+
+  The table has 36 cases: 2 from the page of limits (code whose existence
+  depends on a global; an alias that a type names), 33 that say again the
+  edit of a test set of Revise, with no code of Revise, and 1 from a fault
+  of this work (the argument of a macro that looks like a global). Two test
+  sets ("Multiple definitions", "Duplicate macro-defined methods") define
+  one method two times, which a package can not hold, so they are no case.
+  The cases of files and includes (a removed, moved or computed `include`,
+  `include` with a map function) need more than one file for a case and are
+  not in the table yet.
+
+  | the 35 cases | first run | with findings 55 and 56 |
+  | --- | --- | --- |
+  | applied, refused, failed | 34, 1, 0 after the rule of finding 55; the case of that finding failed before it | 34, 1, 0 |
+  | lines of the output that differ, of 35 | 2 | 0 |
+  | method lines (151), globals | equal | equal |
+  | roots that the chain lacks | 9 | 9 |
+
+  The refused case changes a `baremodule` into a `module` (C5, the header
+  of a module). The cases found two faults:
+
+  *Finding 55: a declaration of another kind.* `global StringType = String`
+  becomes `const StringType = AbstractString`, and the rebuild stops with
+  the error of Julia. Before the evaluation of a changed `const` or
+  `global`, the binding of before now leaves when the declaration of now is
+  of another kind: a constant over a global, a global over a constant, a
+  typed global with another type (`rc_drop_other_declaration!`). A whole
+  build has only the declaration of now.
+
+  *A fault of the first form of that rule, which the platform replay
+  found.* The rule read the kind of the item of now and the binding of the
+  module. The kind of an item comes from its text, and the platform has the
+  line `@insertion TextBlock = @selected TextBlock(…)`: the argument of the
+  macro looks like a global with the name of the struct, and the macro
+  binds no global. When a rebuild evaluated that line again, the rule took
+  the struct `TextBlock` out of its module, and two rebuilds of the
+  platform chain stopped with "`TextBlock` not defined". The rule now takes
+  a plain declaration only (no macro call holds it, other than its
+  docstring), whose text of before declared the name in the other kind,
+  and a binding that is what the text of before declared. A case of the
+  gate has the trap (`macro_argument_like_a_global`). One form stays with
+  no rule: the ledger reads a typed assignment with no keyword
+  (`x::Int = 1`) as a method, so its change of type is not seen as a
+  declaration.
+
+  *Finding 56: a name that leaves gives the name back.* Two cases printed an
+  error in the rebuilt program. A removed `const view = "shadow"` left the
+  name `view` not defined, where a whole build has the `view` of Base:
+  `Base.delete_binding` leaves a guard, which hides the export of a used
+  module. Revise meets the same thing and evaluates a `using` line in its
+  place. The runtime function `jl_reactive_binding_leave` now replaces the
+  binding with the implicit resolution of the new world, which is the state
+  of a module that never bound the name. The second case writes
+  `Base.iterate(x::Foo) = …` in place of `iterate(x::Foo) = …`. Its new text
+  binds no name in the module (`is_qualified_method`), and the old
+  expression of a change now comes up for the removal of its name too.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
@@ -1640,6 +1703,16 @@ commits. The numbers of the steps stay as they are.
   program; an edit that does not make the rebuild evaluate line 32 again
   is not touched. The platform can also make line 32 independent of the
   load order, and then such a rebuild applies.
+
+  *The two replays with the check (the harness of the build at
+  7b469b9767).* Over the 28 commits of the kernel, the gate passes with no
+  refusal: the chain of one server and a new server equal a whole build
+  (3 448 method lines, the output, 13 globals). Over the 18 commits of the
+  platform, the gate passes for the first time: 17 commits apply, the
+  commit that changes `ReactiveCell` is refused for `CellVector.jl:32` and
+  founded again, and the method tables (27 295 lines), the output, the 147
+  globals and all 2 268 roots equal a whole build. So the check refuses no
+  commit of the two replays with no need.
 
   *The replay over the 18 platform commits with all corrections
   (2026-11-12, the harness of the build at 86b5d06977, the runtime at
