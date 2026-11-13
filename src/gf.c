@@ -2751,6 +2751,116 @@ JL_DLLEXPORT void jl_method_table_disable(jl_method_t *method)
         jl_errorf("Method of %s already disabled", jl_symbol_name(method->name));
 }
 
+// The methods that `jl_reactive_methods_disable` disables, and the world of
+// their end.
+struct disable_set_env {
+    htable_t *set;
+    arraylist_t *disabled;
+    size_t max_world;
+};
+
+static int disable_set_entry(jl_typemap_entry_t *entry, void *closure)
+{
+    struct disable_set_env *env = (struct disable_set_env*)closure;
+    jl_method_t *m = entry->func.method;
+    if (ptrhash_get(env->set, m) == HT_NOTFOUND || jl_atomic_load_relaxed(&entry->max_world) != ~(size_t)0)
+        return 1;
+    jl_atomic_store_relaxed(&m->dispatch_status, 0);
+    jl_atomic_store_relaxed(&entry->max_world, env->max_world);
+    arraylist_push(env->disabled, m);
+    return 1;
+}
+
+static int disable_set_cache(jl_typemap_entry_t *oldentry, void *closure)
+{
+    struct disable_set_env *env = (struct disable_set_env*)closure;
+    if (jl_atomic_load_relaxed(&oldentry->max_world) < ~(size_t)0)
+        return 1;
+    if (ptrhash_get(env->set, oldentry->func.linfo->def.method) != HT_NOTFOUND)
+        jl_atomic_store_relaxed(&oldentry->max_world, env->max_world);
+    return 1;
+}
+
+// Disable the methods `methods` in one new world, as `jl_method_table_disable`
+// disables one: the callers of their specializations are invalidated, and the
+// entries of the dispatch cache that lead to them close. One visit of each
+// method table finds the entries of all of them, and one visit of its cache
+// closes their cache entries; a deletion of each method visits the table and
+// its cache once for each method. A method that is disabled already stays as
+// it is. Only the check of the load order of the reactive harness calls it, in
+// a fork of the process that writes no image. Answer the count of the methods
+// that it disabled.
+JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
+{
+    size_t n = jl_array_nrows(methods);
+    if (n == 0)
+        return 0;
+    if (jl_options.incremental && jl_generating_output())
+        jl_error("Method deletion is not possible during Module precompile.");
+    htable_t set;
+    htable_new(&set, n);
+    arraylist_t tables, disabled;
+    arraylist_new(&tables, 0);
+    arraylist_new(&disabled, 0);
+    for (size_t i = 0; i < n; i++) {
+        jl_method_t *m = (jl_method_t*)jl_array_ptr_ref(methods, i);
+        assert(jl_is_method(m) && !m->is_for_opaque_closure);
+        ptrhash_put(&set, m, (void*)1);
+        jl_methtable_t *mt = jl_method_get_table(m);
+        size_t j = 0;
+        while (j < tables.len && tables.items[j] != (void*)mt)
+            j++;
+        if (j == tables.len)
+            arraylist_push(&tables, mt);
+    }
+    JL_LOCK(&world_counter_lock);
+    if (!jl_atomic_load_relaxed(&allow_new_worlds)) {
+        JL_UNLOCK(&world_counter_lock);
+        htable_free(&set);
+        arraylist_free(&tables);
+        arraylist_free(&disabled);
+        jl_error("Method changes have been disabled via a call to disable_new_worlds.");
+    }
+    size_t world = jl_atomic_load_relaxed(&jl_world_counter);
+    struct disable_set_env env = {&set, &disabled, world};
+    for (size_t j = 0; j < tables.len; j++)
+        jl_typemap_visitor(jl_atomic_load_relaxed(&((jl_methtable_t*)tables.items[j])->defs), disable_set_entry, &env);
+    for (size_t k = 0; k < disabled.len; k++) {
+        jl_method_t *m = (jl_method_t*)disabled.items[k];
+        jl_value_t *specializations = jl_atomic_load_relaxed(&m->specializations);
+        if (!jl_is_svec(specializations)) {
+            if (specializations != jl_nothing)
+                invalidate_backedges((jl_method_instance_t*)specializations, world, "jl_method_table_disable");
+            continue;
+        }
+        for (size_t i = 0, l = jl_svec_len(specializations); i < l; i++) {
+            jl_method_instance_t *mi = (jl_method_instance_t*)jl_svecref(specializations, i);
+            if ((jl_value_t*)mi != jl_nothing)
+                invalidate_backedges(mi, world, "jl_method_table_disable");
+        }
+    }
+    for (size_t j = 0; j < tables.len; j++) {
+        jl_methcache_t *mc = ((jl_methtable_t*)tables.items[j])->cache;
+        jl_typemap_visitor(jl_atomic_load_relaxed(&mc->cache), disable_set_cache, &env);
+        jl_genericmemory_t *leafcache = jl_atomic_load_relaxed(&mc->leafcache);
+        for (size_t i = 1, l = leafcache->length; i < l; i += 2) {
+            jl_typemap_entry_t *oldentry = (jl_typemap_entry_t*)jl_genericmemory_ptr_ref(leafcache, i);
+            while (oldentry && (jl_value_t*)oldentry != jl_nothing) {
+                disable_set_cache(oldentry, &env);
+                oldentry = jl_atomic_load_relaxed(&oldentry->next);
+            }
+        }
+    }
+    size_t count = disabled.len;
+    if (count > 0)
+        jl_atomic_store_release(&jl_world_counter, world + 1);
+    JL_UNLOCK(&world_counter_lock);
+    htable_free(&set);
+    arraylist_free(&tables);
+    arraylist_free(&disabled);
+    return count;
+}
+
 jl_typemap_entry_t *jl_method_table_add(jl_methtable_t *mt, jl_method_t *method, jl_tupletype_t *simpletype)
 {
     JL_TIMING(ADD_METHOD, ADD_METHOD);

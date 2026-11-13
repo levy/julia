@@ -713,24 +713,23 @@ end
 # order defined, and each name that such an item gives its module when no item
 # at or before `place` gives it (`first_places`). A name leaves as the name of
 # an expression that left does: the module is then as one that never bound
-# the name. The names of one module leave together (`jl_reactive_bindings_hide`),
-# and one pass over the methods of the module invalidates the code that names
-# them (`rc_invalidate_named!`). `hidden` and `hidden_names` hold what is out;
-# a method that the table holds no more stays as it is.
+# the name. The methods leave together, and the names of one module leave
+# together (`jl_reactive_bindings_hide`), with one pass over the methods of the
+# module that invalidates the code that names them (`rc_invalidate_named!`).
+# `hidden` and `hidden_names` hold what is out; a method that the table holds
+# no more stays as it is.
 function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Method},
                         first_places::Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}},
                         hidden_names::Set{Tuple{Vector{Symbol}, Symbol}})
     order = evaluation.queue.order
     leaving = Dict{Vector{Symbol}, Vector{Any}}()
+    disabled = Any[]
     for item in evaluation.items
         rc_order(order, item) > place || continue
         for method in item.methods
             method in hidden && continue
             push!(hidden, method)
-            try
-                Base.delete_method(method)
-            catch
-            end
+            push!(disabled, method)
         end
         item.kind in RC_HIDDEN_KINDS && item.name !== nothing || continue
         key = (rc_module_path(evaluation.roots, item), item.name::Symbol)
@@ -738,6 +737,18 @@ function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Meth
         first_places[key] > place || continue
         push!(hidden_names, key)
         push!(get!(() -> Any[], leaving, key[1]), key[2])
+    end
+    # The methods leave together (`jl_reactive_methods_disable`); a runtime
+    # with no such function deletes them one by one.
+    try
+        ccall(:jl_reactive_methods_disable, Csize_t, (Any,), disabled)
+    catch
+        for method in disabled
+            try
+                Base.delete_method(method)
+            catch
+            end
+        end
     end
     for (path, names) in leaving
         mod = Base.invokelatest(rc_module_or_nothing, path)
