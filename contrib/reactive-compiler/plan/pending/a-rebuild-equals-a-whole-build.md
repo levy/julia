@@ -2503,6 +2503,13 @@ commits. The numbers of the steps stay as they are.
   that round; their replay took 5 s to 8 s, so the difference is in another
   part, and jobs of another session ran on the machine at the same time.
   Each gate of the round on dd4d6bdd3f passes.
+
+  *Landed (2026-11-13, with the word of the owner: "Land and continue").*
+  `merged-next` moved forward to b74e779ddd, with the libraries and the
+  images of the build at dd4d6bdd3f (the runtime library changed: the two
+  batches), and the caches of the standard libraries made again. Checked in
+  the installed Julia: REPL, Pkg and Test load in 0.3 s, the harness of the
+  image equals its folder, and both batch functions exist. Not pushed.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
