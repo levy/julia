@@ -693,12 +693,12 @@ const RC_HIDDEN_KINDS = (:const, :global, :type)
 
 # The first place in the load order of each name that an item of a kind of
 # `RC_HIDDEN_KINDS` gives its module, by the path of the module and the name.
-function rc_first_places(evaluation::RcEvaluation)
-    order = evaluation.queue.order
+rc_first_places(evaluation::RcEvaluation) = rc_first_places(evaluation.items, evaluation.roots, evaluation.queue.order)
+function rc_first_places(items::Vector{RcItem}, roots::Vector{Vector{Symbol}}, order::RcLoadOrder)
     first = Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}}()
-    for item in evaluation.items
+    for item in items
         item.kind in RC_HIDDEN_KINDS && item.name !== nothing || continue
-        key = (rc_module_path(evaluation.roots, item), item.name::Symbol)
+        key = (rc_module_path(roots, item), item.name::Symbol)
         place = rc_order(order, item)
         haskey(first, key) && first[key] <= place || (first[key] = place)
     end

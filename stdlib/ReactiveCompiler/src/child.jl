@@ -1766,6 +1766,9 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     # statement that moved past another statement or a definition of a binding
     # joins the statement group as a changed statement (D3): the group makes
     # the state of its globals again in the new order, or its check refuses.
+    # A definition of a name that now comes after an item that names it in a
+    # signature, a field, an initializer or a statement is refused: a whole
+    # build fails at that item, and the process holds the name.
     order_moved = Base.IdSet{RcItem}()
     if all_files && length(order_pairs) > 1
         moves = rc_order_moves(order_pairs, rc_load_order(old_files, old_roots, old_items, true), queue.order)
@@ -1787,6 +1790,19 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                     push!(old_statements, RcItem(a.file, a.path, old.entry, old.kind, old.name, Method[]))
                     push!(new_statements, a)
                 end
+            end
+            first_places = nothing
+            for (moved_item, other) in moves, (definition, user) in ((moved_item, other), (other, moved_item))
+                definition.kind in RC_HIDDEN_KINDS && definition.name !== nothing || continue
+                place = rc_order(queue.order, user)
+                place < rc_order(queue.order, definition) || continue
+                path = rc_module_path(new_roots, definition)
+                rc_module_path(new_roots, user) == path || continue
+                definition.name in ReactiveSourceDiff.type_level_names(user.entry.expr) || continue
+                first_places === nothing && (first_places = rc_first_places(new_items, new_roots, queue.order))
+                first_places[(path, definition.name::Symbol)] > place || continue
+                rc_refuse!(refusals, "H4", user, string("names ", definition.name, ", whose definition comes after it ",
+                                                        "now: a whole build stops here"))
             end
             println("rc: order: ", length(unique(first.(moves))), " expressions moved in the load order; ",
                     evaluated, " are evaluated at their new place, ", length(regrouped), " statements join the statement group")

@@ -1205,10 +1205,18 @@ commits. The numbers of the steps stay as they are.
   `false`; it is refused now. `order_name_passed`, the constant moved above
   the use, is applied, and the output equals a whole build.
 
+  *A definition that moves below a use (2026-11-13).* A `const`, a
+  `global` or a type that moves below an item that names it in a signature,
+  a field, an initializer or a statement gives a whole build that stops at
+  that item, while the process of a rebuild holds the name. The apply now
+  refuses such a move (H4), unless an item before the user gives the same
+  name. The case `order_definition_left` moves a struct below a method whose
+  signature names it: the harness of before applied it ("applied 0
+  expressions"), and it is refused now.
+
   *Its limits.* The check takes no value out that a later statement wrote,
   and a plain statement that calls a function with a later method is not
-  checked. A definition that moves below a use of its name gives a whole
-  build that fails, and a rebuild that passes.
+  checked.
 
   *The tests of the branch (2026-11-13, the build at 28ef014c3d with the
   harness of the build, PackageCompiler at 588a846e).*
