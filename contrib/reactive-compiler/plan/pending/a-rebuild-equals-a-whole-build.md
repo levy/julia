@@ -433,8 +433,9 @@ These are my proposals. The owner approves them with the plan.
 ## The open questions
 
 Two decisions are the owner's. Q1 sets what property 3 means and what a
-rebuild costs, and is open. Q2 came with finding 44, on 2026-11-10, and sets
-how the rebuild knows the methods of an expression; it has its answer.
+rebuild costs; it has its answer, (b), since 2026-11-13. Q2 came with finding
+44, on 2026-11-10, and sets how the rebuild knows the methods of an
+expression; it has its answer.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -459,6 +460,18 @@ a run of the program can find those.
 
 My recommendation is (a), with an option that turns it off. It is the only one
 that gives property 3 with no action of a person, and it adds no mechanism.
+
+*On 2026-11-13 the owner chose (b): "the recording is initiated manually, the
+performance degrades gradually, so it's not an issue".* A rebuild runs no
+workload. It says how many statements of the trace it lost and how to record
+again, and a person starts the recording when the program is slow enough to
+need it. Built in PackageCompiler (branch `live-harness`): the whole build
+records the count of the statements that did not compile in it
+(`founding_lost`), each rebuild prints `lost_statements`, and when it is more,
+an info line names `refresh_trace` and the list in the store
+(`reactive-store/trace.jl.unresolved`). In `gate_runs.sh` the first edit loses
+4 statements (a moved type, a removed function, a closure with a new name),
+and each later rebuild says so.
 
 **Q2. How does the rebuild know which expression defined a method (finding
 44)?** The ledger finds the methods of an item by file and line. A method that
@@ -2457,11 +2470,15 @@ commits. The numbers of the steps stay as they are.
   one-line edit.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
-  instance of the image has no machine code is compiled. Each rebuild prints
-  the statements that stay lost and writes them into the record of the store.
-  The replay gate counts what the program still compiles at run time against
-  a whole build. Then the answer to Q1: with (a), the refresh and the second
-  save.
+  instance of the image has no machine code is compiled. ~~Each rebuild prints
+  the statements that stay lost and writes them into the record of the
+  store.~~ *Done (2026-11-13): the store keeps the list, and the build prints
+  the count and the way to record again (see Q1).* The replay gate counts
+  what the program still compiles at run time against a whole build. Q1 has
+  the answer (b), so a rebuild does no refresh and no second save. The rest of
+  this step makes fewer statements lost; with (b) a lost statement costs some
+  speed until the next recording, so it waits behind the steps of
+  correctness.
 - [ ] **Step 11: the record, the documents and the IDE.** The store keeps a
   line for each build: the kind, the changed items by id, the refusals, the
   times, the size of the overlay (finding 17). `doc/architecture.md` and the
