@@ -197,7 +197,7 @@ Two more causes start a whole build, and they are the common ones:
 | --- | --- | --- |
 | 22 | One gate builds the program in the form of the build scripts: `contrib/merged/gate_prelinked_chain.sh` links the image into a program, prelinks it, and starts it with the overlay of a rebuild. It compares the lines that the program prints and nothing else, and its edit is two method bodies, which grow no table of the base. So it found neither the fault of 2026-11-08 nor finding 33. It links with commands of its own, not through `ProjecturedBuilder`. The other gates start the image with `julia -J`, which is another load path; on the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. *Corrected on 2026-11-10: the first text of this row said that no such gate exists. I looked in `contrib/reactive-compiler/tool` alone.* | Read; the count is the audit's |
 | 23 | Each gate edits a small test program with edits written for the gate. No gate applies real commits. All four faults of the list above came from real commits. | Read |
-| 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09; in a tree whose rebuilds load the harness, finding 45 covers it (Step 2) |
+| 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | Closed on 2026-11-13 (Step 2): two leaks of the harness and a bound that took too little for a slot. Each rebuild left the module of a check of the warm-up in the image, and the roots of 22 methods of Base held dead code of the whole build. The chain now grows about 50 KB in 18 rebuilds, which is the cost of its 810 slots, and the gate passes |
 | 60 | The gate of the edit cases tested less than its result said. A store founds again by itself when its image grew 25 % since its whole build. The program of the gate is small, so the bound came after about 24 rebuilds, two times in a run of 44 cases. Each such whole build took each edit of before into the chain, and the comparison at the end then tested only the cases after the last one: 3 of 44. This was a run through a child, where each rebuild writes a whole image. The runs of 2026-11-12 (36 and 37 cases) went through a server with overlays, where the growth counts one overlay; their logs are gone, so no record says that they founded again. The same form with 45 cases and the guard does not found again (2026-11-13). | Found on 2026-11-13, when two cases that must lose an edit ended equal to the whole build. The gate now gives its store a bound that it does not reach, and a whole build of the store in the middle of a run is a fault; `gate_runs.sh` has the same guard. The replay gate already counted such a commit. The first strict run found finding 59 |
 
 ## The model
@@ -580,6 +580,37 @@ commits. The numbers of the steps stay as they are.
   size of the overlay, at 1, 10, 100 and 600 changed items, and a profile of
   the apply and of the save (findings 21, 32). Gate C passes again or its
   bound changes with a reason (finding 24).
+
+  *Gate C passes again (finding 24, 2026-11-13).* The step `sizes` now
+  records the sections of the image at each rebuild, and keeps the images
+  that `KEEP` names. Two images of the chain, 16 rebuilds apart, compared by
+  a walk of their objects, show what grew:
+
+  | what grew in 18 rebuilds | bytes | cause |
+  | --- | --- | --- |
+  | the image data (`.ldata`) | 93 096 of 107 768 | objects that stay |
+  | 2 modules for each rebuild, with 6 bindings, 8 partitions and 2 functions | about 56 000 | `rc_warm` checks the docstring of a module header with a module `D` that it makes. A docstring puts its module on `Base.Docs.modules`, a list that is a root of the image, and each rebuild process warms up |
+  | the slots: 45 for each rebuild | about 48 000 | a slot is never freed; it costs 59 bytes, and the bound took 32 |
+
+  A third thing came up in the same search and is no growth of the chain:
+  the image of the whole build held 294 code instances that no world runs,
+  below 40 roots of 22 methods of Base. Julia appends to the roots of a
+  method and takes nothing out, and the inferred code of a method names the
+  code instances of its callees through its roots, so the root of a callee
+  that was compiled again stays. The whole build of the gate program made
+  them when it loaded its packages. `rc_drop_dead_roots!` empties each such
+  root that no inferred code of a live code instance of the method names, at
+  the end of each apply and before the write of a server. The first rebuild
+  drops them: the image is 620 KB smaller from there on.
+
+  *As closed (84c35442f6, 557581e73a, b7df0bd555, 2f66e95952).* The module
+  of the check leaves the list after the check. The bound of the gate is 64
+  bytes for a slot and 1 024 bytes for a rebuild: 70 272 bytes for this
+  chain, which grows 48 152 to 51 696 bytes. The leak of the module
+  (107 768 bytes) still passes the bound. Ruled out on the way: the
+  partitions of the bindings (a name holds at most 4), the values of the
+  slots (the slots of the last rebuilds hold no new object), and dead code
+  in the lists of callers (the writer prunes those).
 
   *The program gate (2026-11-10, b17599c0f2).* `gate_prelinked_chain.sh` has
   the table edit, the `check` step and the `decode` step. With the writer of
