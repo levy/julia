@@ -174,9 +174,15 @@ noedit() {
 
 # The image after the last reverse equals the image after the first one
 # within the residue of the chain: the global slots of the rebuilds between
-# them (a slot is never freed; 32 bytes covers its pointer, record and
-# relocation) and a few hundred bytes of the objects that a process holds at
-# exit (an IO buffer, a symbol).
+# them and a few hundred bytes of the objects that a process holds at exit (an
+# IO buffer, a symbol). A slot is never freed, and it costs 59 bytes as
+# measured over 810 slots: 8 for its pointer (.lbss), 8.5 for its place in the
+# table of the slots (.lrodata), 1 for a relocation, and about 41 in the image
+# data for its record, its relocation and its entry in two tables of the heap.
+# The bound takes 64 bytes for a slot, and 1024 bytes for a rebuild: the
+# padding of the sections moves the size by some KB between two runs. A leak
+# of 5 KB for each rebuild, as the module of the warm-up was (finding 24),
+# still passes the bound by a half.
 sizes() {
     [ -f "$OUT/sizes.txt" ] || { echo "=== no sizes recorded"; return 1; }
     local first last slots=0 rebuilds=0 i log bound
@@ -190,7 +196,7 @@ sizes() {
             rebuilds=$((rebuilds + 1))
         done
     done
-    bound=$((32 * slots + 512 * rebuilds))
+    bound=$((64 * slots + 1024 * rebuilds))
     echo "=== loadable after reverse 1: $first, after reverse $CYCLES: $last, growth $((last - first)) bytes;" \
          "residue $slots slots in $rebuilds rebuilds, bound $bound bytes"
     echo "=== the sections that grew between reverse 1 and reverse $CYCLES:"; grown_sections reverse-1 "reverse-$CYCLES"
