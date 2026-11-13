@@ -90,88 +90,6 @@ function rc_resident_kb()
     return 0
 end
 
-# Whether no world of the image runs the code instance: its range of worlds is
-# closed, and the world of the compiler is outside it. The image writer drops
-# such a code instance from the chain of its method instance
-# (`codeinst_may_be_runnable` in staticdata.c).
-function rc_is_dead_code(ci::Core.CodeInstance)
-    ci.max_world == typemax(UInt) && return false
-    typeinf = unsafe_load(cglobal(:jl_typeinf_world, UInt))
-    return !(ci.min_world <= typeinf <= ci.max_world)
-end
-
-# Add to `named` each code instance that the code `x` names.
-function rc_named_code!(named::Base.IdSet{Core.CodeInstance}, @nospecialize(x))
-    if x isa Core.CodeInstance
-        push!(named, x)
-    elseif x isa Expr
-        for argument in x.args
-            rc_named_code!(named, argument)
-        end
-    elseif x isa Vector{Any}
-        for i in eachindex(x)
-            isassigned(x, i) && rc_named_code!(named, x[i])
-        end
-    elseif x isa Union{QuoteNode, Core.ReturnNode, Core.PiNode, Core.PhiNode, Core.PhiCNode, Core.UpsilonNode,
-                       Core.GotoIfNot, Core.EnterNode}
-        for i in 1:nfields(x)
-            isdefined(x, i) && rc_named_code!(named, getfield(x, i))
-        end
-    end
-    return named
-end
-
-# The code instances that the inferred code of the live code instances of the
-# method names: the callees of its `:invoke` statements.
-function rc_named_code(method::Method)
-    named = Base.IdSet{Core.CodeInstance}()
-    instances = Any[mi for mi in Base.specializations(method)]
-    isdefined(method, :unspecialized) && push!(instances, method.unspecialized)
-    for mi in instances
-        mi isa Core.MethodInstance || continue
-        ci = isdefined(mi, :cache) ? mi.cache : nothing
-        while ci !== nothing
-            if !rc_is_dead_code(ci) && isdefined(ci, :inferred)
-                inferred = ci.inferred
-                code = inferred isa String ? Base._uncompressed_ir(ci, inferred) : inferred
-                code isa Core.CodeInfo && rc_named_code!(named, code.code)
-            end
-            ci = isdefined(ci, :next) ? ci.next : nothing
-        end
-    end
-    return named
-end
-
-# Empty each root of a method that holds a dead code instance which no code of
-# the method names, and answer their count. Julia appends to the roots of a
-# method and takes nothing out. The inferred code of a method names the code
-# instances of its callees through the roots, and after a callee is compiled
-# again the root of before stays. The image writer follows the roots, so a
-# dead code instance there stays in the image with the dead code that it
-# calls, and each rebuild left more of it (finding 24). The index of a root
-# is its name in the code, so a root is emptied and stays in its place.
-function rc_drop_dead_roots!()
-    dropped = 0
-    Base.visit(Core.methodtable) do method
-        isdefined(method, :roots) || return
-        roots = method.roots
-        dead = Int[]
-        for i in eachindex(roots)
-            isassigned(roots, i) || continue
-            root = roots[i]
-            root isa Core.CodeInstance && rc_is_dead_code(root) && push!(dead, i)
-        end
-        isempty(dead) && return
-        named = rc_named_code(method)
-        for i in dead
-            roots[i] in named && continue
-            roots[i] = nothing
-            dropped += 1
-        end
-    end
-    return dropped
-end
-
 # The tail of the object script: the image carries no path of this build.
 function rc_before_write()
     # The ledger and the parses of the tracked files serve the next apply of
@@ -180,8 +98,7 @@ function rc_before_write()
     empty!(RC_PARSED)
     # The image is the save of the apply that the process holds.
     RC_APPLY_OPEN[] = false
-    dropped = rc_drop_dead_roots!()
-    dropped == 0 || println("rc: ", dropped, " roots of methods held dead code and are empty now")
+    rc_drop_dead_roots!()
     empty!(Base.Filesystem.TEMP_CLEANUP)
     empty!(Core.ARGS)
     empty!(Base.ARGS)
