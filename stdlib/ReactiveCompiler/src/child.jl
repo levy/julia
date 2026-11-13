@@ -407,18 +407,21 @@ function rc_assign_methods!(items::Vector{RcItem}, bydefiner, skip = Base.IdSet{
     return nothing
 end
 
-# Match the old file list with the new one: `pairs` by path, `renamed` by
-# content or as the lone leftover pair, then the removed and the added. A
-# file that several modules include is in both lists once per module, in
-# include order: its n-th old entry pairs with its n-th new one.
-function rc_match_files(old_files::Vector{String}, old_copies::Vector{String},
-                        new_files::Vector{String})
+# Match the old file list with the new one: `pairs` by path and module,
+# `renamed` by content or as the lone leftover pair, then the removed and the
+# added. A file is the same file when the same module includes it: a file
+# whose `include` line moves to another module is removed from the module of
+# before and added to the module of now, so a file of another module is no
+# pair and no rename. A file that several modules include is in both lists
+# once per module.
+function rc_match_files(old_files::Vector{String}, old_roots::Vector{Vector{Symbol}}, old_copies::Vector{String},
+                        new_files::Vector{String}, new_roots::Vector{Vector{Symbol}})
     pairs = Tuple{Int, Int}[]
     renamed = Tuple{Int, Int}[]
     old_left = collect(1:length(old_files))
     new_left = Int[]
     for (j, path) in enumerate(new_files)
-        k = findfirst(i -> old_files[i] == path, old_left)
+        k = findfirst(i -> old_files[i] == path && old_roots[i] == new_roots[j], old_left)
         if k === nothing
             push!(new_left, j)
         else
@@ -429,14 +432,15 @@ function rc_match_files(old_files::Vector{String}, old_copies::Vector{String},
     for i in copy(old_left)
         content = read(old_copies[i], String)
         for j in new_left
-            read(new_files[j], String) == content || continue
+            old_roots[i] == new_roots[j] && old_files[i] != new_files[j] && read(new_files[j], String) == content || continue
             push!(renamed, (i, j))
             filter!(!=(i), old_left)
             filter!(!=(j), new_left)
             break
         end
     end
-    if length(old_left) == 1 && length(new_left) == 1
+    if length(old_left) == 1 && length(new_left) == 1 && old_roots[old_left[1]] == new_roots[new_left[1]] &&
+       old_files[old_left[1]] != new_files[new_left[1]]
         push!(renamed, (old_left[1], new_left[1]))
         empty!(old_left)
         empty!(new_left)
@@ -1522,7 +1526,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     # (a server), else from the stored copies with a walk of the method
     # table. An edit that changes an expression takes the ledgers of every
     # file.
-    match = rc_match_files(old_files, old_copies, new_files)
+    match = rc_match_files(old_files, old_roots, old_copies, new_files, new_roots)
     changed_pairs = Tuple{Int, Int}[(i, j) for (i, j) in match.pairs
                                     if read(old_copies[i], String) != read(new_files[j], String)]
     old_indices = sort!(vcat(first.(changed_pairs), first.(match.renamed), match.removed))
@@ -2044,10 +2048,13 @@ function rc_warm()
     new_items = rc_ledger([new_path], [new_path])
     length(old_items) == 8 && length(new_items) == 9 ||
         error("rc_warm: the ledgers hold ", length(old_items), " and ", length(new_items), " items")
-    match = rc_match_files([old_path], [old_path], [new_path])
+    match = rc_match_files([old_path], [Symbol[]], [old_path], [new_path], [Symbol[]])
     length(match.renamed) == 1 || error("rc_warm: the lone leftover pair is not a rename")
-    match = rc_match_files([old_path, old_path], [old_path, old_path], [old_path, old_path])
+    match = rc_match_files([old_path, old_path], [[:A], [:B]], [old_path, old_path], [old_path, old_path], [[:A], [:B]])
     match.pairs == [(1, 1), (2, 2)] || error("rc_warm: a file of two modules pairs as ", match.pairs)
+    match = rc_match_files([old_path], [[:A]], [old_path], [old_path], [[:B]])
+    isempty(match.pairs) && isempty(match.renamed) && match.removed == [1] && match.added == [1] ||
+        error("rc_warm: a file of another module is not removed and added: ", match)
     kinds = [item.kind for item in new_items]
     kinds == [:method, :module, :type, :method, :const, :macro, :method, :using, :include] ||
         error("rc_warm: the kinds are ", kinds)

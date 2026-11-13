@@ -7,16 +7,24 @@
 # Revise, with the image of a whole build as its goal.
 # The application CaseApp (tool/r1_cases) loads the path package CaseLib. Each
 # file of CaseLib/src/cases holds one module with a function `shown`, and the
-# file of the same name in cases-after holds the module after the edit. The
-# program prints what `shown` answers for each case.
+# file of the same name in cases-after holds the module after the edit. A case
+# of more than one file has a folder of its name beside its file, with the
+# files that the module includes; the folder in cases-after is the folder after
+# the edit. The program prints what `shown` answers for each case.
 #   copy         - the packages into $OUT/src, with a CaseLib.jl that includes
 #                  each case
 #   found-chain  - materialize_app founds $OUT/chain/caseapp
 #   cases        - each case in its turn: its text of after replaces its text
 #                  of before, and one rebuild follows. A rebuild that is refused
 #                  is no fault: the case keeps its text of before, and the gate
-#                  counts it. A case that r1_cases/must-refuse.txt names must
-#                  be refused. $CASES names the cases to take, by file name
+#                  counts it. A build that stops because an input of the store
+#                  changed counts as a refusal. A case that
+#                  r1_cases/must-refuse.txt names must be refused. A store
+#                  that founds again by itself is a fault: the comparison at
+#                  the end would then test only the cases after that whole
+#                  build, so the gate gives the store a bound that it does
+#                  not reach (JULIA_REACTIVE_COMPACT). $CASES
+#                  names the cases to take, by file name
 #                  with no extension; the default is all of them
 #   run-chain    - the rebuilt binary prints the line of each case
 #   trace        - the workload under --trace-compile at the edited sources
@@ -52,6 +60,7 @@ lane() {
     local name=$1; shift
     nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
+            JULIA_REACTIVE_COMPACT="${JULIA_REACTIVE_COMPACT:-100000,1000}" \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
 }
@@ -122,6 +131,14 @@ runbin() {
     echo "=== run-$1: $(grep -c '^shape: ' "$OUT/run-$1.log") lines"
 }
 
+# Put the text of a case into the sources: its file, and its folder when it
+# has one. $1 = the folder that holds the text, $2 = the name of the case.
+put_case() {
+    cp "$1/$2.jl" "$SRC/CaseLib/src/cases/$2.jl" || return 1
+    rm -rf "$SRC/CaseLib/src/cases/$2"
+    if [ -d "$1/$2" ]; then cp -a "$1/$2" "$SRC/CaseLib/src/cases/$2" || return 1; fi
+}
+
 # Each case in its turn. A refusal keeps the text of before for that case, so
 # the sources at the end are those that the chain holds. A rebuild that fails
 # in another way is a fault: the case keeps its text of before, the chain is
@@ -133,8 +150,14 @@ cases() {
     : > "$OUT/faults.txt"
     for name in ${CASES:-$(case_names)}; do
         [ -f "$TOOL/r1_cases/cases-after/$name.jl" ] || { echo "=== cases: $name has no text of after"; return 1; }
-        cp "$TOOL/r1_cases/cases-after/$name.jl" "$SRC/CaseLib/src/cases/$name.jl"
+        put_case "$TOOL/r1_cases/cases-after" "$name" || return 1
         if mat "mat-$name" "$CHAIN"; then
+            if grep -q "materialize_app: the store founds again" "$OUT/mat-$name.log"; then
+                faults=$((faults + 1))
+                echo "    $name: FAULT: the store founded again by itself, so this rebuild tested nothing"
+                echo "$name" >> "$OUT/faults.txt"
+                continue
+            fi
             applied=$((applied + 1))
             echo "    $name: $(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$OUT/mat-$name.log" "$CHAIN/reactive-store/server.log" 2>/dev/null | tail -1)"
             if grep -qx "$name" "$TOOL/r1_cases/must-refuse.txt"; then
@@ -144,12 +167,17 @@ cases() {
             fi
         elif grep -q "the rebuild is refused" "$OUT/mat-$name.log"; then
             refused=$((refused + 1))
-            cp "$TOOL/r1_cases/CaseLib/src/cases/$name.jl" "$SRC/CaseLib/src/cases/$name.jl"
+            put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
             echo "    $name: refused: $(grep -A 1 "the rebuild is refused" "$OUT/mat-$name.log" | tail -1 | cut -c1-200)"
+            echo "$name" >> "$OUT/refused.txt"
+        elif grep -q "an input of the store changed" "$OUT/mat-$name.log"; then
+            refused=$((refused + 1))
+            put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
+            echo "    $name: stopped: $(grep -o "an input of the store changed: [^.]*" "$OUT/mat-$name.log" | head -1 | cut -c1-200)"
             echo "$name" >> "$OUT/refused.txt"
         else
             faults=$((faults + 1))
-            cp "$TOOL/r1_cases/CaseLib/src/cases/$name.jl" "$SRC/CaseLib/src/cases/$name.jl"
+            put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
             echo "    $name: FAULT: $(grep -m 1 -o "the server answered .*\|ERROR: .*" "$OUT/mat-$name.log" | cut -c1-220)"
             echo "$name" >> "$OUT/faults.txt"
             rm -rf "$OUT/chain"

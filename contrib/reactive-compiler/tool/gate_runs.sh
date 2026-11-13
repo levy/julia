@@ -72,6 +72,10 @@
 #   fail         - an edit adds a method and a constant whose initializer
 #                  throws: the build fails. The fix takes both out, and the
 #                  next rebuild holds nothing of the failed edit
+#   late         - an edit adds a method, and the link of the build fails,
+#                  after the save of a server: the next build starts a new
+#                  server from the last snapshot of the store, and the program
+#                  holds the method
 #   input        - the Manifest entry of a package changes, then the text of
 #                  the workload: each build stops and names the input
 #   trace        - the workload under --trace-compile at the edited sources
@@ -107,6 +111,7 @@ lane() {
     local name=$1; shift
     nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
+            JULIA_REACTIVE_COMPACT="${JULIA_REACTIVE_COMPACT:-100000,1000}" \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
@@ -229,6 +234,36 @@ fail() {
     runbin fixed "$CHAIN" "$RETYPED"
 }
 
+# A build that fails late. A folder has the name of the file that the link of
+# the build writes, so the link fails after the server applied the edit and
+# saved it. The server then holds an edit that the store does not name, and
+# its session says so (`pending`). The next build must start a new server from
+# the last snapshot of the store. The method of the edit stays in the sources:
+# the comparison at the end finds it when the chain holds it another number of
+# times than one.
+late() {
+    local lib=$CHAIN/lib/julia store=$CHAIN/reactive-store next
+    next=$(( $(sed -n 's/^id = \([0-9]*\)$/\1/p' "$store/store.toml" | sort -n | tail -1) + 1 ))
+    echo 'method_of_a_late_failure() = 1' >> "$SRC/RunLib/src/helpers.jl"
+    mkdir "$lib/sys.$next.so" "$lib/sys.so.next" || return 1
+    if mat mat-late "$CHAIN"; then
+        echo "=== late: the build passed with no file for its link"; return 1
+    fi
+    rmdir "$lib/sys.$next.so" "$lib/sys.so.next" || return 1
+    if [ "${JULIA_REACTIVE_SERVER:-}" == 1 ]; then
+        grep -q "^pending = $next$" "$store/server.toml" ||
+            { echo "=== late: the session of the server does not name the pending snapshot $next"; return 1; }
+    fi
+    echo "=== late: the build failed at its link, as it must"
+    mat mat-late-again "$CHAIN" || return 1
+    if [ "${JULIA_REACTIVE_SERVER:-}" == 1 ]; then
+        grep -q "pending = $next" "$OUT/mat-late-again.log" ||
+            { echo "=== late: the next build did not start a new server for the pending snapshot"; return 1; }
+        echo "=== late: the next build started a new server"
+    fi
+    runbin late "$CHAIN" "$RETYPED"
+}
+
 # An input of the store outside its tracked sources changes: the Manifest
 # entry of a package, then the text of the workload. The image holds the input
 # of its whole build, so each build stops and names the input, and the program
@@ -302,17 +337,24 @@ check() {
 compare() {
     oracle chain "$CHAIN" && oracle final "$FINAL" || return 1
     local failed=0
+    # A store that founds again by itself makes a whole build in the middle of
+    # the chain, and the checks would then test only the rebuilds after it.
+    if grep -l "materialize_app: the store founds again" "$OUT"/mat-*.log; then
+        echo "=== compare: the store of the chain founded again by itself in the logs above"; failed=1
+    fi
     check 1 "method tables" "^method " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     check 2 "roots" "^root " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
-    # The last binary of the chain: the one of the step fail, or of the step retype.
+    # The last binary of the chain: the one of the step late, of the step
+    # fail, or of the step retype.
     local last=$OUT/run-retyped.log
     [ -f "$OUT/run-fixed.log" ] && last=$OUT/run-fixed.log
+    [ -f "$OUT/run-late.log" ] && last=$OUT/run-late.log
     check 3 "output" "^shape: " "$last" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail input trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late input trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -326,6 +368,7 @@ for step in $steps; do
         retype) retype ;;
         order) order ;;
         fail) fail ;;
+        late) late ;;
         input) input ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;

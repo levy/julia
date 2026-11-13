@@ -171,6 +171,9 @@ function entry_kind(e)
     if h === :(=)
         lhs = e.args[1]
         (lhs isa Symbol || lhs isa Expr && lhs.head === :tuple) && return :global
+        # A typed global, `x::T = v`. A method with a return type has a call
+        # on the left of `::`.
+        lhs isa Expr && lhs.head === :(::) && length(lhs.args) == 2 && lhs.args[1] isa Symbol && return :global
         return defined_name(e) === nothing ? :other : :method
     end
     if h === :call && !isempty(e.args)
