@@ -78,3 +78,7 @@ end
 # neither name.
 badge_sum(badge::ScaledBadge) = badge.base.id + badge.mark.id
 MarkedBadge(id::Int) = ScaledBadge(Badge(id), make_marker(id), 0)
+
+# A file that the package reads at load: a change of it alone is a change of
+# the program (the step read of gate_runs.sh).
+const GREETING = strip(read(joinpath(@__DIR__, "greeting.txt"), String))

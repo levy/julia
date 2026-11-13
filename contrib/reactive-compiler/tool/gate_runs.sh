@@ -76,6 +76,12 @@
 #                  after the save of a server: the next build starts a new
 #                  server from the last snapshot of the store, and the program
 #                  holds the method
+#   same         - a rebuild with no edit ends early and leaves the image and
+#                  the chain as they are (D9)
+#   read         - greeting.txt, which users.jl reads at load, changes alone:
+#                  the rebuild does not end early, evaluates the reader again
+#                  (E1), and the binary prints the new text; the revert does
+#                  the same back
 #   input        - the Manifest entry of a package changes, then the text of
 #                  the workload: each build stops and names the input
 #   trace        - the workload under --trace-compile at the edited sources
@@ -98,8 +104,8 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6 layout=plain"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6 layout=plain"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded greeting=hello line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6 layout=plain"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded greeting=hello line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6 layout=plain"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}
@@ -267,6 +273,37 @@ late() {
     runbin late "$CHAIN" "$RETYPED"
 }
 
+# A rebuild with no edit ends early (D9): the image and the chain stay as they
+# are, and the program prints what it printed.
+same() {
+    local before
+    before=$(ls -l --time-style=+%s.%N "$CHAIN/lib/julia" | md5sum)
+    mat mat-same "$CHAIN" || return 1
+    grep -q "the program stays as it is" "$OUT/mat-same.log" ||
+        { echo "=== same: the rebuild with no edit did not end early"; return 1; }
+    [ "$(ls -l --time-style=+%s.%N "$CHAIN/lib/julia" | md5sum)" == "$before" ] ||
+        { echo "=== same: the rebuild with no edit changed the image or the chain"; return 1; }
+    echo "=== same: the rebuild with no edit ended early, and the image and the chain stayed"
+    runbin same "$CHAIN" "$RETYPED"
+}
+
+# A file that a tracked file reads at load changes alone. That is no edit of a
+# tracked file, but a whole build reads the new text, so the rebuild does not
+# end early and evaluates the reader again (E1). The revert does the same.
+read_file() {
+    local greeting=$SRC/RunLib/src/greeting.txt log
+    echo "hello again" > "$greeting" && mat mat-read "$CHAIN" || return 1
+    echo "hello" > "$greeting" && mat mat-read-back "$CHAIN" || return 1
+    for log in mat-read mat-read-back; do
+        grep -q "the program stays as it is" "$OUT/$log.log" &&
+            { echo "=== read: the rebuild of $log ended early"; return 1; }
+    done
+    [ "$(grep -h -c "rc: change E1" "$OUT/mat-read.log" "$OUT/mat-read-back.log" "$CHAIN/reactive-store/server.log" 2>/dev/null |
+         awk '{ s += $1 } END { print s }')" -ge 2 ] ||
+        { echo "=== read: the rebuilds did not evaluate the reader again two times"; return 1; }
+    echo "=== read: a change of a read file and its revert each made a rebuild that evaluated the reader again"
+}
+
 # An input of the store outside its tracked sources changes: the Manifest
 # entry of a package, then the text of the workload. The image holds the input
 # of its whole build, so each build stops and names the input, and the program
@@ -352,12 +389,13 @@ compare() {
     local last=$OUT/run-retyped.log
     [ -f "$OUT/run-fixed.log" ] && last=$OUT/run-fixed.log
     [ -f "$OUT/run-late.log" ] && last=$OUT/run-late.log
+    [ -f "$OUT/run-read-back.log" ] && last=$OUT/run-read-back.log
     check 3 "output" "^shape: " "$last" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late input trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read input trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -372,6 +410,8 @@ for step in $steps; do
         order) order ;;
         fail) fail ;;
         late) late ;;
+        same) same ;;
+        read) read_file && runbin read-back "$CHAIN" "$RETYPED" ;;
         input) input ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;

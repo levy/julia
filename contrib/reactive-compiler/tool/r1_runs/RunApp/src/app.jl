@@ -43,6 +43,7 @@ function shape_lines()
             "registry = $(join(RunLib.REGISTRY, ' '))",
             "seen = $(length(RunLib.SEEN))",
             "notes = $(join(RunLib.NOTES, ' '))",
+            "greeting = $(RunLib.GREETING)",
             "line = $(RunLib.noted_line())",
             "accessors = $(shown_call(RunLib.pair_first)) and $(shown_call(RunLib.pair_second))",
             "marked = $(RunLib.MARKED) of $(fieldcount(RunLib.Marker)) fields",

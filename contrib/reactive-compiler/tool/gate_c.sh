@@ -13,11 +13,9 @@
 #                  the loadable size after every rebuild, and the check of
 #                  every run
 #   noedit       - a rebuild with no edit ends early and leaves the image as
-#                  it is (D9); a change of data.txt alone, a file that the
-#                  package reads at load, is a rebuild, and so is its revert;
-#                  then two rebuilds with no edit that do not end early
-#                  (JULIA_REACTIVE_REBUILD_UNCHANGED): the second emits no
-#                  function
+#                  it is (D9); then two rebuilds with no edit that do not end
+#                  early (JULIA_REACTIVE_REBUILD_UNCHANGED): the second emits
+#                  no function
 #   heap         - the heap of the image holds no closed entry and no
 #                  invalid code instance (the oracle's `info dead` line)
 #   sizes        - the sizes of the chain: the last reverse against the first,
@@ -168,28 +166,16 @@ cycle() {
     done
 }
 
-# A rebuild with no edit ends early (D9); a change of a file that the package
-# reads at load is no edit of a tracked file and rebuilds all the same. A
-# rebuild with no edit that does not end early reuses everything: the second
-# one emits no function.
+# A rebuild with no edit ends early (D9). A rebuild with no edit that does not
+# end early reuses everything: the second one emits no function.
 noedit() {
-    local before data=$SRC/HazardApp/src/data.txt
+    local before
     before=$(stat -c '%s %Y' "$SO")
     mat mat-same || return 1
     grep -q "the program stays as it is" "$OUT/mat-same.log" ||
         { echo "=== the rebuild with no edit did not end early"; return 1; }
     [ "$(stat -c '%s %Y' "$SO")" == "$before" ] || { echo "=== the rebuild with no edit wrote the image"; return 1; }
     echo "=== noedit: the rebuild with no edit ended early, and the image stayed"
-    cp "$data" "$OUT/data-good.txt" && echo "a line that the edit adds" >> "$data" || return 1
-    mat mat-read || return 1
-    grep -q "the program stays as it is" "$OUT/mat-read.log" &&
-        { echo "=== the rebuild after a change of a read file ended early"; return 1; }
-    grep -q "rc: change E1" "$OUT/mat-read.log" "$APP/reactive-store/server.log" 2>/dev/null ||
-        { echo "=== the rebuild after a change of a read file did not evaluate its reader again"; return 1; }
-    cp "$OUT/data-good.txt" "$data" && mat mat-read-back || return 1
-    grep -q "the program stays as it is" "$OUT/mat-read-back.log" &&
-        { echo "=== the rebuild after the revert of a read file ended early"; return 1; }
-    echo "=== noedit: a change of a read file and its revert each made a rebuild"
     JULIA_REACTIVE_REBUILD_UNCHANGED=1 mat mat-noedit-1 && record noedit-1 || return 1
     JULIA_REACTIVE_REBUILD_UNCHANGED=1 mat mat-noedit-2 && record noedit-2 || return 1
     grep -E "reactive: [0-9]+ of [0-9]+ functions" "$OUT/mat-noedit-2.log" | grep -q "delta 0 functions" ||
