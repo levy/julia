@@ -56,10 +56,11 @@
 # The text of now of such an item, and the text of a new item, have a check of
 # their own at the end of the trial (`rc_order_check!`). The fork takes the
 # result of the item in the whole program, then takes out of the program each
-# method that an item after it in the load order defined, and takes the result
-# again. A whole build gives the item the second program, so an item whose two
-# results differ is a refusal. The check takes methods out, and no name, no
-# type and no value that a later statement wrote: a read of those is not found.
+# method that an item after it in the load order defined, and each name that a
+# later `const`, `global` or type gives its module, and takes the result again.
+# A whole build gives the item the second program, so an item whose two
+# results differ is a refusal. The check takes no value out that a later
+# statement wrote: a read of such a value is not found.
 
 # ── the print of a result ───────────────────────────────────────────────────
 
@@ -687,10 +688,32 @@ function rc_edited_candidates(evaluation::RcEvaluation, candidates::Vector{RcCan
                                          (candidate.expands || candidate.initializer !== nothing || candidate.statement)]
 end
 
+# The kinds of the items whose name the check of the load order takes out.
+const RC_HIDDEN_KINDS = (:const, :global, :type)
+
+# The first place in the load order of each name that an item of a kind of
+# `RC_HIDDEN_KINDS` gives its module, by the path of the module and the name.
+function rc_first_places(evaluation::RcEvaluation)
+    order = evaluation.queue.order
+    first = Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}}()
+    for item in evaluation.items
+        item.kind in RC_HIDDEN_KINDS && item.name !== nothing || continue
+        key = (rc_module_path(evaluation.roots, item), item.name::Symbol)
+        place = rc_order(order, item)
+        haskey(first, key) && first[key] <= place || (first[key] = place)
+    end
+    return first
+end
+
 # Take out of the program each method that an item after `place` in the load
-# order defined. `hidden` holds the methods that are out; a method that the
-# table holds no more stays as it is.
-function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Method})
+# order defined, and each name that such an item gives its module when no item
+# at or before `place` gives it (`first_places`). A name leaves as the name of
+# an expression that left does (`jl_reactive_binding_leave`): the module is
+# then as one that never bound the name. `hidden` and `hidden_names` hold what
+# is out; a method that the table holds no more stays as it is.
+function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Method},
+                        first_places::Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}},
+                        hidden_names::Set{Tuple{Vector{Symbol}, Symbol}})
     order = evaluation.queue.order
     for item in evaluation.items
         rc_order(order, item) > place || continue
@@ -702,15 +725,27 @@ function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Meth
             catch
             end
         end
+        item.kind in RC_HIDDEN_KINDS && item.name !== nothing || continue
+        key = (rc_module_path(evaluation.roots, item), item.name::Symbol)
+        key in hidden_names && continue
+        first_places[key] > place || continue
+        push!(hidden_names, key)
+        mod = Base.invokelatest(rc_module_or_nothing, key[1])
+        mod === nothing && continue
+        Base.invokelatest(Base.binding_kind, mod, key[2]) in RC_OWN_KINDS || continue
+        try
+            ccall(:jl_reactive_binding_leave, Cint, (Any, Any), mod, key[2])
+        catch
+        end
     end
     return nothing
 end
 
 # The check of each candidate that the apply evaluates with a text of the
 # edit, at the end of the trial: write to `report` a line `early <index> <id>`
-# for each one whose result in a program that holds no method of the items
-# after it is not its result in the whole program, and a line
-# `ordered <count> <differ> <methods> <seconds>` at the end, or a line
+# for each one whose result in a program that holds no method and no name of
+# the items after it is not its result in the whole program, and a line
+# `ordered <count> <differ> <methods> <seconds> <names>` at the end, or a line
 # `unordered <text>` for a check that fails. The candidates go from the last
 # one to the first one, so each method leaves the program one time. A result
 # that differs between two evaluations of the same program is no result of the
@@ -729,18 +764,21 @@ function rc_order_check!(report::IO, evaluation::RcEvaluation, candidates::Vecto
             mod === nothing || (whole[candidate.index] = rc_candidate_prints(candidate, mod, nothing, problems))
         end
         hidden = Base.IdSet{Method}()
+        first_places = rc_first_places(evaluation)
+        hidden_names = Set{Tuple{Vector{Symbol}, Symbol}}()
         differ = 0
         seconds = @elapsed for (candidate, id) in Iterators.reverse(edited)
             haskey(whole, candidate.index) || continue
             mod = module_of(candidate)
-            rc_hide_after!(evaluation, rc_order(order, candidate.item), hidden)
+            rc_hide_after!(evaluation, rc_order(order, candidate.item), hidden, first_places, hidden_names)
             alone = rc_candidate_prints(candidate, mod, nothing, problems)
             alone == whole[candidate.index] && continue
             rc_candidate_prints(candidate, mod, nothing, problems) == alone || continue
             differ += 1
             println(report, "early ", candidate.index, " ", id)
         end
-        println(report, "ordered ", length(edited), " ", differ, " ", length(hidden), " ", round(seconds; digits = 2))
+        println(report, "ordered ", length(edited), " ", differ, " ", length(hidden), " ", round(seconds; digits = 2), " ",
+                length(hidden_names))
     catch e
         println(report, "unordered ", first(split(sprint(showerror, e), '\n')))
     end
@@ -1005,12 +1043,13 @@ function rc_replay!(evaluation::RcEvaluation, log::String)
             item = evaluation.items[parse(Int, parts[2])]
             push!(evaluation.refusals, string(parts[3], " ", rc_where(item), " ", rc_what(item),
                                               ": its evaluation gives another result in a program that holds no method ",
-                                              "of what comes after it; only a whole build evaluates it at its place in ",
-                                              "the load order"))
+                                              "and no name of what comes after it; only a whole build evaluates it at its ",
+                                              "place in the load order"))
         elseif parts[1] == "ordered"
             numbers = split(line, ' ')
-            println("rc: replay: ", numbers[2], " expressions of the edit were evaluated again with no method of what ",
-                    "comes after them (", numbers[4], " methods), ", numbers[3], " differ; ", numbers[5], " s")
+            println("rc: replay: ", numbers[2], " expressions of the edit were evaluated again with no method and no ",
+                    "name of what comes after them (", numbers[4], " methods, ", numbers[6], " names), ", numbers[3],
+                    " differ; ", numbers[5], " s")
         elseif parts[1] == "unordered"
             push!(evaluation.refusals, string("the check of the load order of the expressions of the edit failed: ",
                                               SubString(line, 11), "; see ", log))

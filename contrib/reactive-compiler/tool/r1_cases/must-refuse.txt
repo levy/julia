@@ -4,3 +4,4 @@ computed_include
 include_with_map
 new_reader_of_a_later_method
 order_initializer_left
+new_reader_of_a_later_name
