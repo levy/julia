@@ -230,7 +230,10 @@ fail() {
         { echo "=== fail: the log does not name the error of the edit"; return 1; }
     echo "=== fail: the rebuild of an edit that throws failed, as it must"
     cp "$OUT/helpers-good.jl" "$SRC/RunLib/src/helpers.jl" && cp "$OUT/order-good.jl" "$SRC/RunLib/src/order.jl" || return 1
-    mat mat-fixed "$CHAIN" || return 1
+    # The fix gives the sources of the last snapshot. The rebuild must save
+    # all the same, so that the image shows what the server holds, so it does
+    # not end early (D9).
+    JULIA_REACTIVE_REBUILD_UNCHANGED=1 mat mat-fixed "$CHAIN" || return 1
     runbin fixed "$CHAIN" "$RETYPED"
 }
 

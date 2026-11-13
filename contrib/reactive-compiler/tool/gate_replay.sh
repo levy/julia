@@ -395,7 +395,10 @@ fresh() {
     # The new server writes its log over the log of the server of the replay.
     cp "$CHAIN/reactive-store/server.log" "$OUT/server-replay.log" 2>/dev/null
     echo "=== fresh: the replay of the server of the chain: $(grep -h -o "rc: replay: [0-9]* candidates, [0-9]* compared, [0-9]* moved, [0-9]* differ" "$OUT/server-replay.log" | awk '{c += $5; m += $7; d += $9} END {print NR " rebuilds, " c + 0 " compared, " m + 0 " moved, " d + 0 " differ"}')"
-    mat mat-fresh "$CHAIN" "$ARCHIVE" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 ||
+    # The sources are those of the last rebuild: a new server applies each
+    # change since the founding all the same, so the rebuild does not end early
+    # (D9).
+    mat mat-fresh "$CHAIN" "$ARCHIVE" JULIA_REACTIVE_IMAGE_WRITE=overlay JULIA_REACTIVE_SERVER=1 JULIA_REACTIVE_REBUILD_UNCHANGED=1 ||
         { echo "=== fresh: the rebuild failed; see $OUT/mat-fresh.log"; return 1; }
     # A store whose image grew past its bound founds again by itself, and no
     # server applies a change: the program is linked again from the archive

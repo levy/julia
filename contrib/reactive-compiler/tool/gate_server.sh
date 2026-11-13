@@ -108,7 +108,10 @@ decoy() {
     socket=$(socket_of_store) || return 1
     rm -f "$STORE/server.toml"
     start_decoy "$socket" "$OUT/decoy.log" || return 1
-    mat mat-decoy "$APP" JULIA_REACTIVE_SERVER=1 || { echo "=== decoy: the rebuild failed"; failed=1; }
+    # The sources are those of the store: the rebuild must ask a server all the
+    # same, so it does not end early (D9).
+    mat mat-decoy "$APP" JULIA_REACTIVE_SERVER=1 JULIA_REACTIVE_REBUILD_UNCHANGED=1 ||
+        { echo "=== decoy: the rebuild failed"; failed=1; }
     echo "=== decoy: the requests of the decoy: $(tr '\n' ' ' < "$OUT/decoy.log")"
     grep -qx quit "$OUT/decoy.log" || { echo "=== decoy: the decoy got no quit"; failed=1; }
     grep -q "^apply" "$OUT/decoy.log" && { echo "=== decoy: the decoy got the apply"; failed=1; }
@@ -118,7 +121,7 @@ decoy() {
 
 signal() {
     local pid failed=0
-    mat mat-signal "$APP" JULIA_REACTIVE_SERVER=1 || return 1
+    mat mat-signal "$APP" JULIA_REACTIVE_SERVER=1 JULIA_REACTIVE_REBUILD_UNCHANGED=1 || return 1
     pid=$(session_pid)
     [ -n "$pid" ] || { echo "=== signal: no session"; return 1; }
     kill -TERM "$pid"
