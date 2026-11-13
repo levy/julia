@@ -1162,6 +1162,16 @@ commits. The numbers of the steps stay as they are.
   round compares two whole builds. The gate now prints how many rebuilds
   the chain holds since its last whole build, and the replay over the 17
   commits before the refused one tests the chain.
+
+  *Landed (2026-11-13, with the word of the owner: "Land and continue").*
+  `merged-next` moved forward to 8e3f565fde, with the libraries and the
+  images of the build at 28ef014c3d, and the caches of the standard
+  libraries made again. Checked in the installed Julia: REPL, Pkg and Test
+  load in 0.3 s, the print of the harness of the image equals that of its
+  folder, `rc_order_check!` exists, and `x::Int = 1` is a global. Not
+  pushed. PackageCompiler `live-harness` (588a846e) is not pushed, so a
+  build of the owner has findings 58 and 8 and the mark of a pending
+  snapshot only after its push.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
