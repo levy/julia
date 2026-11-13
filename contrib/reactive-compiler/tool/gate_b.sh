@@ -28,8 +28,7 @@
 #   compare-final - the four checks of the invariant: s4 against final
 #   restore      - git restores the tracked files; the added files go
 #   mat-s5       - the reverse edit
-#   run-s5       - the before-values, except `word` (a removed `using` keeps
-#                  its binding)
+#   run-s5       - the before-values: a removed `using` takes its names
 #   compare-s1   - the four checks: s5 against the digest of s1
 #   refuse-option - an option of the module: the rebuild is refused, the
 #                  store keeps its snapshots, the binary still runs
@@ -133,8 +132,9 @@ before = dict(special=1, resig=1, scaler=6, gen=8, box=9, unit=1, crate=16, labe
 after = dict(special=0, resig=2, scaler=7, gen=12, box=6, unit=2, crate=8, label="two",
              factor=3, tally=20, word="exported", quad=9, times2=10, times3=150, note=8,
              renamed=7, extra=42, corner=7)
-# A removed `using` keeps its binding: `word` stays resolved after the restore.
-restored = dict(before, word="exported")
+# The restored program is the program of before: a removed `using` takes the
+# names that it gave with it.
+restored = dict(before)
 want = dict(before=before, after=after, restored=restored)[sys.argv[2]]
 got = {}
 for line in open(sys.argv[1], errors="replace"):

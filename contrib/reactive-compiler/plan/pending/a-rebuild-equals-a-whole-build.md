@@ -1117,6 +1117,53 @@ commits. The numbers of the steps stay as they are.
   all or nothing, the four checks are equal through a server and through a
   child.
 
+  *The tests of the branch (2026-11-13, the build at de6331d52a with the
+  harness of the build, PackageCompiler at a8f16459).* The owner asked for a
+  branch that passes the tests, so each gate that needs no store of the omnet
+  build ran one time, and the tests of Julia itself ran on the fork and on
+  the Julia that the fork starts from.
+
+  | test | result |
+  | --- | --- |
+  | `gate_runs.sh`, through a server and through a child | pass: each step as expected, the four checks equal (74 method lines, 5 roots, 29 lines of output, 13 globals) |
+  | `gate_cases.sh`, 37 cases | pass: 35 applied, 2 refused (the header of a module, and the C entry that must be refused) |
+  | `gate_replay.sh`, 28 commits of the kernel | pass: no refusal, the chain and a new server equal a whole build |
+  | `gate_replay.sh`, 18 commits of the platform | pass: 17 applied, 1 refused (finding 53), each check equal |
+  | `gate_prelinked_chain.sh` | pass, with the steps `environment` and `other-base` |
+  | `oracle_gate.sh` | pass |
+  | `gate_i1.sh`, `gate_const.sh`, `gate_e.sh`, `gate_harness.sh`, `gate_server.sh` | pass (on the landed head 06e95728b3) |
+  | `gate_b.sh` | its four checks are equal; two expectations were of before this plan and are corrected: a generated function has 2 methods (the definer of a method), and a removed `using` takes its names (D2) |
+  | `gate_c.sh` | fails at its step `sizes`: the image grows 104 440 bytes in ten cycles, against a bound of 35 136 (finding 24, open, Step 10) |
+  | `gate_d.sh`, `gate_f.sh`, `gate_g.sh`, `gate_h.sh`, `gate_cli.sh`, `gate_i2.sh` | not run: they build in the omnet checkout of the owner |
+
+  Gates B, C and the oracle gate edit `tool/m6_hazard` of their tree in
+  place and restore it with git, so they run from a copy of the tools that
+  is a git tree of its own, with a link to the `usr` of the build.
+
+  *The tests of Julia.* 33 test sets of `test/runtests.jl` that touch the
+  runtime, the compiler and the load of images (core, compiler, worlds,
+  rebinding, precompile, reflection, staged, ccall, loading, cmdlineargs,
+  misc, syntax, enums, interpreter, opaque_closure, atexit, gc, threads,
+  stacktraces, backtrace, docs, exceptions, errorshow, show, namedtuple,
+  keywordargs, subtype, specificity, ambiguous, compileall, relocatedepot,
+  meta), with 4 workers:
+
+  | | Julia 1.13.0-rc4 (8f33e09afe) | the fork (`merged-next`, 06e95728b3) |
+  | --- | --- | --- |
+  | tests that pass | 9 770 156 | 9 809 249 |
+  | `cmdlineargs.jl:1366` (`--bug-report=rr-local`) | fails | fails |
+  | `threads.jl:435` (thread counts under a CPU mask), 3 times | fails | fails |
+  | `loading` | passes | passes after `make -f pkgimage.mk release` in the installed tree |
+  | `compileall`, alone | passes, peak 10.5 GB | passes, peak 10.7 GB |
+
+  So the fork fails what the Julia of before fails on this machine, and
+  nothing more. Two results of the first run were faults of the run and not
+  of the fork: the installed tree had the caches of the standard libraries
+  of an older image, because a landing copies the libraries and the images
+  and not those caches, so `loading` failed three times; and the memory cap
+  of the run stopped the process of `compileall`. A landing now makes the
+  caches again.
+
   *What stays open in this step.*
   - PackageCompiler has the two commits on the branch `live-harness`. The
     build environments of the owner take PackageCompiler from another branch
