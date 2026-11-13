@@ -104,7 +104,7 @@ materialize_app(app, bundle;
     keep...)
 EOF
     lane "$name" env "$@" "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" \
-        "$APPSRC" "$bundle" "$OUT/app/workload.jl" "$OUT/app/statements.jl" "$archive"
+        "$APPSRC" "$bundle" "$OUT/app/workload.jl" "$STATEMENTS_OUT" "$archive"
 }
 
 clone() {
@@ -119,9 +119,13 @@ clone() {
 checkout() { git -C "$CLONE" checkout -q --detach "$1"; }
 
 # The recorded calls of the package at the commit of the clone, as statements
-# of a trace. The trace of a store is the one of its founding.
+# of a trace. The trace of a store is the one of its founding, and the
+# statements file is an input of the store: a rebuild stops when its text is
+# not that of the founding. So the chain has one file, and the whole builds of
+# the last commit have another.
+STATEMENTS_OUT=$OUT/app/statements.jl
 statements() {
-    sed -n 's/^Tuple{.*/precompile(&)/p' "$CLONE/$STATEMENTS" > "$OUT/app/statements.jl"
+    sed -n 's/^Tuple{.*/precompile(&)/p' "$CLONE/$STATEMENTS" > "$STATEMENTS_OUT"
 }
 
 app() {
@@ -301,6 +305,7 @@ replay() {
 }
 
 final() {
+    local STATEMENTS_OUT=$OUT/app/statements-final.jl
     statements
     rm -rf "$OUT/final"
     mat mat-final "$FINAL" "" || { echo "=== final: the founding failed; see $OUT/mat-final.log"; return 1; }
@@ -323,7 +328,7 @@ oracle() {
 # the build id (the hash of a type) is noise too.
 control() {
     rm -rf "$OUT/control"
-    local name
+    local name STATEMENTS_OUT=$OUT/app/statements-final.jl
     for name in ${TRACKED//,/ }; do rm -rf "$OUT/depot/compiled"/*/"$name"; done
     mat mat-control "$OUT/control/replay" "" || { echo "=== control: the founding failed; see $OUT/mat-control.log"; return 1; }
     oracle control "$OUT/control/replay" && oracle final "$FINAL" || return 1
