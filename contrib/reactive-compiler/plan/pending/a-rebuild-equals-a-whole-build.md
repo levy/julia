@@ -1205,6 +1205,23 @@ commits. The numbers of the steps stay as they are.
   `false`; it is refused now. `order_name_passed`, the constant moved above
   the use, is applied, and the output equals a whole build.
 
+  *A false refusal of the first form, which gate B found.* The print of
+  what an `eval` statement defines holds the names of its module, so that
+  the trial sees a statement that binds another name. The check takes the
+  later names out of the module, so that list differed in the two programs
+  by construction, and gate B refused its edit of an `@eval` loop above
+  `const NOTE`. A whole build has none of the later names at the place of
+  the statement, so the check now leaves them out of both prints
+  (`left_out` of `rc_definitions_print`). The case
+  `edited_eval_before_a_constant` holds the trap.
+
+  The gate of the edit cases did not see it: it failed on an applied case
+  that must be refused, and counted a refusal of any other case. It is
+  strict both ways now: a case that `must-refuse.txt` does not name must be
+  applied, so a refusal that loses an edit which a rebuild can take is a
+  fault too. `baremodule_to_module` (the header of a module, C5) joins the
+  list.
+
   *A definition that moves below a use (2026-11-13).* A `const`, a
   `global` or a type that moves below an item that names it in a signature,
   a field, an initializer or a statement gives a whole build that stops at

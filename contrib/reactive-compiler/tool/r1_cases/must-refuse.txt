@@ -6,3 +6,4 @@ new_reader_of_a_later_method
 order_initializer_left
 new_reader_of_a_later_name
 order_definition_left
+baremodule_to_module

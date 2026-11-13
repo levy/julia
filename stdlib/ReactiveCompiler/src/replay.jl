@@ -370,8 +370,10 @@ end
 # The prints of the candidate in the module `mod`: of the expansion of its
 # expression, and of the value of its initializer or of the definitions of its
 # statement. The evaluation runs under a filter that records its methods;
-# `filter` is the filter of the trial, which is installed again after it.
-function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, problems::Vector{String})
+# `filter` is the filter of the trial, which is installed again after it. The
+# print of the definitions of a statement leaves out the names of `left_out`.
+function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, problems::Vector{String};
+                             left_out::Set{Symbol} = Set{Symbol}())
     item = candidate.item
     what = string(rc_where(item), " ", rc_what(item))
     expansion = UInt(0)
@@ -390,7 +392,7 @@ function rc_candidate_prints(candidate::RcCandidate, mod::Module, filter, proble
     elseif candidate.statement
         value = rc_recorded_evaluation(mod, item, item.entry.expr, rc_record_and_keep_method, filter)
         rc_take_kept!()
-        result = value isa Some ? rc_guarded_print(printer -> rc_definitions_print(printer, mod, copy(RC_DEFINED)),
+        result = value isa Some ? rc_guarded_print(printer -> rc_definitions_print(printer, mod, copy(RC_DEFINED), left_out),
                                                    RcPrinter(copy(RC_DEFINED)), problems, what) :
                  hash(rc_identity(typeof(value)), RC_SEED_ERROR)
     end
@@ -415,18 +417,20 @@ function rc_recorded_evaluation(mod::Module, item::RcItem, e, record, filter)
 end
 
 # The print of what a statement defined in `mod`: its methods, the names that
-# the module exports, and the names that it binds. A name that Julia generates
-# is left out: each evaluation of a top-level `->` binds a new one.
-function rc_definitions_print(printer::RcPrinter, mod::Module, methods::Vector{Method})
+# the module exports, and the names that it binds, except the names of
+# `left_out`. A name that Julia generates is left out: each evaluation of a
+# top-level `->` binds a new one.
+function rc_definitions_print(printer::RcPrinter, mod::Module, methods::Vector{Method},
+                              left_out::Set{Symbol} = Set{Symbol}())
     print = RC_SEED_DEFINED
     for method in methods
         print = hash(rc_print(printer, method.sig), print)
     end
     for name in Base.invokelatest(names, mod)
-        print = hash(rc_name_print(name), print)
+        name in left_out || (print = hash(rc_name_print(name), print))
     end
     for name in Base.invokelatest(names, mod; all = true)
-        '#' in String(name) || (print = hash(rc_name_print(name), print))
+        '#' in String(name) || name in left_out || (print = hash(rc_name_print(name), print))
     end
     return print
 end
@@ -758,22 +762,33 @@ function rc_order_check!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     order = evaluation.queue.order
     try
         module_of(candidate) = Base.invokelatest(rc_module_or_nothing, rc_module_path(evaluation.roots, candidate.item))
+        # The names that the items after a candidate give its module: the check
+        # takes them out, and a whole build has none of them at the place of the
+        # candidate, so the print of a statement leaves them out in both
+        # programs.
+        first_places = rc_first_places(evaluation)
+        later_names(candidate) = (path = rc_module_path(evaluation.roots, candidate.item);
+                                  place = rc_order(order, candidate.item);
+                                  Set{Symbol}(key[2] for (key, first) in first_places if key[1] == path && first > place))
         whole = Dict{Int, Tuple{UInt, UInt}}()
+        left_out = Dict{Int, Set{Symbol}}()
         for (candidate, _) in edited
             mod = module_of(candidate)
-            mod === nothing || (whole[candidate.index] = rc_candidate_prints(candidate, mod, nothing, problems))
+            mod === nothing && continue
+            left_out[candidate.index] = candidate.statement ? later_names(candidate) : Set{Symbol}()
+            whole[candidate.index] = rc_candidate_prints(candidate, mod, nothing, problems;
+                                                         left_out = left_out[candidate.index])
         end
         hidden = Base.IdSet{Method}()
-        first_places = rc_first_places(evaluation)
         hidden_names = Set{Tuple{Vector{Symbol}, Symbol}}()
         differ = 0
         seconds = @elapsed for (candidate, id) in Iterators.reverse(edited)
             haskey(whole, candidate.index) || continue
             mod = module_of(candidate)
             rc_hide_after!(evaluation, rc_order(order, candidate.item), hidden, first_places, hidden_names)
-            alone = rc_candidate_prints(candidate, mod, nothing, problems)
+            alone = rc_candidate_prints(candidate, mod, nothing, problems; left_out = left_out[candidate.index])
             alone == whole[candidate.index] && continue
-            rc_candidate_prints(candidate, mod, nothing, problems) == alone || continue
+            rc_candidate_prints(candidate, mod, nothing, problems; left_out = left_out[candidate.index]) == alone || continue
             differ += 1
             println(report, "early ", candidate.index, " ", id)
         end

@@ -19,7 +19,9 @@
 #                  is no fault: the case keeps its text of before, and the gate
 #                  counts it. A build that stops because an input of the store
 #                  changed counts as a refusal. A case that
-#                  r1_cases/must-refuse.txt names must be refused. A store
+#                  r1_cases/must-refuse.txt names must be refused, and each
+#                  other case must be applied: a refusal of it is a fault of
+#                  the part of the rebuild that takes most edits. A store
 #                  that founds again by itself is a fault: the comparison at
 #                  the end would then test only the cases after that whole
 #                  build, so the gate gives the store a bound that it does
@@ -165,16 +167,20 @@ cases() {
                 echo "    $name: FAULT: the rebuild applied a case that it must refuse"
                 echo "$name" >> "$OUT/faults.txt"
             fi
-        elif grep -q "the rebuild is refused" "$OUT/mat-$name.log"; then
+        elif grep -q "the rebuild is refused\|an input of the store changed" "$OUT/mat-$name.log"; then
             refused=$((refused + 1))
             put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
-            echo "    $name: refused: $(grep -A 1 "the rebuild is refused" "$OUT/mat-$name.log" | tail -1 | cut -c1-200)"
+            if grep -q "the rebuild is refused" "$OUT/mat-$name.log"; then
+                echo "    $name: refused: $(grep -A 1 "the rebuild is refused" "$OUT/mat-$name.log" | tail -1 | cut -c1-200)"
+            else
+                echo "    $name: stopped: $(grep -o "an input of the store changed: [^.]*" "$OUT/mat-$name.log" | head -1 | cut -c1-200)"
+            fi
             echo "$name" >> "$OUT/refused.txt"
-        elif grep -q "an input of the store changed" "$OUT/mat-$name.log"; then
-            refused=$((refused + 1))
-            put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
-            echo "    $name: stopped: $(grep -o "an input of the store changed: [^.]*" "$OUT/mat-$name.log" | head -1 | cut -c1-200)"
-            echo "$name" >> "$OUT/refused.txt"
+            if ! grep -qx "$name" "$TOOL/r1_cases/must-refuse.txt"; then
+                faults=$((faults + 1))
+                echo "    $name: FAULT: the rebuild refused a case that it must apply"
+                echo "$name" >> "$OUT/faults.txt"
+            fi
         else
             faults=$((faults + 1))
             put_case "$TOOL/r1_cases/CaseLib/src/cases" "$name" || return 1
