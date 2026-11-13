@@ -1235,6 +1235,32 @@ commits. The numbers of the steps stay as they are.
   and a plain statement that calls a function with a later method is not
   checked.
 
+  *The tests of the branch (2026-11-13, the build at d096c893c8 with the
+  harness of the build).*
+
+  | test | result |
+  | --- | --- |
+  | `gate_cases.sh`, 54 cases, through a server and through a child | pass: 45 applied, 9 refused as `must-refuse.txt` says, no fault; 211 method lines, 54 lines of output and the globals equal a whole build |
+  | `gate_runs.sh`, through a server and through a child | pass |
+  | `gate_prelinked_chain.sh`, `oracle_gate.sh`, `gate_b.sh` | pass |
+  | `gate_c.sh` | pass: 48 752 bytes of growth in 18 rebuilds, bound 70 272 |
+  | `gate_replay.sh`, 28 commits of the kernel | pass: no refusal; the chain of 28 rebuilds and a new server equal a whole build |
+  | `gate_replay.sh`, 17 commits of the platform | pass: no refusal; the chain of 17 rebuilds and a new server equal a whole build in 27 289 method lines, 147 globals and each of 2 268 roots |
+
+  Rule H4 acted on one real commit: in the platform replay one commit moved
+  6 expressions, and one of them was evaluated at its new place. The 28
+  commits of the kernel move no expression in the load order.
+
+  *The cost of the later names.* In the platform replay the check of the
+  text of now ran in 14 of 17 rebuilds and took out 334 to 1 722 names and
+  5 135 to 26 062 methods, in 2.5 s to 20.4 s, most often 13 s to 14 s. With
+  methods alone it took 1.8 s to 9.4 s. A name costs about 7 ms, because its
+  leave invalidates the code that names it. The rebuilds of the platform take
+  24 s to 60 s, about 7 s more than without the rule. This is a point for
+  Step 8: the check can take out only the names and the methods of the
+  modules that the evaluation of the item reads, or take them out in one
+  pass with one invalidation.
+
   *The tests of the branch (2026-11-13, the build at 28ef014c3d with the
   harness of the build, PackageCompiler at 588a846e).*
 
