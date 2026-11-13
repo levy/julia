@@ -2510,6 +2510,39 @@ commits. The numbers of the steps stay as they are.
   batches), and the caches of the standard libraries made again. Checked in
   the installed Julia: REPL, Pkg and Test load in 0.3 s, the harness of the
   image equals its folder, and both batch functions exist. Not pushed.
+
+  *A build with no change does no work (D9, finding 14; PackageCompiler,
+  branch `live-harness`).* A rebuild now ends before the server, the save and
+  the link when the sources are those of the last snapshot: the same tracked
+  files with the same roots and texts, each file that a top-level expression
+  of them reads with the same content, and the same trace. Each snapshot
+  records the print of the trace, so a new recording (`refresh_trace`) is a
+  change; a snapshot of before the record never ends early. The inputs of the
+  store are checked first, so a changed input still stops the build. The
+  option `rebuild_unchanged` (`JULIA_REACTIVE_REBUILD_UNCHANGED=1`) turns the
+  early end off, for the steps of a gate that ask a server for a save with no
+  change: the decoy and the signal of `gate_server.sh`, the new server of
+  `gate_replay.sh` and the fix after a failed edit in `gate_runs.sh`.
+
+  The small test reads a file at load now (`greeting.txt`), and two steps of
+  `gate_runs.sh` test D9: `same`, a rebuild with no edit, must end early and
+  leave the image and the chain as they are; `read`, a change of the read
+  file alone and its revert, must rebuild each time and evaluate the reader
+  again. In gate C a rebuild with no edit ended early in 4.6 s and left the
+  image as it was.
+
+  The gates that the early end touches pass on the build at dd4d6bdd3f with
+  PackageCompiler c374f7e5 (2026-11-14): `gate_runs.sh` through a server
+  and through a child with the steps `same` and `read`, gate C, the server
+  gate (the decoy gets `status` and `quit`, the signal reaches the server),
+  gate B (the step `mat-s4` after `refresh` rebuilds, because the trace
+  changed), and the replay over 28 commits of the kernel, whose new server
+  applies each change since the founding.
+
+  *Not built:* the second half of D9, a check of the times of the tracked
+  files in the run scripts before they start Julia. The build scripts of the
+  owner start Julia with the builder of `projectured-julia`, which knows
+  where the bundle is, so the check belongs in those repositories.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
