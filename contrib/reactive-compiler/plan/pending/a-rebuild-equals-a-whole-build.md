@@ -198,7 +198,7 @@ Two more causes start a whole build, and they are the common ones:
 | 22 | One gate builds the program in the form of the build scripts: `contrib/merged/gate_prelinked_chain.sh` links the image into a program, prelinks it, and starts it with the overlay of a rebuild. It compares the lines that the program prints and nothing else, and its edit is two method bodies, which grow no table of the base. So it found neither the fault of 2026-11-08 nor finding 33. It links with commands of its own, not through `ProjecturedBuilder`. The other gates start the image with `julia -J`, which is another load path; on the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. *Corrected on 2026-11-10: the first text of this row said that no such gate exists. I looked in `contrib/reactive-compiler/tool` alone.* | Read; the count is the audit's |
 | 23 | Each gate edits a small test program with edits written for the gate. No gate applies real commits. All four faults of the list above came from real commits. | Read |
 | 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09; in a tree whose rebuilds load the harness, finding 45 covers it (Step 2) |
-| 60 | The gate of the edit cases tested less than its result said. A store founds again by itself when its image grew 25 % since its whole build. The program of the gate is small, so the bound came after about 24 rebuilds, two times in a run of 44 cases. Each such whole build took each edit of before into the chain, and the comparison at the end then tested only the cases after the last one: 3 of 44. So the results of 2026-11-12 ("the method tables, the output and the globals equal" for 36 and 37 cases) hold for the last cases of those runs alone. | Found on 2026-11-13, when two cases that must lose an edit ended equal to the whole build. The gate now gives its store a bound that it does not reach, and a whole build of the store in the middle of a run is a fault; `gate_runs.sh` has the same guard. The replay gate already counted such a commit. The first strict run found finding 59 |
+| 60 | The gate of the edit cases tested less than its result said. A store founds again by itself when its image grew 25 % since its whole build. The program of the gate is small, so the bound came after about 24 rebuilds, two times in a run of 44 cases. Each such whole build took each edit of before into the chain, and the comparison at the end then tested only the cases after the last one: 3 of 44. This was a run through a child, where each rebuild writes a whole image. The runs of 2026-11-12 (36 and 37 cases) went through a server with overlays, where the growth counts one overlay; their logs are gone, so no record says that they founded again. The same form with 45 cases and the guard does not found again (2026-11-13). | Found on 2026-11-13, when two cases that must lose an edit ended equal to the whole build. The gate now gives its store a bound that it does not reach, and a whole build of the store in the middle of a run is a fault; `gate_runs.sh` has the same guard. The replay gate already counted such a commit. The first strict run found finding 59 |
 
 ## The model
 
@@ -1038,9 +1038,9 @@ commits. The numbers of the steps stay as they are.
   expression of a change now comes up for the removal of its name too.
 
   *The second round of the gate (2026-11-13): 45 cases, and a strict gate.*
-  The gate was not strict (finding 60): its store made a whole build by
-  itself two times in a run, and the comparison then tested the last cases
-  alone. The gate now gives its store a bound that it does not reach, and
+  The gate was not strict (finding 60): in a run through a child, its store
+  made a whole build by itself two times, and the comparison then tested the
+  last cases alone. The gate now gives its store a bound that it does not reach, and
   counts a whole build of the store in the middle of a run as a fault. The
   first strict run found finding 59. The new cases:
 
@@ -1121,6 +1121,47 @@ commits. The numbers of the steps stay as they are.
   *Not in the gate.* A file that two modules include: the walk of the
   includes stops the whole build with an error for it, so no rebuild meets
   it.
+
+  *The tests of the branch (2026-11-13, the build at 28ef014c3d with the
+  harness of the build, PackageCompiler at 588a846e).*
+
+  | test | result |
+  | --- | --- |
+  | `gate_cases.sh`, 45 cases, through a server with overlays | pass: 39 applied, 6 refused or stopped, no fault, no whole build of the store; 183 method lines, 45 lines of output and the globals equal |
+  | `gate_cases.sh`, 45 cases, through a child | pass, with the same counts |
+  | `gate_runs.sh`, through a server and through a child | pass: each step as expected, with the step `late`; the four checks equal (75 method lines, 5 roots, 29 lines of output, 13 globals) |
+  | `gate_replay.sh`, 28 commits of the kernel | pass: no refusal, no fault; the chain of 28 rebuilds and a new server equal a whole build (3 448 method lines, 13 globals) |
+  | `gate_replay.sh`, 18 commits of the platform | 17 applied, 1 refused (finding 53, the known expression), no fault. The refused commit is the last one, so the chain is a whole build of that commit and the comparison tests no rebuild |
+  | `gate_replay.sh`, the 17 commits of the platform before the refused one | pass: no refusal, no fault; the chain of 17 rebuilds and a new server equal a whole build (27 289 method lines, 147 globals, each of 2 268 roots) |
+  | `gate_prelinked_chain.sh`, `oracle_gate.sh`, `gate_b.sh` | pass |
+  | `gate_c.sh` | fails at its step `sizes`, as before: 107 792 bytes of growth in ten cycles, against a bound of 35 136 (finding 24). Its other steps pass. One cause is ruled out: a name of the image holds at most 4 partitions after 20 rebuilds, so the values of before of the changed names do not pile up |
+
+  The two checks of finding 53 for a text of the edit refuse no commit of
+  the two replays. Their cost on real commits:
+
+  | | the kernel, 28 rebuilds | the platform, 17 rebuilds |
+  | --- | --- | --- |
+  | rebuilds that ran the check of the text of now | 1 | 12 or more |
+  | methods that it deleted | 2 027 | 5 135 to 26 062 |
+  | its time | 0.32 s | 1.8 s to 9.4 s, most often 6 s to 7 s |
+  | the check in the program of before the edit | each rebuild, below 0.1 s | each rebuild, 0.5 s on average, 3.7 s at most |
+
+  So a rebuild of the platform that changes an expression with a macro of
+  the tracked code takes about 6 s more, of 27 s to 39 s. The time is the
+  deletion of the methods: about 0.36 ms for each method in that image. A
+  cheaper form deletes only the later methods of the functions that exist
+  at the place of the item; it is a point for Step 8, because it needs a
+  rule for when a function exists, and a wrong rule misses a read.
+
+  *The comparison of a replay after a refusal (a part of finding 60).* A
+  refused commit founds the chain again, as a build of the owner does. The
+  comparison at the end then tests the rebuilds after that whole build
+  alone. In the platform replay the refused commit is the last one of the
+  18, since the check of finding 53 exists (2026-11-12). So the result
+  "each check equal" of the platform replays of 2026-11-12 and of this
+  round compares two whole builds. The gate now prints how many rebuilds
+  the chain holds since its last whole build, and the replay over the 17
+  commits before the refused one tests the chain.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
@@ -1216,7 +1257,7 @@ commits. The numbers of the steps stay as they are.
   | `gate_runs.sh`, through a server and through a child | pass: each step as expected, the four checks equal (74 method lines, 5 roots, 29 lines of output, 13 globals) |
   | `gate_cases.sh`, 37 cases | pass: 35 applied, 2 refused (the header of a module, and the C entry that must be refused) |
   | `gate_replay.sh`, 28 commits of the kernel | pass: no refusal, the chain and a new server equal a whole build |
-  | `gate_replay.sh`, 18 commits of the platform | pass: 17 applied, 1 refused (finding 53), each check equal |
+  | `gate_replay.sh`, 18 commits of the platform | pass: 17 applied, 1 refused (finding 53), each check equal. The refused commit is the last one, so this comparison is of two whole builds (see Step 3, finding 60) |
   | `gate_prelinked_chain.sh` | pass, with the steps `environment` and `other-base` |
   | `oracle_gate.sh` | pass |
   | `gate_i1.sh`, `gate_const.sh`, `gate_e.sh`, `gate_harness.sh`, `gate_server.sh` | pass (on the landed head 06e95728b3) |

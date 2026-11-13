@@ -22,7 +22,10 @@
 #              rebuild that fails in another way is a fault: the store founds
 #              again, the replay goes on, and the gate fails. A store whose
 #              image grew past its bound founds again by itself: the gate
-#              links the program again and counts the commit
+#              links the program again and counts the commit. The step says
+#              how many rebuilds the chain holds since its last whole build:
+#              the comparison tests those alone, so choose LAST so that no
+#              refused commit comes at the end
 #   final    - materialize_app founds $OUT/final/replay at the last commit
 #   control  - a second whole build of the last commit, which compiles the
 #              tracked packages again; the lines of the oracle that differ
@@ -261,7 +264,7 @@ found() {
 }
 
 replay() {
-    local n=0 refused=0 faults=0 grown=0 commit short
+    local n=0 refused=0 faults=0 grown=0 since=0 commit short
     : > "$OUT/refusals.txt"; : > "$OUT/faults.txt"
     for commit in $(tail -n +2 "$OUT/commits.txt"); do
         n=$((n + 1)); short=$(echo "$commit" | cut -c1-9)
@@ -271,7 +274,7 @@ replay() {
             # The base is new then, so the program is linked again from the
             # archive of that founding, as the build scripts do.
             if grep -q "materialize_app: the store founds again" "$OUT/mat-$n.log"; then
-                grown=$((grown + 1))
+                grown=$((grown + 1)); since=0
                 link || return 1
                 verify "$n-$short" || return 1
                 echo "    $n $short the store founded again by itself: $(grep -A 1 "the store founds again" "$OUT/mat-$n.log" | grep -o 'reason = .*' | cut -c1-120)"
@@ -279,6 +282,7 @@ replay() {
             fi
             local line; line=$(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)
             if verify "$n-$short"; then
+                since=$((since + 1))
                 echo "    $n $short ${line:-rc: applied nothing}, $(grep -o 'Elapsed (wall clock) time.*' "$OUT/mat-$n.log" | awk '{print $NF}')"
                 continue
             fi
@@ -298,9 +302,13 @@ replay() {
         if grep -q "^$n " "$OUT/faults.txt"; then
             mkdir -p "$OUT/fault-$n" && cp -a "$CHAIN/lib/julia/." "$OUT/fault-$n/" 2>/dev/null
         fi
+        since=0
         found_chain "mat-$n-found" again && verify "$n-$short-found" || return 1
     done
     echo "=== replay: $n commits, $refused refused, $faults faults, $grown founded again by the store"
+    # A whole build of the chain takes each change of before into its image, so
+    # the comparison at the end tests the rebuilds after the last one alone.
+    echo "=== replay: the chain holds $since rebuilds since its last whole build, and the comparison tests those"
     [ "$faults" == 0 ]
 }
 
