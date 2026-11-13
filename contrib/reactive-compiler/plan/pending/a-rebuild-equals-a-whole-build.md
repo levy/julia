@@ -1261,6 +1261,14 @@ commits. The numbers of the steps stay as they are.
   modules that the evaluation of the item reads, or take them out in one
   pass with one invalidation.
 
+  *Landed (2026-11-13, with the word of the owner: "yes, land it").*
+  `merged-next` moved forward to b592d8a55b, with the libraries and the
+  images of the build at d096c893c8, and the caches of the standard
+  libraries made again. Checked in the installed Julia: REPL, Pkg and Test
+  load in 0.4 s, the print of the harness of the image equals that of its
+  folder, and `rc_order_moves`, `rc_drop_dead_roots!` and `rc_first_places`
+  exist. Not pushed.
+
   *The tests of the branch (2026-11-13, the build at 28ef014c3d with the
   harness of the build, PackageCompiler at 588a846e).*
 
