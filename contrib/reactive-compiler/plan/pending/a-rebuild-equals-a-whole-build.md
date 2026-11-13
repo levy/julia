@@ -112,6 +112,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 57 | A rebuild that is refused, or whose trial stops, wrote the new lines of the methods of the moved expressions into the server before it refused. The server kept them, and the next save wrote them into the image. | The step `order` of `gate_runs.sh` is refused, and its text is 4 lines longer above the methods of `order.jl`. After the next save, those methods have the place `order.jl:13` where a whole build has `order.jl:9`. | `child.jl`, the pairing of the ledgers in `rc_apply_tracked` | Found by the gate step for finding 7; closed on the branch (6f1972c48c, Step 5) |
 | 58 | **A source file that the build does not track is no input of the store, so its edit is lost with no word.** The walk of the includes reads the text of the sources. It tracks no file whose path the text computes: an `include` in a loop, a path from a function, an `include` with a function of its expressions. The walk warns at the whole build. A rebuild then compares the tracked files only. The same holds for each file of a path package when the build does not track the dependencies. | `for name in ("one", "two") include(joinpath("computed_include", name * ".jl")) end`, then an edit of `two.jl`: the rebuild prints "applied 0 expressions", makes a snapshot, and the program answers `(1, 2)` where a whole build answers `(1, 20)`. | PackageCompiler, `tracked_sources` and `_reactive_inputs` | Found by the new cases of the gate of the edit cases (the test sets "Computed include path" and "include with mapexpr" of Revise); closed in PackageCompiler on the branch `live-harness` (Step 3) |
 | 59 | A file whose `include` line moves to another module stays in the module of before. The apply pairs the file of before with the file of now by the path alone, finds the same text, and evaluates nothing. | `include("part.jl")` moves from `module First` to `module Second`: the rebuilt program has `First.part` and no `Second.part`; a whole build has `Second.part` only. | `child.jl`, `rc_match_files` | Found by the new case `moved_include` of the gate (the test set "Moved include" of Revise); closed on the branch (Step 3) |
+| 61 | **An expression whose text stays and whose place in the load order changes is not evaluated again.** A whole build evaluates it at its new place, where it sees other definitions. The ledger compares texts, so a moved method, a moved expression or a moved `include` line changes nothing in the rebuild. | `pick(x) = 1; const PICKED = pick(1); pick(x::Int) = 2`, and the edit moves the last line above the constant: a whole build gives `PICKED == 2`, the rebuild keeps 1 and prints "applied 0 expressions". | `child.jl`, `rc_apply_tracked`: no rule for the order of the expressions that the edit leaves as they are | Found by a reading of the code for the open part of finding 53 (2026-11-13); closed on the branch (Step 3, rule H4) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1152,6 +1153,52 @@ commits. The numbers of the steps stay as they are.
   *Not in the gate.* A file that two modules include: the walk of the
   includes stops the whole build with an error for it, so no rebuild meets
   it.
+
+  *Rule H4: an expression at another place of the load order (finding 61,
+  proposed by the assistant).* The apply pairs each expression of now with
+  its expression of before by the text. When the order of the pairs is
+  another one, some expressions moved: the expressions outside a longest run
+  that keeps its order (`rc_order_moves`). Each pair of a moved expression
+  and an expression that is now on its other side is a pass. For a pass:
+
+  - an expression that runs tracked code when it is loaded, a candidate of
+    the replay, is evaluated again at its new place (change H4). The check of
+    the load order (`rc_order_check!`) takes it, as it takes a text of the
+    edit: when its result reads a method that comes after its new place, the
+    apply refuses;
+  - a plain statement that passed another statement or a definition of a
+    binding joins the statement group as a changed statement (D3), with its
+    text at its place of before as the old statement. The group makes the
+    state of its globals again in the new order, or its check refuses;
+  - another expression (a method, a type, a constant with no call) runs no
+    tracked code when it is loaded, so its result stays.
+
+  An item of the set `order_moved` is not at its place of before, whatever
+  change evaluates it, so the check of the text of before in the program of
+  before (`rc_check_again!`) does not take it. The apply takes the items of
+  every file when a changed file has expressions in another order
+  (`rc_has_order_change`).
+
+  *The gate cases (`order_*` of `gate_cases.sh`, 2026-11-13).*
+
+  | case | the edit | the harness of before | with H4 |
+  | --- | --- | --- | --- |
+  | `order_macro_use_passed` | moves a method above a use of a macro that asks for it | `plain`, a whole build `wrapped` | applied, `wrapped` |
+  | `order_initializer_passed` | moves `pick(x::Int) = 2` above `const PICKED = pick(1)` | 1, a whole build 2 | applied, 2 |
+  | `order_initializer_left` | moves it below the constant | 2, a whole build 1 | refused (the check of the load order) |
+  | `order_statements_swapped` | swaps two `push!` statements | `(:first, :second)` | applied through the statement group, `(:second, :first)` |
+  | `order_include_swapped` | swaps two `include` lines | 1, a whole build 2 | applied, 2 |
+
+  With the harness of before each rebuild printed "applied 0 expressions",
+  and the output of all five cases differed from a whole build. With H4 the
+  method tables (197 lines), the output (50 lines) and the globals equal a
+  whole build.
+
+  *Its limits.* The check of the load order hides methods only. A moved
+  expression that reads a name, a type or a value that comes after its new
+  place is not found, and a plain statement that calls a function with a
+  later method is not checked. A definition that moves below a use of its
+  name gives a whole build that fails, and a rebuild that passes.
 
   *The tests of the branch (2026-11-13, the build at 28ef014c3d with the
   harness of the build, PackageCompiler at 588a846e).*

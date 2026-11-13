@@ -643,6 +643,75 @@ function rc_load_order(files::Vector{String}, roots::Vector{Vector{Symbol}}, ite
     return RcLoadOrder(keys)
 end
 
+# Whether the edit changes the order of the expressions of a file whose text
+# changed, among the expressions that it leaves as they are: a moved
+# expression, a moved `include` line. The apply then takes the items of every
+# file, to find the expressions that come at another place of the load order
+# (`rc_order_moves`).
+function rc_has_order_change(old_items, new_items, pair_of_new::Dict{Int, Int})
+    old_by_key = Dict{Tuple{Int, UInt64}, RcItem}((item.file, item.entry.key) => item for item in old_items)
+    last_line = Dict{Int, Int}()
+    for item in sort(new_items; by = item -> (item.file, item.entry.lines.start))
+        old = get(old_by_key, (get(pair_of_new, item.file, 0), item.entry.key), nothing)
+        old === nothing && continue
+        line = old.entry.lines.start
+        line < get(last_line, item.file, 0) && return true
+        last_line[item.file] = line
+    end
+    return false
+end
+
+# The pairs of items whose order in the load order is another after the edit
+# than before it. `pairs` holds each item of the edited sources that the edit
+# leaves as it is, with its item of before. The items that moved are the items
+# outside a longest run of items that keep their order. Each pair of a moved
+# item with an item that is in the other order now is an answer,
+# `(moved, other)`.
+function rc_order_moves(pairs::Vector{Tuple{RcItem, RcItem}}, old_order::RcLoadOrder, new_order::RcLoadOrder)
+    found = Tuple{RcItem, RcItem}[]
+    n = length(pairs)
+    n < 2 && return found
+    sorted = sort(pairs; by = pair -> rc_order(new_order, pair[1]))
+    old_keys = Tuple{Vararg{Int}}[rc_order(old_order, pair[2]) for pair in sorted]
+    # The rank of each item in the order of before. Two items of the edited
+    # sources with one item of before have its rank.
+    by_old = sortperm(old_keys)
+    rank = zeros(Int, n)
+    for position in 1:n
+        index = by_old[position]
+        same = position > 1 && old_keys[index] == old_keys[by_old[position - 1]]
+        rank[index] = same ? rank[by_old[position - 1]] : position
+    end
+    # A longest run of the items, in the order of now, whose ranks do not go
+    # down (the patience method).
+    tails = Int[]
+    previous = zeros(Int, n)
+    for k in 1:n
+        lo, hi = 1, length(tails) + 1
+        while lo < hi
+            mid = (lo + hi) >> 1
+            rank[tails[mid]] > rank[k] ? (hi = mid) : (lo = mid + 1)
+        end
+        previous[k] = lo > 1 ? tails[lo - 1] : 0
+        lo > length(tails) ? push!(tails, k) : (tails[lo] = k)
+    end
+    in_run = falses(n)
+    k = isempty(tails) ? 0 : tails[end]
+    while k > 0
+        in_run[k] = true
+        k = previous[k]
+    end
+    for m in 1:n
+        in_run[m] && continue
+        for k in 1:n
+            (k == m || rank[k] == rank[m]) && continue
+            (k < m) == (rank[k] < rank[m]) && continue
+            push!(found, (sorted[m][1], sorted[k][1]))
+        end
+    end
+    return found
+end
+
 function rc_refuse!(refusals, id, item, reason)
     push!(refusals, string(id, " ", rc_where(item), " ", rc_what(item), ": ", reason))
     return nothing
@@ -1086,8 +1155,10 @@ end
 # filter kept, the statements whose effect the apply takes back, the moved
 # expressions that hold a macro call, the names that the edit removes, and the
 # names of the imports that left which an import of the edited sources gives
-# again and no evaluation decided yet, and the items by the names that their
-# evaluation resolves, made at the first evaluation that binds a constant again.
+# again and no evaluation decided yet, the items by the names that their
+# evaluation resolves, made at the first evaluation that binds a constant
+# again, and the items that run tracked code when they are loaded and that come
+# at another place of the load order (H4).
 mutable struct RcEvaluation
     items::Vector{RcItem}
     roots::Vector{Vector{Symbol}}
@@ -1103,13 +1174,14 @@ mutable struct RcEvaluation
     names::Vector{RcNameRemoval}
     replaced_imports::Set{Tuple{Vector{Symbol}, Symbol}}
     named::Union{Nothing, Dict{Symbol, Vector{RcItem}}}
+    order_moved::Base.IdSet{RcItem}
 end
 RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved, names) =
     RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
                  Core.MethodInstance[], 0, group, moved, names,
                  Set{Tuple{Vector{Symbol}, Symbol}}((removal.path, removal.name) for removal in names
                                                     if removal.how === :replaced),
-                 nothing)
+                 nothing, Base.IdSet{RcItem}())
 
 # Whether the item is a statement that defines nothing: it holds no macro call
 # and no `eval`, so what it does is an effect on a value that exists. A
@@ -1143,7 +1215,7 @@ function rc_statement_group!(queue::RcQueue, refusals::Vector{String}, items::Ve
     for statement in old
         found = named(statement)
         isempty(found) && rc_refuse!(refusals, "S1", statement,
-                                     "the statement changed or left, and it names no tracked global: the rebuild can not take back what it did")
+                                     "the statement changed, left or moved in the load order, and it names no tracked global: the rebuild can not take back what it did")
         union!(names, found)
     end
     for statement in new
@@ -1534,7 +1606,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     pair_of_new = Dict{Int, Int}(j => i for (i, j) in vcat(match.pairs, match.renamed))
     old_items, old_ledger = rc_old_items(old_files, old_copies, old_indices)
     new_items = rc_new_items(new_files, new_indices)
-    all_files = rc_has_change(old_items, new_items, pair_of_new, old_reads)
+    all_files = rc_has_change(old_items, new_items, pair_of_new, old_reads) ||
+                rc_has_order_change(old_items, new_items, pair_of_new)
     if all_files
         old_items, old_ledger = rc_old_items(old_files, old_copies, eachindex(old_files))
         new_items = rc_new_items(new_files, eachindex(new_files))
@@ -1595,8 +1668,10 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             rc_enqueue!(queue, RcChange("C4", item, RcItem[], string("new file ", basename(new_files[j]))))
         end
     end
-    # The diff of every matched pair.
+    # The diff of every matched pair. `order_pairs` holds each item that the
+    # edit leaves as it is, with its item of before.
     shifted = Base.IdSet{Method}()
+    order_pairs = Tuple{RcItem, RcItem}[]
     for (i, j) in vcat(match.pairs, match.renamed)
         olds = RcItem[item for item in old_items if item.file == i]
         news = RcItem[item for item in new_items if item.file == j]
@@ -1637,6 +1712,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 end
             end
             item.methods = old.methods
+            push!(order_pairs, (item, old))
             rc_is_moved_macro_user(item, old.entry.lines.start, old_files[i]) &&
                 push!(moved, RcMoved(item, old.entry.expr))
         end
@@ -1677,6 +1753,43 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             old = RcItem[o for o in removed if counterpart(o, item)]
             change = rc_classify(item, old, new_roots, tracked, refusals)
             change === nothing || rc_enqueue!(queue, change)
+        end
+    end
+    # H4: an expression that the edit leaves as it is and that comes at another
+    # place of the load order, before or after another one: a moved
+    # expression, the expressions of a file whose `include` line moved, and
+    # the expressions that those passed. A whole build evaluates it at its
+    # new place, so it sees other definitions than before. An item that runs
+    # tracked code when it is loaded (a candidate of the replay) is evaluated
+    # again, and the check of the load order (`rc_order_check!`) refuses it
+    # when its result reads a method that comes after its new place. A plain
+    # statement that moved past another statement or a definition of a binding
+    # joins the statement group as a changed statement (D3): the group makes
+    # the state of its globals again in the new order, or its check refuses.
+    order_moved = Base.IdSet{RcItem}()
+    if all_files && length(order_pairs) > 1
+        moves = rc_order_moves(order_pairs, rc_load_order(old_files, old_roots, old_items, true), queue.order)
+        if !isempty(moves)
+            candidates = Base.IdSet{RcItem}(candidate.item for candidate in rc_candidates(new_items, queue.order))
+            old_of = IdDict{RcItem, RcItem}(order_pairs)
+            is_state(item) = rc_is_plain_statement(item) || item.kind in RC_BINDING_KINDS
+            evaluated = 0
+            regrouped = Base.IdSet{RcItem}()
+            for (moved_item, other) in moves, (a, b) in ((moved_item, other), (other, moved_item))
+                if a in candidates
+                    a in order_moved && continue
+                    push!(order_moved, a)
+                    rc_enqueue!(queue, RcChange("H4", a, "comes at another place of the load order")) &&
+                        (evaluated += 1)
+                elseif rc_is_plain_statement(a) && is_state(b) && !(a in regrouped)
+                    push!(regrouped, a)
+                    old = old_of[a]
+                    push!(old_statements, RcItem(a.file, a.path, old.entry, old.kind, old.name, Method[]))
+                    push!(new_statements, a)
+                end
+            end
+            println("rc: order: ", length(unique(first.(moves))), " expressions moved in the load order; ",
+                    evaluated, " are evaluated at their new place, ", length(regrouped), " statements join the statement group")
         end
     end
     # E1: a changed read file re-evaluates the expressions that name it. A
@@ -1742,6 +1855,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     end
     isempty(refusals) || rc_stop(refusals, refusal_out)
     evaluation = RcEvaluation(new_items, new_roots, tracked, queue, removals, refusals, group, moved, names)
+    evaluation.order_moved = order_moved
     # The replay: the expressions whose text stays and whose result changes.
     replay_log = string(refusal_out, ".replay.log")
     stopped = nothing
@@ -2152,6 +2266,13 @@ function rc_warm()
         error("rc_warm: the ledgers of an edit show no change")
     rc_has_change(old_items[1:1], old_items[1:1], Dict(1 => 1), Tuple{String, String}[]) &&
         error("rc_warm: two equal ledgers show a change")
+    rc_has_order_change(old_items, old_items, Dict(1 => 1)) && error("rc_warm: a ledger shows an order change against itself")
+    warm_order = RcLoadOrder(Tuple{Vararg{Int}}[(1,)])
+    first_item, second_item = old_items[1], old_items[2]
+    isempty(rc_order_moves([(first_item, first_item), (second_item, second_item)], warm_order, warm_order)) ||
+        error("rc_warm: items in their order of before moved")
+    isempty(rc_order_moves([(first_item, second_item), (second_item, first_item)], warm_order, warm_order)) &&
+        error("rc_warm: two items in the other order did not move")
     old_by_key = Dict{UInt64, RcItem}(item.entry.key => item for item in old_items)
     changed = RcItem[item for item in new_items if !haskey(old_by_key, item.entry.key)]
     length(changed) == 6 || error("rc_warm: ", length(changed), " changed items")

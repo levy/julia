@@ -645,7 +645,7 @@ function rc_trial_parts!(report::IO, evaluation::RcEvaluation, candidates::Vecto
                 println(report, "differs ", candidate.index, " ", how)
                 how == 's' || rc_enqueue!(queue, rc_replay_change(candidate.item, how))
             else
-                rc_is_evaluated_again(change) && haskey(indices, change.item) &&
+                rc_is_evaluated_again(evaluation, change) && haskey(indices, change.item) &&
                     println(report, "again ", indices[change.item], " ", change.id)
                 if !rc_evaluate_next!(evaluation)
                     println(report, "stopped ", first(evaluation.refusals))
@@ -671,15 +671,16 @@ end
 
 # ── the text of the edit at its place in the load order ─────────────────────
 
-# The candidates that a change of the queue evaluates with a text of the edit,
-# with the id of the change: an item that the edit changes, or a new one. A
+# The candidates that a change of the queue evaluates with a text of the edit
+# or at a new place of the load order, with the id of the change: an item that
+# the edit changes, a new one, or one that moved (H4). A
 # generated method has no result at its evaluation, because its generator runs
 # at a call.
 function rc_edited_candidates(evaluation::RcEvaluation, candidates::Vector{RcCandidate})
     ids = IdDict{RcItem, String}()
     for change in evaluation.queue.changes
         change.item === nothing && continue
-        rc_is_evaluated_again(change) || (ids[change.item] = change.id)
+        rc_is_evaluated_again(evaluation, change) || (ids[change.item] = change.id)
     end
     return Tuple{RcCandidate, String}[(candidate, ids[candidate.item]) for candidate in candidates
                                       if haskey(ids, candidate.item) &&
@@ -746,13 +747,16 @@ function rc_order_check!(report::IO, evaluation::RcEvaluation, candidates::Vecto
     return nothing
 end
 
-# Whether the change evaluates an item with the text of before: a dependent, a
-# candidate whose result differs, a moved expression. Its old item is the item
-# itself. A `using`, an `export`, an `include` and the header of a module
-# define no method.
+# Whether the change evaluates an item with the text of before at its place of
+# before: a dependent, a candidate whose result differs, a moved expression.
+# Its old item is the item itself. A `using`, an `export`, an `include` and the
+# header of a module define no method. An item that comes at another place of
+# the load order (H4, `order_moved`) is not at its place of before, whatever
+# change evaluates it, so the check of the load order takes it, as it takes a
+# text of the edit (`rc_edited_candidates`).
 const RC_AGAIN_KINDS = (:method, :macro, :other, :type, :const, :global)
-rc_is_evaluated_again(change::RcChange) =
-    change.item !== nothing && change.item.kind in RC_AGAIN_KINDS &&
+rc_is_evaluated_again(evaluation::RcEvaluation, change::RcChange) =
+    change.item !== nothing && !(change.item in evaluation.order_moved) && change.item.kind in RC_AGAIN_KINDS &&
     length(change.old_items) == 1 && change.old_items[1] === change.item
 
 # The print of the methods of one evaluation: the same for two evaluations
