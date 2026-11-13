@@ -2463,6 +2463,46 @@ commits. The numbers of the steps stay as they are.
   a rebase between two edits; the oracle after it; the start time equals that
   of a whole build; an edit that passes the room rebases and the program
   starts.
+
+  *The cost of the check of the load order (2026-11-13, the owner said "Yes"
+  to Step 8).* The check takes the later methods and the later names out of
+  the program, one by one, and each one cost a pass over a whole table:
+
+  | what leaves | cost of one | why |
+  | --- | --- | --- |
+  | a method (`Base.delete_method`) | 0.36 ms on the platform | the runtime visits the whole method table to find the entry, and the whole dispatch cache to close its entries |
+  | a name (`jl_reactive_binding_leave`) | about 7 ms on the platform; 1.9 ms in a module of 20 000 methods | the compiler scans each method of the module whose code names one of its bindings, once for each name |
+
+  Two runtime functions take them out in one pass, in one new world, each
+  only for the check, in a fork that writes no image:
+  `jl_reactive_methods_disable` (`gf.c`, one visit of each method table and
+  of its cache for all methods) and `jl_reactive_bindings_hide` (`module.c`,
+  the invalidation of each name with no pass over the methods of the module,
+  and then one pass of the harness for all names, `rc_invalidate_named!`).
+  Each one does what the function of one item does for each item; on a
+  module of 20 000 methods and 1 000 constants, one pass for all names took
+  0.025 s against 1.9 s. The harness checks the count that the batch of
+  methods answers and deletes the methods one by one when it differs, and
+  takes the names out one by one when the runtime has no batch.
+
+  *A fault on the way.* The first batch of methods stored `(void*)1` as the
+  value of its hash table, which is the value of "not found" of the runtime,
+  so it disabled no method. The round on that build applied two cases that
+  must be refused (a read of a later method); the strict gate of the edit
+  cases found it, and the case `new_reader_of_a_later_constant_in_a_function`
+  covers the invalidation of compiled code for the names.
+
+  | the platform replay, 17 rebuilds | before (d096c893c8) | the batches (dd4d6bdd3f) |
+  | --- | --- | --- |
+  | the check of the text of now, in all | 166 s | 16 s |
+  | the longest check | 20.4 s | 4.7 s |
+  | the rebuilds, in all | 564 s | 480 s |
+
+  The rebuilds of the platform now take about as long as before rule H4 and
+  the later names. Three commits (12 to 14) took 7 s to 13 s more than in
+  that round; their replay took 5 s to 8 s, so the difference is in another
+  part, and jobs of another session ran on the machine at the same time.
+  Each gate of the round on dd4d6bdd3f passes.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
