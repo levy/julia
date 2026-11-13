@@ -2283,6 +2283,11 @@ function rc_warm()
     Base.invokelatest(rc_set_module_doc!, documented, plain_header.entry.expr)
     Base.invokelatest(module_doc, documented) === nothing ||
         error("rc_warm: a header without a docstring keeps the docstring of the module")
+    # A docstring puts its module on the list of the modules that have
+    # documentation, and the list is a root of the image: the module of this
+    # check leaves the list, or each process that warms up would leave one
+    # module in the image that it writes.
+    filter!(m -> m !== documented && m !== documented_parent, Base.Docs.modules)
     rc_resolution(Base, [:sin, :nosuchname])[:sin] === sin || error("rc_warm: sin does not resolve in Base")
     rc_new_dependency(Base, :(using NoSuchPackage)) === :NoSuchPackage ||
         error("rc_warm: a new dependency is not seen")

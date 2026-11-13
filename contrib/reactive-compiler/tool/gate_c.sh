@@ -109,6 +109,9 @@ loadable() { size "$SO" | awk 'NR == 2 { print $4 }'; }
 record() {
     echo "$1 $(loadable) $(stat -c %s "$SO")" >> "$OUT/sizes.txt"
     size -A "$SO" > "$OUT/sections-$1.txt"
+    # $KEEP names the records whose image stays as $OUT/image-<tag>.so, for a
+    # comparison of two images of the chain.
+    case " ${KEEP:-} " in *" $1 "*) cp "$SO" "$OUT/image-$1.so" ;; esac
     echo "=== size $1: loadable $(loadable), file $(stat -c %s "$SO")"
 }
 
