@@ -1539,6 +1539,65 @@ JL_DLLEXPORT int jl_reactive_binding_leave(jl_module_t *m, jl_sym_t *var)
     return bound;
 }
 
+// Take the names `vars` out of the module `m`, as `jl_reactive_binding_leave`
+// takes one, all in one new world. The invalidation of each name runs as for
+// one name, except the pass over the methods of `m` whose code names the
+// binding (the bindings with implicit edges): that pass reads each method of
+// the module, and one pass for each name costs the count of the names times
+// the count of the methods. The caller makes that pass once for all the names
+// that this answers. Only the check of the load order of the reactive harness
+// calls it, in a fork of the process that writes no image.
+static jl_binding_partition_t *replace_binding_locked(jl_binding_t *b,
+    jl_binding_partition_t *old_bpart, jl_value_t *restriction_val, size_t kind, size_t new_world, int invalidate);
+void jl_invalidate_binding_refs(jl_globalref_t *ref, jl_binding_partition_t *invalidated_bpart,
+                                jl_binding_partition_t *new_bpart, size_t new_world);
+
+JL_DLLEXPORT jl_value_t *jl_reactive_bindings_hide(jl_module_t *m, jl_array_t *vars)
+{
+    size_t n = jl_array_nrows(vars);
+    jl_array_t *changed = jl_alloc_vec_any(0);
+    jl_array_t *scanned = jl_alloc_vec_any(0);
+    JL_GC_PUSH2(&changed, &scanned);
+    JL_LOCK(&world_counter_lock);
+    size_t new_world = jl_atomic_load_acquire(&jl_world_counter) + 1;
+    for (size_t i = 0; i < n; i++) {
+        jl_sym_t *var = (jl_sym_t*)jl_array_ptr_ref(vars, i);
+        jl_binding_t *b = jl_get_module_binding(m, var, 0);
+        if (b == NULL)
+            continue;
+        jl_binding_partition_t *bpart = jl_get_binding_partition(b, new_world);
+        if (jl_bkind_is_some_implicit(jl_binding_kind(bpart)))
+            continue;
+        jl_binding_partition_t *new_bpart = replace_binding_locked(b, bpart, NULL,
+            PARTITION_FAKE_KIND_IMPLICIT_RECOMPUTE | (bpart->kind & PARTITION_MASK_FLAG), new_world, 0);
+        if (new_bpart == bpart)
+            continue;
+        jl_array_ptr_1d_push(changed, (jl_value_t*)b);
+        jl_array_ptr_1d_push(changed, (jl_value_t*)bpart);
+        jl_array_ptr_1d_push(changed, (jl_value_t*)new_bpart);
+    }
+    if (jl_typeinf_world != 1) {
+        jl_task_t *ct = jl_current_task;
+        size_t last_world = ct->world_age;
+        ct->world_age = jl_typeinf_world;
+        for (size_t i = 0; i < jl_array_nrows(changed); i += 3) {
+            jl_binding_t *b = (jl_binding_t*)jl_array_ptr_ref(changed, i);
+            uint8_t flags = jl_atomic_fetch_and(&b->flags, (uint8_t)~BINDING_FLAG_ANY_IMPLICIT_EDGES);
+            jl_invalidate_binding_refs(b->globalref, (jl_binding_partition_t*)jl_array_ptr_ref(changed, i + 1),
+                                       (jl_binding_partition_t*)jl_array_ptr_ref(changed, i + 2), new_world - 1);
+            if (flags & BINDING_FLAG_ANY_IMPLICIT_EDGES) {
+                jl_atomic_fetch_or(&b->flags, BINDING_FLAG_ANY_IMPLICIT_EDGES);
+                jl_array_ptr_1d_push(scanned, (jl_value_t*)b);
+            }
+        }
+        ct->world_age = last_world;
+    }
+    jl_atomic_store_release(&jl_world_counter, new_world);
+    JL_UNLOCK(&world_counter_lock);
+    JL_GC_POP();
+    return (jl_value_t*)scanned;
+}
+
 // Take the export and the public mark of `var` in the module `m` back, in a
 // new world, as a whole build of sources that no longer export the name has
 // none. The binding keeps what it holds. Answer 1 when the name had one of
@@ -1848,6 +1907,14 @@ extern JL_DLLEXPORT _Atomic(size_t) jl_first_image_replacement_world;
 JL_DLLEXPORT jl_binding_partition_t *jl_replace_binding_locked2(jl_binding_t *b,
     jl_binding_partition_t *old_bpart, jl_value_t *restriction_val, size_t kind, size_t new_world)
 {
+    return replace_binding_locked(b, old_bpart, restriction_val, kind, new_world, 1);
+}
+
+// The replacement of a binding partition; `invalidate` says whether the code
+// that names the binding is invalidated here, or by the caller.
+static jl_binding_partition_t *replace_binding_locked(jl_binding_t *b,
+    jl_binding_partition_t *old_bpart, jl_value_t *restriction_val, size_t kind, size_t new_world, int invalidate)
+{
     check_safe_newbinding(b->globalref->mod, b->globalref->name);
 
     // Check if this is a replacing a binding in the system or a package image.
@@ -1896,7 +1963,7 @@ JL_DLLEXPORT jl_binding_partition_t *jl_replace_binding_locked2(jl_binding_t *b,
     jl_gc_wb(b, new_bpart);
     JL_GC_POP();
 
-    if (jl_typeinf_world != 1) {
+    if (invalidate && jl_typeinf_world != 1) {
         jl_task_t *ct = jl_current_task;
         size_t last_world = ct->world_age;
         ct->world_age = jl_typeinf_world;

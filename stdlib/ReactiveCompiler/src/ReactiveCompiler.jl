@@ -67,6 +67,7 @@ precompile(rc_order_check!, (IOBuffer, RcEvaluation, Vector{RcCandidate}, Vector
 precompile(rc_hide_after!, (RcEvaluation, Tuple{Vararg{Int}}, Base.IdSet{Method},
                             Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}}, Set{Tuple{Vector{Symbol}, Symbol}}))
 precompile(rc_first_places, (RcEvaluation,))
+precompile(rc_invalidate_named!, (Module, Vector{Any}, UInt))
 precompile(rc_again_refusal, (RcAgain, SubString{String}))
 precompile(rc_methods_print, (Vector{Method}, Vector{String}, String))
 precompile(rc_print, (RcPrinter, Any))

@@ -712,13 +712,16 @@ end
 # Take out of the program each method that an item after `place` in the load
 # order defined, and each name that such an item gives its module when no item
 # at or before `place` gives it (`first_places`). A name leaves as the name of
-# an expression that left does (`jl_reactive_binding_leave`): the module is
-# then as one that never bound the name. `hidden` and `hidden_names` hold what
-# is out; a method that the table holds no more stays as it is.
+# an expression that left does: the module is then as one that never bound
+# the name. The names of one module leave together (`jl_reactive_bindings_hide`),
+# and one pass over the methods of the module invalidates the code that names
+# them (`rc_invalidate_named!`). `hidden` and `hidden_names` hold what is out;
+# a method that the table holds no more stays as it is.
 function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Method},
                         first_places::Dict{Tuple{Vector{Symbol}, Symbol}, Tuple{Vararg{Int}}},
                         hidden_names::Set{Tuple{Vector{Symbol}, Symbol}})
     order = evaluation.queue.order
+    leaving = Dict{Vector{Symbol}, Vector{Any}}()
     for item in evaluation.items
         rc_order(order, item) > place || continue
         for method in item.methods
@@ -734,15 +737,65 @@ function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Meth
         key in hidden_names && continue
         first_places[key] > place || continue
         push!(hidden_names, key)
-        mod = Base.invokelatest(rc_module_or_nothing, key[1])
+        push!(get!(() -> Any[], leaving, key[1]), key[2])
+    end
+    for (path, names) in leaving
+        mod = Base.invokelatest(rc_module_or_nothing, path)
         mod === nothing && continue
-        Base.invokelatest(Base.binding_kind, mod, key[2]) in RC_OWN_KINDS || continue
+        own = Any[name for name in names if Base.invokelatest(Base.binding_kind, mod, name) in RC_OWN_KINDS]
+        isempty(own) && continue
         try
-            ccall(:jl_reactive_binding_leave, Cint, (Any, Any), mod, key[2])
+            scanned = ccall(:jl_reactive_bindings_hide, Any, (Any, Any), mod, own)::Vector{Any}
+            rc_invalidate_named!(mod, scanned, Base.get_world_counter() - 1)
         catch
+            # A runtime with no batch of names takes them out one by one.
+            for name in own
+                ccall(:jl_reactive_binding_leave, Cint, (Any, Any), mod, name)
+            end
         end
     end
     return nothing
+end
+
+# Whether the code `x` names one of the bindings `names` of the module `mod`.
+rc_names_any(@nospecialize(x), mod::Module, names::Set{Symbol}) =
+    x isa GlobalRef ? x.mod === mod && x.name in names :
+    x isa Expr ? any(argument -> rc_names_any(argument, mod, names), x.args) :
+    x isa Union{Core.ReturnNode, Core.GotoIfNot, Core.PiNode} ?
+        any(i -> isdefined(x, i) && rc_names_any(getfield(x, i), mod, names), 1:nfields(x)) : false
+
+# Invalidate the code of the methods of `mod` that names one of the bindings
+# `bindings` of it, as the invalidation of each binding does it
+# (`invalidate_method_for_globalref!` of the compiler), in one pass over the
+# methods of the module whose code names a binding of it: each code instance
+# of a method whose source names one of them, and each code instance with an
+# edge to one of them.
+function rc_invalidate_named!(mod::Module, bindings::Vector{Any}, world::UInt)
+    isempty(bindings) && return 0
+    names = Set{Symbol}(binding.globalref.name for binding in bindings)
+    set = Base.IdSet{Any}(bindings)
+    invalidated = 0
+    for i in 1:ccall(:jl_module_scanned_methods_length, Csize_t, (Any,), mod)
+        method = ccall(:jl_module_scanned_methods_getindex, Any, (Any, Csize_t), mod, i)::Method
+        all = false
+        if isdefined(method, :source) && method.source isa Union{Core.CodeInfo, String}
+            all = any(statement -> rc_names_any(statement, mod, names), Base._uncompressed_ir(method).code)
+        end
+        for mi in Base.specializations(method)
+            mi isa Core.MethodInstance && isdefined(mi, :cache) || continue
+            ci = mi.cache
+            while true
+                if ci.max_world > world &&
+                   (all || isdefined(ci, :edges) && any(i -> isassigned(ci.edges, i) && ci.edges[i] in set, eachindex(ci.edges)))
+                    ccall(:jl_invalidate_code_instance, Cvoid, (Any, UInt), ci, world)
+                    invalidated += 1
+                end
+                isdefined(ci, :next) || break
+                ci = ci.next
+            end
+        end
+    end
+    return invalidated
 end
 
 # The check of each candidate that the apply evaluates with a text of the
