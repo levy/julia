@@ -106,7 +106,19 @@ PY
 loadable() { size "$SO" | awk 'NR == 2 { print $4 }'; }
 
 # $1 = a tag: append the size of the image now to $OUT/sizes.txt
-record() { echo "$1 $(loadable) $(stat -c %s "$SO")" >> "$OUT/sizes.txt"; echo "=== size $1: loadable $(loadable), file $(stat -c %s "$SO")"; }
+record() {
+    echo "$1 $(loadable) $(stat -c %s "$SO")" >> "$OUT/sizes.txt"
+    size -A "$SO" > "$OUT/sections-$1.txt"
+    echo "=== size $1: loadable $(loadable), file $(stat -c %s "$SO")"
+}
+
+# The sections of the image that grew between two records, with the bytes of
+# each one. $1 $2 = the tags.
+grown_sections() {
+    join <(awk 'NF == 3 && $2 ~ /^[0-9]+$/ { print $1, $2 }' "$OUT/sections-$1.txt" | sort) \
+         <(awk 'NF == 3 && $2 ~ /^[0-9]+$/ { print $1, $2 }' "$OUT/sections-$2.txt" | sort) |
+        awk '$3 != $2 { printf "===   %-22s %10d -> %10d  %+d\n", $1, $2, $3, $3 - $2 }'
+}
 
 format() {
     local tables shards dups name n ok=0
@@ -178,6 +190,7 @@ sizes() {
     bound=$((32 * slots + 512 * rebuilds))
     echo "=== loadable after reverse 1: $first, after reverse $CYCLES: $last, growth $((last - first)) bytes;" \
          "residue $slots slots in $rebuilds rebuilds, bound $bound bytes"
+    echo "=== the sections that grew between reverse 1 and reverse $CYCLES:"; grown_sections reverse-1 "reverse-$CYCLES"
     [ $((last - first)) -le "$bound" ] || { echo "=== the chain grows beyond its residue"; return 1; }
 }
 
