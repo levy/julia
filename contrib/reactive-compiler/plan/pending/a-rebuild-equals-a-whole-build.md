@@ -105,11 +105,13 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 50 | A method of another module that names a moved struct in its signature stays a method for the struct of before. The expression of the method has the same text, so nothing evaluated it again. | `struct Token` moves from the module `Left` to the module `Right`; `Both` uses the two and has `weigh(token::Token) = token.weight`. After the rebuild `Both.weigh(Right.Token(8))` is a `MethodError`; a whole build gives 8. | `child.jl`: the check of how the names of an expression resolve covered only a module with a changed `using` | Found by reading, confirmed by a gate case that failed first (Step 6); closed on the branch |
 | 51 | **Julia fails when it resolves a declared name again in modules that use each other.** The pass that follows a changed binding to the modules that use its module comes back to a binding that it resolved already, and an assertion fails. The error that the person sees is "MethodError: no method matching string(::Expr)", because the message of the assertion is made in the world of the compiler. The released Julia 1.13.1 does the same. | `module R; export f; end`, `module K; using ..R; using ..P; export f; end`, the parent `P` has `using .K`, and both resolved `f`. Then `global f` in `R` fails. In the kernel, `KernelModule` uses each module of its parent and the parent too, and the parent uses `KernelModule`; the rebuild that defines `search_documents` again in the module that exports it reaches the case. | `Compiler/src/bindinginvalidations.jl`, `invalidate_code_for_globalref!` | Seen on the three commits of finding 49, after its correction; a script of ten lines shows it; closed on the branch (ec197346b0), with a test in `test/rebinding.jl`. A report to upstream Julia is the decision of the owner |
 | 52 | A name that the call of a macro binds and its source does not show gets a new value, and the expressions that name it stay as they were. The harness knew one name for each expression: the name that the source shows. | `@theme struct ConversationTheme … end` defines `ConversationTheme` and `ScaledConversationTheme`. A change of `ReactiveCell` gives the second type a new identity and leaves the first. `AgentWorkToWidget(theme::Union{ConversationTheme, ScaledConversationTheme})` in another module keeps the type of before in its signature, so a call with a value of the new type is a `MethodError`; a whole build has the new type. The same for the alias `ICCellVector` that `@document struct CellVector` defines, and the methods `ICCellVector(…) = …`. | `child.jl`, `rc_evaluate_next!`: the dependents of an evaluation came from the name of the item | Found by the replay over 18 platform commits with the comparison (24 method lines of 27 297); confirmed by a gate case that failed first; closed on the branch (Step 6) |
-| 53 | **An expression that the rebuild evaluates again sees the definitions that come after it in the load order.** A whole build evaluates an expression with the code that it loads before the expression. A rebuild evaluates it in a process that holds the whole program. The result differs when the evaluation calls a function that a later expression gives a method. | `@document struct CellVector` is at line 32 of `CellVector.jl`. The macro asks `get_cell_layout_field_type(Val(:Vector))` for each field that is a `Vector`, and line 150 of the same file has the method that answers `CellVector`. A whole build expands line 32 before that method exists. The rebuild of the commit that changes `ReactiveCell` expands line 32 again, gets `CellVector`, and the constructor wraps its own vector: `CellVector(Any[1, 2])` throws `DeclaredTypeMismatchException` in the rebuilt image and gives a list of 2 elements in a whole build. | `replay.jl` names the limit in its header; no rule of the harness covered it | Found by the comparison of the replay over the platform (4 method lines of `CellVector.jl:32`), confirmed by a call in both images. The owner said to go on with it on 2026-11-12. Closed on the branch for an expression whose text the edit leaves as it is: the apply finds it and refuses (Step 6). Open for an edited text that gets a new dependence on a later definition |
+| 53 | **An expression that the rebuild evaluates again sees the definitions that come after it in the load order.** A whole build evaluates an expression with the code that it loads before the expression. A rebuild evaluates it in a process that holds the whole program. The result differs when the evaluation calls a function that a later expression gives a method. | `@document struct CellVector` is at line 32 of `CellVector.jl`. The macro asks `get_cell_layout_field_type(Val(:Vector))` for each field that is a `Vector`, and line 150 of the same file has the method that answers `CellVector`. A whole build expands line 32 before that method exists. The rebuild of the commit that changes `ReactiveCell` expands line 32 again, gets `CellVector`, and the constructor wraps its own vector: `CellVector(Any[1, 2])` throws `DeclaredTypeMismatchException` in the rebuilt image and gives a list of 2 elements in a whole build. | `replay.jl` names the limit in its header; no rule of the harness covered it | Found by the comparison of the replay over the platform (4 method lines of `CellVector.jl:32`), confirmed by a call in both images. The owner said to go on with it on 2026-11-12. Closed on the branch for an expression whose text the edit leaves as it is: the apply finds it and refuses (Step 6). For a text of the edit, two checks refuse it (Step 3, 2026-11-13): the text of before must define again what the program holds for it, and the text of now must give the same result in a program that holds no method of what comes after it. Open: a text of the edit that reads a later name, type or value that is no method |
 | 54 | A deleted method stays in the method table of an overlay. The save takes a closed entry out of its chain by a recorded change of the pointer that leads to it, and a save by pages writes only the objects of the pages that the process wrote. A pointer in an object of another page keeps the bytes of the base. Dispatch does not use a closed entry, so no call goes wrong; `Base.visit` counts it. | After the rebuild of the commit that changes `ReactiveCell`, 2 of 2 754 deleted methods are still in the table: the program counts 23 824 methods, a whole build 23 822. | `staticdata.c`, `reactive_pages_begin`: the recorded field changes did not mark their pages | Found by the comparison of the replay over the platform (the output of the program); closed on the branch (d7a821790b), see Step 6 for the test |
 | 55 | A declaration that changes its kind stops the rebuild with an error of Julia: a global that becomes a constant, a constant that becomes a global, a typed global that gets another type. Julia changes no such declaration in a module that holds the name. | `global StringType = String` becomes `const StringType = AbstractString`. The server answers "cannot declare StringType constant; it was already declared global", and the build stops. | `child.jl`, `rc_evaluate_next!`: the changed item was evaluated over the binding of before | Found by the gate of the edit cases (the test set "Global binding invalidation" of Revise); closed on the branch (ca86d3657f, Step 3) |
 | 56 | A name that leaves a module does not give the name back to the export of a used module that it hid. `Base.delete_binding` leaves a guard, which no export passes. And a method that an edit writes with the module of its function counted as a binding of the name in its own module. | An edit removes `const view = "shadow"`: `view` is then not defined, where a whole build has the `view` of Base. An edit writes `Base.iterate(x::Foo) = …` in place of `iterate(x::Foo) = …`: the function of the module stays with no method, and a caller gets a `MethodError`. | `child.jl`, `rc_remove_name!`, `rc_given_names`, and the pairing of an old expression with a changed one | Found by the gate of the edit cases (the test sets "Retract removed bindings" and "Orphaned binding realias" of Revise); closed on the branch (ca86d3657f, 14f260af38, Step 3) |
 | 57 | A rebuild that is refused, or whose trial stops, wrote the new lines of the methods of the moved expressions into the server before it refused. The server kept them, and the next save wrote them into the image. | The step `order` of `gate_runs.sh` is refused, and its text is 4 lines longer above the methods of `order.jl`. After the next save, those methods have the place `order.jl:13` where a whole build has `order.jl:9`. | `child.jl`, the pairing of the ledgers in `rc_apply_tracked` | Found by the gate step for finding 7; closed on the branch (6f1972c48c, Step 5) |
+| 58 | **A source file that the build does not track is no input of the store, so its edit is lost with no word.** The walk of the includes reads the text of the sources. It tracks no file whose path the text computes: an `include` in a loop, a path from a function, an `include` with a function of its expressions. The walk warns at the whole build. A rebuild then compares the tracked files only. The same holds for each file of a path package when the build does not track the dependencies. | `for name in ("one", "two") include(joinpath("computed_include", name * ".jl")) end`, then an edit of `two.jl`: the rebuild prints "applied 0 expressions", makes a snapshot, and the program answers `(1, 2)` where a whole build answers `(1, 20)`. | PackageCompiler, `tracked_sources` and `_reactive_inputs` | Found by the new cases of the gate of the edit cases (the test sets "Computed include path" and "include with mapexpr" of Revise); closed in PackageCompiler on the branch `live-harness` (Step 3) |
+| 59 | A file whose `include` line moves to another module stays in the module of before. The apply pairs the file of before with the file of now by the path alone, finds the same text, and evaluates nothing. | `include("part.jl")` moves from `module First` to `module Second`: the rebuilt program has `First.part` and no `Second.part`; a whole build has `Second.part` only. | `child.jl`, `rc_match_files` | Found by the new case `moved_include` of the gate (the test set "Moved include" of Revise); closed on the branch (Step 3) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -196,6 +198,7 @@ Two more causes start a whole build, and they are the common ones:
 | 22 | One gate builds the program in the form of the build scripts: `contrib/merged/gate_prelinked_chain.sh` links the image into a program, prelinks it, and starts it with the overlay of a rebuild. It compares the lines that the program prints and nothing else, and its edit is two method bodies, which grow no table of the base. So it found neither the fault of 2026-11-08 nor finding 33. It links with commands of its own, not through `ProjecturedBuilder`. The other gates start the image with `julia -J`, which is another load path; on the overlay of the IDE the two paths end with different code pointers for 6 441 code instances. *Corrected on 2026-11-10: the first text of this row said that no such gate exists. I looked in `contrib/reactive-compiler/tool` alone.* | Read; the count is the audit's |
 | 23 | Each gate edits a small test program with edits written for the gate. No gate applies real commits. All four faults of the list above came from real commits. | Read |
 | 24 | The `sizes` step of gate C fails on the branch: 100 568 bytes of growth against a bound of 35 136. | recorded 2026-11-09; in a tree whose rebuilds load the harness, finding 45 covers it (Step 2) |
+| 60 | The gate of the edit cases tested less than its result said. A store founds again by itself when its image grew 25 % since its whole build. The program of the gate is small, so the bound came after about 24 rebuilds, two times in a run of 44 cases. Each such whole build took each edit of before into the chain, and the comparison at the end then tested only the cases after the last one: 3 of 44. So the results of 2026-11-12 ("the method tables, the output and the globals equal" for 36 and 37 cases) hold for the last cases of those runs alone. | Found on 2026-11-13, when two cases that must lose an edit ended equal to the whole build. The gate now gives its store a bound that it does not reach, and a whole build of the store in the middle of a run is a fault; `gate_runs.sh` has the same guard. The replay gate already counted such a commit. The first strict run found finding 59 |
 
 ## The model
 
@@ -1033,6 +1036,91 @@ commits. The numbers of the steps stay as they are.
   `Base.iterate(x::Foo) = …` in place of `iterate(x::Foo) = …`. Its new text
   binds no name in the module (`is_qualified_method`), and the old
   expression of a change now comes up for the removal of its name too.
+
+  *The second round of the gate (2026-11-13): 45 cases, and a strict gate.*
+  The gate was not strict (finding 60): its store made a whole build by
+  itself two times in a run, and the comparison then tested the last cases
+  alone. The gate now gives its store a bound that it does not reach, and
+  counts a whole build of the store in the middle of a run as a fault. The
+  first strict run found finding 59. The new cases:
+
+  | case | what the edit does | a rebuild now |
+  | --- | --- | --- |
+  | `edited_reader_of_a_later_method` | changes the text of an expression that reads a later method | refuses (finding 53) |
+  | `new_reader_of_a_later_method` | makes an expression read a later method | refuses (finding 53) |
+  | `typed_global_other_type` | gives a typed global with no keyword another type, and removes another one | applies |
+  | `removed_include`, `new_include` | takes a file out; adds a file with its `include` line | applies |
+  | `moved_include` | moves an `include` line to another module | applies (finding 59) |
+  | `computed_include`, `include_with_map` | changes a file whose path the text computes, or that `include` reads through a function | stops and names the file (finding 58) |
+
+  | the run of 45 cases, with the harness of the folder | result |
+  | --- | --- |
+  | applied, refused or stopped, faults | 39, 6, 0 |
+  | method lines (183), output (45 lines), globals | equal |
+  | roots that the chain lacks (counted, Step 10) | 10 |
+  | the store founds again by itself | never |
+
+  *Finding 53 for a text of the edit (proposed by the assistant; built on
+  the branch, the owner did not see it yet).* An item whose text the edit
+  changes, and a new item, have no result of before to compare with. Two
+  checks now refuse such an item when its evaluation reads a method that
+  comes after it:
+
+  - *The text of before.* The second fork of the replay, in the program of
+    before the edit, also evaluates the text of before of each changed item
+    for which the program holds methods (`rc_edited_checks`). When that text
+    does not define again what the program holds, the item reads what the
+    apply can not give it, and its edit is refused. This finds an edit of an
+    expression that reads a later method already.
+  - *The text of now, with nothing after it* (`rc_order_check!`, at the end
+    of the trial). For each candidate of the replay that the apply evaluates
+    with a text of the edit, the fork takes the result in the whole program:
+    the expansion, the value of the initializer, the definitions of a
+    statement. Then it deletes each method that an item after the candidate
+    in the load order defined, and takes the result again. A whole build
+    gives the item the second program. When the two results differ, the
+    apply refuses: "its evaluation gives another result in a program that
+    holds no method of what comes after it". The candidates go from the last
+    one to the first one, so each method is deleted one time.
+
+  The cost: the deletion of 13 518 methods of 13 loaded packages takes 2.1 s
+  in one process, 155 µs for each method, and the code of Base runs at once
+  after it. The check runs only when an edit changes or adds a candidate of
+  the replay: an item that calls a tracked macro, an initializer that runs
+  code and names a tracked name, or an `eval` statement. In the gate, 4 of
+  the 45 rebuilds ran it, each in 0.03 s for about 100 methods.
+
+  *Its limits.* The second program lacks the methods of what comes after the
+  item, and nothing else. A text of the edit that reads a later name
+  (`isdefined`), a later type (`subtypes`) or a value that a later statement
+  wrote is not found. An `include` line that moves inside its module changes
+  the place of each item of its file in the load order, and no check
+  evaluates those items.
+
+  *Finding 58, as closed (PackageCompiler, branch `live-harness`).* Julia
+  records each file that a package included in the header of the cache of
+  the package, with its size and its checksum, and the image names that
+  cache (`Base.pkgorigins`). After a whole build, a process on the new image
+  reads the headers (`_reactive_untracked_sources`). Each source file of the
+  package of the build or of a path package that the walk did not track
+  becomes an input of the store, with the print of the text that the build
+  loaded. A rebuild whose such file differs stops and names it, as for each
+  other input (D5). The whole build prints the list of those files.
+
+  *Finding 59, as closed.* `rc_match_files` pairs a file of before with a
+  file of now by the path and the module. A file whose module changes is a
+  removed file of the module of before and an added file of the module of
+  now: its methods and names leave the first module, and the second module
+  evaluates it.
+
+  *The typed assignment.* The ledger read `x::Int = 1` as a method, because
+  the left side of a method with a return type has the same head. It is a
+  global when the left side of `::` is a name (`entry_kind`), so the rule of
+  finding 55 now covers a typed global with no keyword.
+
+  *Not in the gate.* A file that two modules include: the walk of the
+  includes stops the whole build with an error for it, so no rebuild meets
+  it.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
@@ -1186,8 +1274,15 @@ commits. The numbers of the steps stay as they are.
     This is what D5 says, and it ends the rebuild of an old store with the
     harness of a new Julia (Step 4) outside a test: after each landing, each
     store needs a whole build.
-  - A failure of the client after the save of the server (the link of an
-    overlay) leaves a server whose last save the store does not name.
+  - *Closed on 2026-11-13 (PackageCompiler, branch `live-harness`):* a
+    failure of the client after the save of the server (the link of an
+    overlay) left a server whose last save the store does not name. The
+    session file of the server now holds `pending`, the number of the
+    snapshot, from the apply until the store names the snapshot. A build
+    that finds the mark starts a new server from the last snapshot of the
+    store. A refused apply takes the mark off, because it changes nothing.
+    The step `late` of `gate_runs.sh` makes the link fail with a folder at
+    the place of its output file.
   - Finding 39 has no test: it needs an edit during a build.
 - [x] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
   40, 41, 44, refusal C5).** *Done (2026-11-12): D13 and D2 are built, and
