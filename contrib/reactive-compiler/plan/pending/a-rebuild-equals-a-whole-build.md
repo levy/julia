@@ -1164,6 +1164,18 @@ commits. The numbers of the steps stay as they are.
   of the run stopped the process of `compileall`. A landing now makes the
   caches again.
 
+  *Landed (2026-11-13, with the word of the owner).* `merged-next` moved
+  forward to the head of the branch (74fe0958b6). The installed tree got the
+  three libraries and the six image files of the build at de6331d52a, each by
+  a copy and a rename, and then `make -f pkgimage.mk release` there made the
+  caches of the standard libraries again (1 min 13 s, peak 4.4 GB). Checked
+  in the installed Julia: REPL, Pkg and Test load in 0.3 s, the print of the
+  harness of the image equals the print of its folder, and `RC_APPLY_OPEN`
+  exists. The overlay header has one more field in a place that was
+  reserved, so an old store still loads; but the print of the build of Julia
+  is another one, so each store that PackageCompiler of `live-harness`
+  rebuilds asks for a whole build. Not pushed.
+
   *What stays open in this step.*
   - PackageCompiler has the two commits on the branch `live-harness`. The
     build environments of the owner take PackageCompiler from another branch
