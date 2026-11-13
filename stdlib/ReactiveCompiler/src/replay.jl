@@ -738,11 +738,16 @@ function rc_hide_after!(evaluation::RcEvaluation, place, hidden::Base.IdSet{Meth
         push!(hidden_names, key)
         push!(get!(() -> Any[], leaving, key[1]), key[2])
     end
-    # The methods leave together (`jl_reactive_methods_disable`); a runtime
-    # with no such function deletes them one by one.
-    try
-        ccall(:jl_reactive_methods_disable, Csize_t, (Any,), disabled)
+    # The methods leave together (`jl_reactive_methods_disable`). A runtime
+    # with no such function, or a batch that disabled fewer methods than it
+    # got, makes the deletion of each method, which leaves a disabled one as
+    # it is.
+    batch = try
+        Int(ccall(:jl_reactive_methods_disable, Csize_t, (Any,), disabled))
     catch
+        -1
+    end
+    if batch != length(disabled)
         for method in disabled
             try
                 Base.delete_method(method)

@@ -2805,7 +2805,7 @@ JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
     for (size_t i = 0; i < n; i++) {
         jl_method_t *m = (jl_method_t*)jl_array_ptr_ref(methods, i);
         assert(jl_is_method(m) && !m->is_for_opaque_closure);
-        ptrhash_put(&set, m, (void*)1);
+        ptrhash_put(&set, m, m);
         jl_methtable_t *mt = jl_method_get_table(m);
         size_t j = 0;
         while (j < tables.len && tables.items[j] != (void*)mt)
