@@ -2722,6 +2722,19 @@ commits. The numbers of the steps stay as they are.
   A prelinked start reads none of them since the checksum is in the header,
   and the server reads them for its next save. They cost space on the disk
   and time of the save, not time of the start.
+
+  Each of 11 gates passes on the build at 9bff013a4a with PackageCompiler
+  d667fb87 (round r36, 2026-11-14), with 3 rebases in the replay of the
+  kernel and 2 in the replay of the platform. The oracle and gate B first
+  stopped at their first step: the copy of the tools that the round ran had
+  no `usr` and no git tree, which these two gates read. They passed on the
+  same copy with both added. `tool/overlay_check.py` of a659deae01 on the
+  last overlay of each replay: 97 556 reused functions of the platform and
+  47 103 of the kernel, each one of the code instance of the base. The two
+  replays ran again with the check of a659deae01 after each rebuild (round
+  r36b): 25 checks of the kernel and 15 of the platform, the rebuilds that
+  did not move the base. Each check finds 0 reused functions of another code
+  instance than in the base, and the two replays pass.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
