@@ -2635,6 +2635,37 @@ commits. The numbers of the steps stay as they are.
   in the overlay form against a whole build; the start time of the program
   gate against the size of its overlay; the count of the patches of a
   one-line edit.
+
+  *The start with an overlay, measured (2026-11-14, the prelinked program of
+  the replay over 17 commits of the platform, with the rebases of D6; the
+  middle of 9 starts).* The base alone starts in 30 ms with a peak of 379 MB.
+  Two causes of the cost of an overlay are closed:
+
+  - *The checksum (D12, finding 12).* The identity of the loaded image takes
+    a checksum of each overlay, and the loader computed it over the whole
+    blob, so a start read each byte of it. The writer now computes it with
+    the blob in memory and keeps it in the last free field of the header
+    (`blob_checksum`, 4297b70926). On one overlay, as written and as a copy
+    with the field zero: 28 MB less peak, and up to 20 ms.
+  - *The patches that change nothing (finding 13).* In a state with
+    overlays the extent of the sysimg spans the const data, so the writer
+    gave a reference to a const object of the base the form of the sysimg,
+    where the base file holds a reference into the const data: two words
+    for one place. 381 090 of 597 851 patched words of an overlay of the
+    platform were such words. `reactive_pages_base_ref` tests the const data
+    first now (8b2303e1ee).
+
+  | the last overlay of the platform replay | before | now |
+  | --- | --- | --- |
+  | patched objects | 285 750 | 34 288 |
+  | patched words that differ from the base | 597 851 | 214 448 |
+  | a start with the overlay | 60 ms to 90 ms, 543 MB to 614 MB | 50 ms, 516 MB |
+
+  Two runs of the replay before the fix gave overlays of 7.9 MB and 45.6 MB
+  of new objects for the same commits; the run after it, 7.9 MB. The cause
+  of the larger one is not found. Open in this step: the lists of the whole
+  image in each overlay (29 MB), the call through a slot (D11, finding 26),
+  and 10 182 words of the base file that still hold the tag BaseRef.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
