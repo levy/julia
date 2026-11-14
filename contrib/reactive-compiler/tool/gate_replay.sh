@@ -22,7 +22,11 @@
 #              rebuild that fails in another way is a fault: the store founds
 #              again, the replay goes on, and the gate fails. A store whose
 #              image grew past its bound founds again by itself: the gate
-#              links the program again and counts the commit. The step says
+#              links the program again and counts the commit. A rebuild
+#              whose overlay passed the bound of the store (REBASE when the
+#              test sets it, else the default of PackageCompiler) moves the
+#              base forward (D6): the gate links the program again from the
+#              new archive and counts it as a rebuild. The step says
 #              how many rebuilds the chain holds since its last whole build:
 #              the comparison tests those alone, so choose LAST so that no
 #              refused commit comes at the end
@@ -74,7 +78,7 @@ lane() {
     local name=$1; shift
     nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=1 JULIA_DEPOT_PATH="$DEPOT" \
-            JULIA_REACTIVE_REBASE="${REBASE:-0.05}" \
+            ${REBASE:+JULIA_REACTIVE_REBASE=$REBASE} \
         "$@" > "$OUT/$name.log" 2>&1
 }
 
