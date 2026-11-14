@@ -284,7 +284,7 @@ typedef struct {
     uint64_t new_sysimg_size;    // the new objects, after the base
     uint64_t new_const_size;
     uint64_t new_syms_size;
-    uint64_t relocs_size;        // the full merged lists
+    uint64_t relocs_size;        // zero: the loader makes the full lists from the delta lists (`reactive_overlay_merge_lists`); an overlay of an earlier build holds them here
     uint64_t gvar_size;          // the slots of this overlay's own image
     uint64_t fptr_size;          // the fresh table
     uint64_t roots_size;
@@ -340,6 +340,9 @@ static size_t reactive_chain_n = 0;
 // The CRC of the overlays of the loaded chain: a part of the identity of the image.
 static uint32_t reactive_chain_crc = 0;
 static char *reactive_syms_buffer = NULL;           // the symbols of the base and the overlays, concatenated
+// The full lists of the loaded chain, which the loader made from the delta
+// lists of its overlays; the first save of an overlay decodes them.
+static char *reactive_merged_lists = NULL;
 
 JL_DLLEXPORT int jl_reactive_overlay_mode(void) JL_NOTSAFEPOINT
 {
@@ -4266,6 +4269,10 @@ static int reactive_pages_begin(ios_t *sysimg, ios_t *const_data, ios_t *symbols
         if (reactive_base_lists_pending) {
             reactive_base_lists_from(reactive_sections.relocs.ptr, reactive_sections.relocs.size);
             reactive_base_lists_pending = 0;
+            free(reactive_merged_lists);
+            reactive_merged_lists = NULL;
+            reactive_sections.relocs.ptr = NULL;
+            reactive_sections.relocs.size = 0;
         }
         if (!reactive_base_lists_ready || reactive_region_base == NULL) {
             jl_safe_printf("reactive: overlay: the loaded image has no region; the save writes whole\n");
@@ -4440,43 +4447,69 @@ static void reactive_write_offset_diff(ios_t *f, size_t diff)
     }
 }
 
+// The next difference of a delta-coded list of positions, or 0 at its end.
+static size_t reactive_read_offset_diff(const uint8_t **cursor) JL_NOTSAFEPOINT
+{
+    const uint8_t *p = *cursor;
+    size_t diff = 0, cnt = 0;
+    uint8_t c;
+    do {
+        c = *p++;
+        diff |= ((size_t)c & 0x7F) << (7 * cnt++);
+    } while (c >> 7);
+    *cursor = p;
+    return diff;
+}
+
+// A walk of a list of positions over the runs of an overlay: the first run
+// that ends after the last position asked, and that position.
+typedef struct {
+    size_t run;
+    size_t last;
+} reactive_run_walk_t;
+
+// Whether the words [pos, pos + span) meet one of the `nruns` runs, which are
+// in the order of their offsets. A list goes down at some places inside an
+// object, and a position below the last one finds its run again.
+static int reactive_runs_meet(const reactive_patch_t *runs, size_t nruns, reactive_run_walk_t *walk,
+                              size_t pos, size_t span) JL_NOTSAFEPOINT
+{
+    if (pos < walk->last) {
+        size_t lo = 0, hi = nruns;
+        while (lo < hi) {
+            size_t mid = lo + (hi - lo) / 2;
+            if (runs[mid].offset + runs[mid].size <= pos)
+                lo = mid + 1;
+            else
+                hi = mid;
+        }
+        walk->run = lo;
+    }
+    walk->last = pos;
+    while (walk->run < nruns && runs[walk->run].offset + runs[walk->run].size <= pos)
+        walk->run++;
+    return walk->run < nruns && runs[walk->run].offset < pos + span;
+}
+
 // The delta lists: the four offset lists of `relocs` with only the positions
 // that a start on a prelinked base converts, then the fixup list whole. A
 // prelinked base holds its pointers converted, and the overlay rewrites the
 // words of its patched runs and adds its new objects, so a position counts when
-// it is past `objects_start` or inside a run of `patches` ((start, size) pairs
-// in the order of their offsets). A memory reference spans two words, its
-// pointer and its owner, and a run holds both or neither of them (see
-// `reactive_overlay_emit`), so it counts when either word is in a run.
-static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, arraylist_t *patches, size_t objects_start)
+// it is past `objects_start` or inside one of the `nruns` runs. A memory
+// reference spans two words, its pointer and its owner, and a run holds both or
+// neither of them (see `reactive_overlay_emit`), so it counts when either word
+// is in a run.
+static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, const reactive_patch_t *runs, size_t nruns,
+                                         size_t objects_start)
 {
     const uint8_t *p = (const uint8_t*)relocs->buf;
     for (int list = 0; list < 4; list++) {
         size_t span = list >= 2 ? 2 * sizeof(void*) : sizeof(void*);
-        size_t last_in = 0, last_out = 0, k = 0;
-        while (1) {
-            size_t diff = 0, cnt = 0;
-            uint8_t c;
-            do {
-                c = *p++;
-                diff |= ((size_t)c & 0x7F) << (7 * cnt++);
-            } while (c >> 7);
-            if (diff == 0)
-                break;
-            size_t pos = last_in + diff;
-            last_in = pos;
-            int keep = pos >= objects_start;
-            while (!keep && k < patches->len) {
-                size_t start = (size_t)patches->items[k];
-                size_t size = (size_t)patches->items[k + 1];
-                if (start + size <= pos) {
-                    k += 2;
-                    continue;
-                }
-                keep = start < pos + span;
-                break;
-            }
-            if (keep) {
+        reactive_run_walk_t walk = {0, 0};
+        size_t pos = 0, last_out = 0, diff;
+        while ((diff = reactive_read_offset_diff(&p)) != 0) {
+            pos += diff;
+            if (pos >= objects_start || reactive_runs_meet(runs, nruns, &walk, pos, span)) {
                 reactive_write_offset_diff(f, pos - last_out);
                 last_out = pos;
             }
@@ -4486,6 +4519,54 @@ static void reactive_overlay_write_delta(ios_t *f, ios_t *relocs, arraylist_t *p
     uintptr_t nfixups;
     memcpy(&nfixups, p, sizeof(nfixups));
     ios_write(f, (const char*)p, (1 + nfixups) * sizeof(uintptr_t));
+}
+
+// The full lists of the state that an overlay gives (D12): each position of
+// `prev`, the lists of the state that the overlay extends, that is below
+// `base_end` and outside each run of the overlay, and each position of
+// `delta`, its delta lists; then the fixup list, which `delta` holds whole.
+// The delta lists hold each position past `base_end` and each one in a run,
+// so the two parts share no position. A reader takes each position alone, so
+// a list keeps the order of its two inputs. The caller frees the result.
+static char *reactive_overlay_merge_lists(const char *prev, const char *delta, const reactive_patch_t *runs,
+                                          size_t nruns, size_t base_end, size_t *size)
+{
+    ios_t out;
+    ios_mem(&out, 0);
+    const uint8_t *p = (const uint8_t*)prev, *d = (const uint8_t*)delta;
+    for (int list = 0; list < 4; list++) {
+        size_t span = list >= 2 ? 2 * sizeof(void*) : sizeof(void*);
+        reactive_run_walk_t walk = {0, 0};
+        size_t pdiff = reactive_read_offset_diff(&p), ddiff = reactive_read_offset_diff(&d);
+        size_t ppos = pdiff, dpos = ddiff, last = 0;
+        while (pdiff != 0 || ddiff != 0) {
+            size_t pos;
+            if (pdiff != 0 && (ddiff == 0 || ppos < dpos)) {
+                pos = ppos;
+                pdiff = reactive_read_offset_diff(&p);
+                ppos += pdiff;
+                if (pos >= base_end || reactive_runs_meet(runs, nruns, &walk, pos, span))
+                    continue;
+            }
+            else {
+                pos = dpos;
+                ddiff = reactive_read_offset_diff(&d);
+                dpos += ddiff;
+            }
+            if (pos == last)
+                jl_errorf("reactive: overlay: two lists name the position %zu", pos);
+            reactive_write_offset_diff(&out, pos - last);
+            last = pos;
+        }
+        write_int8(&out, 0);
+    }
+    uintptr_t nfixups;
+    memcpy(&nfixups, d, sizeof(nfixups));
+    ios_write(&out, (const char*)d, (1 + nfixups) * sizeof(uintptr_t));
+    size_t with_nul = 0;
+    char *lists = ios_take_buffer(&out, &with_nul);
+    *size = with_nul - 1;
+    return lists;
 }
 
 static int reactive_pages_cmp_pos(const void *a, const void *b) JL_NOTSAFEPOINT;
@@ -4610,10 +4691,11 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     }
     arraylist_free(&references);
     h->npatch_sysimg = idx.len / 2;
-    arraylist_t patches;
-    arraylist_new(&patches, 0);
-    for (size_t i = 0; i < idx.len; i++)
-        arraylist_push(&patches, idx.items[i]);
+    reactive_patch_t *runs = (reactive_patch_t*)malloc_s((h->npatch_sysimg + 1) * sizeof(reactive_patch_t));
+    for (size_t i = 0; i < h->npatch_sysimg; i++) {
+        runs[i].offset = (size_t)idx.items[2 * i];
+        runs[i].size = (size_t)idx.items[2 * i + 1];
+    }
     reactive_overlay_align(f, 8);
     h->off_patch_idx_sysimg = ios_pos(f) - reactive_overlay_blob_start;
     for (size_t i = 0; i < idx.len; i += 2) {
@@ -4675,16 +4757,13 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     h->off_new_syms = ios_pos(f) - reactive_overlay_blob_start;
     h->new_syms_size = symbols->size - reactive_syms_len;
     ios_write(f, symbols->buf + reactive_syms_len, h->new_syms_size);
-    reactive_overlay_align(f, 8);
-    h->off_relocs = ios_pos(f) - reactive_overlay_blob_start;
-    h->relocs_size = relocs->size;
-    ios_seek(relocs, 0);
-    ios_copyall(f, relocs);
+    // the delta lists alone: a loader makes the full lists from them and the
+    // lists of the base (D12)
     reactive_overlay_align(f, 8);
     h->off_delta_relocs = ios_pos(f) - reactive_overlay_blob_start;
-    reactive_overlay_write_delta(f, relocs, &patches, reactive_base_end);
+    reactive_overlay_write_delta(f, relocs, runs, h->npatch_sysimg, reactive_base_end);
     h->delta_relocs_size = ios_pos(f) - reactive_overlay_blob_start - h->off_delta_relocs;
-    arraylist_free(&patches);
+    free(runs);
     reactive_overlay_align(f, 8);
     h->off_gvar = ios_pos(f) - reactive_overlay_blob_start;
     h->gvar_size = gvar->size;
@@ -4696,10 +4775,10 @@ static void reactive_overlay_emit(ios_t *f, ios_t *sysimg, ios_t *const_data, io
     ios_seek(fptr, 0);
     ios_copyall(f, fptr);
     if (jl_reactive_timings())
-        jl_safe_printf("reactive: overlay: %zu objects and %zu const pages patched, %zu KB new objects, %zu KB new const, %zu KB lists, %zu KB delta lists\n",
+        jl_safe_printf("reactive: overlay: %zu objects and %zu const pages patched, %zu KB new objects, %zu KB new const, %zu KB delta lists of %zu KB lists of the state\n",
                        (size_t)h->npatch_sysimg, (size_t)h->npatch_const, (size_t)h->new_sysimg_size / 1024,
-                       (size_t)h->new_const_size / 1024, (size_t)h->relocs_size / 1024,
-                       (size_t)h->delta_relocs_size / 1024);
+                       (size_t)h->new_const_size / 1024, (size_t)h->delta_relocs_size / 1024,
+                       (size_t)relocs->size / 1024);
 }
 
 // After the roots: the header gets its last sizes and lands at the front.
@@ -7742,15 +7821,28 @@ static void reactive_chain_load(jl_image_t *image)
         reactive_sections.const_data.size = new_const;
         reactive_sections.symbols.ptr = syms;
         reactive_sections.symbols.size = new_syms;
-        reactive_sections.relocs.ptr = blob + h->off_relocs;
-        reactive_sections.relocs.size = h->relocs_size;
+        if (h->delta_relocs_size == 0)
+            jl_errorf("reactive: overlay %s carries no delta lists", path);
         if (reactive_prelinked_chain) {
             // A prelinked base holds its pointers converted, so the delta
             // lists convert the patched runs and the new objects.
-            if (h->delta_relocs_size == 0)
-                jl_errorf("reactive: overlay %s carries no delta lists, which a prelinked program needs", path);
             reactive_sections.relocs.ptr = blob + h->off_delta_relocs;
             reactive_sections.relocs.size = h->delta_relocs_size;
+        }
+        else if (h->relocs_size != 0) {
+            reactive_sections.relocs.ptr = blob + h->off_relocs;
+            reactive_sections.relocs.size = h->relocs_size;
+        }
+        else {
+            // the full lists of the composed state, from the lists of the
+            // state that the overlay extends and its delta lists
+            size_t size = 0;
+            char *lists = reactive_overlay_merge_lists(reactive_sections.relocs.ptr, blob + h->off_delta_relocs,
+                                                       patches, h->npatch_sysimg, reactive_base_end, &size);
+            free(reactive_merged_lists);
+            reactive_merged_lists = lists;
+            reactive_sections.relocs.ptr = lists;
+            reactive_sections.relocs.size = size;
         }
         reactive_sections.gvar.ptr = blob + h->off_gvar;
         reactive_sections.gvar.size = h->gvar_size;
@@ -7881,10 +7973,17 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
         checksum = jl_crc32c(checksum, (const char*)&reactive_chain_crc, sizeof(reactive_chain_crc));
     jl_restore_system_image_from_stream(&f, image, checksum);
     if (reactive_sections_on) {
-        // the lists of the loaded state decode at the first save: a bundle's
-        // launcher never saves, and the decode costs a large part of a start
+        // the lists of the loaded state decode at the first save of an
+        // overlay: a bundle's launcher never saves, and the decode costs a
+        // large part of a start
         reactive_base_lists_ready = 0;
-        reactive_base_lists_pending = 1;
+        reactive_base_lists_pending = reactive_overlay_mode();
+    }
+    if (!reactive_base_lists_pending && reactive_merged_lists != NULL) {
+        free(reactive_merged_lists);
+        reactive_merged_lists = NULL;
+        reactive_sections.relocs.ptr = NULL;
+        reactive_sections.relocs.size = 0;
     }
     reactive_sections_on = 0;
     reactive_prelinked_chain = 0;
