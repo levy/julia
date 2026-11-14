@@ -16,9 +16,10 @@
 #   restore      - git restores shapes.jl
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
-#   full-during  - materialize_app founds the store again, and HazardApp
-#                  changes `reused_const` in shapes.jl when the process that
-#                  writes the image loads it (HAZARD_EDIT_DURING_BUILD=1)
+#   full-during  - materialize_app founds the store again; when the log shows
+#                  the header of the image, the process that writes it loaded
+#                  the sources, and the gate changes `reused_const` in
+#                  shapes.jl while the build continues
 #   run-during   - the before-values: the image holds the text of before
 #   mat-during   - the first rebuild must apply the edit that arrived during
 #                  the whole build (finding 39)
@@ -128,15 +129,35 @@ boxed_slot() {
 }
 
 edit() { cp "$HZ/shapes-after.jl" "$HZ/$FILE" && echo "=== edited $FILE"; }
+
+# The founding build, with an edit of shapes.jl after the process that writes
+# the image loaded the sources (finding 39). The line of the image header is
+# that moment, and it needs JULIA_REACTIVE_TIMINGS, which `lane` sets; `time` writes its `Elapsed` line when the build ends, so a log
+# that has that line at the edit shows an edit that came too late.
+edit_during_build() {
+    local log=$OUT/mat-full-during.log
+    rm -f "$log"
+    lane mat-full-during "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" &
+    local pid=$!
+    until grep -q "^reactive: image header version" "$log" 2>/dev/null; do
+        kill -0 $pid 2>/dev/null || { wait $pid; echo "=== the build ended with no image header"; return 1; }
+        sleep 0.2
+    done
+    sed -i "s/^reused_const() = 42$/reused_const() = 43/" "$HZ/$FILE"
+    local late=0
+    grep -q "Elapsed (wall" "$log" && late=1
+    wait $pid || return 1
+    grep -q "^reused_const() = 43$" "$HZ/$FILE" || { echo "=== the gate did not edit $FILE"; return 1; }
+    [ $late = 0 ] || { echo "=== the edit came after the build"; return 1; }
+    echo "=== edited $FILE during the build"
+}
 restore() { git -C "$JH" checkout -- "contrib/reactive-compiler/tool/m6_hazard/$FILE" && echo "=== restored $FILE"; }
 
 steps=${*:-full run-before edit mat-edit run-after restore mat-restore run-restored full-during run-during mat-during run-during-after restore}
 for step in $steps; do
     case $step in
         full) rm -rf "$APP" && write_mat && lane mat-full "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
-        full-during) rm -rf "$APP" && write_mat &&
-            lane mat-full-during env HAZARD_EDIT_DURING_BUILD=1 "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" &&
-            { grep -q "reused_const() = 43" "$HZ/$FILE" || { echo "=== the build did not edit $FILE"; false; }; } ;;
+        full-during) rm -rf "$APP" && write_mat && edit_during_build ;;
         run-during) runbin during-before before ;;
         mat-during) lane mat-during "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
         run-during-after) runbin during-after during ;;

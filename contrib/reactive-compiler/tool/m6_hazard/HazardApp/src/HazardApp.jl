@@ -13,20 +13,6 @@ include("changes.jl")
 include("renamed.jl")
 include("untracked.jl")
 
-# Gate M6 tests an edit that arrives during a whole build (finding 39). With
-# HAZARD_EDIT_DURING_BUILD=1, the process that writes the image changes
-# `reused_const` in shapes.jl when it loads this module, after it read the
-# text of before: the image holds that text, and the first rebuild must apply
-# the edit.
-function __init__()
-    if get(ENV, "HAZARD_EDIT_DURING_BUILD", "") == "1" && ccall(:jl_generating_output, Cint, ()) == 1 &&
-            Base.JLOptions().incremental == 0
-        path = joinpath(@__DIR__, "shapes.jl")
-        write(path, replace(read(path, String), "reused_const() = 42" => "reused_const() = 43"))
-    end
-    return nothing
-end
-
 function julia_main()::Cint
     print(report())
     print(changes_report())
