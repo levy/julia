@@ -532,7 +532,9 @@ through it names the line of before.
   `debuginfo.cpp`) adds the difference, for the function and for each
   function inlined into it. Each line that a person sees equals a whole
   build. The cost: a change of the runtime, at each backtrace a read of the
-  line tables of the code instance.
+  line tables of the code instance. Julia has a hook of this kind,
+  `Base.update_stackframes_callback`, which Revise uses, but it corrects a
+  printed backtrace only, and not `stacktrace()` or a profile.
 - (c) **(a), and the rebuild compiles the machine code again.** The rebuild
   compiles each moved method and each function that inlined one again, with
   no new evaluation. The lines equal a whole build by construction. The
