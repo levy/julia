@@ -2673,6 +2673,12 @@ commits. The numbers of the steps stay as they are.
   whole build. An overlay of before still loads: its field `blob_checksum`
   is zero, and its references to const objects in the form of the sysimg
   name the same places.
+
+  *Landed (2026-11-14, with the word of the owner: "Yes").* `merged-next`
+  moved forward to 533ef035fb, with the libraries and the images of the
+  build at 8b2303e1ee, and the caches of the standard libraries made again.
+  Checked in the installed Julia: REPL, Pkg and Test load in 0.26 s, and the
+  harness of the image equals its folder. Not pushed.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
