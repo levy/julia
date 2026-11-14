@@ -3273,6 +3273,19 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
     if (reactive_prelinked_chain && !s->incremental && reactive_chain_n == 2 &&
         fvars.nclones == 0 && reactive_base_linfos != NULL)
         reuse = reactive_chain[1].reuse;
+    // the pages of the base that a patch writes: a code instance on other
+    // pages needs no search of the patches
+    size_t page = jl_page_size;
+    uint8_t *patched_pages = NULL;
+    if (reuse != NULL) {
+        patched_pages = (uint8_t*)calloc_s(reactive_base_end / page + 1);
+        const reactive_chain_image_t *c = &reactive_chain[1];
+        for (size_t k = 0; k < c->npatches; k++) {
+            size_t lo = c->patches[k].offset, hi = lo + c->patches[k].size;
+            for (size_t p = lo / page; p <= (hi - 1) / page && p <= reactive_base_end / page; p++)
+                patched_pages[p] = 1;
+        }
+    }
     uint32_t clone_idx = 0;
     for (i = 0; i < img_fvars_max; i++) {
         reloc_t offset = *(reloc_t*)&linfos[i];
@@ -3286,10 +3299,12 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
             }
             if (reuse != NULL && i < fvars.nptrs && reuse[i] != 0 && reuse[i] <= reactive_base_nlinfos &&
                 reactive_base_linfos[reuse[i] - 1] != NULL &&
-                offset + sizeof(jl_code_instance_t) <= reactive_base_end &&
-                !reactive_chain_patched(offset - sizeof(jl_taggedvalue_t), offset + sizeof(jl_code_instance_t))) {
-                linfos[i] = reactive_base_linfos[reuse[i] - 1];
-                continue;
+                offset + sizeof(jl_code_instance_t) <= reactive_base_end) {
+                size_t lo = offset - sizeof(jl_taggedvalue_t), hi = offset + sizeof(jl_code_instance_t);
+                if ((!patched_pages[lo / page] && !patched_pages[(hi - 1) / page]) || !reactive_chain_patched(lo, hi)) {
+                    linfos[i] = reactive_base_linfos[reuse[i] - 1];
+                    continue;
+                }
             }
             jl_code_instance_t *codeinst = (jl_code_instance_t*)(base + offset);
             assert(jl_is_method(jl_get_ci_mi(codeinst)->def.method) && jl_atomic_load_relaxed(&codeinst->invoke) != jl_fptr_const_return);
@@ -3321,6 +3336,7 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
             }
         }
     }
+    free(patched_pages);
     // Tell LLVM about the native code
     jl_register_fptrs(image->base, &fvars, linfos, img_fvars_max);
 }
