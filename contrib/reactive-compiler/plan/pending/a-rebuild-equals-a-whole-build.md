@@ -2606,6 +2606,22 @@ commits. The numbers of the steps stay as they are.
 
   A rebase costs about 35 s to 43 s on the platform, once, and each later
   rebuild is about 18 s shorter. On the kernel a rebase costs 8 s to 10 s.
+
+  *The round on the build at 761134a7c6 with PackageCompiler d667fb87
+  (2026-11-14).* Each of 11 gates passes: the gate of the edit cases through
+  a server and through a child (55 cases, 45 applied, 10 refused as they
+  must be), `gate_runs.sh` in both forms with the steps `same` and `read`,
+  the prelinked gate, the oracle gate, gates B and C, the server gate, the
+  replay of the kernel (3 rebases with the default bound) and the replay of
+  the platform (2 rebases); both chains and their new servers equal a whole
+  build.
+
+  *What stays open in Step 8.* The measurement of a rebase of the IDE store
+  needs a whole build of the IDE with the Julia of now (D5 stops its store).
+  The client side of a rebuild, about 5 s, and the floor of a save (finding
+  32), the ledger (finding 20) and the apply (finding 21) are not changed. The
+  check of the run scripts before Julia starts (D9) belongs in the
+  repositories of the owner.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
