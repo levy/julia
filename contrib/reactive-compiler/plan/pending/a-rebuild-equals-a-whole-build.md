@@ -2784,6 +2784,25 @@ commits. The numbers of the steps stay as they are.
   position. The writer and the merge now use one test, which finds the run
   again when a position goes down (`reactive_runs_meet`). An overlay of an
   earlier build loads with its full lists.
+
+  *The words with the tag BaseRef (closed: no fault).* The tag `BaseRef` is
+  7, so it reads as the top three bits 111, and the integer `typemax(UInt)`
+  has the same bits. Each of the 10 178 such words of the last overlay of
+  the platform replay (round r36b) is `typemax(UInt)` in the base and a
+  world from 41 713 to 42 439 in the overlay: the `max_world` of an entry or
+  a code instance that an edit closed. The 20 other words with these bits in
+  both are integers too. None of them is a reference.
+
+  *The size of the new objects from run to run (closed: no fault).* The last
+  overlay of the kernel replay held 789 KB of new objects in round r36 and
+  1 844 KB in round r36b, for the same commits and the same three moves of
+  the base. The difference starts at commit 24 and is one vector: the cache
+  of the `TypeName` of `Tuple`, which doubled to 131 072 slots (1 MB). In
+  round r36 the cache had its large vector in the base already. The server
+  makes types in an order that changes from run to run, and a cache doubles
+  when its count passes a bound, so the doubling falls before or after a
+  move of the base. The overlays of 45.6 MB and 7.9 MB of round r32 are gone;
+  *by the assistant:* the same kind of cause is likely, and it is not shown.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
