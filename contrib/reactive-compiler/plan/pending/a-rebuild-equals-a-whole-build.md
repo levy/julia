@@ -2622,6 +2622,14 @@ commits. The numbers of the steps stay as they are.
   32), the ledger (finding 20) and the apply (finding 21) are not changed. The
   check of the run scripts before Julia starts (D9) belongs in the
   repositories of the owner.
+
+  *Landed (2026-11-14, with the word of the owner: "Yes and continue").*
+  `merged-next` moved forward to 27c0f4ff81, with the libraries and the
+  images of the build at 761134a7c6, and the caches of the standard
+  libraries made again. Checked in the installed Julia: REPL, Pkg and Test
+  load in 0.3 s, and the harness of the image equals its folder. Not pushed.
+  D9 and D6 are in PackageCompiler, branch `live-harness`, which is not
+  pushed either.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
