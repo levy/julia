@@ -113,6 +113,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 58 | **A source file that the build does not track is no input of the store, so its edit is lost with no word.** The walk of the includes reads the text of the sources. It tracks no file whose path the text computes: an `include` in a loop, a path from a function, an `include` with a function of its expressions. The walk warns at the whole build. A rebuild then compares the tracked files only. The same holds for each file of a path package when the build does not track the dependencies. | `for name in ("one", "two") include(joinpath("computed_include", name * ".jl")) end`, then an edit of `two.jl`: the rebuild prints "applied 0 expressions", makes a snapshot, and the program answers `(1, 2)` where a whole build answers `(1, 20)`. | PackageCompiler, `tracked_sources` and `_reactive_inputs` | Found by the new cases of the gate of the edit cases (the test sets "Computed include path" and "include with mapexpr" of Revise); closed in PackageCompiler on the branch `live-harness` (Step 3) |
 | 59 | A file whose `include` line moves to another module stays in the module of before. The apply pairs the file of before with the file of now by the path alone, finds the same text, and evaluates nothing. | `include("part.jl")` moves from `module First` to `module Second`: the rebuilt program has `First.part` and no `Second.part`; a whole build has `Second.part` only. | `child.jl`, `rc_match_files` | Found by the new case `moved_include` of the gate (the test set "Moved include" of Revise); closed on the branch (Step 3) |
 | 61 | **An expression whose text stays and whose place in the load order changes is not evaluated again.** A whole build evaluates it at its new place, where it sees other definitions. The ledger compares texts, so a moved method, a moved expression or a moved `include` line changes nothing in the rebuild. | `pick(x) = 1; const PICKED = pick(1); pick(x::Int) = 2`, and the edit moves the last line above the constant: a whole build gives `PICKED == 2`, the rebuild keeps 1 and prints "applied 0 expressions". | `child.jl`, `rc_apply_tracked`: no rule for the order of the expressions that the edit leaves as they are | Found by a reading of the code for the open part of finding 53 (2026-11-13); closed on the branch (Step 3, rule H4) |
+| 62 | **The line table of a moved method keeps the lines of before.** The apply gives a method that an edit moves its new first line (H1), and leaves the rest of its place as it was: the line table of its source, the line tables of its code instances, the method of an opaque closure in its code, and the debug lines of the machine code that the image reuses. A backtrace through the method names the line of before, and a whole build names the line of now. Finding 43 says that the rebuild gives a moved item its new lines in the line table; that holds for the first line of a method only. | `shapes-after-2.jl` has one line more above `reused_kwargs` than `shapes-after.jl`. After the rebuild, `reused_kwargs(1; scale = "a")` throws, and the backtrace names `shapes.jl:28`; a whole build names `shapes.jl:29`. The machine code of `reused_noinline` names line 13, the whole build 14. The method of the opaque closure of `make_oc` keeps line 45 and makes the hash of the oracle differ. | `child.jl`, the place moves of `rc_apply_tracked` set `line` and `toplevel_line` only; `debuginfo.cpp`, `lookup_pointer` reads the line of a frame from the debug lines of the machine code | Seen in the oracle gate (round r37, 2026-11-14), after a new call shape moved `make_oc` by one line between the two edits; the oracle passed before because the three places of `make_oc` gave its first line again. Open: Q3 |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -432,10 +433,11 @@ These are my proposals. The owner approves them with the plan.
 
 ## The open questions
 
-Two decisions are the owner's. Q1 sets what property 3 means and what a
+Three decisions are the owner's. Q1 sets what property 3 means and what a
 rebuild costs; it has its answer, (b), since 2026-11-13. Q2 came with finding
 44, on 2026-11-10, and sets how the rebuild knows the methods of an
-expression; it has its answer.
+expression; it has its answer. Q3 came with finding 62, on 2026-11-14, and
+sets which lines a moved method gives; it waits for its answer.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -512,6 +514,34 @@ the apply defines again with the same code is never deleted, whoever has it
 at its lines. It closes the first form of finding 44, where the user of the
 macro is evaluated again. The second form, where the user is not evaluated
 again, waits for Q2.
+
+**Q3. Which lines does a moved method give after a rebuild (finding 62)?**
+An edit that adds a line above a method moves it. The rebuild keeps its code
+and its machine code, and gives it its new first line only. A backtrace
+through it names the line of before.
+
+- (a) **The line tables move with the method.** The apply shifts the line
+  table of the source of each moved method, of its inferred code that a
+  caller inlines, and of the method of each opaque closure in it. Code that
+  a rebuild or the program compiles later names the right lines. Reused machine code keeps the lines of its compile, so a
+  frame of it names the line of before until the next whole build. The cost:
+  a change of the harness.
+- (b) **(a), and the lookup of a frame corrects reused machine code.** The
+  line tables of a code instance keep the lines of its compile, and its
+  method has the line of now. The lookup of a frame (`lookup_pointer` in
+  `debuginfo.cpp`) adds the difference, for the function and for each
+  function inlined into it. Each line that a person sees equals a whole
+  build. The cost: a change of the runtime, at each backtrace a read of the
+  line tables of the code instance.
+- (c) **(a), and the rebuild compiles the machine code again.** The rebuild
+  compiles each moved method and each function that inlined one again, with
+  no new evaluation. The lines equal a whole build by construction. The
+  cost: the rebuild time follows the moved code. An edit near the top of a
+  large file moves each method below it.
+
+*The recommendation of the assistant is (b).* A move stays as fast as now,
+the correction uses two facts that the image has already, and each line that
+a backtrace, a profile or a log names equals a whole build.
 
 ## Steps
 
@@ -2758,6 +2788,11 @@ commits. The numbers of the steps stay as they are.
   restore in that form applies nothing: a rebuild with no server loads the
   base image and applies the change since its sources, and the restore gives
   those sources again. The gate tests the slot at the edit only.
+
+  In round r37, 10 of the 12 gates pass, the two replays with the check of
+  each rebuild among them. Gate M6 in the overlay form stopped at the check
+  of the slot after the restore. The oracle finds one method of the tables
+  that differs, `make_oc`: finding 62, which the new call shape shows.
 
   *The full lists (D12).* An overlay held the full lists of its state and the
   delta lists. *Decision by the assistant:* no overlay holds the full lists.
