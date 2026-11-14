@@ -16,6 +16,14 @@
 #   restore      - git restores shapes.jl
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
+#   full-during  - materialize_app founds the store again, and HazardApp
+#                  changes `reused_const` in shapes.jl when the process that
+#                  writes the image loads it (HAZARD_EDIT_DURING_BUILD=1)
+#   run-during   - the before-values: the image holds the text of before
+#   mat-during   - the first rebuild must apply the edit that arrived during
+#                  the whole build (finding 39)
+#   run-during-after - the before-values with `const` 43
+#   restore
 # In the overlay form (JULIA_REACTIVE_IMAGE_WRITE=overlay), the log of
 # mat-edit must also name the slot through which the delta calls
 # `reused_boxed!`, a function of boxed arguments (D11). A rebuild in that form
@@ -74,7 +82,7 @@ EOF
 }
 
 # The binary prints one `shape:` line per call shape and one `bench:` line.
-# $1 = a tag for the log, $2 = before | after: the expected values.
+# $1 = a tag for the log, $2 = before | after | during: the expected values.
 runbin() {
     lane run-$1 "$APP/bin/hazard" || return 1
     python3 - "$OUT/run-$1.log" "$2" <<'PY'
@@ -85,7 +93,7 @@ before = dict(noinline=3, inline=2, nospec=11, const=42, cfunc=2, kwargs=3,
 after = dict(noinline=6, inline=3, nospec=12, const=42, cfunc=4, kwargs=6,
              varargs=6, invoke=0.0, oc=102, sparam=8, boxed=4, finalizer=2,
              reverse=2002, cone=4, ccallable=2)
-want = before if sys.argv[2] == "before" else after
+want = {"before": before, "after": after, "during": dict(before, const=43)}[sys.argv[2]]
 got = {}
 for line in open(sys.argv[1], errors="replace"):
     m = re.match(r"shape: (\w+) = (.*)$", line)
@@ -122,10 +130,16 @@ boxed_slot() {
 edit() { cp "$HZ/shapes-after.jl" "$HZ/$FILE" && echo "=== edited $FILE"; }
 restore() { git -C "$JH" checkout -- "contrib/reactive-compiler/tool/m6_hazard/$FILE" && echo "=== restored $FILE"; }
 
-steps=${*:-full run-before edit mat-edit run-after restore mat-restore run-restored}
+steps=${*:-full run-before edit mat-edit run-after restore mat-restore run-restored full-during run-during mat-during run-during-after restore}
 for step in $steps; do
     case $step in
         full) rm -rf "$APP" && write_mat && lane mat-full "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
+        full-during) rm -rf "$APP" && write_mat &&
+            lane mat-full-during env HAZARD_EDIT_DURING_BUILD=1 "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" &&
+            { grep -q "reused_const() = 43" "$HZ/$FILE" || { echo "=== the build did not edit $FILE"; false; }; } ;;
+        run-during) runbin during-before before ;;
+        mat-during) lane mat-during "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
+        run-during-after) runbin during-after during ;;
         run-before) runbin before before ;;
         edit) edit ;;
         mat-edit) lane mat-edit "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-edit && boxed_slot mat-edit ;;
