@@ -2543,6 +2543,25 @@ commits. The numbers of the steps stay as they are.
   files in the run scripts before they start Julia. The build scripts of the
   owner start Julia with the builder of `projectured-julia`, which knows
   where the bundle is, so the check belongs in those repositories.
+
+  *The parts of a rebuild of the platform (2026-11-14, the replay over 17
+  commits, overlays through a server, the build at dd4d6bdd3f).*
+
+  | rebuilds | the client, outside the server | the apply (the replay in it) | the save (the code of the delta in it) | in all |
+  | --- | --- | --- | --- | --- |
+  | 1 to 7, before the large commit | about 5 s | 1.5 s to 10.9 s (0.6 s to 5.3 s) | 2.9 s to 8.8 s (0.5 s to 3.7 s) | 10 s to 25 s |
+  | 8, the commit of 250 expressions | about 5 s | 19.5 s (8.4 s) | 20.8 s (10.9 s) | 45 s |
+  | 9 to 17, small commits after it | about 5 s | 3.9 s to 9.7 s (3.0 s to 5.8 s) | 21.0 s to 22.3 s (10.8 s to 11.5 s) | 31 s to 37 s |
+
+  The save holds each function that changed since the whole build (finding
+  18): after the large commit the delta has about 2 400 functions, and each
+  later save compiles them all again, 11 s, and writes 2.5 s of heap. So one
+  large edit makes each later rebuild about 20 s longer, until the next whole
+  build. The rebase of D6 is the answer of the plan: a save in the whole
+  form makes the image of now the base, and the overlay starts empty again.
+  The client side, about 5 s, is the start of Julia, the load of
+  PackageCompiler, the walk of the tracked files, the checks of the inputs
+  and the link of the overlay.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
