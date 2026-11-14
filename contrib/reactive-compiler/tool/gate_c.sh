@@ -83,10 +83,10 @@ runbin() {
     python3 - "$OUT/run-$1.log" "$2" <<'PY'
 import re, sys
 before = dict(noinline=3, inline=2, nospec=11, const=42, cfunc=2, kwargs=3,
-              varargs=3, invoke=0.0, oc=101, sparam=8, finalizer=1,
+              varargs=3, invoke=0.0, oc=101, sparam=8, boxed=2, finalizer=1,
               reverse=1001, cone=2, ccallable=1)
 after = dict(noinline=6, inline=3, nospec=12, const=42, cfunc=4, kwargs=6,
-             varargs=6, invoke=0.0, oc=102, sparam=8, finalizer=2,
+             varargs=6, invoke=0.0, oc=102, sparam=8, boxed=4, finalizer=2,
              reverse=2002, cone=4, ccallable=2)
 want = before if sys.argv[2] == "before" else after
 got = {}

@@ -530,6 +530,11 @@ static void resolve_workqueue(jl_codegen_params_t &params, egal_set &method_root
                 }
             }
         }
+        // An overlay calls the loaded image through slots (D11): a callee with
+        // code there that reaches this trampoline is a `jl_fptr_sparam` or an
+        // opaque-closure callee.
+        if (preal_decl.empty() && jl_reactive_overlay_mode() && jl_reactive_image_ids(codeinst, NULL, NULL))
+            trampolines++;
         if (preal_decl.empty()) {
             pinvoke = emit_tojlinvoke(codeinst, invokeName, mod, params);
             if (!proto.specsig) {
@@ -1049,12 +1054,20 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
     size_t offset = gvars.size();
     data->jl_external_to_llvm.resize(params.external_fns.size());
 
+    // The slot of a callee holds its `specptr.fptr` (`jl_root_new_gvars` in
+    // staticdata.c): the specialized function, or the function of boxed
+    // arguments, which only an overlay calls through a slot.
+    size_t boxed_slots = 0;
     for (auto &extern_fn : params.external_fns) {
         jl_code_instance_t *this_code = std::get<0>(extern_fn.first);
         bool specsig = std::get<1>(extern_fn.first);
-        assert(specsig && "Error external_fns doesn't handle non-specsig yet");
-        (void) specsig;
+        assert((specsig || jl_reactive_overlay_mode()) && "a package image has no slot for a callee of boxed arguments");
         GlobalVariable *F = extern_fn.second;
+        if (!specsig) {
+            boxed_slots++;
+            if (jl_reactive_timings() >= 2)
+                jl_safe_printf("reactive: overlay: a slot for the boxed function %s\n", F->getName().str().c_str());
+        }
         size_t idx = gvars.size() - offset;
         assert(idx >= 0);
         assert(idx < data->jl_external_to_llvm.size());
@@ -1063,6 +1076,9 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, LLVMOrcThreadSafeModuleRef llvm
         assert(gvars_names.insert(F->getName()).second && "Duplicate gvar name in params!");
         gvars.push_back(std::string(F->getName()));
     }
+    if (jl_reactive_timings() && jl_reactive_overlay_mode())
+        jl_safe_printf("reactive: overlay: %zu callees of the loaded image through a slot, %zu of them with boxed arguments\n",
+                       params.external_fns.size(), boxed_slots);
 
     // clones the contents of the module `m` to the shadow_output collector
     // while examining and recording what kind of function pointer we have

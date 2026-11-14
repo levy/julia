@@ -3,11 +3,12 @@
 # gate copies this file over `HazardApp/src/shapes.jl` after the first edit.
 #
 # The founding build compiles every definition here. The edit changes
-# `driver`, `edited_leaf`, `delta_callee`, `bench_delta` and `hazard_entry`;
-# `shapes-after.jl` holds the edited text. After the rebuild, `driver` is
-# delta code that calls reused code of every shape, `cone_caller` is reused
-# code that the edit of `edited_leaf` invalidates, and `apply_dynamic` is
-# reused code that calls delta code through a generic call.
+# `driver`, `edited_leaf`, `delta_callee`, `bench_delta`, `bench_boxed_delta`
+# and `hazard_entry`; `shapes-after.jl` holds the edited text. After the
+# rebuild, `driver` is delta code that calls reused code of every shape,
+# `cone_caller` is reused code that the edit of `edited_leaf` invalidates,
+# and `apply_dynamic` is reused code that calls delta code through a
+# generic call.
 
 # specsig; a delta caller reaches it through the trampoline
 @noinline reused_noinline(x::Int) = x * 3
@@ -15,7 +16,7 @@
 # small enough to inline: the callee body lands in the delta with its caller
 reused_inline(x::Int) = x + 1
 
-# jl_fptr_args: a @nospecialize method has no specsig
+# a @nospecialize argument: the result `Int` keeps a specsig
 @noinline reused_nospec(@nospecialize(x)) = x isa Int ? x + 10 : -1
 
 # jl_fptr_const_return
@@ -43,6 +44,17 @@ reused_invoke(c::Circle) = invoke(area, Tuple{Shape}, c)
 # code makes the closure in a function: stock Julia faults on a closure that
 # a precompiled package holds in a `const`.
 make_oc() = Base.Experimental.@opaque (x::Int) -> x + 100
+
+# jl_fptr_args: three boxed arguments and the result `nothing` give no
+# specsig (`uses_specsig` in codegen.cpp). A delta caller reaches it by its
+# symbol in the whole form and through a slot in the overlay form.
+mutable struct Counter
+    n::Int
+end
+@noinline function reused_boxed!(a::Counter, b::Counter, c::Counter)
+    a.n += b.n + c.n
+    return nothing
+end
 
 # a method with a static parameter and no specialization: jl_fptr_sparam
 @noinline reused_sparam(@nospecialize(x::T)) where {T} = sizeof(T)
@@ -91,6 +103,21 @@ function bench_delta(n::Int)
     end
     return s
 end
+# the same two loops over a callee with boxed arguments
+function bench_boxed_reused(n::Int)
+    a = Counter(0); b = Counter(1); c = Counter(0)
+    for i in 1:n
+        reused_boxed!(a, b, c)
+    end
+    return a.n
+end
+function bench_boxed_delta(n::Int)
+    a = Counter(0); b = Counter(1); c = Counter(0)
+    for _ in 1:n
+        reused_boxed!(a, b, c)
+    end
+    return a.n
+end
 function bench(f, n::Int)
     f(n)
     t0 = time_ns()
@@ -130,6 +157,7 @@ function driver()
         ("invoke", reused_invoke(Circle(2.0))),
         ("oc", make_oc()(2)),
         ("sparam", reused_sparam(2)),
+        ("boxed", let a = Counter(0); reused_boxed!(a, Counter(2), Counter(2)); a.n end),
         ("finalizer", FINALIZED[] - state),
         ("state", state),
         ("reverse", apply_dynamic(delta_callee, 2)),
@@ -149,6 +177,11 @@ function run_all(io::IO)
     sr == sd || println(io, "bench: the sums differ ", sr, " ", sd)
     println(io, "bench: reused ", round(tr; digits = 2), " ns/call; delta ",
             round(td; digits = 2), " ns/call")
+    (br, tbr) = bench(bench_boxed_reused, n)
+    (bd, tbd) = bench(bench_boxed_delta, n)
+    br == bd || println(io, "bench: the boxed sums differ ", br, " ", bd)
+    println(io, "bench: boxed reused ", round(tbr; digits = 2), " ns/call; delta ",
+            round(tbd; digits = 2), " ns/call")
     return nothing
 end
 

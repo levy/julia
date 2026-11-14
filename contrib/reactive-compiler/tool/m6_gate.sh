@@ -8,17 +8,23 @@
 #   edit         - shapes-after.jl replaces HazardApp/src/shapes.jl
 #   mat-edit     - materialize_app again: the delta of the edit; the log must
 #                  say that the previous image exports `hazard_entry`
-#   run-after    - the rebuilt binary prints the after-values; the bench line
-#                  gives the trampoline cost per call; the `state` line must
-#                  be 0: no build executes the program
+#   run-after    - the rebuilt binary prints the after-values; the two bench
+#                  lines give the cost per call from reused code and from
+#                  delta code, to a callee of a specsig and to a callee of
+#                  boxed arguments; the `state` line must be 0: no build
+#                  executes the program
 #   restore      - git restores shapes.jl
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
+# In the overlay form (JULIA_REACTIVE_IMAGE_WRITE=overlay), the log of
+# mat-edit and of mat-restore must also name the slot through which the delta
+# calls `reused_boxed!`, a function of boxed arguments (D11).
 # Pass step names to run some steps, or nothing to run all of them in order.
+# Run the gate under bounded-run: the steps take no cap of their own.
 set -u
 OUT=${OUT:-${TMPDIR:-/tmp}/reactive/m6}
 JH=${JH:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}
-JULIA=$JH/usr/bin/julia
+JULIA=${JULIA:-$JH/usr/bin/julia}
 PC=${PC:-$(cd "$JH/.." && pwd)/package-compiler-reactive}
 HZ=$JH/contrib/reactive-compiler/tool/m6_hazard
 THREADS=${THREADS:-8}
@@ -28,18 +34,16 @@ APP=$OUT/hazard
 FILE=HazardApp/src/shapes.jl
 mkdir -p "$OUT/depot"
 
-# One bounded run on the build lane. $1 = log name, $2.. = the command.
+# One run on the build lane. $1 = log name, $2.. = the command.
 lane() {
     local name=$1; shift
-    systemd-run --user --scope -q -p MemoryMax=24G -p MemorySwapMax=0 \
-        nice -n 10 taskset -c "$LANE" \
-        timeout 2400s /usr/bin/time -v \
+    nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=$TIMINGS \
             JULIA_DEPOT_PATH="$OUT/depot:$HOME/.julia:" \
         "$@" > "$OUT/$name.log" 2>&1
     local rc=$?
     echo "=== $name exit $rc at $(date +%T)"
-    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|trace)|reactive: (delta|front|ccallable)|materialize_app|shape:|bench:|=== " "$OUT/$name.log"
+    grep -E "Elapsed \(wall|Maximum resident|rc: (file|apply|applied|eval|new [0-9]|warning|removed|trace)|reactive: (delta|front|ccallable|overlay: [0-9])|materialize_app|shape:|bench:|=== " "$OUT/$name.log"
     return $rc
 }
 
@@ -74,10 +78,10 @@ runbin() {
     python3 - "$OUT/run-$1.log" "$2" <<'PY'
 import re, sys
 before = dict(noinline=3, inline=2, nospec=11, const=42, cfunc=2, kwargs=3,
-              varargs=3, invoke=0.0, oc=101, sparam=8, finalizer=1,
+              varargs=3, invoke=0.0, oc=101, sparam=8, boxed=2, finalizer=1,
               reverse=1001, cone=2, ccallable=1)
 after = dict(noinline=6, inline=3, nospec=12, const=42, cfunc=4, kwargs=6,
-             varargs=6, invoke=0.0, oc=102, sparam=8, finalizer=2,
+             varargs=6, invoke=0.0, oc=102, sparam=8, boxed=4, finalizer=2,
              reverse=2002, cone=4, ccallable=2)
 want = before if sys.argv[2] == "before" else after
 got = {}
@@ -103,6 +107,16 @@ alias_skipped() {
         { echo "=== the rebuild did not skip the alias of hazard_entry"; return 1; }
 }
 
+# $1 = the log of a rebuild. In the overlay form the delta calls
+# `reused_boxed!` through a slot, which the loader fills with the function of
+# the loaded image: one load and one indirect call (D11).
+boxed_slot() {
+    [ "${JULIA_REACTIVE_IMAGE_WRITE:-whole}" = overlay ] || return 0
+    grep -qE "reactive: overlay: a slot for the boxed function pjsys1_reused_boxed!_[0-9]+$" "$OUT/$1.log" ||
+        { echo "=== the delta calls reused_boxed! through no slot"; return 1; }
+    echo "=== $1: the delta calls reused_boxed! through a slot"
+}
+
 edit() { cp "$HZ/shapes-after.jl" "$HZ/$FILE" && echo "=== edited $FILE"; }
 restore() { git -C "$JH" checkout -- "contrib/reactive-compiler/tool/m6_hazard/$FILE" && echo "=== restored $FILE"; }
 
@@ -112,10 +126,10 @@ for step in $steps; do
         full) rm -rf "$APP" && write_mat && lane mat-full "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" ;;
         run-before) runbin before before ;;
         edit) edit ;;
-        mat-edit) lane mat-edit "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-edit ;;
+        mat-edit) lane mat-edit "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-edit && boxed_slot mat-edit ;;
         run-after) runbin after after ;;
         restore) restore ;;
-        mat-restore) lane mat-restore "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-restore ;;
+        mat-restore) lane mat-restore "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-restore && boxed_slot mat-restore ;;
         run-restored) runbin restored before ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }

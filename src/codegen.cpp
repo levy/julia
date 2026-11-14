@@ -5377,9 +5377,12 @@ static jl_cgval_t emit_invoke(jl_codectx_t &ctx, const jl_cgval_t &lival, ArrayR
                             jl_read_codeinst_invoke(codeinst, &specsigflags, &invoke, &fptr, 0);
                             if (specsig ? specsigflags & JL_CI_FLAGS_SPECPTR_SPECIALIZED : invoke == jl_fptr_args_addr) {
                                 if (ctx.external_linkage) {
-                                    // TODO: Add !specsig support to aotcompile.cpp
-                                    // Check that the codeinst is containing native code
-                                    if (specsig && (specsigflags & JL_CI_FLAGS_FROM_IMAGE)) {
+                                    // A callee with native code in a loaded image is called
+                                    // through a slot that the loader fills with its function.
+                                    // A callee with boxed arguments gets a slot in the overlay
+                                    // of a reactive rebuild (D11); a package image calls it
+                                    // through the `jl_invoke` trampoline.
+                                    if ((specsig || jl_reactive_overlay_mode()) && (specsigflags & JL_CI_FLAGS_FROM_IMAGE)) {
                                         external = !always_inline;
                                         need_to_emit = false;
                                     }
