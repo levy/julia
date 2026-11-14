@@ -74,6 +74,7 @@ lane() {
     local name=$1; shift
     nice -n 10 taskset -c "$LANE" /usr/bin/time -v \
         env JULIA_IMAGE_THREADS=$THREADS JULIA_REACTIVE_TIMINGS=1 JULIA_DEPOT_PATH="$DEPOT" \
+            JULIA_REACTIVE_REBASE="${REBASE:-0.05}" \
         "$@" > "$OUT/$name.log" 2>&1
 }
 
@@ -264,7 +265,7 @@ found() {
 }
 
 replay() {
-    local n=0 refused=0 faults=0 grown=0 since=0 commit short
+    local n=0 refused=0 faults=0 grown=0 rebased=0 since=0 commit short
     : > "$OUT/refusals.txt"; : > "$OUT/faults.txt"
     for commit in $(tail -n +2 "$OUT/commits.txt"); do
         n=$((n + 1)); short=$(echo "$commit" | cut -c1-9)
@@ -281,6 +282,16 @@ replay() {
                 continue
             fi
             local line; line=$(grep -h -o "rc: applied [0-9]* expressions and [0-9]* removals" "$CHAIN/reactive-store/server.log" | tail -1)
+            # A rebuild whose overlay passed the bound moved the base forward
+            # (D6): the program is linked again from the new archive, as the
+            # build scripts do.
+            if grep -q "is the base now" "$OUT/mat-$n.log"; then
+                rebased=$((rebased + 1)); since=$((since + 1))
+                link || return 1
+                verify "$n-$short-rebased" || return 1
+                echo "    $n $short ${line:-rc: applied nothing}, and the base moved forward: $(grep -o 'Elapsed (wall clock) time.*' "$OUT/mat-$n.log" | awk '{print $NF}')"
+                continue
+            fi
             if verify "$n-$short"; then
                 since=$((since + 1))
                 echo "    $n $short ${line:-rc: applied nothing}, $(grep -o 'Elapsed (wall clock) time.*' "$OUT/mat-$n.log" | awk '{print $NF}')"
@@ -305,7 +316,7 @@ replay() {
         since=0
         found_chain "mat-$n-found" again && verify "$n-$short-found" || return 1
     done
-    echo "=== replay: $n commits, $refused refused, $faults faults, $grown founded again by the store"
+    echo "=== replay: $n commits, $refused refused, $faults faults, $grown founded again by the store, $rebased moved the base forward"
     # A whole build of the chain takes each change of before into its image, so
     # the comparison at the end tests the rebuilds after the last one alone.
     echo "=== replay: the chain holds $since rebuilds since its last whole build, and the comparison tests those"
