@@ -2562,6 +2562,50 @@ commits. The numbers of the steps stay as they are.
   The client side, about 5 s, is the start of Julia, the load of
   PackageCompiler, the walk of the tracked files, the checks of the inputs
   and the link of the overlay.
+
+  *D6 as built (2026-11-14; PackageCompiler, branch `live-harness`, f9a20afc
+  and d667fb87; the fork 761134a7c6 and bb30a1268f; by the assistant within
+  the approved D6).* In the overlay form, after the save of a rebuild:
+
+  1. The measure is the code of the overlay against the code of the base:
+     the size of the text objects of the last snapshot, which hold each
+     function that a change compiled since the base, against the size of the
+     text objects of the base (`_reactive_delta_share`). The size of the
+     overlay is no measure: it has a part that follows the base, the lists
+     of the whole image, and an overlay of one expression of the kernel was
+     6 % to 9 % of the base. Each rebuild prints `code_percent`.
+  2. Past the bound (`rebase`, `JULIA_REACTIVE_REBASE`, 2 %), the server
+     stops, and a child in the whole form starts from the base image and
+     applies each change since the base, as a new server does. Its image
+     takes the place of the base. Its snapshot holds the text objects of the
+     old base too and becomes the first snapshot of the store; the chain is
+     empty; the archive for the program, the archive of the save with the
+     text objects of the base, is written last, so the builder of the owner
+     links and prelinks the program again, as after a founding, with no
+     change of the builder. The next rebuild starts a new server from the
+     new base.
+  3. A rebase that fails leaves the overlay of the rebuild in place, with a
+     warning. The growth of an overlay store no longer starts a whole build.
+
+  One fault came up on the way: a child writes its image at its exit, after
+  its apply, so the image held the flag of an open apply as true, and a
+  server from a rebased image refused each apply. The flag is of one
+  process now: it is false at the end of the apply of a child and at the
+  start of each server.
+
+  | the replay | rebases | result |
+  | --- | --- | --- |
+  | 28 commits of the kernel, bound 0.5 % | 25 | the program linked again and right after each; the chain and a new server equal a whole build |
+  | 17 commits of the platform, bound 2 % | 2, at commits 7 and 8 | the chain and a new server equal a whole build in 27 289 method lines |
+
+  | the platform, 17 rebuilds | without rebase | with rebase |
+  | --- | --- | --- |
+  | commits 9 to 17, small edits after the commit of 250 expressions | 31 s to 37 s each | 12 s to 19 s each |
+  | the rebuilds that moved the base (7, 8) | 25 s, 45 s | 60 s, 88 s |
+  | all 17 rebuilds | 459 s | 379 s |
+
+  A rebase costs about 35 s to 43 s on the platform, once, and each later
+  rebuild is about 18 s shorter. On the kernel a rebase costs 8 s to 10 s.
 - [ ] **Step 9: the overlay form: the call and the start (D11, D12; findings
   12, 13, 26).** Test: the bench of gate M6 with a callee of boxed arguments,
   in the overlay form against a whole build; the start time of the program
