@@ -300,13 +300,16 @@ typedef struct {
     uint64_t off_delta_relocs;   // the lists of the pointers that a start on a prelinked base converts
     uint64_t delta_relocs_size;  // zero in an overlay written before the lists
     uint64_t base_checksum;      // the mark and the checksum of the base image; zero in an overlay written before the field
-    uint64_t reserved;
+    uint64_t blob_checksum;      // the mark and the checksum of this blob with this field zero; zero in an overlay written before the field
 } reactive_overlay_header_t;
 // The checksum that the base image of this process carries
 // (`jl_system_image_checksum`). An overlay records the one of the base that
 // its writer loaded, and the loader applies the overlay to that base only:
 // two whole builds can have the three sizes of the header in common.
 #define REACTIVE_BASE_CHECKSUM_MARK ((uint64_t)0x62617365 << 32)
+// The mark of `blob_checksum`. A start takes the identity of an overlay from
+// the field and reads no byte of the overlay that it does not apply (D12).
+#define REACTIVE_BLOB_CHECKSUM_MARK ((uint64_t)0x626c6f62 << 32)
 static uint32_t reactive_base_checksum = 0;
 static int reactive_overlay_on = 0;                 // this save writes an overlay
 static reactive_overlay_header_t reactive_overlay_header;
@@ -4648,9 +4651,19 @@ static void reactive_overlay_finish(ios_t *f)
     reactive_overlay_header_t *h = &reactive_overlay_header;
     h->roots_size = ios_pos(f) - reactive_overlay_blob_start - h->off_roots;
     size_t end = ios_pos(f);
+    h->blob_checksum = 0;
     ios_seek(f, reactive_overlay_blob_start);
     ios_write(f, (const char*)h, sizeof(*h));
     ios_seek(f, end);
+    // The checksum of the blob, which the identity of the loaded image takes
+    // (`reactive_chain_crc`): the writer has the blob in memory.
+    if (f->bm == bm_mem) {
+        uint32_t crc = jl_crc32c(0, f->buf + reactive_overlay_blob_start, end - reactive_overlay_blob_start);
+        h->blob_checksum = REACTIVE_BLOB_CHECKSUM_MARK | crc;
+        ios_seek(f, reactive_overlay_blob_start);
+        ios_write(f, (const char*)h, sizeof(*h));
+        ios_seek(f, end);
+    }
 }
 
 // Queue the objects of the dirty pages: the objects whose tag is in a dirty
@@ -7619,7 +7632,13 @@ static void reactive_chain_load(jl_image_t *image)
                       path, (unsigned)(h->base_checksum & 0xffffffff), (unsigned)reactive_base_checksum);
         if (reactive_chain_n >= REACTIVE_CHAIN_MAX)
             jl_errorf("reactive: the chain holds more than %d overlays", REACTIVE_CHAIN_MAX);
-        reactive_chain_crc = jl_crc32c(reactive_chain_crc, (const char*)ob.data, ob.size);
+        if ((h->blob_checksum >> 32) == (REACTIVE_BLOB_CHECKSUM_MARK >> 32)) {
+            uint32_t blob_crc = (uint32_t)(h->blob_checksum & 0xffffffff);
+            reactive_chain_crc = jl_crc32c(reactive_chain_crc, (const char*)&blob_crc, sizeof(blob_crc));
+        }
+        else {
+            reactive_chain_crc = jl_crc32c(reactive_chain_crc, (const char*)ob.data, ob.size);
+        }
         const char *blob = (const char*)ob.data;
         // the new objects, then the patches over the pages they name
         size_t objects_start = reactive_sections.sysimg.size;
