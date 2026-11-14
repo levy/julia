@@ -91,7 +91,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 35 | No save checks the room that the program keeps for an overlay: 64 MB of constant data and 256 MB of objects. The rebuild succeeds, and each start of the program stops with "no room". The overlay of today uses 30 % and 21 %. | about 2 000 changed items, or one new table of 45 MB | `staticdata.c:4566`, `:7582` | Read |
 | 36 | The program matches an overlay with its base by three sizes. It applies an overlay of another whole build of the same sizes with no message. | an old `sys.<n>.so` beside a new whole build | `staticdata.c:7570` | Read |
 | 37 | Under overlays, a save that can not write an object back in its place stops the build, and each later build, until a whole build. | a `BigInt` of the base on a written page; a module with more `using` lines than its object has room for | `staticdata.c:2253`, `:2580`, `:5122` | Read (audit) |
-| 39 | A whole build copies the tracked sources into its store at its end, after the hour of the build. An edit of a tracked file during the build is in the copy and not in the image, so no later rebuild applies it. | Another session lands a commit while the IDE founds. | `reactive.jl:232-251`: `create_app`, then `_reactive_copy_sources` | Read |
+| 39 | A whole build copies the tracked sources into its store at its end, after the hour of the build. An edit of a tracked file during the build is in the copy and not in the image, so no later rebuild applies it. | Another session lands a commit while the IDE founds. | `reactive.jl:232-251`: `create_app`, then `_reactive_copy_sources` | Read. Closed in PackageCompiler on the branch `live-harness` (7474fc67, Step 5), with a test in gate M6 (round r40) |
 | 40 | **The image of a rebuild depends on the way to it.** One server that takes 28 commits one by one, and a new server that takes the same 28 commits at once, give two different images, and neither is the image of a whole build. | The kernel, 354c83ba6 to 0af15983d. The first image has 3 509 methods and lacks the two constructors of the new struct `RootedOperation`; the second has 3 470 and holds them; the whole build has 3 449. The commit 1df4c59c8 is refused after 28 commits in a server and applied after 3. | the replay gate of Step 2 | Seen on real commits |
 | 41 | Methods that a macro made stay when their item is evaluated again. Such a method carries a line of the source of the macro, or `none:0`, so no item of the ledger owns it, and the new evaluation adds a copy. | 61 extra methods after 28 commits in one server, 22 in a new server: closures and keyword methods of `@document` and `@cell_struct` structs. | `rc_owns` and `rc_assign_methods!`, `child.jl:306-324` | Seen on real commits |
 | 42 | A loop of a root file that exports names is not run again when the names change. | The root file of the kernel exports each name of `KernelModule` in a loop. After 28 commits the rebuilt program exports 717 names and the whole build 728, and two constants are missing from the package module. | R1; no case in `child.jl` | Seen on real commits. Closed on the branch by Step 7: the replay gate gives 728 names |
@@ -1435,7 +1435,7 @@ commits. The numbers of the steps stay as they are.
   | 7 | The trial of the replay evaluates each change in a fork, for each apply that has one. When it stops or ends with no answer, the process evaluates nothing and answers the error. A server whose request fails while its heap holds an apply that no save wrote exits (`RC_APPLY_OPEN`). | `replay.jl`, `child.jl`, `server.jl` | `gate_runs.sh`, step `fail` |
   | 57 (new) | A refused rebuild had written the new lines of the methods of moved expressions, and the new name of a renamed file, before it refused; the next save wrote them. The apply writes them when it begins. | `child.jl`, `place_moves` | `gate_runs.sh`: the steps `order`, `fail` and the comparison |
   | 8 | The whole build records a print of each input: the build of Julia, the project file, the Manifest entry of each package, the preferences files, the workload, each statements file. A rebuild whose inputs differ stops with their names and the option of a whole build. | PackageCompiler `_reactive_inputs` | `gate_runs.sh`, step `input` |
-  | 39 | A whole build copies the tracked sources before the first load of the packages, and a rebuild before its request. | PackageCompiler `_materialize_full`, `_materialize_delta` | none of its own |
+  | 39 | A whole build copies the tracked sources before the first load of the packages, and a rebuild before its request. | PackageCompiler `_materialize_full`, `_materialize_delta` | `m6_gate.sh`, steps `full-during` to `run-during-after` (round r40) |
   | 28 | A rebuild whose code level differs from the level of the whole build prints both. | PackageCompiler `_materialize_rebuild` | none |
   | 29 | A changed signature of a `@ccallable` function is refused (A4). | `child.jl`, `rc_classify` | `gate_cases.sh`, the case `c_entry_signature`, which must be refused |
   | 30 | The server starts with `--gcthreads=1`. | PackageCompiler | none |
@@ -1526,7 +1526,16 @@ commits. The numbers of the steps stay as they are.
     store. A refused apply takes the mark off, because it changes nothing.
     The step `late` of `gate_runs.sh` makes the link fail with a folder at
     the place of its output file.
-  - Finding 39 has no test: it needs an edit during a build.
+  - *Closed on 2026-11-15:* finding 39 has a test in gate M6. The step
+    `full-during` founds the store, and when the log shows the line of the
+    image header, the gate changes `reused_const` from 42 to 43. That line
+    comes from the process that writes the image after it loaded the
+    sources; the build continues for about 30 s more. A whole image runs no
+    `__init__` in the process that writes it, so a hook in the package can
+    not make the edit. In round r40, in both forms, the copy in the store and
+    the image hold 42, the first rebuild applies one expression, and the
+    program prints 43. With a copy at the end of the build, the store would
+    hold 43 and the rebuild would apply nothing.
 - [x] **Step 6: the definer of a method, and removals (D13, D2; findings 1,
   40, 41, 44, refusal C5).** *Done (2026-11-12): D13 and D2 are built, and
   the replays over the kernel and the platform apply each commit. The owner
@@ -2821,6 +2830,13 @@ commits. The numbers of the steps stay as they are.
   position. The writer and the merge now use one test, which finds the run
   again when a position goes down (`reactive_runs_meet`). An overlay of an
   earlier build loads with its full lists.
+
+  Round r38 (2026-11-14, the build of f371b61b6f, the overlays with the
+  delta lists only): 11 of the 12 gates pass, the two forms of gate M6, the
+  edit cases through the server and the two replays among them. The replay
+  of the platform loads 17 overlays that the loader merges, with no fault,
+  and its method tables (27 289 lines) are equal to a whole build. The
+  oracle finds `make_oc` again, as in round r37: finding 62.
 
   *The words with the tag BaseRef (closed: no fault).* The tag `BaseRef` is
   7, so it reads as the top three bits 111, and the integer `typemax(UInt)`
