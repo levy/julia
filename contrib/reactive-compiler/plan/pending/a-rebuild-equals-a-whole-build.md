@@ -141,7 +141,7 @@ depend on an address.
 | 10 | The harness keeps a cache from the text of each statement of the trace to the type that the text gave in the whole build. After an edit changes a struct, the cache still gives the old struct. The statement fails, or it compiles code for the old struct, and the new struct gets no compiled code. `--refresh-trace` does not heal it, because the new statement has the same text. | 150 statements failed today, 137 of them in the owner's packages. 63 are functions of the SDL backend: `_compute_dirty_change`, `_record_painted_element!`, `_take_wheel_run!`. They name `SdlBackend` and `SdlWindowResources`, which changed and have no type parameter, so the text of each statement is still right. The program compiles its paint path at each start. | `child.jl:1136-1159` | Read, Log. Measured on the platform: 1 136 of 2 268 roots after the commit that changes `ReactiveCell`. The table is closed on the branch (86b5d06977, see Step 6): the session drops it when a constant gets another value |
 | 11 | A statement whose text is no longer right stays lost. A struct with one type parameter for each field, as each `@document` struct has, changes its text with each new field. New code behind a dynamic call has no statement at all. Both wait for a person who runs `--refresh-trace`. The rebuild writes the count into the server log and nowhere else. | `collect_ini_file_entries(::LegacyProjectIniFiles{ReactiveCell{Any}, …})` after the struct got a field | `child.jl:1197`, `reactive.jl:285` | Log |
 | 25 | An edited method starts with no compiled code. It gets code from the trace and from the callers that the rebuild compiles again. Code that the whole build compiled for the old method by another way is not compiled for the new one: a finalizer, a callback, a dynamic call from an unchanged caller. The old method still lists those specializations when the apply replaces it. | Edit the body of a function that only a `finalizer(f, x)` of an unchanged function names. | `child.jl:994`, `typeinfer.jl:1939` | Read (audit) |
-| 26 | In the overlay form, new code calls an old function with boxed arguments through `jl_invoke`. A whole build makes a direct call. The same path cost 43 ns against 2.6 ns in the bench of gate M6. Most functions on mutable documents have boxed arguments. The count line of the build prints 0 for these calls. | An edited function calls an unchanged `handle!(document, event, context)` in a loop. | `codegen.cpp:5378` ("TODO: Add !specsig support"), `aotcompile.cpp:504` | Read; the cost in the owner's code needs a measurement |
+| 26 | In the overlay form, new code calls an old function with boxed arguments through `jl_invoke`. A whole build makes a direct call. The same path cost 43 ns against 2.6 ns in the bench of gate M6. Most functions on mutable documents have boxed arguments. The count line of the build prints 0 for these calls. | An edited function calls an unchanged `handle!(document, event, context)` in a loop. | `codegen.cpp:5378` ("TODO: Add !specsig support"), `aotcompile.cpp:504` | Read. Closed on the branch by D11 (1fd1c54bd7, Step 9): the call goes through a slot; 2.0 ns against 1.55 ns from old code in the bench of gate M6 |
 | 27 | `precompile` does nothing for a code instance of the image that has no machine code. The statement counts as compiled, the program compiles the call at each run, and a refresh changes nothing. | A new dynamic call to a small function that the whole build always inlined. | `gf.c:4025` | Read (audit); Test |
 | 28 | `JULIA_REACTIVE_DELTA_OPT` in the environment lowers the level of the rebuilt code, and no line of the output says it. | A variable that a gate run left makes each rebuild compile at `-O1`. | `Executable.jl:327`, `reactive.jl:111` | Read |
 
@@ -2735,6 +2735,55 @@ commits. The numbers of the steps stay as they are.
   r36b): 25 checks of the kernel and 15 of the platform, the rebuilds that
   did not move the base. Each check finds 0 reused functions of another code
   instance than in the base, and the two replays pass.
+
+  *The call through a slot (D11, finding 26; 1fd1c54bd7).* In the overlay
+  form, `emit_invoke` calls a callee of the loaded image with boxed arguments
+  through a slot, as it calls a callee with a specialized signature. The
+  loader fills the slot with `specptr.fptr` of the code instance, which is the
+  function of boxed arguments. A package image keeps the `jl_invoke`
+  trampoline for such a callee (*by the assistant:* package images are out
+  of this plan). The build prints the count of the slots and of the
+  trampolines that stay; a trampoline that stays is a `jl_fptr_sparam` or an
+  opaque-closure callee. Gate M6 has a new call shape `boxed`: a function of
+  three mutable arguments that returns `nothing`, and a bench of it from old
+  code and from new code. Round r37 (2026-11-14, the build of 1fd1c54bd7):
+
+  | gate M6, ns per call | old code | new code |
+  | --- | --- | --- |
+  | whole form, after the edit | 1.57 | 1.55 |
+  | overlay form, after the edit | 1.55 | 2.0 |
+
+  The rebuild of the edit in the overlay form has 72 slots, 5 of them for a
+  function of boxed arguments, `reused_boxed!` among them. The rebuild of the
+  restore in that form applies nothing: a rebuild with no server loads the
+  base image and applies the change since its sources, and the restore gives
+  those sources again. The gate tests the slot at the edit only.
+
+  *The full lists (D12).* An overlay held the full lists of its state and the
+  delta lists. *Decision by the assistant:* no overlay holds the full lists.
+  A loader that is not prelinked makes them: it keeps each position of the
+  lists of the state that the overlay extends that is below the end of the
+  base objects and outside each run of the overlay, and adds the delta lists
+  (`reactive_overlay_merge_lists`). The delta lists hold each position past
+  that end and each one in a run, so the two parts share no position. Before
+  the change, a script tested the rule on the overlays of rounds r36 and
+  r36b: in each of 5 overlays, the merge gives the positions of the full
+  lists, in each of the four lists, and the same fixups.
+
+  | overlay | full lists | delta lists |
+  | --- | --- | --- |
+  | gate of the prelinked program | 7.7 MB | 0.18 MB |
+  | gate of the runs, through the server | 7.8 MB | 0.24 MB |
+  | gate of the edit cases | 8.0 MB | 0.29 MB |
+  | replay of the kernel, 28 commits | 9.5 MB | 0.27 MB |
+  | replay of the platform, 17 commits | 26.0 MB | 0.76 MB |
+
+  A list goes down at about 50 places inside some objects, so the writer of
+  the delta lists, which moved its run index forward only, could miss a
+  position in a run behind the index. None of the 5 overlays has such a
+  position. The writer and the merge now use one test, which finds the run
+  again when a position goes down (`reactive_runs_meet`). An overlay of an
+  earlier build loads with its full lists.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints

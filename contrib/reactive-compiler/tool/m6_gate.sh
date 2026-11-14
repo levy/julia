@@ -17,8 +17,10 @@
 #   mat-restore  - the reverse edit
 #   run-restored - the before-values again
 # In the overlay form (JULIA_REACTIVE_IMAGE_WRITE=overlay), the log of
-# mat-edit and of mat-restore must also name the slot through which the delta
-# calls `reused_boxed!`, a function of boxed arguments (D11).
+# mat-edit must also name the slot through which the delta calls
+# `reused_boxed!`, a function of boxed arguments (D11). A rebuild in that form
+# with no server loads the base image and applies the change since its
+# sources, so mat-restore applies nothing and compiles no caller.
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -129,7 +131,7 @@ for step in $steps; do
         mat-edit) lane mat-edit "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-edit && boxed_slot mat-edit ;;
         run-after) runbin after after ;;
         restore) restore ;;
-        mat-restore) lane mat-restore "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-restore && boxed_slot mat-restore ;;
+        mat-restore) lane mat-restore "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" && alias_skipped mat-restore ;;
         run-restored) runbin restored before ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }
