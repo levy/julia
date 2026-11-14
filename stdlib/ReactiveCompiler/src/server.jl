@@ -259,6 +259,9 @@ function rc_dispatch(request::String, saves::Ref{Int})
 end
 
 function rc_serve(socket::String)
+    # The flag of an open apply is of one process: a server that starts holds
+    # no apply, whatever the image that it loaded says.
+    RC_APPLY_OPEN[] = false
     fd = rc_listen(socket)
     saves = Ref(0)
     println("rc: server ", ccall(:getpid, Cint, ()), " listens on ", socket)

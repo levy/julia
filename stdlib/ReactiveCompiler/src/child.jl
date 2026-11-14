@@ -2018,6 +2018,10 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
             round(t_ledger, digits = 2), " s of ", all_files ? string("all ", length(new_files)) :
             string(length(new_indices), " changed of ", length(new_files)), " files; cone ", length(replaced), " replaced, ", length(closed),
             " closed; scan ", round(t_scan, digits = 2), " s")
+    # A process that keeps no ledger writes its image next, at its exit (a
+    # child): its apply ends here, and the flag of an open apply is no part of
+    # the image that a later server starts from.
+    keep_ledger || (RC_APPLY_OPEN[] = false)
     return (before = before, moved = world_after > world_before)
 end
 
