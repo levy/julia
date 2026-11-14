@@ -2,7 +2,9 @@
 # overlay_check: read-only check of a Julia system image overlay composed over its base image.
 # It reports the tables of the composed image that are wrong: root_blocks arrays of base
 # methods that grew inside their memory and lack the new block of roots, hashed specializations
-# missing from a method's speckeyset, and bindings missing from a module's bindingkeyset.
+# missing from a method's speckeyset, bindings missing from a module's bindingkeyset, and
+# functions that the overlay reuses from the base with another code instance than in the base
+# (a start on a prelinked base takes the method instance of such a function from the base).
 # Usage: python3 -I overlay_check.py BASE OVERLAY [--verbose] [--base-blob OFF,SIZE] [--overlay-blob OFF,SIZE]
 #   BASE is the base image in its file form: lib/julia/sys.so of a bundle, or reactive-store/founding.so.
 #   A prelinked program holds the same image with final addresses, and the check does not read that
@@ -27,8 +29,8 @@ def align(x, a):
     return (x + a - 1) & ~(a - 1)
 
 
-def find_blob(m):
-    """Return (file offset, size) of the system image data blob of the ELF file mapped in m."""
+def find_symbols(m, wanted):
+    """Return {name: (file offset, size)} of the symbols in `wanted` of the ELF file mapped in m."""
     if len(m) < 64 or m[:4] != b'\x7fELF' or m[4] != 2 or m[5] != 1:
         raise CheckError('not a 64-bit little-endian ELF file')
     phoff, shoff = struct.unpack_from('<QQ', m, 32)
@@ -50,15 +52,23 @@ def find_blob(m):
                 continue
             start = strtab[4] + st_name
             name = bytes(m[start:m.find(b'\0', start)])
-            if name in (b'jl_system_image_data', b'jl_system_image_size') and name not in found:
+            if name in wanted and name not in found:
                 found[name] = (st_value, st_size)
+    out = {}
+    for name, (addr, size) in found.items():
+        seg = [off + (addr - vaddr) for vaddr, off, filesz in loads if vaddr <= addr < vaddr + filesz]
+        if not seg:
+            raise CheckError('%s lies in no loaded segment' % name.decode())
+        out[name] = (seg[0], size)
+    return out
+
+
+def find_blob(m):
+    """Return (file offset, size) of the system image data blob of the ELF file mapped in m."""
+    found = find_symbols(m, (b'jl_system_image_data',))
     if b'jl_system_image_data' not in found:
         raise CheckError('symbol jl_system_image_data not found')
-    addr, size = found[b'jl_system_image_data']
-    for vaddr, off, filesz in loads:
-        if vaddr <= addr < vaddr + filesz:
-            return off + (addr - vaddr), size
-    raise CheckError('jl_system_image_data lies in no loaded segment')
+    return found[b'jl_system_image_data']
 
 
 class Composed:
@@ -74,7 +84,7 @@ class Composed:
         ssize = u64(ms, sys_off + pos); pos += 8; pos = align(pos, 8) + ssize
         rsize = u64(ms, sys_off + pos); pos += 8; pos = align(pos, 8); relocs_off = pos; pos += rsize
         gsize = u64(ms, sys_off + pos); pos += 8; pos = align(pos, 8) + gsize
-        fsize = u64(ms, sys_off + pos); pos += 8; pos = align(pos, 8) + fsize
+        fsize = u64(ms, sys_off + pos); pos += 8; pos = align(pos, 8); fptr_off = pos; pos += fsize
         roots_off = align(pos, 8)
         self.sys_end, self.const_size, self.const_start = sys_end, const_size, const_start
         self.const_limit = align(const_start + const_size, PAGE) + (64 << 20)
@@ -84,6 +94,9 @@ class Composed:
                  'off_patch_idx_sysimg', 'off_patch_sysimg', 'off_patch_idx_const', 'off_patch_const', 'off_new_sysimg',
                  'off_new_const', 'off_new_syms', 'off_relocs', 'off_gvar', 'off_fptr', 'off_roots']
         h = dict(zip(names, struct.unpack_from('<25Q', mo, ov_off)))
+        # the function records: for each function, the offset of its code instance
+        self.base_fptr = np.frombuffer(ms, dtype='<u8', count=fsize // 8, offset=sys_off + fptr_off)
+        self.ov_fptr = np.frombuffer(mo, dtype='<u8', count=h['fptr_size'] // 8, offset=ov_off + h['off_fptr'])
 
         self.base_words = np.frombuffer(ms, dtype='<u8', count=sys_end // 8, offset=sys_off)
         # the composed sysimg: the base words with the runs of the overlay over them
@@ -374,6 +387,25 @@ def check_modules(c, nothings):
     return nchecked, nentries, missing, bad, skipped, examples
 
 
+def check_functions(c, mo):
+    """The functions that the overlay reuses from the base: each must keep the code instance
+    that owns it in the base. Returns (reused, of a base code instance, owned by another)."""
+    found = find_symbols(mo, (b'jl_fvar_reuse',))
+    if b'jl_fvar_reuse' not in found:
+        return 0, 0, 0
+    off, size = found[b'jl_fvar_reuse']
+    reuse = np.frombuffer(mo, dtype='<u4', count=min(size // 4, len(c.ov_fptr)), offset=off).astype(np.int64)
+    rec = c.ov_fptr[:len(reuse)]
+    sel = (reuse != 0) & (rec != 0)
+    hi = np.uint64(1) << np.uint64(63)
+    ci = np.where((rec & hi) != 0, ~rec, rec)
+    base_ci = sel & (ci < np.uint64(c.sys_end))
+    if np.any(reuse[base_ci] > len(c.base_fptr)):
+        raise CheckError('the overlay reuses a function past the table of the base')
+    other = base_ci & (c.base_fptr[np.clip(reuse, 1, len(c.base_fptr)) - 1] != rec)
+    return int(sel.sum()), int(base_ci.sum()), int(other.sum())
+
+
 def parse_blob_option(text):
     try:
         off, size = text.split(',')
@@ -417,12 +449,14 @@ def run(argv):
     nothings = c.find_nothing()
     mres = check_methods(c, nothings)
     bres = check_modules(c, nothings)
-    wrong = lost + mres[2] + bres[2]
+    fres = check_functions(c, mo)
+    wrong = lost + mres[2] + bres[2] + fres[2]
 
     print('const data: starts %d bytes into a page' % (c.const_start % PAGE))
     print('root tables: %d grew inside their memory, %d of them lack the new block' % (grown, lost))
     print('specializations: %d missing from the key set of %d methods' % (mres[2], mres[3]))
     print('bindings: %d missing from the key set of %d modules' % (bres[2], bres[3]))
+    print('functions: %d reused from the base, %d of them of a base code instance, %d of another code instance than in the base' % fres)
     if verbose:
         print('detail: %d overlay runs not word aligned or past the base' % c.runs_left_out)
         print('detail: root tables: %d replaced their memory, %d are new arrays, %d carried new elements' % (replaced, newarr, carried))
@@ -435,7 +469,7 @@ def run(argv):
         for ex in bres[5][:LIMIT]:
             print('  module %s: binding %d of %d, key set of %d values at const offset %d' % ex)
     if wrong:
-        print('overlay_check: FAILED (%d + %d + %d wrong entries)' % (lost, mres[2], bres[2]))
+        print('overlay_check: FAILED (%d + %d + %d + %d wrong entries)' % (lost, mres[2], bres[2], fres[2]))
         return 1
     print('overlay_check: ok')
     return 0

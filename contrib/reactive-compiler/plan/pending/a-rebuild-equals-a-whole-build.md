@@ -2679,6 +2679,49 @@ commits. The numbers of the steps stay as they are.
   build at 8b2303e1ee, and the caches of the standard libraries made again.
   Checked in the installed Julia: REPL, Pkg and Test load in 0.26 s, and the
   harness of the image equals its folder. Not pushed.
+
+  *The passes of a start under an overlay (2026-11-14, a profile of 20
+  starts of the same program with `perf`, in cycles for each start, with one
+  thread of OpenBLAS).* A start with the overlay took 233 M cycles, the base
+  alone 127 M. The extra parts:
+
+  - 53 M: the copies of the pages that the patches write. The patches of
+    the overlay write 9 155 pages of the program (35.8 MB), and the first
+    write to each page copies it. The patches are real changes of the
+    state: 9 630 entries of method tables with a new `max_world`, about
+    2 900 methods with a new line, the fields `left` and `right` of about
+    5 800 old symbols, and arrays and memory. This part follows the change,
+    and a rebase (D6) removes it.
+  - 20 M: the pass over the function table, which read each of its 98 435
+    code instances. 97 554 entries reuse a function of the base, and each of
+    them has the code instance of its entry in the base, by construction:
+    the writer fills the reuse table from the functions of the reused code
+    instances (`reactive_rebase` in `aotcompile.cpp`), and a prelinked
+    program takes one overlay over the base. Such an entry now takes its
+    method instance from the function record of the base, which the
+    pre-relocation wrote, when no patch writes its code instance; the start
+    copies that record before the overlay writes over the end of the blob
+    (a37408e71f). A table of the pages that a patch writes keeps the search
+    of the patches off most entries (9bff013a4a). The pass costs 4 M now.
+    `tool/overlay_check.py` tests the rule for each rebuild of the replay
+    gate: a reused function of a base code instance must have the entry of
+    the base.
+  - 18 M: the slot pass of the chain, which put the value of each of the
+    64 034 slots of the base in the set of global roots. The base has no
+    external-function slot, and a start of the base alone roots no slot.
+    The pass now starts at the overlay (a37408e71f).
+  - 12 M: the delta lists, which follow the size of the overlay.
+
+  | 20 starts of the program of the platform replay | user cycles | kernel cycles | CPU time | peak memory |
+  | --- | --- | --- | --- | --- |
+  | the overlay, before | 199 M | 87 M | 59.1 ms | 516 MB |
+  | the overlay, now | 168 M | 85 M | 52.7 ms | 435 MB |
+  | the base alone | 122 M | 26 M | 30.7 ms | 374 MB |
+
+  The full lists of the whole image are 25.5 MB of the overlay of 50.9 MB.
+  A prelinked start reads none of them since the checksum is in the header,
+  and the server reads them for its next save. They cost space on the disk
+  and time of the save, not time of the start.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
   31).** The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
