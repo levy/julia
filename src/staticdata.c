@@ -261,6 +261,10 @@ static size_t reactive_base_file_extent = 0; // the sysimg extent of the base FI
 // the end of its blob.
 static int reactive_prelinked_chain = 0;
 static uintptr_t *reactive_base_residual = NULL;
+// The method instance of each function of a prelinked base, in the order of its
+// function table: the pre-relocation wrote them over its function record.
+static jl_method_instance_t **reactive_base_linfos = NULL;
+static size_t reactive_base_nlinfos = 0;
 
 // The overlay image (Stage G): the delta as a shared object of its own,
 // with the blob below; the loader applies a chain of them to the base.
@@ -328,6 +332,7 @@ typedef struct {
     const uint32_t *const_pages;       // the const page patches, ascending
     const char *const_bytes;
     size_t nconst_pages;
+    const uint32_t *reuse;             // for each function, the id of the function of the loaded image that it reuses, or 0
 } reactive_chain_image_t;
 #define REACTIVE_CHAIN_MAX 64
 static reactive_chain_image_t reactive_chain[REACTIVE_CHAIN_MAX];
@@ -3227,6 +3232,22 @@ static void jl_register_image_fptrs(jl_serializer_state *s, jl_image_t *image)
     jl_register_fptrs(image->base, &fvars, linfos, img_fvars_max);
 }
 
+// Whether a patch of the one overlay of a prelinked chain writes a byte of
+// `[lo, hi)` of the sysimg. The patches are ascending and do not overlap.
+static int reactive_chain_patched(size_t lo, size_t hi) JL_NOTSAFEPOINT
+{
+    const reactive_chain_image_t *c = &reactive_chain[1];
+    size_t a = 0, b = c->npatches;
+    while (a < b) {
+        size_t mid = a + (b - a) / 2;
+        if (c->patches[mid].offset + c->patches[mid].size <= lo)
+            a = mid + 1;
+        else
+            b = mid;
+    }
+    return a < c->npatches && c->patches[a].offset < hi;
+}
+
 static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
 {
     jl_image_fptrs_t fvars = image->fptrs;
@@ -3243,6 +3264,15 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
     // These will become MethodInstance references, but they start out as a list of
     // offsets into `s` for CodeInstances
     jl_method_instance_t **linfos = (jl_method_instance_t**)&s->fptr_record->buf[0];
+    // A prelinked base under its overlay: a function that the overlay reuses
+    // belongs to the code instance that owns it in the base (`reactive_rebase`
+    // in aotcompile.cpp). When no patch writes that code instance, its fields
+    // hold the values of the base file, and its method instance is the one of
+    // the base table, so the start reads no such code instance.
+    const uint32_t *reuse = NULL;
+    if (reactive_prelinked_chain && !s->incremental && reactive_chain_n == 2 &&
+        fvars.nclones == 0 && reactive_base_linfos != NULL)
+        reuse = reactive_chain[1].reuse;
     uint32_t clone_idx = 0;
     for (i = 0; i < img_fvars_max; i++) {
         reloc_t offset = *(reloc_t*)&linfos[i];
@@ -3253,6 +3283,13 @@ static void jl_update_all_fptrs(jl_serializer_state *s, jl_image_t *image)
                 // if high bit is set, this is the func wrapper, not the specfunc
                 specfunc = 0;
                 offset = ~offset;
+            }
+            if (reuse != NULL && i < fvars.nptrs && reuse[i] != 0 && reuse[i] <= reactive_base_nlinfos &&
+                reactive_base_linfos[reuse[i] - 1] != NULL &&
+                offset + sizeof(jl_code_instance_t) <= reactive_base_end &&
+                !reactive_chain_patched(offset - sizeof(jl_taggedvalue_t), offset + sizeof(jl_code_instance_t))) {
+                linfos[i] = reactive_base_linfos[reuse[i] - 1];
+                continue;
             }
             jl_code_instance_t *codeinst = (jl_code_instance_t*)(base + offset);
             assert(jl_is_method(jl_get_ci_mi(codeinst)->def.method) && jl_atomic_load_relaxed(&codeinst->invoke) != jl_fptr_const_return);
@@ -6716,8 +6753,10 @@ static void jl_restore_system_image_from_stream_(ios_t *f, jl_image_t *image,
     if (!s.incremental && reactive_chain_n > 0) {
         // the chain: the external-function slots of every overlay take the
         // pointers of the code instances, which the fresh table set now; a
-        // package image rooted its own slots above
-        for (size_t ci = 0; ci < reactive_chain_n; ci++) {
+        // package image rooted its own slots above. The base has no such
+        // slot, and its value slots stay as a start of the base alone leaves
+        // them.
+        for (size_t ci = 1; ci < reactive_chain_n; ci++) {
             ios_t record;
             ios_static_buffer(&record, (char*)reactive_chain[ci].gvar.ptr, reactive_chain[ci].gvar.size);
             s.gvar_record = &record;
@@ -7454,6 +7493,9 @@ static int reactive_inplace_load(jl_image_buf_t buf)
     char *gvar = (char*)malloc_s(sec.gvar.size + 1);
     memcpy(gvar, sec.gvar.ptr, sec.gvar.size);
     sec.gvar.ptr = gvar;
+    reactive_base_nlinfos = sec.fptr.size / sizeof(void*);
+    reactive_base_linfos = (jl_method_instance_t**)malloc_s(sec.fptr.size + 1);
+    memcpy(reactive_base_linfos, sec.fptr.ptr, sec.fptr.size);
     reactive_region_base = (char*)blob;
     reactive_region_span = span;
     reactive_region_const = (char*)blob + const_start;
@@ -7492,6 +7534,9 @@ static void reactive_inplace_drop(void)
     reactive_gap_hi = NULL;
     free(reactive_base_residual);
     reactive_base_residual = NULL;
+    free(reactive_base_linfos);
+    reactive_base_linfos = NULL;
+    reactive_base_nlinfos = 0;
 }
 
 // Apply one pass of the residual list of a prelinked base under a chain, outside
@@ -7738,6 +7783,7 @@ static void reactive_chain_load(jl_image_t *image)
         reactive_chain[reactive_chain_n].const_pages = pidx;
         reactive_chain[reactive_chain_n].const_bytes = blob + h->off_patch_const;
         reactive_chain[reactive_chain_n].nconst_pages = h->npatch_const;
+        reactive_chain[reactive_chain_n].reuse = reuse;
         reactive_chain_n++;
         applied++;
         if (jl_reactive_timings())
@@ -7826,6 +7872,9 @@ JL_DLLEXPORT void jl_restore_system_image(jl_image_t *image, jl_image_buf_t buf)
     }
     reactive_sections_on = 0;
     reactive_prelinked_chain = 0;
+    free(reactive_base_linfos);
+    reactive_base_linfos = NULL;
+    reactive_base_nlinfos = 0;
 
     ios_close(&f);
     JL_SIGATOMIC_END();
