@@ -1695,16 +1695,20 @@ static uintptr_t add_external_linkage(jl_serializer_state *s, jl_value_t *v, jl_
 
 // The reference to an object of the base that the page write did not
 // queue: its offset in the base, with the tag BaseRef for the sysimg section
-// (the finish makes it a DataRef) and ConstDataRef for the const data.
+// (the finish makes it a DataRef) and ConstDataRef for the const data. The
+// const data is tested first: in a state with overlays the extent of the
+// sysimg spans the const data, and a reference to a const object in the form
+// of the sysimg is another word than the base file holds, a patch of an
+// overlay that changes nothing (finding 13).
 static uintptr_t reactive_pages_base_ref(jl_value_t *v) JL_NOTSAFEPOINT
 {
-    if (reactive_in_sysimg(v))
-        return ((uintptr_t)BaseRef << RELOC_TAG_OFFSET) + ((const char*)v - reactive_image_base);
     if (reactive_in_const(v)) {
         size_t off = (const char*)v - reactive_const_base;
         assert(off % sizeof(void*) == 0);
         return ((uintptr_t)ConstDataRef << RELOC_TAG_OFFSET) + off / sizeof(void*);
     }
+    if (reactive_in_sysimg(v))
+        return ((uintptr_t)BaseRef << RELOC_TAG_OFFSET) + ((const char*)v - reactive_image_base);
     jl_safe_printf("reactive: pages: an object of the image lies outside the base sections\n");
     abort();
 }
