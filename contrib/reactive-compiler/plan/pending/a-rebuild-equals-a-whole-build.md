@@ -459,6 +459,52 @@ These are my proposals. The owner approves them with the plan.
   The image holds two more fields for each method, so a store needs one whole
   build with the new Julia.
 
+- **D15. The runtime records the files that the evaluation of a top-level
+  expression opens (Q4, answer (a); finding 9).** A build installs a list in
+  the runtime (`jl_reactive_set_read_record`). `open` of Base names each file
+  that it opens for a read only (`jl_reactive_note_read`), and the runtime
+  adds the file to the list with the place of the top-level expression that
+  runs: the file and the first line that D13 gives a method as its definer.
+  With no list, or with no top-level expression, the call does nothing.
+
+  A whole build installs the list before it loads the packages, and writes it
+  at its end. A rebuild installs it while it evaluates the changes. The store
+  keeps one line for each read: the expression by its place, the path, and a
+  print of the content. A file with another print evaluates its expression
+  again (rule E1), and the new evaluation gives the reads of the expression
+  again. An expression that the edit leaves, and that no change evaluates,
+  keeps its reads; a moved one keeps them at its new place.
+
+  Not a read of the package: a file of a place outside the tracked sources; a
+  tracked source; a file under `/proc`, `/sys` or `/dev`; and a file that a
+  `using`, an `import` or an `include` expression opens, because that is the
+  load of packages, whose inputs D5 has.
+
+  *Decisions of the design (by the assistant).*
+  - *The record replaces the search for strings.* `read_paths` goes away. One
+    rule finds a reader, and a string in a function is no input any more.
+    Rejected: both rules together, which keeps the false inputs.
+  - *The print of a file that changed after the build began is "changed".*
+    The build learns the path of a read only when the read occurs, so it can
+    not take the print before the load, as it does for the sources (finding
+    39). The build takes the time of its start. A file with a later
+    modification time gets a print that equals no content, so the first
+    rebuild evaluates its reader again. Rejected: a hash inside the runtime at
+    the open, which is a second read of each file in C.
+  - *The hook is in `open` of Base, not in the function of C that opens.* The
+    code of a package opens a file through `open`; the runtime itself opens
+    images and caches through the function of C, and those are not reads of a
+    package. Rejected: a hook in `ios_file`, which then needs a filter for
+    the runtime's own files.
+  - *No file form of before.* The line of a read has four fields now, and the
+    harness and PackageCompiler change together. A store of before needs a
+    whole build, as after each landing (D5). Rejected: a harness that reads
+    both forms, which keeps the search for strings alive.
+
+  *Not covered.* A decision by `isfile`, `stat` or `readdir` with no open; a
+  library of C that opens a file by itself; a function that keeps what it
+  read, so that a second evaluation opens no file.
+
 ## The open questions
 
 Four decisions are the owner's. Q1 sets what property 3 means and what a
@@ -467,7 +513,8 @@ rebuild costs; it has its answer, (b), since 2026-11-13. Q2 came with finding
 expression; it has its answer. Q3 came with finding 62, on 2026-11-14, and
 sets which lines a moved method gives; it has its answer, (b), since
 2026-11-15. Q4 came with the test of finding 9, on 2026-11-15, and sets how a
-build knows the files that the load of a package reads; it is open.
+build knows the files that the load of a package reads; it has its answer,
+(a), since 2026-11-15.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -635,6 +682,9 @@ read inside a function that an initializer calls.
 *The recommendation of the assistant is (a).* The evaluation knows the files
 that it reads, and the search for strings is a guess in both directions. (b)
 makes the guess louder, and (c) keeps a silent difference from a whole build.
+
+*The answer of the owner (2026-11-15): "I agree with you", so (a).* D15 holds
+the design.
 
 ## Steps
 
@@ -1572,6 +1622,20 @@ commits. The numbers of the steps stay as they are.
   The program of the chain compiles no finalizer, no callback and no small
   function. The step `refresh` records the workload again (Q1, answer (b)):
   the list is the same before and after it.
+
+  *The files that an evaluation reads (finding 9, D15; from 2026-11-15).*
+  - [x] The test that fails first: the step `read-unnamed` of `gate_runs.sh`
+    (ce2c16c0e4). Round r43a, the harness of before: `motto = steady` and
+    `creed = plain` after the two files changed, where a whole build prints
+    `firm` and `clear`; the rebuild for `creed.txt` ended early.
+  - [ ] The runtime: the list and the note, and the two calls in `open` of
+    Base. A test of Julia.
+  - [ ] The harness: the reads by their place, rule E1 from the record, and
+    no search for strings.
+  - [ ] PackageCompiler: the whole build records and writes the list; the
+    build that ends early compares the same list.
+  - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`; the
+    round of the gates passes.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
