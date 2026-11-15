@@ -790,6 +790,160 @@ static int jl_unw_step(bt_cursor_t *cursor, int from_signal_handler, uintptr_t *
 }
 #endif
 
+// ── the frames of a moved method ────────────────────────────────────────────
+//
+// Machine code names the lines of the line tables that its compile read. A
+// method that a rebuild moves keeps its machine code, and gets a line table
+// with the same statements at another first line or in another file. A frame
+// of machine code takes the place of its method now: the shift of the lines
+// and the file, for the function of the frame and for each function inlined
+// into it.
+
+static int debuginfo_edges_equal(jl_svec_t *a, jl_svec_t *b) JL_NOTSAFEPOINT;
+
+// Whether two line tables hold the same files, statements and edges.
+static int debuginfo_equal(jl_debuginfo_t *a, jl_debuginfo_t *b) JL_NOTSAFEPOINT
+{
+    if (a == b)
+        return 1;
+    if (a->def != b->def)
+        return 0;
+    jl_value_t *la = (jl_value_t*)a->linetable, *lb = (jl_value_t*)b->linetable;
+    if ((la == jl_nothing) != (lb == jl_nothing))
+        return 0;
+    if (la != jl_nothing && !debuginfo_equal((jl_debuginfo_t*)la, (jl_debuginfo_t*)lb))
+        return 0;
+    size_t n = jl_string_len(a->codelocs);
+    if (n != jl_string_len(b->codelocs) ||
+        memcmp(jl_string_data(a->codelocs), jl_string_data(b->codelocs), n) != 0)
+        return 0;
+    return debuginfo_edges_equal(a->edges, b->edges);
+}
+
+static int debuginfo_edges_equal(jl_svec_t *a, jl_svec_t *b) JL_NOTSAFEPOINT
+{
+    if (a == b)
+        return 1;
+    size_t n = jl_svec_len(a);
+    if (n != jl_svec_len(b))
+        return 0;
+    for (size_t i = 0; i < n; i++) {
+        if (!debuginfo_equal((jl_debuginfo_t*)jl_svecref(a, i), (jl_debuginfo_t*)jl_svecref(b, i)))
+            return 0;
+    }
+    return 1;
+}
+
+// Whether the line table `now` of the source of a method holds the
+// statements of `old` moved: the same statements and edges, with each line of
+// the file of the method at the same distance, which goes to `*shift`. The
+// first word of the compressed lines is the smallest line, and each line of
+// the file is stored as its distance from it.
+static int debuginfo_moved(jl_debuginfo_t *old, jl_debuginfo_t *now, int32_t *shift) JL_NOTSAFEPOINT
+{
+    if (!jl_is_symbol(old->def) || !jl_is_symbol(now->def) ||
+        (jl_value_t*)old->linetable != jl_nothing || (jl_value_t*)now->linetable != jl_nothing)
+        return 0;
+    jl_value_t *a = old->codelocs, *b = now->codelocs;
+    size_t n = jl_string_len(a);
+    if (n < sizeof(int32_t[3]) || n != jl_string_len(b) ||
+        memcmp(jl_string_data(a) + sizeof(int32_t), jl_string_data(b) + sizeof(int32_t), n - sizeof(int32_t)) != 0)
+        return 0;
+    if (!debuginfo_edges_equal(old->edges, now->edges))
+        return 0;
+    int32_t first_old, first_now;
+    memcpy(&first_old, jl_string_data(a), sizeof(int32_t));
+    memcpy(&first_now, jl_string_data(b), sizeof(int32_t));
+    if (first_old <= 0 || first_now <= 0)
+        return 0;
+    *shift = first_now - first_old;
+    return 1;
+}
+
+// Whether a frame names a line of the source line table `source`: its file,
+// as the debug lines give it, and a line in the range of the table.
+static int frame_in_source(jl_frame_t *frame, jl_debuginfo_t *source) JL_NOTSAFEPOINT
+{
+    if (!jl_is_symbol(source->def) || frame->file_name == NULL)
+        return 0;
+    const char *file = jl_symbol_name((jl_sym_t*)source->def);
+    // the debug lines give a relative file name from the folder "."
+    const char *name = frame->file_name;
+    if (strcmp(name, file) != 0 && !(name[0] == '.' && name[1] == '/' && strcmp(name + 2, file) == 0))
+        return 0;
+    jl_value_t *cl = source->codelocs;
+    if (frame->line <= 0 || jl_string_len(cl) < sizeof(int32_t[3]))
+        return 0;
+    int32_t header[2];
+    memcpy(header, jl_string_data(cl), sizeof(header));
+    return header[0] <= frame->line && frame->line <= header[0] + header[1];
+}
+
+// The method of the line table of a function in machine code, or NULL.
+static jl_method_t *debuginfo_method(jl_value_t *def) JL_NOTSAFEPOINT
+{
+    if (jl_is_method_instance(def))
+        def = ((jl_method_instance_t*)def)->def.value;
+    return jl_is_method(def) ? (jl_method_t*)def : NULL;
+}
+
+// The line table below `node` of the function inlined at `frame`: the
+// function has the name of the frame, and its source holds the line.
+static jl_debuginfo_t *debuginfo_find_inlined(jl_debuginfo_t *node, jl_frame_t *frame) JL_NOTSAFEPOINT
+{
+    size_t n = jl_svec_len(node->edges);
+    for (size_t i = 0; i < n; i++) {
+        jl_debuginfo_t *edge = (jl_debuginfo_t*)jl_svecref(node->edges, i);
+        jl_value_t *source = (jl_value_t*)edge->linetable;
+        if (debuginfo_method(edge->def) != NULL && source != jl_nothing &&
+            strcmp(jl_debuginfo_name(edge->def), frame->func_name) == 0 &&
+            frame_in_source(frame, (jl_debuginfo_t*)source))
+            return edge;
+        jl_debuginfo_t *found = debuginfo_find_inlined(edge, frame);
+        if (found != NULL)
+            return found;
+    }
+    return NULL;
+}
+
+// The frame of the function of `node` takes the place of its method now.
+static void frame_follow_move(jl_frame_t *frame, jl_debuginfo_t *node) JL_NOTSAFEPOINT
+{
+    jl_method_t *m = debuginfo_method(node->def);
+    jl_value_t *old = (jl_value_t*)node->linetable;
+    if (m == NULL || old == jl_nothing)
+        return;
+    jl_debuginfo_t *now = m->debuginfo;
+    int32_t shift;
+    if (now == NULL || (jl_value_t*)now == old || !frame_in_source(frame, (jl_debuginfo_t*)old) ||
+        !debuginfo_moved((jl_debuginfo_t*)old, now, &shift))
+        return;
+    frame->line += shift;
+    if (now->def != ((jl_debuginfo_t*)old)->def) {
+        free(frame->file_name);
+        frame->file_name = strdup(jl_symbol_name((jl_sym_t*)now->def));
+    }
+}
+
+// `frames` are the frames at one address, the innermost first: the last one
+// is the function of the code instance, the others are inlined into it.
+static void frames_follow_moves(jl_frame_t *frames, int n) JL_NOTSAFEPOINT
+{
+    if (n <= 0 || frames[n - 1].ci == NULL || frames[n - 1].fromC)
+        return;
+    jl_debuginfo_t *top = jl_atomic_load_relaxed(&frames[n - 1].ci->debuginfo);
+    if (top == NULL)
+        return;
+    for (int i = 0; i < n - 1; i++) {
+        if (frames[i].inlined && !frames[i].fromC && frames[i].func_name != NULL) {
+            jl_debuginfo_t *node = debuginfo_find_inlined(top, &frames[i]);
+            if (node != NULL)
+                frame_follow_move(&frames[i], node);
+        }
+    }
+    frame_follow_move(&frames[n - 1], top);
+}
+
 JL_DLLEXPORT jl_value_t *jl_lookup_code_address(void *ip, int skipC)
 {
     jl_task_t *ct = jl_current_task;
@@ -797,6 +951,7 @@ JL_DLLEXPORT jl_value_t *jl_lookup_code_address(void *ip, int skipC)
     int8_t gc_state = jl_gc_safe_enter(ct->ptls);
     int n = jl_getFunctionInfo(&frames, (uintptr_t)ip, skipC, 0);
     jl_gc_safe_leave(ct->ptls, gc_state);
+    frames_follow_moves(frames, n);
     jl_value_t *rs = (jl_value_t*)jl_alloc_svec(n);
     JL_GC_PUSH1(&rs);
     for (int i = 0; i < n; i++) {
@@ -845,6 +1000,7 @@ void jl_fprint_native_codeloc(ios_t *s, uintptr_t ip) JL_NOTSAFEPOINT
     // it means calling getFunctionInfo with noInline = 1
     jl_frame_t *frames = NULL;
     int n = jl_getFunctionInfo(&frames, ip, 0, 0);
+    frames_follow_moves(frames, n);
     int i;
 
     for (i = 0; i < n; i++) {
