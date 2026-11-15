@@ -1367,6 +1367,14 @@ end
 # that changed its name. A new file of the package starts with no stamps.
 package_names_dir(cachefile::String) = string(chopsuffix(cachefile, ".ji"), ".names")
 
+# The reads of a package file: the files that the top-level expressions of the
+# package opened for a read while the file was made, each with the place of
+# its expression and the print of its content, in the form of the read listing
+# of a store. The process that makes the file writes the listing beside its
+# output (`include_package_for_output`), and `compilecache` moves it beside
+# the file. A file of a standard library has none.
+package_reads_file(cachefile::String) = string(chopsuffix(cachefile, ".ji"), ".reads")
+
 # Write the stamps of the names that the patch `patchfile` of `cachefile`
 # changed.
 function update_package_name_stamps(cachefile::String, patchfile::String)
@@ -3367,6 +3375,11 @@ function include_package_for_output(pkg::PkgId, input::String, depot_path::Vecto
     # clears them (and the flag) before staticdata serialization.
     keep_ir = JLOptions().outputo != C_NULL
     keep_ir && ccall(:jl_set_precompile_keep_ir, Cvoid, (Int8,), 1)
+    # The runtime records each file that a top-level expression of the package
+    # opens for a read, from this time on (`package_reads_file`).
+    reads = Any[]
+    reads_since = time()
+    ccall(:jl_reactive_set_read_record, Cvoid, (Any,), reads)
     try
         Base.include(Base.__toplevel__, input)
     catch ex
@@ -3374,6 +3387,7 @@ function include_package_for_output(pkg::PkgId, input::String, depot_path::Vecto
         @debug "Aborting `create_expr_cache'" exception=(ErrorException("Declaration of __precompile__(false) not allowed"), catch_backtrace())
         exit(125) # we define status = 125 means PrecompileableError
     finally
+        ccall(:jl_reactive_set_read_record, Cvoid, (Any,), nothing)
         ccall(:jl_set_newly_inferred, Cvoid, (Any,), nothing)
         keep_ir && ccall(:jl_set_precompile_keep_ir, Cvoid, (Int8,), 0)
     end
@@ -3382,10 +3396,15 @@ function include_package_for_output(pkg::PkgId, input::String, depot_path::Vecto
     m isa Module || check_package_module_loaded_error(pkg)
     # The stamps of the constants and macros of other packages that the top
     # level of the package names (`package_names_dir`). A standard library
-    # is never above a package that changes in place.
+    # is never above a package that changes in place. Then the listing of the
+    # files that the load of the package read, beside the output
+    # (`package_reads_file`): no store tracks a standard library.
     if !startswith(input, Sys.STDLIB)
         rc = require(PkgId(UUID("1dda119b-71a3-45fb-bd14-d17b1eb16859"), "ReactiveCompiler"))
         invokelatest(rc.record_top_level_reads, m)
+        JLOptions().outputji == C_NULL ||
+            invokelatest(rc.rc_write_package_reads, m, reads, reads_since,
+                         package_reads_file(unsafe_string(JLOptions().outputji)))
     end
 
     # Re-populate the runtime's newly-inferred array, which will be included
@@ -3664,6 +3683,7 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
                     rm(evicted_cachefile; force=true)
                     rm_package_patches(pkg, evicted_cachefile)
                     rm(package_names_dir(evicted_cachefile); force = true, recursive = true)
+                    rm(package_reads_file(evicted_cachefile); force = true)
                     try
                         rm(ocachefile_from_cachefile(evicted_cachefile); force=true)
                         @static if Sys.isapple()
@@ -3693,10 +3713,15 @@ function compilecache(pkg::PkgId, path::String, internal_stderr::IO = stderr, in
             # no more.
             rm_package_patches(pkg, cachefile)
             rm(package_names_dir(cachefile); force = true, recursive = true)
+            # The listing of the reads of the load goes with the file.
+            reads = package_reads_file(tmppath)
+            isfile(reads) ? mv(reads, package_reads_file(cachefile); force = true) :
+                            rm(package_reads_file(cachefile); force = true)
             return cachefile, ocachefile
         end
     finally
         rm(tmppath, force=true)
+        rm(package_reads_file(tmppath), force=true)
         if cache_objects
             rm(tmppath_o::String, force=true)
             rm(tmppath_so, force=true)

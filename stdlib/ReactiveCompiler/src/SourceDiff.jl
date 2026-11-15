@@ -3,8 +3,8 @@
 
 The syntactic half of the ledger of a rebuild: the top-level expressions of
 one source file, each with the module that owns it, its lines, its kind, the
-name it defines, the macros it names, the global names of its signature or
-initializer, and the files its evaluation reads. The rebuild child compares
+name it defines, the macros it names, and the global names of its signature
+or initializer. The rebuild child compares
 the ledger of the stored copy of a file with the ledger of the file on disk,
 and evaluates only the expressions that changed, plus the ones that depend
 on them, in the module that owns them.
@@ -29,7 +29,7 @@ by the file and the lines of the entry.
 module ReactiveSourceDiff
 
 export Entry, file_entries, changed_expressions, is_module, entry_kind, defined_name, macro_heads, type_level_names, all_names, declared_type, is_qualified_method,
-       read_paths, type_shape, initializer, runs_code, without_docstrings
+       type_shape, initializer, runs_code, without_docstrings
 
 "Strip every `LineNumberNode` from `x`, recursively, for the key only."
 strip_lines(x) = x
@@ -465,53 +465,6 @@ function type_shape(e)
         push!(body.args, strip_lines(field))
     end
     return Expr(:struct, d.args[1], strip_lines(d.args[2]), body)
-end
-
-# The folders of the files that the system makes.
-const SYSTEM_ROOTS = ("/proc/", "/sys/", "/dev/")
-
-"""
-    read_paths(e, dir) -> Vector{String}
-
-The files that the evaluation of the expression can read: every string
-literal in it that names a file relative to `dir`, the directory of the
-source file, as `joinpath(@__DIR__, "data.txt")` and `include_dependency`
-name them. An `include` names a tracked file, not a read. A literal that can
-not be a path, such as `"\\0"` or a name longer than the system takes, names
-no file. A file under `/proc`, `/sys` or `/dev` is no read: the system makes
-its content, which is no input of a build.
-"""
-function read_paths(e, dir::AbstractString)
-    paths = String[]
-    entry_kind(e) === :include && return paths
-    literals = String[]
-    string_literals!(literals, e)
-    for s in literals
-        (occursin('\n', s) || occursin('\0', s)) && continue
-        path = normpath(isabspath(s) ? s : joinpath(dir, s))
-        any(root -> startswith(path, root), SYSTEM_ROOTS) && continue
-        names_file(path) && push!(paths, path)
-    end
-    return unique!(paths)
-end
-# `isfile` throws for a name that the system refuses, where a literal names no file.
-function names_file(path::AbstractString)
-    try
-        return isfile(path)
-    catch err
-        err isa Base.IOError || rethrow()
-        return false
-    end
-end
-function string_literals!(literals, e)
-    if e isa String
-        push!(literals, e)
-    elseif e isa Expr
-        for a in e.args
-            string_literals!(literals, a)
-        end
-    end
-    return nothing
 end
 
 # ── the code that an initializer runs ───────────────────────────────────────

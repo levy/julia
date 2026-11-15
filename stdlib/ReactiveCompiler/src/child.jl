@@ -317,7 +317,7 @@ function rc_has_change(old_items, new_items, pair_of_new::Dict{Int, Int}, old_re
         old = old_by_key[(pair_of_new[item.file], item.entry.key)]
         rc_is_moved_macro_user(item, old.entry.lines.start, old.path) && return true
     end
-    return any(((path, h),) -> !isfile(path) || rc_content_hash(path) != h, old_reads)
+    return any(rc_read_changed, old_reads)
 end
 
 # Whether `item`, an expression that the edit leaves as it is, is at another
@@ -579,6 +579,168 @@ function rc_resolution(mod::Module, names)
 end
 
 rc_content_hash(path) = string(hash(read(path, String)); base = 16)
+
+# ── the files that an evaluation reads ──────────────────────────────────────
+
+# A file that the evaluation of a top-level expression opened for a read: the
+# source file and the first line of the expression, the path of the file, and
+# the print of its content at that build.
+struct RcRead
+    source::String
+    line::Int
+    path::String
+    print::String
+end
+
+# The system makes the content of a file under one of these folders, so the
+# file is no input of a build.
+const RC_SYSTEM_ROOTS = ("/proc/", "/sys/", "/dev/")
+
+# The kinds of the expressions whose evaluation loads packages and sources.
+# The files that they open are no reads of the package.
+const RC_LOADER_KINDS = (:using, :include)
+
+# The list that the runtime fills while a build records the reads.
+const RC_READ_RECORD = Any[]
+
+# Start the record of the reads: from here, each file that the evaluation of a
+# top-level expression opens for a read only goes to the list, with the place
+# of that expression.
+function rc_start_read_record()
+    empty!(RC_READ_RECORD)
+    ccall(:jl_reactive_set_read_record, Cvoid, (Any,), RC_READ_RECORD)
+    return nothing
+end
+
+# Stop the record of the reads, and answer what it holds: the source file and
+# the line of the expression, and the path, of each read.
+function rc_stop_read_record()
+    ccall(:jl_reactive_set_read_record, Cvoid, (Any,), nothing)
+    records = rc_read_records(RC_READ_RECORD)
+    empty!(RC_READ_RECORD)
+    return records
+end
+
+# The reads of `raw`, a list that the runtime filled: the source file and the
+# line of the expression, and the path, of each read.
+function rc_read_records(raw::Vector{Any})
+    records = Tuple{String, Int, String}[(String(record[1]::Symbol), Int(record[2]::Int32), record[3]::String)
+                                         for record in raw]
+    return unique!(records)
+end
+
+# The print of the content of a read file, for a build that began at the time
+# `since`. A file that changed since then has a print that equals no content:
+# the build can hold the text of before, so the next build evaluates its
+# reader again. A file that is not there has a print of its own.
+function rc_read_print(path::String, since::Float64)
+    isfile(path) || return "absent"
+    mtime(path) >= since && return "changed"
+    return rc_content_hash(path)
+end
+
+# Whether the file of the read has another content now than its print says.
+rc_read_changed(read::RcRead) =
+    read.print == "changed" || (isfile(read.path) ? rc_content_hash(read.path) : "absent") != read.print
+
+# The reads of the tracked sources among the records of a build that began at
+# the time `since`. `kind_at(source, line)` answers the kind of the expression
+# at a place, or `nothing` for a place with no expression. No read of the
+# package: a place outside the tracked files, a tracked file, a file of the
+# system, and a file that an expression of a kind of `RC_LOADER_KINDS` opens.
+function rc_reads_of_records(records::Vector{Tuple{String, Int, String}}, tracked::Set{String},
+                             kind_at, since::Float64)
+    reads = RcRead[]
+    for (source, line, path) in records
+        source in tracked || continue
+        path in tracked && continue
+        any(root -> startswith(path, root), RC_SYSTEM_ROOTS) && continue
+        kind = kind_at(source, line)
+        kind === nothing && continue
+        kind in RC_LOADER_KINDS && continue
+        push!(reads, RcRead(source, line, path, rc_read_print(path, since)))
+    end
+    return unique!(reads)
+end
+
+# The listing of the reads of a snapshot: one line for each read, with its
+# print, the line and the source file of its expression, and its path, with
+# a tab between them.
+function rc_read_reads(listing::String)
+    reads = RcRead[]
+    isfile(listing) || return reads
+    for line in eachline(listing)
+        parts = split(line, '\t')
+        length(parts) == 4 || continue
+        push!(reads, RcRead(String(parts[3]), parse(Int, parts[2]), String(parts[4]), String(parts[1])))
+    end
+    return reads
+end
+
+function rc_write_reads(listing::String, reads::Vector{RcRead})
+    open(listing, "w") do io
+        for read in reads
+            println(io, read.print, '\t', read.line, '\t', read.source, '\t', read.path)
+        end
+    end
+    return nothing
+end
+
+# The listing of the reads of the package of `root`, for the process that
+# makes its cache file (`Base.package_reads_file`). `raw` is the list that the
+# runtime filled while the package loaded, from the time `since`. The listing
+# has the reads of the sources of the package, in the form of `rc_write_reads`.
+function rc_write_package_reads(root::Module, raw::Vector{Any}, since::Float64, listing::String)
+    sources = Set{String}()
+    for (mod, path, _, _, mtime) in Base._require_dependencies
+        mtime < 0 || continue
+        (mod === Base.__toplevel__ || Base.moduleroot(mod) === root) && push!(sources, path)
+    end
+    records = rc_read_records(raw)
+    kinds = Dict{Tuple{String, Int}, Symbol}()
+    for source in unique!(String[source for (source, _, _) in records])
+        source in sources && isfile(source) || continue
+        for entry in ReactiveSourceDiff.file_entries(read(source, String), source)
+            kinds[(source, entry.lines.start)] = ReactiveSourceDiff.entry_kind(entry.expr)
+        end
+    end
+    rc_write_reads(listing, rc_reads_of_records(records, sources, (source, line) -> get(kinds, (source, line), nothing), since))
+    return nothing
+end
+
+# The reads of the packages that this process loaded from a cache file: the
+# listing beside each cache file (`Base.package_reads_file`), all written to
+# `listing` in the same form. A whole build calls it in the process that loads
+# its packages: the top-level expressions of a package run in the process
+# that makes its cache file, and in no process of a build that finds the
+# cache file fresh. A cache file of a package with no listing is an error: the
+# build can not know what the load of the package read.
+function rc_write_loaded_reads(listing::String)
+    reads = RcRead[]
+    @lock Base.require_lock for (id, origin) in Base.pkgorigins
+        cachefile = origin.cachepath
+        cachefile === nothing && continue
+        startswith(something(origin.path, Sys.STDLIB), Sys.STDLIB) && continue
+        file = Base.package_reads_file(cachefile)
+        isfile(file) || error("ReactiveCompiler: the cache file ", cachefile, " of ", id.name,
+                              " has no listing of the files that its load read; remove the cache file")
+        append!(reads, rc_read_reads(file))
+    end
+    sort!(reads; by = read -> (read.source, read.line, read.path))
+    rc_write_reads(listing, reads)
+    return nothing
+end
+
+# The read listing of a whole build: the reads of the tracked files `files`
+# among those of `loaded`, the listing that the process of the build wrote
+# (`rc_write_loaded_reads`). Answer the count of the reads.
+function rc_found_reads(loaded::String, files::Vector{String}, listing::String)
+    isfile(loaded) || error("ReactiveCompiler: the whole build wrote no listing of its reads to ", loaded)
+    tracked = Set{String}(files)
+    reads = unique!(RcRead[read for read in rc_read_reads(loaded) if read.source in tracked])
+    rc_write_reads(listing, reads)
+    return length(reads)
+end
 
 # The load order of the apply: a key for each tracked file, which the key of
 # an item of the file extends with the first line of the item. Two keys
@@ -1623,9 +1785,9 @@ end
 
 # Compare every tracked file with the stored copy of the previous snapshot,
 # classify the changes, refuse what the catalog refuses, and evaluate the
-# changes and their dependents in their modules. `old_reads` holds the
-# hash of every file that a top-level expression of the previous snapshot
-# could read; the new listing is written to `reads_out`. A refusal is written
+# changes and their dependents in their modules. `old_listing` names the
+# listing of the files that the top-level expressions of the previous snapshot
+# read; the new listing is written to `reads_out`. A refusal is written
 # to `refusal_out` and the child exits before any evaluation. With `allowed`,
 # the ids of the change catalog that this apply takes, every other change is
 # refused too. The evaluations of the replay print to the file
@@ -1637,11 +1799,12 @@ end
 function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Symbol}},
                           old_copies::Vector{String},
                           new_files::Vector{String}, new_roots::Vector{Vector{Symbol}},
-                          old_reads::Vector{Tuple{String, String}},
+                          old_listing::String,
                           reads_out::String, refusal_out::String;
                           allowed::Union{Nothing, Set{String}} = nothing, keep_ledger::Bool = false)
     rc_warm()
     t0 = time()
+    old_reads = rc_read_reads(old_listing)
     # The ledgers of the files whose text changed: a pair by path whose texts
     # differ, and every renamed, removed and added file. The old items come
     # from the ledger of the previous apply of this process when it has them
@@ -1858,20 +2021,28 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                     evaluated, " are evaluated at their new place, ", length(regrouped), " statements join the statement group")
         end
     end
-    # E1: a changed read file re-evaluates the expressions that name it. A
-    # ledger of the changed files found every old read file the same, and the
-    # reads of the other files carry over.
-    old_hashes = Dict{String, String}(path => h for (path, h) in old_reads)
-    new_reads = all_files ? Tuple{String, String}[] : copy(old_reads)
-    for item in new_items
-        for path in ReactiveSourceDiff.read_paths(item.entry.expr, dirname(item.path))
-            h = rc_content_hash(path)
-            push!(new_reads, (path, h))
-            get(old_hashes, path, "") == h && continue
-            rc_enqueue!(queue, RcChange("E1", item, string("reads ", basename(path))))
+    # E1: a read file with another content evaluates again the expression
+    # that read it. An expression that the edit leaves as it is keeps its
+    # reads, at its place of now; the reads of a changed or removed expression
+    # go, and the evaluation of the changed one records its reads again. A
+    # ledger of the changed files alone has no expression for a read of
+    # another file: that read stays as it is.
+    old_at = Dict{Tuple{String, Int}, RcItem}((item.path, item.entry.lines.start) => item for item in old_items)
+    new_of = IdDict{RcItem, RcItem}(old => item for (item, old) in order_pairs)
+    kept_reads = RcRead[]
+    carried_reads = Tuple{RcItem, RcRead}[]
+    for old_read in old_reads
+        old = get(old_at, (old_read.source, old_read.line), nothing)
+        if old === nothing
+            all_files || push!(kept_reads, old_read)
+            continue
         end
+        item = get(new_of, old, nothing)
+        item === nothing && continue
+        push!(carried_reads, (item, old_read))
+        rc_read_changed(old_read) &&
+            rc_enqueue!(queue, RcChange("E1", item, string("reads ", basename(old_read.path))))
     end
-    unique!(new_reads)
     # D1: a changed macro re-evaluates every expression that names it, and
     # the macros among those, transitively.
     macro_users = Dict{Symbol, Vector{RcItem}}()
@@ -1960,6 +2131,8 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     world_before = Base.get_world_counter()
     empty!(RC_KEPT)
     rc_install_filter(rc_method_filter)
+    rc_start_read_record()
+    read_records = Tuple{String, Int, String}[]
     t_eval = @elapsed try
         rc_with_empty_task_storage() do
             rc_with_fresh_log_ids() do
@@ -1970,7 +2143,20 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
         end
     finally
         rc_install_filter(nothing)
+        read_records = rc_stop_read_record()
     end
+    # The reads of now: those of each expression that stayed and that no
+    # change evaluated, and those that the evaluations of this apply recorded.
+    evaluated_items = Base.IdSet{RcItem}(change.item for change in queue.changes if change.item !== nothing)
+    new_at = Dict{Tuple{String, Int}, RcItem}((item.path, item.entry.lines.start) => item for item in new_items)
+    kind_at(source, line) = haskey(new_at, (source, line)) ? new_at[(source, line)].kind : nothing
+    new_reads = kept_reads
+    for (item, old_read) in carried_reads
+        item in evaluated_items ||
+            push!(new_reads, RcRead(item.path, item.entry.lines.start, old_read.path, old_read.print))
+    end
+    append!(new_reads, rc_reads_of_records(read_records, tracked, kind_at, t0))
+    unique!(new_reads)
     replaced = evaluation.replaced
     kept = evaluation.kept
     world_after = Base.get_world_counter()
@@ -2037,11 +2223,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 change.kept > 0 ? string(", ", change.kept, " kept") : "",
                 change.deleted > 0 ? string(", ", change.deleted, " deleted") : "")
     end
-    open(reads_out, "w") do io
-        for (path, h) in new_reads
-            println(io, h, " ", path)
-        end
-    end
+    rc_write_reads(reads_out, new_reads)
     closed = Core.MethodInstance[]
     before = Base.IdSet{Core.MethodInstance}()
     t_scan = @elapsed rc_each_instance() do mi
@@ -2352,8 +2534,6 @@ function rc_warm()
         error("rc_warm: h does not name @m")
     ReactiveSourceDiff.type_shape(old_items[3].entry.expr) == ReactiveSourceDiff.type_shape(new_items[3].entry.expr) &&
         error("rc_warm: the shapes of P are equal")
-    isempty(ReactiveSourceDiff.read_paths(new_items[9].entry.expr, dir)) ||
-        error("rc_warm: an include is a read")
     refusals = String[]
     tracked = Set([new_path])
     roots = [Symbol[:Base]]
@@ -2517,6 +2697,14 @@ function rc_warm()
     merge!(RC_TRACE_CACHE, kept_cache)
     union!(RC_TRACE_FAILED, kept_failed)
     rc_content_hash(new_path)
+    # The record of the reads holds a file that an evaluation opens, with the
+    # place of the evaluation, and the print of that file is that of its text.
+    rc_start_read_record()
+    Core.eval(Main, Expr(:toplevel, LineNumberNode(3, Symbol(new_path)), :(Base.read($statement_path, String))))
+    rc_stop_read_record() == [(new_path, 3, statement_path)] ||
+        error("rc_warm: the record of the reads does not hold the file that an evaluation opened")
+    rc_read_changed(RcRead(new_path, 3, statement_path, rc_read_print(statement_path, time() + 1.0))) &&
+        error("rc_warm: a read file with the same text counts as changed")
     rm(dir; recursive = true)
     # Warm both branches of the module resolver: a name that Main binds, and
     # one that only the loaded modules hold.

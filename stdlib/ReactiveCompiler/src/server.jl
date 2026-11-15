@@ -72,17 +72,6 @@ end
 
 rc_root_paths(roots) = Vector{Symbol}[isempty(root) ? Symbol[] : Symbol.(split(root, '.')) for root in roots]
 
-# The reads listing of a snapshot: `<hash> <path>` lines.
-function rc_read_reads(listing::String)
-    reads = Tuple{String, String}[]
-    isfile(listing) || return reads
-    for line in eachline(listing)
-        parts = split(line, " "; limit = 2)
-        length(parts) == 2 && push!(reads, (String(parts[2]), String(parts[1])))
-    end
-    return reads
-end
-
 function rc_resident_kb()
     for line in eachline("/proc/self/status")
         startswith(line, "VmRSS:") && return parse(Int, split(line)[2])
@@ -224,7 +213,7 @@ function rc_apply_spec(spec::String)
     s = Base.parsed_toml(spec)
     state = rc_apply_tracked(String.(s["old_files"]), rc_root_paths(s["old_roots"]), String.(s["old_copies"]),
                              String.(s["files"]), rc_root_paths(s["roots"]),
-                             rc_read_reads(s["old_reads"]), s["reads_out"], s["refusal_out"]; keep_ledger = true)
+                             String(s["old_reads"]), s["reads_out"], s["refusal_out"]; keep_ledger = true)
     rc_precompile_trace(s["trace"])
     rc_report_new(state)
     return nothing

@@ -3648,4 +3648,23 @@ end
     end end
 end
 
+# The process that makes a cache file writes beside it the files that the
+# top-level expressions of the package read.
+precompile_test_harness("the reads of the load of a package") do dir
+    write(joinpath(dir, "ReadsAtLoad.jl"), """
+        module ReadsAtLoad
+        read_text() = read(joinpath(@__DIR__, "reads-at-load.txt"), String)
+        const TEXT = read_text()
+        const UNREAD = joinpath(@__DIR__, "unread.txt")
+        end
+        """)
+    write(joinpath(dir, "reads-at-load.txt"), "one")
+    write(joinpath(dir, "unread.txt"), "two")
+    cachefile, _ = Base.compilecache(Base.PkgId("ReadsAtLoad"))
+    listing = Base.package_reads_file(cachefile)
+    @test isfile(listing)
+    @test split.(readlines(listing), '\t') ==
+        [[string(hash("one"); base = 16), "3", joinpath(dir, "ReadsAtLoad.jl"), joinpath(dir, "reads-at-load.txt")]]
+end
+
 finish_precompile_test!()

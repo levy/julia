@@ -78,5 +78,6 @@ precompile(rc_keep_statements, (String, String))
 precompile(trim_entrypoints!, ())
 precompile(write_package_patch, (Base.PkgId, String, Int, Vector{Core.CodeInstance}))
 precompile(record_top_level_reads, (Module,))
+precompile(rc_write_package_reads, (Module, Vector{Any}, Float64, String))
 
 end

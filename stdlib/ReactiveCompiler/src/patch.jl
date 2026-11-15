@@ -212,7 +212,7 @@ function apply_package_patch(pkg::Base.PkgId, root::Module, cachefile::String, k
     # The log messages of the apply, such as a replaced docstring, go to the
     # log of the build.
     Base.CoreLogging.with_logger(Base.CoreLogging.SimpleLogger(stdout)) do
-        rc_apply_tracked(files, roots, copies, files, roots, Tuple{String, String}[],
+        rc_apply_tracked(files, roots, copies, files, roots, Base.package_reads_file(cachefile),
                          joinpath(work, "reads"), joinpath(work, "refusals"); allowed = PATCH_CHANGES)
     end
     world_after = Base.get_world_counter()
