@@ -282,7 +282,10 @@ end
 #   initializer  - the expression that gives the binding of the item its
 #                  value, when it runs code and names a tracked name; else
 #                  `nothing`
-#   generated    - the item is a `@generated` method
+#   generated    - the item defines a generated method: its text is a
+#                  `@generated` method, or a method that the program holds
+#                  for it has a generator, as one that a statement or the
+#                  expansion of a macro defines
 #   statement    - the item is a statement that defines through `eval`
 struct RcCandidate
     index::Int
@@ -321,7 +324,8 @@ function rc_candidates(items::Vector{RcItem}, order::RcLoadOrder)
             ReactiveSourceDiff.runs_code(initializer) &&
                 !isdisjoint(ReactiveSourceDiff.all_names(initializer), names) || (initializer = nothing)
         end
-        generated = item.kind === :method && Symbol("@generated") in heads
+        generated = item.kind === :method && Symbol("@generated") in heads ||
+                    any(method -> isdefined(method, :generator), item.methods)
         statement = item.kind === :other && (Symbol("@eval") in heads || :eval in ReactiveSourceDiff.all_names(e))
         expands || initializer !== nothing || generated || statement || continue
         push!(candidates, RcCandidate(index, item, expands, initializer, generated, statement))
