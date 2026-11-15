@@ -507,14 +507,15 @@ These are my proposals. The owner approves them with the plan.
 
 ## The open questions
 
-Four decisions are the owner's. Q1 sets what property 3 means and what a
+Five decisions are the owner's. Q1 sets what property 3 means and what a
 rebuild costs; it has its answer, (b), since 2026-11-13. Q2 came with finding
 44, on 2026-11-10, and sets how the rebuild knows the methods of an
 expression; it has its answer. Q3 came with finding 62, on 2026-11-14, and
 sets which lines a moved method gives; it has its answer, (b), since
 2026-11-15. Q4 came with the test of finding 9, on 2026-11-15, and sets how a
 build knows the files that the load of a package reads; it has its answer,
-(a), since 2026-11-15.
+(a), since 2026-11-15. Q5 came with the first round of D15, on 2026-11-15, and
+sets where the record of a whole build runs; it is open.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -685,6 +686,64 @@ makes the guess louder, and (c) keeps a silent difference from a whole build.
 
 *The answer of the owner (2026-11-15): "I agree with you", so (a).* D15 holds
 the design.
+
+**Q5. Where does the record of a whole build run (D15)?** D15 says that a
+whole build installs the list before it loads the packages. Round r44 shows
+that this records nothing: the read list of the whole build is empty, so the
+step `read` of `gate_runs.sh` fails, because the rebuild for `greeting.txt`
+ends early.
+
+```julia
+# users.jl of RunLib, a tracked package
+const GREETING = strip(read(joinpath(@__DIR__, "greeting.txt"), String))
+```
+
+Now: `reads.txt` of the whole build has no line. Expected: one line with
+`users.jl`, the line of the expression, `greeting.txt` and its print.
+
+*The cause.* A whole build does not evaluate the sources of a package in its
+own process. `ensurecompiled` of PackageCompiler imports the packages first,
+so Julia makes the cache file of each package in a precompile process of its
+own (`Base.compilecache`, `include_package_for_output`). The process that
+writes the image then loads each package from its cache file. The top-level
+expressions run in the precompile process, where no list is installed. A
+cache file that is fresh is not made again, so the expressions of its package
+run in no process of the build.
+
+The half of D15 for a rebuild does not change: an apply evaluates in its own
+process, and the runtime part (e14f69b054) serves each option.
+
+- (a) **The cache file of a package keeps the reads of its load, in a file
+  beside it.** The precompile process of a package installs the list while it
+  loads the package. At its end it writes the listing of the reads of the
+  package, in the form of `reads.txt`, to a file beside the cache file.
+  `Base.compilecache` moves that file with the cache file and removes it with
+  an evicted one, as it does for the folder of the name stamps
+  (`package_names_dir`). The whole build takes the listing of each tracked
+  package from the file of the cache file that it loaded. The print is that
+  of the text that the cache file holds. The cost: each precompile of a
+  package of this Julia writes one small file more, also outside a store. A
+  tracked package whose cache file has no such file stops the whole build.
+- (b) **The same record in a hidden constant of the module of the package,**
+  as the docstrings of a module have. No file moves with the cache file. Its
+  fault: the list is then a part of the program. The image holds it, and the
+  module of a rebuilt program keeps the list of its whole build, which
+  differs from that of a new whole build.
+- (c) **A whole build loads the tracked packages from their sources in its own
+  process.** D15 then holds as it is written. Its faults: the whole build
+  uses no cache file for them, so it loads them one after the other and makes
+  each one again; and the load of a package in the process of the image is
+  another path of Julia than the one that each gate tests now.
+
+*A fact of (a) and (b).* A whole build that takes a fresh cache file has the
+text that the cache file read, as Julia has for each read file that no
+`include_dependency` names. The read list has the print of that text, so the
+next build finds the changed file and evaluates its reader again.
+
+*The recommendation of the assistant is (a).* The reads are a fact of the
+load of a package, and the cache file is the result of that load; the folder
+of the name stamps shows the way. (b) puts a fact of the build into the
+program, and (c) changes how a whole build loads.
 
 ## Steps
 
@@ -1628,12 +1687,18 @@ commits. The numbers of the steps stay as they are.
     (ce2c16c0e4). Round r43a, the harness of before: `motto = steady` and
     `creed = plain` after the two files changed, where a whole build prints
     `firm` and `clear`; the rebuild for `creed.txt` ended early.
-  - [ ] The runtime: the list and the note, and the two calls in `open` of
-    Base. A test of Julia.
+  - [x] The runtime: the list and the note, and the two calls in `open` of
+    Base (e14f69b054). The test set of `test/iostream.jl` passes, 64 of 64;
+    the tests `file`, `read` and `filesystem` pass, 7861 and 1 known broken;
+    the static analysis of `toplevel.c` passes.
   - [ ] The harness: the reads by their place, rule E1 from the record, and
-    no search for strings.
+    no search for strings. *Written, not committed.* The warm-up of each
+    apply checks the record and the print (`rc_warm`), and each apply of
+    round r44 passed it. Rule E1 has no test yet, because the whole build of
+    r44 gave an empty list (Q5).
   - [ ] PackageCompiler: the whole build records and writes the list; the
-    build that ends early compares the same list.
+    build that ends early compares the same list. *The first half waits for
+    Q5:* round r44 (2026-11-15, both forms) failed at the step `read`.
   - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`; the
     round of the gates passes.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
