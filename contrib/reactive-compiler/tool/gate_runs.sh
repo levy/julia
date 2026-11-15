@@ -94,12 +94,12 @@
 #                  the rebuild does not end early, evaluates the reader again
 #                  (E1), and the binary prints the new text; the revert does
 #                  the same back
-#   read-unnamed - not in the default list, after the step read: motto.txt
-#                  changes, which a function of helpers.jl reads for an
-#                  initializer of users.jl, and then creed.txt, whose name an
-#                  initializer computes. Each rebuild must give its constant
-#                  the new text; the step fails until the build knows the
-#                  files that an evaluation reads (finding 9)
+#   read-unnamed - motto.txt changes, which a function of helpers.jl reads
+#                  for an initializer of users.jl, and then creed.txt, whose
+#                  name an initializer computes. Each rebuild gives its
+#                  constant the new text. Then note.txt changes, which only a
+#                  function names: that rebuild ends early (finding 9,
+#                  decision D15)
 #   input        - the Manifest entry of a package changes, then the text of
 #                  the workload: each build stops and names the input
 #   refresh      - the workload is recorded again from the image of the
@@ -333,18 +333,29 @@ read_file() {
 # Two files that no expression names at the place of its use: a function of
 # helpers.jl reads the first one for an initializer of users.jl, and the
 # initializer of the second one computes its name. A whole build reads the new
-# texts, so each rebuild must give its constant the new text. This step is not
-# in the default list: it fails until the build knows the files that the
-# evaluation of an expression reads (finding 9, the second half).
+# texts, so each rebuild must give its constant the new text: the build
+# records the files that the evaluation of an expression opens (finding 9,
+# decision D15). The record holds no file that only the program reads: a
+# function of users.jl names note.txt and nothing calls it at load, so a
+# change of note.txt alone is no change for a build.
 read_unnamed() {
-    local failed=0 log
+    local failed=0 log listing
     echo "firm" > "$SRC/RunLib/src/motto.txt" && mat mat-read-function "$CHAIN" || return 1
     echo "clear" > "$SRC/RunLib/src/creed.txt" && mat mat-read-computed "$CHAIN" || return 1
     for log in mat-read-function mat-read-computed; do
         grep -q "the program stays as it is" "$OUT/$log.log" &&
             { echo "=== read-unnamed: the rebuild of $log ended early"; failed=1; }
     done
+    echo "another note" > "$SRC/RunLib/src/note.txt" && mat mat-read-program "$CHAIN" || return 1
+    grep -q "the program stays as it is" "$OUT/mat-read-program.log" ||
+        { echo "=== read-unnamed: a file that only a function names made a rebuild"; failed=1; }
+    listing=$(ls "$CHAIN"/reactive-store/s*/reads.txt | sort -V | tail -1)
+    for log in greeting.txt motto.txt creed.txt; do
+        grep -q "/$log\$" "$listing" || { echo "=== read-unnamed: the listing of the reads does not hold $log"; failed=1; }
+    done
+    grep -q "/note.txt\$" "$listing" && { echo "=== read-unnamed: the listing of the reads holds note.txt"; failed=1; }
     runbin read-unnamed "$CHAIN" "$READ" || failed=1
+    [ $failed == 0 ] && echo "=== read-unnamed: each constant has the new text of its file, and the listing holds $(grep -c . "$listing") reads"
     return $failed
 }
 
@@ -479,7 +490,7 @@ compare() {
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read input refresh trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read read-unnamed input refresh trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;

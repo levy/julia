@@ -109,3 +109,7 @@ through_unknown(f, x) = Base.inferencebarrier(f)(x)
 # the second one computes the name of its file.
 const MOTTO = read_motto()
 const CREED = strip(read(joinpath(@__DIR__, string("creed", ".txt")), String))
+
+# A file that a function names, and that the function reads when it is called.
+# Nothing calls the function at load, so the file is no input of a build.
+noted_text() = strip(read(joinpath(@__DIR__, "note.txt"), String))
