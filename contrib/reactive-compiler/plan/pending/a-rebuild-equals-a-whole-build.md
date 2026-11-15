@@ -1014,13 +1014,19 @@ commits. The numbers of the steps stay as they are.
   part beside finding 43, because both are the lines of a moved expression
   (*by the assistant*). The parts, in their order:
 
-  - [ ] The test, which fails first. HazardApp gets an inlined function that
-    throws and a function that calls it, and two lines of output,
-    `shape: line_outer` and `shape: line_inner`: the lines of the two frames
-    of the error. The second edit of the oracle gate moves both functions by
-    one line, so check 3 of the oracle compares the lines of reused machine
-    code against a whole build. `test/stacktraces.jl` moves a compiled
-    method as the apply does and reads the lines of its frames.
+  - [x] The test, which fails first (530f1b93a8). HazardApp gets an inlined
+    function that throws and a function that calls it, and two lines of
+    output, `shape: line_outer` and `shape: line_inner`: the lines of the two
+    frames of the error. The second edit of the oracle gate moves both
+    functions by one line, so check 3 of the oracle compares the lines of
+    reused machine code against a whole build. `test/stacktraces.jl` moves a
+    compiled method as the apply does and reads the lines of its frames. On
+    the build of 2fcee8b004 (round r42a): check 3 of the oracle finds
+    `line_outer = 64` and `line_inner = 63` in the chain, 65 and 64 in the
+    whole build, and check 1 finds `make_oc`; `test/stacktraces.jl` fails at
+    the three lines of the moved method (307 where 317 is right). Gate M6
+    passes with the two new lines of output, because it reads only the
+    names that it knows.
   - [ ] The apply (`child.jl`): a moved method and the method of each opaque
     closure in its code get the line table of now with the line and the
     file, as one write at the begin of the apply (D4). The method filter
