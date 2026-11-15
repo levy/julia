@@ -1375,6 +1375,10 @@ JL_DLLEXPORT jl_method_t *jl_new_method_uninit(jl_module_t*);
 // The place of the top-level expression that is evaluated now (toplevel.c).
 extern jl_sym_t *jl_toplevel_expr_file;
 extern int jl_toplevel_expr_line;
+// The record of the files that top-level expressions open (toplevel.c).
+JL_DLLEXPORT void jl_reactive_set_read_record(jl_value_t *list);
+JL_DLLEXPORT int jl_reactive_records_reads(void) JL_NOTSAFEPOINT;
+JL_DLLEXPORT void jl_reactive_note_read(jl_value_t *path);
 
 jl_module_t *jl_new_module_(jl_sym_t *name, jl_module_t *parent, uint8_t default_using_core, uint8_t self_name);
 jl_module_t *jl_add_standard_imports(jl_module_t *m);

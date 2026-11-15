@@ -317,6 +317,10 @@ function open(fname::String; lock = true,
         truncate = truncate,
         append = append,
     )
+    # A reactive build records the files that the load of a package reads.
+    if flags.read && !flags.write && ccall(:jl_reactive_records_reads, Cint, ()) != 0
+        ccall(:jl_reactive_note_read, Cvoid, (Any,), abspath(fname))
+    end
     s = IOStream(string("<file ",fname,">"))
     if !lock
         s._dolock = false

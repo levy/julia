@@ -47,6 +47,44 @@ jl_sym_t *jl_toplevel_expr_file = NULL;
 int jl_toplevel_expr_line = 0;
 static int jl_toplevel_expr_lowered = 0;
 
+// The record of the files that the evaluation of top-level expressions opens,
+// for a reactive build: a `Vector{Any}` that the build installs while it loads
+// packages or applies an edit. `open` of Base names each file that it opens
+// for a read only, and the list gets the file and the line of the top-level
+// expression that runs, as a method gets them for its definer, with the path.
+// With no list, or outside a top-level expression, nothing is recorded. The
+// caller keeps the list alive; `nothing` removes it.
+static _Atomic(jl_value_t*) jl_reactive_read_record = NULL;
+static jl_mutex_t jl_reactive_read_record_lock;
+
+JL_DLLEXPORT void jl_reactive_set_read_record(jl_value_t *list)
+{
+    jl_atomic_store_release(&jl_reactive_read_record, list == jl_nothing ? NULL : list);
+}
+
+// Whether a note of a read is recorded now: `open` makes the path absolute
+// only then.
+JL_DLLEXPORT int jl_reactive_records_reads(void) JL_NOTSAFEPOINT
+{
+    return jl_atomic_load_relaxed(&jl_reactive_read_record) != NULL && jl_toplevel_expr_file != NULL;
+}
+
+JL_DLLEXPORT void jl_reactive_note_read(jl_value_t *path)
+{
+    jl_value_t *list = jl_atomic_load_acquire(&jl_reactive_read_record);
+    jl_sym_t *file = jl_toplevel_expr_file;
+    if (list == NULL || file == NULL)
+        return;
+    jl_value_t *line = NULL, *record = NULL;
+    JL_GC_PUSH3(&list, &line, &record);
+    line = jl_box_int32(jl_toplevel_expr_line);
+    record = (jl_value_t*)jl_svec3(file, line, path);
+    JL_LOCK(&jl_reactive_read_record_lock);
+    jl_array_ptr_1d_push((jl_array_t*)list, record);
+    JL_UNLOCK(&jl_reactive_read_record_lock);
+    JL_GC_POP();
+}
+
 static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t *stmts, int fast, int need_value, const char **toplevel_filename, int *toplevel_lineno);
 
 htable_t jl_current_modules;

@@ -179,6 +179,10 @@ setup_stdio(file::File, ::Bool) = (file, false)
 
 # Filesystem.open, not Base.open
 function open(path::AbstractString, flags::Integer, mode::Integer=0)
+    # A reactive build records the files that the load of a package reads.
+    if flags & (JL_O_WRONLY | JL_O_RDWR) == 0 && ccall(:jl_reactive_records_reads, Cint, ()) != 0
+        ccall(:jl_reactive_note_read, Cvoid, (Any,), abspath(path))
+    end
     req = Libc.malloc(_sizeof_uv_fs)
     local handle
     try

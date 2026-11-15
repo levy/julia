@@ -194,3 +194,29 @@ end
 @testset "fd" begin
     @test open(fd, tempname(), "w") isa RawFD
 end
+
+# A reactive build records the files that the evaluation of a top-level
+# expression opens for a read only, with the place of that expression.
+@testset "the record of the reads of a reactive build" begin
+    mktempdir() do dir
+        dir = realpath(dir)
+        path = joinpath(dir, "data.txt")
+        write(path, "data")
+        opened(place::Symbol, e) = Core.eval(Main, Expr(:toplevel, LineNumberNode(7, place), e))
+        list = Any[]
+        ccall(:jl_reactive_set_read_record, Cvoid, (Any,), list)
+        try
+            opened(:reader, :(read($path, String)))
+            opened(:relative, :(cd(() -> read("data.txt", String), $dir)))
+            opened(:low, :(close(Base.Filesystem.open($path, Base.Filesystem.JL_O_RDONLY))))
+            opened(:writer, :(open(io -> nothing, $(joinpath(dir, "out.txt")), "w")))
+            opened(:absent, :(try read($(joinpath(dir, "none.txt"))) catch end))
+        finally
+            ccall(:jl_reactive_set_read_record, Cvoid, (Any,), nothing)
+        end
+        opened(:late, :(read($path, String)))
+        records = [(record[1], Int(record[2]), record[3]) for record in list]
+        @test records == [(:reader, 7, path), (:relative, 7, path), (:low, 7, path),
+                          (:absent, 7, joinpath(dir, "none.txt"))]
+    end
+end
