@@ -1055,6 +1055,14 @@ commits. The numbers of the steps stay as they are.
     numbers are those of round r41: 20 lines of roots in `cases`, 22 of 300
     in `replay-28`, 0 of 2268 in `replay-platform-17`.
 
+  *Landed (2026-11-15, with the word of the owner: "Yes").* `merged-next`
+  moved forward to 3da82e166b, with the libraries and the images of the
+  build at db0e88dddd, and the caches of the standard libraries made again.
+  The landing holds the end of Step 9 too. Checked in the installed Julia:
+  REPL, Pkg and Test load in 0.32 s, the harness of the image equals its
+  folder, and the frames of a moved method name the lines of now. Not
+  pushed.
+
   *Open in this step:* the reason of the size of gate C after a `make`; the
   profile of the apply.
 - [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
@@ -2758,6 +2766,8 @@ commits. The numbers of the steps stay as they are.
   closed: the full lists (D12), the call through a slot (D11), the words
   with the tag BaseRef, the size of the new objects from run to run, and
   the leaf cache (finding 63). Finding 62 goes on in Step 2, with D14.
+  *Landed (2026-11-15, with the word of the owner: "Yes"),* together with
+  D14 of Step 2; not pushed.
 
   *The start with an overlay, measured (2026-11-14, the prelinked program of
   the replay over 17 commits of the platform, with the rebases of D6; the
