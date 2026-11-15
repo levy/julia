@@ -145,6 +145,7 @@ depend on an address.
 | 26 | In the overlay form, new code calls an old function with boxed arguments through `jl_invoke`. A whole build makes a direct call. The same path cost 43 ns against 2.6 ns in the bench of gate M6. Most functions on mutable documents have boxed arguments. The count line of the build prints 0 for these calls. | An edited function calls an unchanged `handle!(document, event, context)` in a loop. | `codegen.cpp:5378` ("TODO: Add !specsig support"), `aotcompile.cpp:504` | Read. Closed on the branch by D11 (1fd1c54bd7, Step 9): the call goes through a slot; 2.0 ns against 1.55 ns from old code in the bench of gate M6 |
 | 27 | `precompile` does nothing for a code instance of the image that has no machine code. The statement counts as compiled, the program compiles the call at each run, and a refresh changes nothing. | A new dynamic call to a small function that the whole build always inlined. | `gf.c:4025` | Read (audit); Test |
 | 28 | `JULIA_REACTIVE_DELTA_OPT` in the environment lowers the level of the rebuilt code, and no line of the output says it. | A variable that a gate run left makes each rebuild compile at `-O1`. | `Executable.jl:327`, `reactive.jl:111` | Read |
+| 63 (new) | **An edit empties the leaf cache of dispatch.** A new method that takes over a method instance closes each entry of the leaf cache of the one global method cache, and puts an empty cache in its place; the other cache of dispatch closes only the entries of the method instances that the method takes over. After a rebuild, the program has the entries that the rebuild process made after the apply, and the first call of each other concrete signature takes the slow path of dispatch, which a whole build does not. The closed entries are dead objects of the base on written pages, and the save patches them too. | The one-line edit `reused_const() = 42` to `43` of gate M6, in the overlay form: the leaf cache of the whole build holds 36 351 entries and the program after the rebuild 663; the overlay patches 40 129 objects, 36 204 of them the field `max_world` of a dead `TypeMapEntry`, and 807 of its 2 724 written pages hold only such patches. A rebuild with no change patches 2 257 objects. In a session, `h(x::Int) = 3` over `h(x) = 1` closes the entry of `g(::Int)`. | `gf.c`, `jl_method_table_activate`: the leaf cache is dropped whole, and `_method_table_invalidate` walks it entry by entry | Found by the count of the patches of a one-line edit (Step 9, 2026-11-15). *Decision by the assistant:* the leaf cache takes the rule of the other cache (Step 9) |
 
 The code generation itself gives no slower code: the audit found the same LLVM
 passes and the same level for the code of a rebuild as for a whole build, and
@@ -1414,8 +1415,11 @@ commits. The numbers of the steps stay as they are.
   because the process compiles the harness, and about 4 MB in the overlay
   (see D7). The owner's IDE store has no `harness` record, so it loads the
   sources until its next whole build.
-- [ ] **Step 5: an apply is all or nothing, and each input is known (D4, D5,
-  D5a; findings 7, 8, 28 to 30, 34, 36, 39).** The server starts with one collector
+- [x] **Step 5: an apply is all or nothing, and each input is known (D4, D5,
+  D5a; findings 7, 8, 28 to 30, 34, 36, 39).** *Done (2026-11-15): each test
+  of this step passes in round r38, and finding 39 has its test in gate M6
+  (round r40). The push of PackageCompiler `live-harness` waits for the word
+  of the owner.* The server starts with one collector
   thread. A changed signature of a `@ccallable` function is refused. A build
   prints the level of its code when it is not the level of the whole build.
   Test: a failed edit, then its fix, give the image of a whole build; a
@@ -2837,6 +2841,24 @@ commits. The numbers of the steps stay as they are.
   of the platform loads 17 overlays that the loader merges, with no fault,
   and its method tables (27 289 lines) are equal to a whole build. The
   oracle finds `make_oc` again, as in round r37: finding 62.
+
+  *The patches of a one-line edit (2026-11-15, gate M6 in the overlay form,
+  `reused_const() = 42` to `43`).* The overlay patches 40 129 objects, and a
+  rebuild with no change 2 257. 36 204 of the 40 129 are the field
+  `max_world` of a `TypeMapEntry` of the leaf cache: finding 63. *Decision by
+  the assistant:* the insert of a method closes the leaf entries by the rule
+  of the other cache (`invalidate_mt_cache`): an entry closes when its method
+  instance is one that the new method takes over (`oldmi`), and the leaf
+  cache stays. Upstream already depends on that set for the leaf cache: an
+  insert with an empty `oldmi` keeps each leaf entry, and the delete of a
+  method walks the leaf cache entry by entry. An exact replace, the case of a
+  rebuild, closes the entries of the replaced method in
+  `jl_method_table_invalidate` before. The cost: a walk of the leaf cache at
+  each insert that takes over a method instance, where the upstream rule
+  empties it. *Rejected:* the precise rule only in a process that writes an
+  image, because the fault is the same in a session, and two rules for one
+  cache is more code. The test is in `test/worlds.jl`; before the change it
+  fails at the entry of `g(::Int)`.
 
   *The words with the tag BaseRef (closed: no fault).* The tag `BaseRef` is
   7, so it reads as the top three bits 111, and the integer `typemax(UInt)`

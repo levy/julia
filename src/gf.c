@@ -3263,8 +3263,12 @@ void jl_method_table_activate(jl_typemap_entry_t *newentry)
     }
     invalidated |= typename_env.invalidated;
     if (oldmi && jl_array_nrows(oldmi)) {
-        // drop leafcache and search mc->cache and drop anything that might overlap with the new method
-        // this is very cheap, so we don't mind being very conservative at over-approximating this
+        // close each entry of mc->cache and of the leaf cache whose method
+        // instance the new method shadows. A leaf entry holds the dispatch of
+        // one concrete signature, and a new method changes it only when it
+        // takes over the method instance of the entry, which is then in
+        // `oldmi`: the other entries stay valid, in the session and in the
+        // image that a save writes from it.
         struct invalidate_mt_env mt_cache_env;
         mt_cache_env.max_world = max_world;
         mt_cache_env.shadowed = oldmi;
@@ -3277,12 +3281,11 @@ void jl_method_table_activate(jl_typemap_entry_t *newentry)
             jl_value_t *entry = jl_genericmemory_ptr_ref(leafcache, i);
             if (entry) {
                 while (entry != jl_nothing) {
-                    jl_atomic_store_relaxed(&((jl_typemap_entry_t*)entry)->max_world, max_world);
+                    invalidate_mt_cache((jl_typemap_entry_t*)entry, (void*)&mt_cache_env);
                     entry = (jl_value_t*)jl_atomic_load_relaxed(&((jl_typemap_entry_t*)entry)->next);
                 }
             }
         }
-        jl_atomic_store_relaxed(&mc->leafcache, (jl_genericmemory_t*)jl_an_empty_memory_any);
     }
     JL_UNLOCK(&mc->writelock);
     if (invalidated && _jl_debug_method_invalidation) {

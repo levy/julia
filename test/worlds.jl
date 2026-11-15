@@ -643,3 +643,24 @@ let ci = method_instance(fshow61667, (Vector{ShowInval61667},)).cache
     Core.eval(Main, :(struct ShowInval61667 end))
     @test ci.max_world == typemax(UInt)
 end
+
+# A method that shadows another one closes the leaf cache entries of the
+# method instances that it takes over, and keeps the other entries.
+module LeafCacheShadow
+g(x) = 2
+h(x) = 1
+end
+let get_entry(tt) = ccall(:jl_eqtable_get, Any, (Any, Any, Any), Core.methodtable.cache.leafcache, tt, nothing),
+    is_open(e) = e !== nothing && e.max_world == typemax(UInt)
+    g, h = LeafCacheShadow.g, LeafCacheShadow.h
+    @test Base.invokelatest(g, 1) == 2
+    @test Base.invokelatest(h, 1) == 1
+    @test is_open(get_entry(Tuple{typeof(g), Int}))
+    e = get_entry(Tuple{typeof(h), Int})
+    @test is_open(e)
+    Core.eval(LeafCacheShadow, :(h(x::Int) = 3))
+    @test e.max_world < typemax(UInt)
+    @test is_open(get_entry(Tuple{typeof(g), Int}))
+    @test Base.invokelatest(h, 1) == 3
+    @test Base.invokelatest(g, 1) == 2
+end
