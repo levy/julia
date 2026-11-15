@@ -58,6 +58,21 @@ end
 # a method with a static parameter and no specialization: jl_fptr_sparam
 @noinline reused_sparam(@nospecialize(x::T)) where {T} = sizeof(T)
 
+# the lines of a moved method: an error in an inlined function, and the line
+# that each of the two frames of the error names
+@inline lines_inner(x::Int) = x > 0 ? error("lines") : x
+@noinline lines_outer(x::Int) = lines_inner(x) + 1
+function frame_line(name::Symbol)
+    try
+        lines_outer(1)
+    catch
+        for frame in stacktrace(catch_backtrace())
+            frame.func === name && return frame.line
+        end
+    end
+    return -1
+end
+
 # a finalizer that the delta registers and `finalize` runs
 mutable struct Tracked
     id::Int
@@ -162,6 +177,8 @@ function driver()
         ("reverse", apply_dynamic(delta_callee, 1)),
         ("cone", cone_caller()),
         ("chained", chained(1)),
+        ("line_outer", frame_line(:lines_outer)),
+        ("line_inner", frame_line(:lines_inner)),
     ]
 end
 

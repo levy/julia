@@ -298,3 +298,35 @@ end
         end
     end
 end
+
+# A frame of compiled code names the place of its method now, when the method
+# got the line table of a move: the same statements at another first line or
+# in another file. The rebuild of the reactive compiler moves a method so, and
+# keeps its machine code.
+module StackTracesMoved
+@inline moved_inner(x::Int) = x > 0 ? error("moved") : x
+@noinline moved_outer(x::Int) = moved_inner(x) + 1
+end
+let frames() = try
+            StackTracesMoved.moved_outer(1)
+        catch
+            Dict(sf.func => sf for sf in stacktrace(catch_backtrace()) if sf.func in (:moved_inner, :moved_outer))
+        end,
+    move!(m::Method, shift::Int; file::Symbol = m.debuginfo.def) = begin
+        d = m.debuginfo
+        bytes = Vector{UInt8}(codeunits(d.codelocs))
+        bytes[1:4] = reinterpret(UInt8, Int32[reinterpret(Int32, bytes[1:4])[1] + shift])
+        m.line += shift
+        m.file = file
+        m.debuginfo = Core.DebugInfo(file, d.linetable, d.edges, String(bytes))
+    end
+    before = frames()
+    @test before[:moved_inner].inlined
+    move!(only(methods(StackTracesMoved.moved_inner)), 10)
+    move!(only(methods(StackTracesMoved.moved_outer)), 20; file = :moved_file)
+    after = frames()
+    @test after[:moved_inner].line == before[:moved_inner].line + 10
+    @test after[:moved_inner].file === before[:moved_inner].file
+    @test after[:moved_outer].line == before[:moved_outer].line + 20
+    @test after[:moved_outer].file === :moved_file
+end
