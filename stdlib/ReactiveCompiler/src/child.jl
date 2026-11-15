@@ -197,10 +197,11 @@ const RC_KEPT = Method[]
 # whose lowered code is the same. The definition would move the world and
 # invalidate every caller of the method for nothing: an `@eval` loop with
 # one changed method, or a dependent whose expansion did not change. The
-# line table is not compared: the kept method keeps its own. The kept method
-# stands for the definition of now, so it takes the two places of `m`: the
-# file and the line of its text, and those of the top-level expression that
-# defines it.
+# line table is not compared. The kept method stands for the definition of
+# now, so it takes the two places of `m`, the file and the line of its text
+# and those of the top-level expression that defines it, and the line table
+# of `m`. Its code instances keep theirs, and the lookup of a frame of their
+# machine code takes the place of now (decision D14).
 function rc_method_filter(m::Method)
     isdefined(m, :generator) && return false
     isdefined(m, :source) || return false
@@ -224,6 +225,7 @@ function rc_method_filter(m::Method)
     setfield!(old, :line, m.line)
     setfield!(old, :toplevel_file, m.toplevel_file)
     setfield!(old, :toplevel_line, m.toplevel_line)
+    isdefined(m, :debuginfo) && setfield!(old, :debuginfo, m.debuginfo)
     push!(RC_KEPT, old)
     return true
 end
@@ -945,6 +947,54 @@ function rc_stop(refusals, refusal_out)
     println("rc: refused ", length(refusals), " changes; the founding build applies them")
     flush(stdout)
     throw(RcRefusal(refusal_out))
+end
+
+# The write of one new place of a method that an edit moves (H1) or whose file
+# it renames (H3). A new line or a new file goes to the line table of the
+# method too, and to the method of each opaque closure in its code, as a
+# whole build gives them. The line tables of its code instances stay: the
+# machine code was compiled from them, and the lookup of a frame takes the
+# place of the method now (decision D14).
+function rc_move_place!(method::Method, field::Symbol, place)
+    if field === :line
+        rc_move_lines!(method, Int(place) - Int(method.line), nothing)
+    elseif field === :file
+        rc_move_lines!(method, 0, place)
+    else
+        setfield!(method, field, place)
+    end
+    return nothing
+end
+
+function rc_move_lines!(method::Method, shift::Int, file::Union{Symbol, Nothing})
+    if isdefined(method, :roots)
+        for root in method.roots
+            root isa Method && root.is_for_opaque_closure && root.file === method.file &&
+                rc_move_lines!(root, shift, file)
+        end
+    end
+    shift == 0 || setfield!(method, :line, Int32(method.line + shift))
+    file === nothing || setfield!(method, :file, file)
+    isdefined(method, :debuginfo) &&
+        setfield!(method, :debuginfo, rc_move_debuginfo(method.debuginfo, shift, file))
+    return nothing
+end
+
+# The line table of the source of a method, moved: each line of the file of
+# the method `shift` lines further, and `file` in place of the file. The lines
+# of its edges, the lines of the macros that the code expands, stay. The first
+# word of the compressed lines is the smallest line, and each line of the file
+# is stored as its distance from it (`jl_compress_codelocs`).
+function rc_move_debuginfo(debuginfo::Core.DebugInfo, shift::Int, file::Union{Symbol, Nothing})
+    debuginfo.def isa Symbol || return debuginfo
+    codelocs = debuginfo.codelocs
+    if shift != 0 && sizeof(codelocs) >= 12
+        bytes = Vector{UInt8}(codeunits(codelocs))
+        first = reinterpret(Int32, bytes[1:4])[1]
+        first > 0 && (bytes[1:4] = reinterpret(UInt8, Int32[first + shift]))
+        codelocs = String(bytes)
+    end
+    return Core.DebugInfo(something(file, debuginfo.def), debuginfo.linetable, debuginfo.edges, codelocs)
 end
 
 # The statements of an edit whose effect the apply takes back (see
@@ -1895,7 +1945,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     # part of the edit until the apply ends.
     RC_APPLY_OPEN[] = true
     for (method, field, place) in place_moves
-        setfield!(method, field, place)
+        rc_move_place!(method, field, place)
     end
     for (item, path) in path_moves
         item.path = path
