@@ -925,13 +925,45 @@ static void frame_follow_move(jl_frame_t *frame, jl_debuginfo_t *node) JL_NOTSAF
     }
 }
 
-// `frames` are the frames at one address, the innermost first: the last one
-// is the function of the code instance, the others are inlined into it.
-static void frames_follow_moves(jl_frame_t *frames, int n) JL_NOTSAFEPOINT
+// The code instance of the machine code at `ip`. A frame of JIT code names
+// it. A frame of the code of an image names its method instance, and the code
+// instance is the one in its cache whose function starts last at or before
+// `ip`, because no other function starts inside the function that holds `ip`.
+static jl_code_instance_t *frame_code_instance(jl_frame_t *frame, uintptr_t ip) JL_NOTSAFEPOINT
 {
-    if (n <= 0 || frames[n - 1].ci == NULL || frames[n - 1].fromC)
+    jl_value_t *linfo = (jl_value_t*)frame->ci;
+    if (linfo == NULL)
+        return NULL;
+    if (jl_is_code_instance(linfo))
+        return (jl_code_instance_t*)linfo;
+    if (!jl_is_method_instance(linfo))
+        return NULL;
+    jl_code_instance_t *found = NULL;
+    uintptr_t found_start = 0;
+    jl_code_instance_t *ci = jl_atomic_load_relaxed(&((jl_method_instance_t*)linfo)->cache);
+    for (; ci != NULL; ci = jl_atomic_load_relaxed(&ci->next)) {
+        uintptr_t starts[2] = {(uintptr_t)jl_atomic_load_relaxed(&ci->specptr.fptr),
+                               (uintptr_t)jl_atomic_load_relaxed(&ci->invoke)};
+        for (int k = 0; k < 2; k++) {
+            if (starts[k] != 0 && starts[k] <= ip && starts[k] > found_start) {
+                found = ci;
+                found_start = starts[k];
+            }
+        }
+    }
+    return found;
+}
+
+// `frames` are the frames at the address `ip`, the innermost first: the last
+// one is the function of the code instance, the others are inlined into it.
+static void frames_follow_moves(jl_frame_t *frames, int n, uintptr_t ip) JL_NOTSAFEPOINT
+{
+    if (n <= 0 || frames[n - 1].fromC)
         return;
-    jl_debuginfo_t *top = jl_atomic_load_relaxed(&frames[n - 1].ci->debuginfo);
+    jl_code_instance_t *ci = frame_code_instance(&frames[n - 1], ip);
+    if (ci == NULL)
+        return;
+    jl_debuginfo_t *top = jl_atomic_load_relaxed(&ci->debuginfo);
     if (top == NULL)
         return;
     for (int i = 0; i < n - 1; i++) {
@@ -951,7 +983,7 @@ JL_DLLEXPORT jl_value_t *jl_lookup_code_address(void *ip, int skipC)
     int8_t gc_state = jl_gc_safe_enter(ct->ptls);
     int n = jl_getFunctionInfo(&frames, (uintptr_t)ip, skipC, 0);
     jl_gc_safe_leave(ct->ptls, gc_state);
-    frames_follow_moves(frames, n);
+    frames_follow_moves(frames, n, (uintptr_t)ip);
     jl_value_t *rs = (jl_value_t*)jl_alloc_svec(n);
     JL_GC_PUSH1(&rs);
     for (int i = 0; i < n; i++) {
@@ -1000,7 +1032,7 @@ void jl_fprint_native_codeloc(ios_t *s, uintptr_t ip) JL_NOTSAFEPOINT
     // it means calling getFunctionInfo with noInline = 1
     jl_frame_t *frames = NULL;
     int n = jl_getFunctionInfo(&frames, ip, 0, 0);
-    frames_follow_moves(frames, n);
+    frames_follow_moves(frames, n, ip);
     int i;
 
     for (i = 0; i < n; i++) {
