@@ -28,6 +28,14 @@ owner_name(mod::Module, name::Symbol) = isdefined(mod, name) ? nameof(parentmodu
 token_module() = isdefined(RunLib.Left, :Token) ? RunLib.Left : RunLib.Right
 token_weight() = RunLib.Both.weigh(getfield(token_module(), :Token)(8))
 
+# A value of a type that the build never sees: the workload runs with no
+# variable RUNAPP_LATE, and the program of the gate runs with it. So a method
+# gets its code for that type in the program.
+late_value() = Base.inferencebarrier(haskey(ENV, "RUNAPP_LATE") ? Int8(1) : 1)
+
+# The count of the finalizer of RunLib after the program finalizes one value.
+released_weight() = (finalize(RunLib.track(3)); RunLib.RELEASED[])
+
 function shape_lines()
     return ["table = $(RunLib.TABLE[:answer])",
             "scaled = $(RunLib.SCALED)",
@@ -35,6 +43,9 @@ function shape_lines()
             "answer constant = $(RunLib.ANSWER)",
             "theme = $(RunLib.theme_width()) of $(fieldcount(typeof(RunLib.DEFAULT_THEME))) fields",
             "staged = $(RunLib.staged(1))",
+            "staged late = $(shown_result(() -> RunLib.staged(late_value()))) of $(typeof(late_value()))",
+            "staged by = $(RunLib.staged_by_statement(1)) and $(RunLib.staged_by_macro(1)) and " *
+            "$(shown_result(() -> RunLib.staged_by_statement(late_value())))",
             "loop = $(RunLib.loop_first())$(isdefined(RunLib, :loop_second) ? " and $(RunLib.loop_second())" : "")",
             "exports = $(join(sort!(filter(!=(:RunLib), names(RunLib))), ' '))",
             "handlers = $(RunLib.HANDLERS[2](1))",
@@ -44,6 +55,10 @@ function shape_lines()
             "seen = $(length(RunLib.SEEN))",
             "notes = $(join(RunLib.NOTES, ' '))",
             "greeting = $(RunLib.GREETING)",
+            "reached = $(released_weight()) and $(RunLib.through_c(2)) and " *
+            "$(RunLib.through_unknown(RunLib.shout, 1)) and $(RunLib.whisper(1))",
+            "motto = $(RunLib.MOTTO)",
+            "creed = $(RunLib.CREED)",
             "line = $(RunLib.noted_line())",
             "accessors = $(shown_call(RunLib.pair_first)) and $(shown_call(RunLib.pair_second))",
             "marked = $(RunLib.MARKED) of $(fieldcount(RunLib.Marker)) fields",

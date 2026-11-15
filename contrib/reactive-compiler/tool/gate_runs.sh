@@ -47,6 +47,18 @@
 # that failed (finding 7, decision D4). The step input changes an input that
 # no tracked source holds, and the build must stop with its name (finding 8,
 # decision D5). The chain is compared with the founding of the edited sources.
+# Three generated methods of users.jl take their body from one function of
+# helpers.jl: the text of the first one is a `@generated` method, a statement
+# defines the second one, and the expansion of a macro defines the third one.
+# After the edit each must give the new body, also for a type that the image
+# has no code for (finding 6).
+# Three functions of helpers.jl that the edit changes have no static call in a
+# source that stays: the program reaches them as a finalizer, as a callback of
+# C, and through a value of an unknown type. The rebuilt program must hold
+# compiled code for each, as the founded one does (finding 25). The edit also
+# makes a function call a small function through a value of an unknown type:
+# after a new recording of the workload, the rebuilt program must hold compiled
+# code for the small function (finding 27).
 # The environment chooses the form of the rebuild: JULIA_REACTIVE_SERVER=1 for
 # a server, JULIA_REACTIVE_IMAGE_WRITE=overlay for overlays.
 #   copy         - the packages into $OUT/src, where the gate edits them
@@ -82,13 +94,22 @@
 #                  the rebuild does not end early, evaluates the reader again
 #                  (E1), and the binary prints the new text; the revert does
 #                  the same back
+#   read-unnamed - not in the default list, after the step read: motto.txt
+#                  changes, which a function of helpers.jl reads for an
+#                  initializer of users.jl, and then creed.txt, whose name an
+#                  initializer computes. Each rebuild must give its constant
+#                  the new text; the step fails until the build knows the
+#                  files that an evaluation reads (finding 9)
 #   input        - the Manifest entry of a package changes, then the text of
 #                  the workload: each build stops and names the input
+#   refresh      - the workload is recorded again from the image of the
+#                  chain, and a rebuild compiles what the recording added
 #   trace        - the workload under --trace-compile at the edited sources
 #   found-final  - materialize_app founds $OUT/final/runapp at those sources
-#   run-final    - the founded binary: as the binary of the step retype
+#   run-final    - the founded binary: as the last binary of the chain
 #   compare      - the four checks of the invariant: the method tables, the
-#                  roots, the output, the globals
+#                  roots, the output, the globals; and a fifth one: what the
+#                  program compiles when it runs
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -104,12 +125,14 @@ LANE=${LANE:-16-23}
 LIGHT=${LIGHT:-24-27}
 CHAIN=$OUT/chain/runapp
 FINAL=$OUT/final/runapp
-BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded greeting=hello line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6 layout=plain"
-AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded greeting=hello line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6 layout=plain"
+BEFORE="table=1 scaled=6 answer=11 answer_constant=101 theme=1_of_1_fields staged=2 staged_late=2_of_Int8 staged_by=2_and_2_and_2 loop=1 exports=TABLE handlers=2 stamp=1_of_1 themes=1_with_1_fields registry=first_second seen=1 notes=loaded greeting=hello reached=3_and_4_and_11_and_2 motto=steady creed=plain line=3 accessors=1_and_10 marked=1_of_1_fields steady=7 height=1 logged=3 journey=3 token=8_of_Left left=Token_travel+travel removed=+Gone+GONE+Before-After onlooker=+stay+Right handover=6_and_7_of_Early_and_Late+carry-bring badge=6 layout=plain"
+AFTER="table=2 scaled=9 answer=12 answer_constant=102 theme=2_of_2_fields staged=3 staged_late=3_of_Int8 staged_by=3_and_3_and_3 loop=2_and_3 exports=SCALED_TABLE handlers=3 stamp=1_of_1 themes=1_with_2_fields registry=first_third seen=0 notes=loaded greeting=hello reached=6_and_6_and_21_and_2 motto=steady creed=plain line=5 accessors=2_and_10 marked=2_of_1_fields steady=7 height=2 logged=5 journey=3 token=8_of_Right left=-travel removed=-Gone-GONE-Before+After onlooker=-stay-Right handover=6_and_7_of_Late_and_Early-carry+bring badge=6 layout=plain"
 # The values after the step move, and after the step retype.
 MOVED=${AFTER/line=5/line=6}
 MOVED=${MOVED/logged=5/logged=6}
 RETYPED=${MOVED/marked=2_of_1_fields/marked=2_of_2_fields}
+# The values after the step read-unnamed.
+READ=${RETYPED/motto=steady creed=plain/motto=firm creed=clear}
 mkdir -p "$OUT/depot"
 
 # One run on the build lane. $1 = log name, $2.. = the command.
@@ -163,9 +186,11 @@ EOF
 mat() { write_mat && lane "$1" "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" "$2"; }
 
 # $1 = a tag, $2 = the bundle, $3 = the expected shape lines, "name=value ...",
-# where `_` stands for a space.
+# where `_` stands for a space. The program runs with the variable
+# RUNAPP_LATE, which the workload of the build never has: the program then
+# calls two generated methods with a value of a type that is new to the image.
 runbin() {
-    lane "run-$1" "$2/bin/runapp"
+    lane "run-$1" env RUNAPP_LATE=1 "$2/bin/runapp"
     local want got
     want=$(for pair in $3; do echo "shape: ${pair%%=*} = ${pair#*=}" | tr _ ' '; done; echo "shape: state = 0")
     got=$(grep "^shape: " "$OUT/run-$1.log")
@@ -177,7 +202,7 @@ runbin() {
     fi
 }
 
-copy() { rm -rf "$SRC" && cp -a "$TOOL/r1_runs" "$SRC" && echo "=== copied the packages to $SRC"; }
+copy() { rm -rf "$SRC" "$OUT/mat-read-computed.log" && cp -a "$TOOL/r1_runs" "$SRC" && echo "=== copied the packages to $SRC"; }
 
 edit() {
     cp "$TOOL/r1_runs/helpers-after.jl" "$SRC/RunLib/src/helpers.jl" &&
@@ -302,7 +327,30 @@ read_file() {
          awk '{ s += $1 } END { print s }')" -ge 2 ] ||
         { echo "=== read: the rebuilds did not evaluate the reader again two times"; return 1; }
     echo "=== read: a change of a read file and its revert each made a rebuild that evaluated the reader again"
+    runbin read-back "$CHAIN" "$RETYPED"
 }
+
+# Two files that no expression names at the place of its use: a function of
+# helpers.jl reads the first one for an initializer of users.jl, and the
+# initializer of the second one computes its name. A whole build reads the new
+# texts, so each rebuild must give its constant the new text. This step is not
+# in the default list: it fails until the build knows the files that the
+# evaluation of an expression reads (finding 9, the second half).
+read_unnamed() {
+    local failed=0 log
+    echo "firm" > "$SRC/RunLib/src/motto.txt" && mat mat-read-function "$CHAIN" || return 1
+    echo "clear" > "$SRC/RunLib/src/creed.txt" && mat mat-read-computed "$CHAIN" || return 1
+    for log in mat-read-function mat-read-computed; do
+        grep -q "the program stays as it is" "$OUT/$log.log" &&
+            { echo "=== read-unnamed: the rebuild of $log ended early"; failed=1; }
+    done
+    runbin read-unnamed "$CHAIN" "$READ" || failed=1
+    return $failed
+}
+
+# The values that the program prints after the step read: those of the step
+# read-unnamed when it ran.
+values_after_read() { if [ -f "$OUT/mat-read-computed.log" ]; then echo "$READ"; else echo "$RETYPED"; fi; }
 
 # An input of the store outside its tracked sources changes: the Manifest
 # entry of a package, then the text of the workload. The image holds the input
@@ -326,7 +374,7 @@ input() {
         { echo "=== input: the log does not name the workload"; return 1; }
     cp "$OUT/workload-good.jl" "$SRC/workload.jl"
     echo "=== input: the build stopped for the Manifest entry and for the workload, and named each"
-    runbin after-input "$CHAIN" "$RETYPED"
+    runbin after-input "$CHAIN" "$(values_after_read)"
 }
 
 # A changed statement that names no global: the rebuild refuses it (S1), and
@@ -340,6 +388,37 @@ refuse() {
     echo "=== refuse: the rebuild refused the statement that names no global (S1)"
     cp "$TOOL/r1_runs/statements-after.jl" "$SRC/RunLib/src/statements.jl"
     runbin s2-after-refusal "$CHAIN" "$AFTER"
+}
+
+# The statements that a binary compiles when it runs, sorted, with no number
+# of a generated name. $1 = a tag, $2 = the bundle.
+compiled() {
+    : > "$OUT/compiled-$1.raw"
+    light "compiled-$1" env RUNAPP_LATE=1 "$2/bin/runapp" --julia-args --trace-compile="$OUT/compiled-$1.raw" || return 1
+    grep "^precompile" "$OUT/compiled-$1.raw" | sed -E 's/#[0-9]+/#N/g' | sort -u > "$OUT/compiled-$1.jl"
+}
+
+# A new recording of the workload (decision Q1: a person starts it). The
+# workload runs from the image of the chain under --trace-compile, and the
+# trace of the store takes its statements. The rebuild that follows compiles
+# what the recording added: the edit made a caller call a small function
+# through a value of an unknown type, and no statement of the whole build
+# names that function (findings 11 and 27).
+refresh() {
+    local before
+    compiled before-refresh "$CHAIN" || return 1
+    before=$(grep -c . "$OUT/compiled-before-refresh.jl")
+    cat > "$OUT/refresh.jl" <<EOF
+import Pkg; Pkg.instantiate()
+using PackageCompiler
+refresh_trace(ARGS[1])
+EOF
+    write_mat && lane refresh "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/refresh.jl" "$CHAIN" || return 1
+    grep -q "refresh_trace: the trace is refreshed" "$OUT/refresh.log" || { echo "=== refresh: no refresh line"; return 1; }
+    mat mat-refreshed "$CHAIN" || return 1
+    compiled refreshed "$CHAIN" || return 1
+    echo "=== refresh: the program compiled $before statements when it ran before the recording, and $(grep -c . "$OUT/compiled-refreshed.jl") after it"
+    runbin refreshed "$CHAIN" "$(values_after_read)"
 }
 
 trace() {
@@ -390,12 +469,17 @@ compare() {
     [ -f "$OUT/run-fixed.log" ] && last=$OUT/run-fixed.log
     [ -f "$OUT/run-late.log" ] && last=$OUT/run-late.log
     [ -f "$OUT/run-read-back.log" ] && last=$OUT/run-read-back.log
+    [ -f "$OUT/run-refreshed.log" ] && last=$OUT/run-refreshed.log
     check 3 "output" "^shape: " "$last" "$OUT/run-final.log" || failed=1
     check 4 "globals" "^global " "$OUT/oracle-chain.log" "$OUT/oracle-final.log" || failed=1
+    # What each program compiles when it runs: the last binary of the chain
+    # must compile no call that the founded binary has code for.
+    compiled chain "$CHAIN" && compiled final "$FINAL" || return 1
+    check 5 "compiled when the program runs" "^precompile" "$OUT/compiled-chain.jl" "$OUT/compiled-final.jl" || failed=1
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read input trace found-final run-final compare}
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read input refresh trace found-final run-final compare}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -411,11 +495,13 @@ for step in $steps; do
         fail) fail ;;
         late) late ;;
         same) same ;;
-        read) read_file && runbin read-back "$CHAIN" "$RETYPED" ;;
+        read) read_file ;;
+        read-unnamed) read_unnamed ;;
         input) input ;;
+        refresh) refresh ;;
         trace) trace ;;
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
-        run-final) runbin final "$FINAL" "$RETYPED" ;;
+        run-final) runbin final "$FINAL" "$(values_after_read)" ;;
         compare) compare ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }

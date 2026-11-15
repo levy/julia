@@ -22,6 +22,16 @@ theme_width() = DEFAULT_THEME.width
 # The generator runs a function.
 @generated staged(x) = generated_body(x)
 
+# A statement defines a generated method, and so does the expansion of a macro.
+# The text of neither expression is a `@generated` method.
+for name in (:staged_by_statement,)
+    @eval @generated $name(x) = generated_body(x)
+end
+macro staged_method(name)
+    return esc(:(@generated $name(x) = generated_body(x)))
+end
+@staged_method staged_by_macro
+
 # A statement defines a method for each row of a table that a function makes.
 for (name, value) in loop_table()
     @eval $name() = $value
@@ -82,3 +92,20 @@ MarkedBadge(id::Int) = ScaledBadge(Badge(id), make_marker(id), 0)
 # A file that the package reads at load: a change of it alone is a change of
 # the program (the step read of gate_runs.sh).
 const GREETING = strip(read(joinpath(@__DIR__, "greeting.txt"), String))
+
+# The program reaches three functions of helpers.jl with no static call: the
+# first one as a finalizer, the second one as a callback of C, and the third
+# one through a value of an unknown type.
+mutable struct Parcel
+    weight::Int
+end
+const RELEASED = Ref(0)
+track(weight::Int) = finalizer(release, Parcel(weight))
+through_c(x::Int) = Int(ccall(@cfunction(scale_in_c, Cint, (Cint,)), Cint, (Cint,), Cint(x)))
+through_unknown(f, x) = Base.inferencebarrier(f)(x)
+
+# Two more files that the package reads at load. A function of helpers.jl
+# reads the first one, so the initializer names no file. The initializer of
+# the second one computes the name of its file.
+const MOTTO = read_motto()
+const CREED = strip(read(joinpath(@__DIR__, string("creed", ".txt")), String))

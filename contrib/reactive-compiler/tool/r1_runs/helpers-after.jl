@@ -27,6 +27,23 @@ loop_table() = [(:loop_first, 2), (:loop_second, 3)]
 # A loop exports each of these names.
 exported_names() = [:TABLE, :SCALED]
 
+# The initializer of a constant calls this function, which reads a file. No
+# edit changes it.
+read_motto() = strip(read(joinpath(@__DIR__, "motto.txt"), String))
+
+# The program reaches these three functions with no static call of a source
+# that the edit leaves as it is: a finalizer, a callback of C, and a call
+# through a value of an unknown type.
+release(parcel) = (RELEASED[] += 2 * parcel.weight; nothing)
+scale_in_c(x::Cint)::Cint = Cint(3) * x
+shout(x::Int) = x + 20
+
+# A small function, and its one caller. The caller now calls the small
+# function through a value of an unknown type, so the call needs compiled code
+# of the small function.
+tiny(x::Int) = x + 1
+whisper(x::Int) = Base.inferencebarrier(tiny)(x)
+
 # Two functions of a constant call this function.
 handle(x) = 2 * x
 
