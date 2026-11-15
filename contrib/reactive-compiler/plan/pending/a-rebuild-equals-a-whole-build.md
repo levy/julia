@@ -146,6 +146,7 @@ depend on an address.
 | 27 | `precompile` does nothing for a code instance of the image that has no machine code. The statement counts as compiled, the program compiles the call at each run, and a refresh changes nothing. | A new dynamic call to a small function that the whole build always inlined. | `gf.c:4025` | Read (audit); Test. Tested in Step 3 (2026-11-15): the edit of `gate_runs.sh` makes a caller call a small function through a value of an unknown type; the rebuilt program compiles no call more than the founded one, before and after a new recording (check 5). No difference on the branch; Step 10 counts the same on real commits |
 | 28 | `JULIA_REACTIVE_DELTA_OPT` in the environment lowers the level of the rebuilt code, and no line of the output says it. | A variable that a gate run left makes each rebuild compile at `-O1`. | `Executable.jl:327`, `reactive.jl:111` | Read |
 | 63 (new) | **An edit empties the leaf cache of dispatch.** A new method that takes over a method instance closes each entry of the leaf cache of the one global method cache, and puts an empty cache in its place; the other cache of dispatch closes only the entries of the method instances that the method takes over. After a rebuild, the program has the entries that the rebuild process made after the apply, and the first call of each other concrete signature takes the slow path of dispatch, which a whole build does not. The closed entries are dead objects of the base on written pages, and the save patches them too. | The one-line edit `reused_const() = 42` to `43` of gate M6, in the overlay form: the leaf cache of the whole build holds 36 351 entries and the program after the rebuild 663; the overlay patches 40 129 objects, 36 204 of them the field `max_world` of a dead `TypeMapEntry`, and 807 of its 2 724 written pages hold only such patches. A rebuild with no change patches 2 257 objects. In a session, `h(x::Int) = 3` over `h(x) = 1` closes the entry of `g(::Int)`. | `gf.c`, `jl_method_table_activate`: the leaf cache is dropped whole, and `_method_table_invalidate` walks it entry by entry | Found by the count of the patches of a one-line edit (Step 9, 2026-11-15). *Decision by the assistant:* the leaf cache takes the rule of the other cache. Closed on the branch (0d860317e3, Step 9): the one-line edit patches 2 431 objects, and the program keeps the leaf cache of the whole build |
+| 64 (new) | **The code of a generator is younger than its generated method, so the program compiles the generator again.** The apply deleted the old method of each change at its end. Julia keeps a replaced method in the method table until its deletion, and a lookup of its function is valid only from the world of that deletion on. A generator runs in the first world of its generated method, and the apply defines that method before its end. So the code of a generator that calls a changed function was valid only from a later world than the method, and the program compiled the generator again at the first call with a type that is new to the image. The result of the call is the same. | The edit of `gate_runs.sh` changes `generated_body`, which the generator of `staged` calls. After the rebuild, `staged` has the first world 41128, and the code of its generator is valid from world 41175. `runapp` with a new type prints `precompile(Tuple{RunLib.var"##14#15", Any, Any}) # recompile`; the founded program does not. | `child.jl`, the deletions at the end of `rc_apply_tracked`; `gf.c`, `jl_method_table_disable` and the lookup `ml_matches` | Seen by check 5 of `gate_runs.sh` in the server form (round r45, 2026-11-15). The fault came and went with the last apply of the chain: an apply that changes `generated_body` gave it, and a later apply that defines the generated methods again took it away. The two more applies of the step `read-unnamed` made it show at the end of the chain. Closed on the branch (359aed34e9, Step 3): an old method that a change replaced leaves at its replacement. Open rest: an old method with no replacement of its signature leaves at the end of the apply, as before |
 
 The code generation itself gives no slower code: the audit found the same LLVM
 passes and the same level for the code of a rebuild as for a whole build, and
@@ -1731,20 +1732,52 @@ commits. The numbers of the steps stay as they are.
     Base (e14f69b054). The test set of `test/iostream.jl` passes, 64 of 64;
     the tests `file`, `read` and `filesystem` pass, 7861 and 1 known broken;
     the static analysis of `toplevel.c` passes.
-  - [ ] The harness: the reads by their place, rule E1 from the record, and
-    no search for strings. *Written, not committed.* The warm-up of each
-    apply checks the record and the print (`rc_warm`), and each apply of
-    round r44 passed it. Rule E1 has no test yet, because the whole build of
-    r44 gave an empty list (Q5).
-  - [ ] The cache file of a package keeps the reads of its load (Q5): the
+  - [x] The harness: the reads by their place, rule E1 from the record, and
+    no search for strings (499b67a65a). The warm-up of each apply checks the
+    record and the print (`rc_warm`). Round r45: the rebuilds for
+    `greeting.txt`, `motto.txt` and `creed.txt` each print a change E1 for
+    the constant that read the file, in both forms.
+  - [x] The cache file of a package keeps the reads of its load (Q5): the
     listing beside the cache file, in `Base.include_package_for_output` and
-    `Base.compilecache`.
-  - [ ] PackageCompiler: the whole build takes the listings of the packages
-    that it loaded; the build that ends early compares the same list. Round
-    r44 (2026-11-15, both forms) failed at the step `read` with the record
-    in the process of the whole build, which gave Q5.
-  - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`; the
-    round of the gates passes.
+    `Base.compilecache` (499b67a65a). A test set of `test/precompile.jl`
+    makes the cache file of a package that reads a file through a function,
+    and finds one line in the listing; the tests `precompile` and `iostream`
+    pass, 495 of 495.
+  - [x] PackageCompiler: the whole build takes the listings of the packages
+    that it loaded; the build that ends early compares the same list
+    (`live-harness` bc4743a3). Round r44 (2026-11-15, both forms) failed at
+    the step `read` with the record in the process of the whole build, which
+    gave Q5.
+  - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`
+    (849d6b20f5); the round of the gates passes. Round r45, the child form:
+    the step passes, the listing holds `greeting.txt`, `motto.txt` and
+    `creed.txt` and not `note.txt`, and the five checks are equal (96 method
+    lines, 11 roots, 35 output lines, 17 globals, 7 compiled calls).
+
+  *Finding 64, which check 5 gave in the server form of round r45 (by the
+  assistant; built on 2026-11-15).* The rebuilt program compiled two
+  generators again when it ran, and the founded program did not. The apply
+  deleted the old method of each change at its end, after it defined the
+  generated methods again. Julia 1.13 keeps a replaced method in the method
+  table until its deletion (`jl_method_table_disable`), and a lookup that
+  meets the deleted method is valid only from the world of the deletion on.
+  So the code of the generator of `staged`, which calls the changed
+  `generated_body`, was valid from world 41175, and `staged` is from world
+  41128. A generator runs in the world of its method, where that code is not
+  valid.
+
+  The rule now: an old method that the evaluation of a change replaced leaves
+  at once (`rc_evaluate_next!`, `rc_is_replaced`). The trial of the replay
+  evaluates with the same function, so the two stay equal. An old method with
+  no replacement of its signature stays until the end of the apply, as
+  before: another change can define its signature again, and the method
+  filter can then keep it. Round r46, the server form with the sources of
+  the harness: the five checks are equal, with 7 compiled calls.
+
+  *Its limit.* An edit that changes the signature of a method, or removes a
+  function with a generated name, deletes at the end of the apply. A
+  generator that calls that function is then compiled again when the program
+  runs: a slower first call, with the same result.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
