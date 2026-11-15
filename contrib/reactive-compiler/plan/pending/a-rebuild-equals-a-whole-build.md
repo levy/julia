@@ -467,13 +467,24 @@ These are my proposals. The owner approves them with the plan.
   runs: the file and the first line that D13 gives a method as its definer.
   With no list, or with no top-level expression, the call does nothing.
 
-  A whole build installs the list before it loads the packages, and writes it
-  at its end. A rebuild installs it while it evaluates the changes. The store
-  keeps one line for each read: the expression by its place, the path, and a
-  print of the content. A file with another print evaluates its expression
-  again (rule E1), and the new evaluation gives the reads of the expression
-  again. An expression that the edit leaves, and that no change evaluates,
-  keeps its reads; a moved one keeps them at its new place.
+  The record runs in each process that evaluates the top-level expressions
+  of a package (Q5, answer (a)). A whole build evaluates none: it loads each
+  package from its cache file. So the process that makes a cache file
+  installs the list while it loads the package
+  (`Base.include_package_for_output`), and writes at its end the listing of
+  the reads of the package to a file beside the cache file
+  (`Base.package_reads_file`, the name of the cache file with `.reads`).
+  `Base.compilecache` moves the listing with the cache file and removes it
+  with an evicted one. The whole build takes the listing of each package that
+  it loaded (`rc_write_loaded_reads`), and keeps the reads of the tracked
+  sources (`rc_found_reads`). A rebuild installs the list while it evaluates
+  the changes.
+
+  The store keeps one line for each read: the expression by its place, the
+  path, and a print of the content. A file with another print evaluates its
+  expression again (rule E1), and the new evaluation gives the reads of the
+  expression again. An expression that the edit leaves, and that no change
+  evaluates, keeps its reads; a moved one keeps them at its new place.
 
   Not a read of the package: a file of a place outside the tracked sources; a
   tracked source; a file under `/proc`, `/sys` or `/dev`; and a file that a
@@ -484,13 +495,28 @@ These are my proposals. The owner approves them with the plan.
   - *The record replaces the search for strings.* `read_paths` goes away. One
     rule finds a reader, and a string in a function is no input any more.
     Rejected: both rules together, which keeps the false inputs.
-  - *The print of a file that changed after the build began is "changed".*
-    The build learns the path of a read only when the read occurs, so it can
-    not take the print before the load, as it does for the sources (finding
-    39). The build takes the time of its start. A file with a later
-    modification time gets a print that equals no content, so the first
-    rebuild evaluates its reader again. Rejected: a hash inside the runtime at
-    the open, which is a second read of each file in C.
+  - *The print of a file that changed after the evaluation began is
+    "changed".* A process learns the path of a read only when the read
+    occurs, so it can not take the print before the load, as a build does
+    for the sources (finding 39). The process that makes a cache file, and an
+    apply, take the time of their start. A file with a later modification
+    time gets a print that equals no content, so the next rebuild evaluates
+    its reader again. Rejected: a hash inside the runtime at the open, which
+    is a second read of each file in C.
+  - *The listing beside a cache file has the form of the read listing of a
+    store,* and the process that makes the cache file leaves out what is no
+    read of the package. One function writes both listings, and the whole
+    build only joins them.
+  - *A cache file with no listing stops the whole build.* Each process of
+    this Julia that makes the cache file of a package writes the listing,
+    also an empty one; a standard library has none. A cache file without it
+    came from a copy, and an empty read list would hide that.
+  - *Julia's check of a cache file does not change.* A changed read file
+    does not make a cache file out of date. A file that the load makes,
+    reads and removes would make its cache file out of date for ever.
+  - *A patch build of a package takes the listing of the file that it
+    patches.* A changed read file whose reader is in a changed source is
+    rule E1, which a patch refuses, so Julia makes the cache file whole.
   - *The hook is in `open` of Base, not in the function of C that opens.* The
     code of a package opens a file through `open`; the runtime itself opens
     images and caches through the function of C, and those are not reads of a
@@ -504,6 +530,16 @@ These are my proposals. The owner approves them with the plan.
   *Not covered.* A decision by `isfile`, `stat` or `readdir` with no open; a
   library of C that opens a file by itself; a function that keeps what it
   read, so that a second evaluation opens no file.
+  - A whole build that finds a cache file fresh has the text that the cache
+    file read, as Julia has for each read file that no `include_dependency`
+    names. The read list has the print of that text, so the next build finds
+    the changed file and evaluates its reader again.
+  - A package with `__precompile__(false)` has no cache file. The whole build
+    evaluates it in its own process, where no list is installed, so its
+    reads are unknown.
+  - The trial of the replay runs in a fork, and its record does not come
+    back. A candidate that an edit of a function makes read another file,
+    with the same value, keeps its reads of before.
 
 ## The open questions
 
@@ -515,7 +551,8 @@ sets which lines a moved method gives; it has its answer, (b), since
 2026-11-15. Q4 came with the test of finding 9, on 2026-11-15, and sets how a
 build knows the files that the load of a package reads; it has its answer,
 (a), since 2026-11-15. Q5 came with the first round of D15, on 2026-11-15, and
-sets where the record of a whole build runs; it is open.
+sets where the record of a whole build runs; it has its answer, (a), since
+2026-11-15.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -744,6 +781,9 @@ next build finds the changed file and evaluates its reader again.
 load of a package, and the cache file is the result of that load; the folder
 of the name stamps shows the way. (b) puts a fact of the build into the
 program, and (c) changes how a whole build loads.
+
+*The answer of the owner (2026-11-15): "I agree", so (a).* D15 holds the
+design.
 
 ## Steps
 
@@ -1696,9 +1736,13 @@ commits. The numbers of the steps stay as they are.
     apply checks the record and the print (`rc_warm`), and each apply of
     round r44 passed it. Rule E1 has no test yet, because the whole build of
     r44 gave an empty list (Q5).
-  - [ ] PackageCompiler: the whole build records and writes the list; the
-    build that ends early compares the same list. *The first half waits for
-    Q5:* round r44 (2026-11-15, both forms) failed at the step `read`.
+  - [ ] The cache file of a package keeps the reads of its load (Q5): the
+    listing beside the cache file, in `Base.include_package_for_output` and
+    `Base.compilecache`.
+  - [ ] PackageCompiler: the whole build takes the listings of the packages
+    that it loaded; the build that ends early compares the same list. Round
+    r44 (2026-11-15, both forms) failed at the step `read` with the record
+    in the process of the whole build, which gave Q5.
   - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`; the
     round of the gates passes.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
