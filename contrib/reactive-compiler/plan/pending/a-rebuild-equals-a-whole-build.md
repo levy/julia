@@ -113,7 +113,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 58 | **A source file that the build does not track is no input of the store, so its edit is lost with no word.** The walk of the includes reads the text of the sources. It tracks no file whose path the text computes: an `include` in a loop, a path from a function, an `include` with a function of its expressions. The walk warns at the whole build. A rebuild then compares the tracked files only. The same holds for each file of a path package when the build does not track the dependencies. | `for name in ("one", "two") include(joinpath("computed_include", name * ".jl")) end`, then an edit of `two.jl`: the rebuild prints "applied 0 expressions", makes a snapshot, and the program answers `(1, 2)` where a whole build answers `(1, 20)`. | PackageCompiler, `tracked_sources` and `_reactive_inputs` | Found by the new cases of the gate of the edit cases (the test sets "Computed include path" and "include with mapexpr" of Revise); closed in PackageCompiler on the branch `live-harness` (Step 3) |
 | 59 | A file whose `include` line moves to another module stays in the module of before. The apply pairs the file of before with the file of now by the path alone, finds the same text, and evaluates nothing. | `include("part.jl")` moves from `module First` to `module Second`: the rebuilt program has `First.part` and no `Second.part`; a whole build has `Second.part` only. | `child.jl`, `rc_match_files` | Found by the new case `moved_include` of the gate (the test set "Moved include" of Revise); closed on the branch (Step 3) |
 | 61 | **An expression whose text stays and whose place in the load order changes is not evaluated again.** A whole build evaluates it at its new place, where it sees other definitions. The ledger compares texts, so a moved method, a moved expression or a moved `include` line changes nothing in the rebuild. | `pick(x) = 1; const PICKED = pick(1); pick(x::Int) = 2`, and the edit moves the last line above the constant: a whole build gives `PICKED == 2`, the rebuild keeps 1 and prints "applied 0 expressions". | `child.jl`, `rc_apply_tracked`: no rule for the order of the expressions that the edit leaves as they are | Found by a reading of the code for the open part of finding 53 (2026-11-13); closed on the branch (Step 3, rule H4) |
-| 62 | **The line table of a moved method keeps the lines of before.** The apply gives a method that an edit moves its new first line (H1), and leaves the rest of its place as it was: the line table of its source, the line tables of its code instances, the method of an opaque closure in its code, and the debug lines of the machine code that the image reuses. A backtrace through the method names the line of before, and a whole build names the line of now. Finding 43 says that the rebuild gives a moved item its new lines in the line table; that holds for the first line of a method only. | `shapes-after-2.jl` has one line more above `reused_kwargs` than `shapes-after.jl`. After the rebuild, `reused_kwargs(1; scale = "a")` throws, and the backtrace names `shapes.jl:28`; a whole build names `shapes.jl:29`. The machine code of `reused_noinline` names line 13, the whole build 14. The method of the opaque closure of `make_oc` keeps line 45 and makes the hash of the oracle differ. | `child.jl`, the place moves of `rc_apply_tracked` set `line` and `toplevel_line` only; `debuginfo.cpp`, `lookup_pointer` reads the line of a frame from the debug lines of the machine code | Seen in the oracle gate (round r37, 2026-11-14), after a new call shape moved `make_oc` by one line between the two edits; the oracle passed before because the three places of `make_oc` gave its first line again. The owner's answer to Q3 (2026-11-15): (b), D14, built in Step 2 |
+| 62 | **The line table of a moved method keeps the lines of before.** The apply gives a method that an edit moves its new first line (H1), and leaves the rest of its place as it was: the line table of its source, the line tables of its code instances, the method of an opaque closure in its code, and the debug lines of the machine code that the image reuses. A backtrace through the method names the line of before, and a whole build names the line of now. Finding 43 says that the rebuild gives a moved item its new lines in the line table; that holds for the first line of a method only. | `shapes-after-2.jl` has one line more above `reused_kwargs` than `shapes-after.jl`. After the rebuild, `reused_kwargs(1; scale = "a")` throws, and the backtrace names `shapes.jl:28`; a whole build names `shapes.jl:29`. The machine code of `reused_noinline` names line 13, the whole build 14. The method of the opaque closure of `make_oc` keeps line 45 and makes the hash of the oracle differ. | `child.jl`, the place moves of `rc_apply_tracked` set `line` and `toplevel_line` only; `debuginfo.cpp`, `lookup_pointer` reads the line of a frame from the debug lines of the machine code | Seen in the oracle gate (round r37, 2026-11-14), after a new call shape moved `make_oc` by one line between the two edits; the oracle passed before because the three places of `make_oc` gave its first line again. The owner's answer to Q3 (2026-11-15): (b), D14. Closed on the branch (6a62f952b9, 224dcb1a45, db0e88dddd, Step 2; round r42) |
 | 1 | A name that leaves a `using` or `export` line stays. A removed struct, constant or global stays. The rebuild prints "not applied, the binding stays". | Move `foo` from module `A` to module `B`. `A` still exports its old `foo`. A module with `using A, B` sees two `foo`, and Julia can not choose. A whole build has one. | `child.jl:874` | Read, Log (29 times); the example needs Test. Closed on the branch by D2: an expression that left takes its methods and its names with it (Step 6) |
 | 2 | A constant keeps the value that the old code made. An edit of a function evaluates no initializer again. | `const BINDINGS = _make_open_page_bindings()`. Edit the function. The rebuilt program has the old bindings. In the sources, 129 constants take their value from a call in one line: 78 call `_color`, and 17 call another function or constructor of the tracked packages. | `child.jl:997-1032` has no case for a changed method | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
@@ -1027,14 +1027,33 @@ commits. The numbers of the steps stay as they are.
     the three lines of the moved method (307 where 317 is right). Gate M6
     passes with the two new lines of output, because it reads only the
     names that it knows.
-  - [ ] The apply (`child.jl`): a moved method and the method of each opaque
-    closure in its code get the line table of now with the line and the
-    file, as one write at the begin of the apply (D4). The method filter
-    gives a kept method the line table of the definition of now.
-  - [ ] The lookup (`stackwalk.c`): the frames of machine code follow the
-    move of their method (D14).
-  - [ ] The oracle gate and Julia's tests of the stack traces pass; the
-    round of the gates passes.
+  - [x] The apply (`child.jl`, 6a62f952b9): a moved method and the method of
+    each opaque closure in its code get the line table of now with the line
+    and the file, as one write at the begin of the apply (D4,
+    `rc_move_place!`). A line table is moved by its first word, the smallest
+    line, because each line of the file is stored as its distance from it.
+    The method filter gives a kept method the line table of the definition
+    of now.
+  - [x] The lookup (`stackwalk.c`, 224dcb1a45 and db0e88dddd): the frames of
+    machine code follow the move of their method (D14), in
+    `jl_lookup_code_address` and in the print of a crash. *Found in the
+    build:* the frame of image code names the method instance of its
+    function, not the code instance (Julia 1.13; upstream master names the
+    code instance since #53925, with changes in Base that this plan does not
+    take). The first form read the method instance as a code instance, and
+    the build stopped with a segmentation fault. The lookup now takes the
+    code instance in the cache of the method instance whose function starts
+    last at or before the address: no other function starts inside the
+    function that holds the address. The check of the GC roots and
+    clang-tidy pass (`make -C src analyze-stackwalk`).
+  - [x] The oracle gate and Julia's tests of the stack traces pass; the
+    round of the gates passes. Done (2026-11-15): the tests `stacktraces`,
+    `backtrace`, `errorshow` and `Profile` give 20 994 passes and 9 broken.
+    Round r42 on snapshot s48 (db0e88dddd) passes all 13 gates. The oracle
+    passes in the whole form and in the overlay form, with the four checks
+    equal; in round r41 its method tables differed in 2 lines. The counted
+    numbers are those of round r41: 20 lines of roots in `cases`, 22 of 300
+    in `replay-28`, 0 of 2268 in `replay-platform-17`.
 
   *Open in this step:* the reason of the size of gate C after a `make`; the
   profile of the apply.
