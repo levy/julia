@@ -2823,24 +2823,30 @@ JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
     }
     size_t world = jl_atomic_load_relaxed(&jl_world_counter);
     struct disable_set_env env = {&set, &disabled, world};
-    for (size_t j = 0; j < tables.len; j++)
-        jl_typemap_visitor(jl_atomic_load_relaxed(&((jl_methtable_t*)tables.items[j])->defs), disable_set_entry, &env);
+    // the tables and the methods come through the lists, which hold no root
+    jl_value_t *root = NULL;
+    JL_GC_PUSH1(&root);
+    for (size_t j = 0; j < tables.len; j++) {
+        root = (jl_value_t*)jl_atomic_load_relaxed(&((jl_methtable_t*)tables.items[j])->defs);
+        jl_typemap_visitor((jl_typemap_t*)root, disable_set_entry, &env);
+    }
     for (size_t k = 0; k < disabled.len; k++) {
         jl_method_t *m = (jl_method_t*)disabled.items[k];
-        jl_value_t *specializations = jl_atomic_load_relaxed(&m->specializations);
-        if (!jl_is_svec(specializations)) {
-            if (specializations != jl_nothing)
-                invalidate_backedges((jl_method_instance_t*)specializations, world, "jl_method_table_disable");
+        root = jl_atomic_load_relaxed(&m->specializations);
+        if (!jl_is_svec(root)) {
+            if (root != jl_nothing)
+                invalidate_backedges((jl_method_instance_t*)root, world, "jl_method_table_disable");
             continue;
         }
-        for (size_t i = 0, l = jl_svec_len(specializations); i < l; i++) {
-            jl_method_instance_t *mi = (jl_method_instance_t*)jl_svecref(specializations, i);
+        for (size_t i = 0, l = jl_svec_len(root); i < l; i++) {
+            jl_method_instance_t *mi = (jl_method_instance_t*)jl_svecref(root, i);
             if ((jl_value_t*)mi != jl_nothing)
                 invalidate_backedges(mi, world, "jl_method_table_disable");
         }
     }
     for (size_t j = 0; j < tables.len; j++) {
         jl_methcache_t *mc = ((jl_methtable_t*)tables.items[j])->cache;
+        root = (jl_value_t*)mc;
         jl_typemap_visitor(jl_atomic_load_relaxed(&mc->cache), disable_set_cache, &env);
         jl_genericmemory_t *leafcache = jl_atomic_load_relaxed(&mc->leafcache);
         for (size_t i = 1, l = leafcache->length; i < l; i += 2) {
@@ -2851,6 +2857,7 @@ JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
             }
         }
     }
+    JL_GC_POP();
     size_t count = disabled.len;
     if (count > 0)
         jl_atomic_store_release(&jl_world_counter, world + 1);
