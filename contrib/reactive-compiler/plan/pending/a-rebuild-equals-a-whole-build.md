@@ -119,11 +119,11 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 3 | A macro expansion keeps the old code of its helper function. Only a change of the `macro` item itself evaluates its users again. | `macro document(args...) _document_expr(args; ...) end`. An edit of `_document_expr` changes what 788 `@document` items expand to. The rebuild evaluates none of them. | `child.jl:899-916` | Read; seen on real commits in the replay gate (Step 2), and in the IDE store on 2026-11-10. Closed on the branch by Step 7 (`gate_runs.sh`) |
 | 4 | A changed top-level statement adds to the effect of the old one. | `register!(TABLE, a)` becomes `register!(TABLE, b)`. The table of the rebuild holds `a` and `b`. A whole build holds `b`. | `child.jl:649-659` (ids `X`, `D2`) | Read. Closed on the branch by Step 7 for a statement that names a tracked global; another one is refused (`S1`) |
 | 5 | A value of a struct type that changed stays inside a global, when a function made the value. | `const DEFAULT = make_default()` gives a `Theme`. `Theme` gets a field. `DEFAULT` holds an old `Theme`, and no method of the new type accepts it. | the limit that `doc/architecture.md` names | Read. Closed on the branch by Step 7 (`gate_runs.sh`) |
-| 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test. The first sentence is closed on the branch by Step 7 (`gate_runs.sh`); the save and "method too new" have no test yet |
-| 7 | An apply that fails stays in the server. The server answers `error` or `refused` and serves the next request on a heap that holds half of the edit. | An edit adds a method and has a mistake in a later file. The build fails. The fix removes the method again. The method stays in the server, and in each later image. | `server.jl` `rc_serve`; `child.jl:972`, `child.jl:1001-1005` | Read |
-| 8 | The store does not record its inputs outside the tracked files: the versions of the registry packages in the Manifest, the preferences, the Julia build, the build options, the text of the workload. A change of one is not applied and not refused. | `Pkg.update` moves a registry package. The rebuild keeps the old version in the image. | `reactive.jl:252-260` is all that the store records | Read |
-| 9 | The files that a top-level item reads are a guess: each string literal that names a file. | The read list of the IDE store holds `/usr/bin/time` and `/proc/sys/kernel/perf_event_paranoid`. A file read through a computed path is not in it. | `SourceDiff.jl:429` | Read, Log |
-| 29 | A `@ccallable` function whose signature changed keeps the C entry of the whole build. The build looks at the name only. | `foo(x::Cint)::Cint` becomes `foo(x::Cdouble)::Cdouble`. A C caller gets the old entry. | `codegen.cpp:7886` | Read |
+| 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test. The first sentence is closed on the branch by Step 7 (`gate_runs.sh`). The second sentence is closed by Step 3 (2026-11-15): the replay finds a generated method by its generator, so a statement or the expansion of a macro that defines one is evaluated again too; `gate_runs.sh` calls each form with a type that is new to the image |
+| 7 | An apply that fails stays in the server. The server answers `error` or `refused` and serves the next request on a heap that holds half of the edit. | An edit adds a method and has a mistake in a later file. The build fails. The fix removes the method again. The method stays in the server, and in each later image. | `server.jl` `rc_serve`; `child.jl:972`, `child.jl:1001-1005` | Read. Closed on the branch by D4 (Step 5): the trial of an apply runs in a fork, and a server with an open apply exits (`gate_runs.sh`, step `fail`) |
+| 8 | The store does not record its inputs outside the tracked files: the versions of the registry packages in the Manifest, the preferences, the Julia build, the build options, the text of the workload. A change of one is not applied and not refused. | `Pkg.update` moves a registry package. The rebuild keeps the old version in the image. | `reactive.jl:252-260` is all that the store records | Read. Closed on the branch by D5 (Step 5): the whole build records a print of each input, and a rebuild with another input stops with its name (`gate_runs.sh`, step `input`) |
+| 9 | The files that a top-level item reads are a guess: each string literal that names a file. | The read list of the IDE store holds `/usr/bin/time` and `/proc/sys/kernel/perf_event_paranoid`. A file read through a computed path is not in it. | `SourceDiff.jl:429` | Read, Log. The first half is closed on the branch by Step 7 (a file of the system is no read). The second half has its test since Step 3 (`gate_runs.sh`, step `read-unnamed`, which fails); the rule waits for Q4 |
+| 29 | A `@ccallable` function whose signature changed keeps the C entry of the whole build. The build looks at the name only. | `foo(x::Cint)::Cint` becomes `foo(x::Cdouble)::Cdouble`. A C caller gets the old entry. | `codegen.cpp:7886` | Read. Closed on the branch (Step 5): a changed signature of a `@ccallable` function is refused as A4 (`gate_cases.sh`, the case `c_entry_signature`) |
 | 30 | The fork of a save has no guard against the collector threads. The server starts with `--threads=1`, but `JULIA_NUM_GC_THREADS` of the shell still counts. | A server started from such a shell can hang in a save. | `reactive.jl:809`, `cgmemmgr.cpp:408` | Read (audit); Test |
 
 The plan `robust-incremental-compiler.md` has the rule "apply or refuse,
@@ -141,9 +141,9 @@ depend on an address.
 | --- | --- | --- | --- | --- |
 | 10 | The harness keeps a cache from the text of each statement of the trace to the type that the text gave in the whole build. After an edit changes a struct, the cache still gives the old struct. The statement fails, or it compiles code for the old struct, and the new struct gets no compiled code. `--refresh-trace` does not heal it, because the new statement has the same text. | 150 statements failed today, 137 of them in the owner's packages. 63 are functions of the SDL backend: `_compute_dirty_change`, `_record_painted_element!`, `_take_wheel_run!`. They name `SdlBackend` and `SdlWindowResources`, which changed and have no type parameter, so the text of each statement is still right. The program compiles its paint path at each start. | `child.jl:1136-1159` | Read, Log. Measured on the platform: 1 136 of 2 268 roots after the commit that changes `ReactiveCell`. The table is closed on the branch (86b5d06977, see Step 6): the session drops it when a constant gets another value |
 | 11 | A statement whose text is no longer right stays lost. A struct with one type parameter for each field, as each `@document` struct has, changes its text with each new field. New code behind a dynamic call has no statement at all. Both wait for a person who runs `--refresh-trace`. The rebuild writes the count into the server log and nowhere else. | `collect_ini_file_entries(::LegacyProjectIniFiles{ReactiveCell{Any}, …})` after the struct got a field | `child.jl:1197`, `reactive.jl:285` | Log |
-| 25 | An edited method starts with no compiled code. It gets code from the trace and from the callers that the rebuild compiles again. Code that the whole build compiled for the old method by another way is not compiled for the new one: a finalizer, a callback, a dynamic call from an unchanged caller. The old method still lists those specializations when the apply replaces it. | Edit the body of a function that only a `finalizer(f, x)` of an unchanged function names. | `child.jl:994`, `typeinfer.jl:1939` | Read (audit) |
+| 25 | An edited method starts with no compiled code. It gets code from the trace and from the callers that the rebuild compiles again. Code that the whole build compiled for the old method by another way is not compiled for the new one: a finalizer, a callback, a dynamic call from an unchanged caller. The old method still lists those specializations when the apply replaces it. | Edit the body of a function that only a `finalizer(f, x)` of an unchanged function names. | `child.jl:994`, `typeinfer.jl:1939` | Read (audit). Tested in Step 3 (2026-11-15): `gate_runs.sh` edits a finalizer, a callback of C and a function behind a dynamic call, and the rebuilt program compiles the same calls when it runs as the founded one (check 5). No difference on the branch; Step 10 counts the same on real commits |
 | 26 | In the overlay form, new code calls an old function with boxed arguments through `jl_invoke`. A whole build makes a direct call. The same path cost 43 ns against 2.6 ns in the bench of gate M6. Most functions on mutable documents have boxed arguments. The count line of the build prints 0 for these calls. | An edited function calls an unchanged `handle!(document, event, context)` in a loop. | `codegen.cpp:5378` ("TODO: Add !specsig support"), `aotcompile.cpp:504` | Read. Closed on the branch by D11 (1fd1c54bd7, Step 9): the call goes through a slot; 2.0 ns against 1.55 ns from old code in the bench of gate M6 |
-| 27 | `precompile` does nothing for a code instance of the image that has no machine code. The statement counts as compiled, the program compiles the call at each run, and a refresh changes nothing. | A new dynamic call to a small function that the whole build always inlined. | `gf.c:4025` | Read (audit); Test |
+| 27 | `precompile` does nothing for a code instance of the image that has no machine code. The statement counts as compiled, the program compiles the call at each run, and a refresh changes nothing. | A new dynamic call to a small function that the whole build always inlined. | `gf.c:4025` | Read (audit); Test. Tested in Step 3 (2026-11-15): the edit of `gate_runs.sh` makes a caller call a small function through a value of an unknown type; the rebuilt program compiles no call more than the founded one, before and after a new recording (check 5). No difference on the branch; Step 10 counts the same on real commits |
 | 28 | `JULIA_REACTIVE_DELTA_OPT` in the environment lowers the level of the rebuilt code, and no line of the output says it. | A variable that a gate run left makes each rebuild compile at `-O1`. | `Executable.jl:327`, `reactive.jl:111` | Read |
 | 63 (new) | **An edit empties the leaf cache of dispatch.** A new method that takes over a method instance closes each entry of the leaf cache of the one global method cache, and puts an empty cache in its place; the other cache of dispatch closes only the entries of the method instances that the method takes over. After a rebuild, the program has the entries that the rebuild process made after the apply, and the first call of each other concrete signature takes the slow path of dispatch, which a whole build does not. The closed entries are dead objects of the base on written pages, and the save patches them too. | The one-line edit `reused_const() = 42` to `43` of gate M6, in the overlay form: the leaf cache of the whole build holds 36 351 entries and the program after the rebuild 663; the overlay patches 40 129 objects, 36 204 of them the field `max_world` of a dead `TypeMapEntry`, and 807 of its 2 724 written pages hold only such patches. A rebuild with no change patches 2 257 objects. In a session, `h(x::Int) = 3` over `h(x) = 1` closes the entry of `g(::Int)`. | `gf.c`, `jl_method_table_activate`: the leaf cache is dropped whole, and `_method_table_invalidate` walks it entry by entry | Found by the count of the patches of a one-line edit (Step 9, 2026-11-15). *Decision by the assistant:* the leaf cache takes the rule of the other cache. Closed on the branch (0d860317e3, Step 9): the one-line edit patches 2 431 objects, and the program keeps the leaf cache of the whole build |
 
@@ -461,12 +461,13 @@ These are my proposals. The owner approves them with the plan.
 
 ## The open questions
 
-Three decisions are the owner's. Q1 sets what property 3 means and what a
+Four decisions are the owner's. Q1 sets what property 3 means and what a
 rebuild costs; it has its answer, (b), since 2026-11-13. Q2 came with finding
 44, on 2026-11-10, and sets how the rebuild knows the methods of an
 expression; it has its answer. Q3 came with finding 62, on 2026-11-14, and
 sets which lines a moved method gives; it has its answer, (b), since
-2026-11-15.
+2026-11-15. Q4 came with the test of finding 9, on 2026-11-15, and sets how a
+build knows the files that the load of a package reads; it is open.
 
 D10 gets back, with no run of the program, each statement whose text is still
 right and each specialization of an edited method. Finding 11 stays: a
@@ -575,6 +576,65 @@ the correction uses two facts that the image has already, and each line that
 a backtrace, a profile or a log names equals a whole build.
 
 *The answer of the owner (2026-11-15): "It's (b)".* D14 holds the design.
+
+**Q4. How does a build know the files that the load of a package reads
+(finding 9)?** A whole build reads each file again. A rebuild evaluates an
+expression again when a file changed that a string of that expression names
+(rule E1). The test of Step 3 has two readers that this rule does not find:
+
+```julia
+# helpers.jl
+read_motto() = strip(read(joinpath(@__DIR__, "motto.txt"), String))
+# users.jl
+const MOTTO = read_motto()
+const CREED = strip(read(joinpath(@__DIR__, string("creed", ".txt")), String))
+```
+
+`motto.txt` changes from `steady` to `firm`: the rebuild evaluates the method
+`read_motto` again, which changes nothing, and `MOTTO` stays `steady`.
+`creed.txt` changes from `plain` to `clear`: the build ends early, and `CREED`
+stays `plain`. A whole build gives `firm` and `clear`.
+
+The rule has the opposite fault too. A string in a function names a file that
+the function reads when the program runs, and not when the package loads. The
+rule takes that file as an input of the build: the read list of the IDE holds
+`/usr/bin/time`.
+
+- (a) **The runtime records the files that each top-level expression opens.**
+  This is a new mechanism of the runtime. While the packages of a whole build
+  load, and while an apply evaluates, the function that opens a file for a
+  read writes down the file and the place of the top-level expression that
+  runs (the place that D13 keeps for a method). The store keeps the list, and
+  a changed file evaluates its expression again, as rule E1 does now. The
+  record replaces the search for strings: it finds a reader through any
+  function and any computed name, with no word in the sources, and it takes
+  no file that only the program reads. The files that a `using` or an
+  `include` expression opens are the load of packages and not reads of the
+  package; D5 has those inputs. Not covered: a decision by `isfile` or
+  `readdir` with no read, and a library of C that opens a file by itself. The
+  cost: a hook at the open of a file (one test of a pointer when no build
+  records), a list in the store, and the same list in PackageCompiler for the
+  build that ends early.
+- (b) **The sources name each file, as for the caches of Julia.** A package
+  that reads a file at load and does not name it with `include_dependency`
+  has a stale cache in Julia too. A string of the reader names the file: the
+  reader is evaluated again, as now. A string in a function, or an
+  `include_dependency`: the build stops with the name of the file and the
+  option of a whole build, as for another input (D5), because the harness
+  does not know which expression ran the function. A computed name stays
+  unknown. The cost: a change of the harness only. Its fault: most strings in
+  functions name files that the program reads when it runs, so most stops
+  would be false, and each one costs a whole build.
+- (c) **No change.** The limit goes to "Not in this plan".
+
+*The measurement.* A search of the package sources of projectured-julia,
+omnet-julia and inet-julia for a read at the top level of a file finds none in
+a package; the hits are scripts, examples and tools. The search does not see a
+read inside a function that an initializer calls.
+
+*The recommendation of the assistant is (a).* The evaluation knows the files
+that it reads, and the search for strings is a guess in both directions. (b)
+makes the guess louder, and (c) keeps a silent difference from a whole build.
 
 ## Steps
 
@@ -1448,6 +1508,70 @@ commits. The numbers of the steps stay as they are.
   pushed. PackageCompiler `live-harness` (588a846e) is not pushed, so a
   build of the owner has findings 58 and 8 and the mark of a pending
   snapshot only after its push.
+
+  *The findings of this step, one by one (2026-11-15).* The step names the
+  findings 1 to 9, 25 to 27 and 29. Each has a test in a gate now.
+
+  | finding | test | on the branch |
+  | --- | --- | --- |
+  | 1 | `gate_runs.sh`: `moved.jl` | closed (D2, Step 6) |
+  | 2 to 5 | `gate_runs.sh`: `users.jl` and `statements.jl` | closed (Step 7) |
+  | 6 | `gate_runs.sh`: `staged`, `staged_by_statement`, `staged_by_macro`, each also with a type that is new to the image | closed by the rule below |
+  | 7, 8 | `gate_runs.sh`: the steps `fail` and `input` | closed (D4, D5, Step 5) |
+  | 9 | `gate_runs.sh`: the step `read`; the step `read-unnamed` for a file that no string of the reader names | the first half closed (Step 7); the second half fails and waits for Q4 |
+  | 25 | `gate_runs.sh`: `release`, `scale_in_c`, `shout`, and check 5 | no difference |
+  | 26 | the bench of gate M6 | closed (D11, Step 9) |
+  | 27 | `gate_runs.sh`: `whisper` and `tiny`, the step `refresh`, and check 5 | no difference |
+  | 29 | `gate_cases.sh`: `c_entry_signature` | closed (Step 5) |
+
+  *Finding 6, the rest: a generated method that no text shows (proposed by
+  the assistant; built on 2026-11-15).* A generator runs in the first world
+  of its method. So the replay evaluates each generated method again after a
+  change (the difference `g`): the new method is younger than each helper of
+  the edit. The replay found a generated method by its text, a method with
+  the macro `@generated`. Two forms have another text:
+
+  ```julia
+  for name in (:staged_by_statement,)
+      @eval @generated $name(x) = generated_body(x)
+  end
+  macro staged_method(name)
+      return esc(:(@generated $name(x) = generated_body(x)))
+  end
+  @staged_method staged_by_macro
+  ```
+
+  The edit changes `generated_body` from `x + 1` to `x + 2`. With the harness
+  of before (round r43a), the program printed `2` for both methods, where a
+  whole build prints `3`. A call with an `Int8`, a type that the image has no
+  code for, stopped with a `MethodError`: the generator ran in the world of
+  the old method, the save had taken the old helper out, and the new helper
+  was too new for that world. This is the second sentence of the finding.
+  Now a candidate of the replay is generated when a method that the program
+  holds for its expression has a generator (`rc_candidates`); the text
+  `@generated` still counts for a method that the edit adds. With the rule
+  the program prints `3 and 3 and 3`.
+
+  *Its limits.*
+  - A generated method of a package that the build does not track is not
+    evaluated again. It can call tracked code only when its package loads
+    after a tracked one.
+  - A generated method that is evaluated again is younger than each method
+    of the program. Its generator can then see a method that the sources
+    define after it, which a whole build hides from it. The check of the
+    load order (finding 53) does not test a generator, because a generator
+    gives its result at a call and not at its evaluation.
+
+  *Check 5: what the program compiles when it runs.* `gate_runs.sh` runs the
+  last binary of the chain and the founded binary with `--trace-compile`,
+  and compares the two lists. This is the list that the step asks for, for
+  the findings 25 and 27. The program runs with a variable that the workload
+  never has (`RUNAPP_LATE`), so it calls two generated methods with a type
+  that is new to the image. Both binaries compile the same 7 calls: 4 at the
+  start of the program, for the parser of Julia, and 3 for the new type.
+  The program of the chain compiles no finalizer, no callback and no small
+  function. The step `refresh` records the workload again (Q1, answer (b)):
+  the list is the same before and after it.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
@@ -2581,7 +2705,7 @@ commits. The numbers of the steps stay as they are.
   - The tests of Step 3 for the findings 2 to 6 and 9 as separate small
     edits. `gate_runs.sh` holds one case of each of the findings 2 to 6
     now. The second half of finding 6, the save that removes the old helper
-    of a generator, has no test yet.
+    of a generator, has its test and its rule since Step 3.
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
   37).** First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the
