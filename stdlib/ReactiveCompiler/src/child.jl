@@ -239,6 +239,13 @@ function rc_take_kept!()
     return kept
 end
 
+# Whether another method has the signature of `method` now: a definition
+# replaced it.
+function rc_is_replaced(method::Method)
+    match = Base._which(method.sig; world = Base.get_world_counter(), raise = false)
+    return match !== nothing && match.method !== method && match.method.sig == method.sig
+end
+
 # Delete a method. The method of the generator of a generated method is a
 # method of the item that defines the generated one, so the item deletes it
 # with its other methods. A generator method with no top-level place has no
@@ -1387,13 +1394,14 @@ mutable struct RcEvaluation
     replaced_imports::Set{Tuple{Vector{Symbol}, Symbol}}
     named::Union{Nothing, Dict{Symbol, Vector{RcItem}}}
     order_moved::Base.IdSet{RcItem}
+    gone::Base.IdSet{Method}
 end
 RcEvaluation(items, roots, tracked, queue, removals, refusals, group, moved, names) =
     RcEvaluation(items, roots, tracked, queue, removals, refusals, Dict{UInt, Dict{Symbol, Any}}(),
                  Core.MethodInstance[], 0, group, moved, names,
                  Set{Tuple{Vector{Symbol}, Symbol}}((removal.path, removal.name) for removal in names
                                                     if removal.how === :replaced),
-                 nothing, Base.IdSet{RcItem}())
+                 nothing, Base.IdSet{RcItem}(), Base.IdSet{Method}())
 
 # Whether the item is a statement that defines nothing: it holds no macro call
 # and no `eval`, so what it does is an effect on a value that exists. A
@@ -1738,6 +1746,19 @@ function rc_evaluate_next!(evaluation::RcEvaluation)
     end
     for method in change.old_methods, mi in Base.specializations(method)
         mi isa Core.MethodInstance && push!(evaluation.replaced, mi)
+    end
+    # An old method that this evaluation replaced leaves now, and not at the
+    # end of the apply. Julia keeps a replaced method in the table until its
+    # deletion, and a lookup of its function is valid only from the world of
+    # that deletion on. A generator runs in the first world of its generated
+    # method: when a later change defines that method, the code of a generator
+    # that calls the function must be valid in that world, or the program
+    # compiles the generator again when it runs.
+    for method in change.old_methods
+        method in evaluation.gone && continue
+        rc_is_replaced(method) || continue
+        push!(evaluation.gone, method)
+        rc_delete_method(method)
     end
     # The dependents of what the evaluation changed. The constants come from the
     # bindings of the module and not from the name of the item: the call of a
@@ -2196,7 +2217,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
     # old items), so the signatures of every new item count. An old method
     # that two changes share is deleted once.
     new_sigs = Any[m.sig for item in new_items for m in item.methods]
-    gone = Base.IdSet{Method}()
+    gone = evaluation.gone
     for change in queue.changes
         item = change.item
         replaced_sigs = 0
