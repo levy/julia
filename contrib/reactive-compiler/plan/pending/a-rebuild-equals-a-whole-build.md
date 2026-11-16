@@ -3486,6 +3486,18 @@ commits. The numbers of the steps stay as they are.
   `replay-platform-17` has peaks from 16.0 to 18.0 G in the rounds r41 to
   r51. The bundle of 2026-11-12 and its store stay, and the program starts.
 
+  *The second whole build with a cap of 40 G (16:35 to 17:19) fails too,
+  for the memory of the machine.* The process that compiles the system image
+  gets SIGTERM after 44 min, in `aot_optimize_roots`, at 17.6 G. The machine
+  runs `earlyoom -m 10,5`, which sends SIGTERM to the largest process when
+  less than 10 % of the memory is free; a test run of another session used
+  up to 13.6 G then. bounded-run admitted that run because its budget counts
+  the cap that a job has at its start: the build started at 5 G, and the
+  cap of 40 G came after (bounded-run refuses a cap above half of the free
+  memory). The fault is in the machine room for the build, not in the code:
+  a whole build of the IDE needs more than 28 G, and the machine must keep
+  10 % free beside it.
+
 ## Not in this plan
 
 - The refusals F1 and C4, a new version of a registry package (F3), and a
