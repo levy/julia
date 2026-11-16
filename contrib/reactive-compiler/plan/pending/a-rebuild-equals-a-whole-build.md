@@ -122,7 +122,7 @@ two code audits of 2026-11-09 found and I did not read again line by line.
 | 6 | A generated function keeps the old answer of its generator when a helper of the generator changes. The save also removes the old helper from the method table with no look at the world in which the generator runs, so a new specialization can stop with "method too new". | the same as 3, for `@generated` | no case in `child.jl`; `staticdata.c:1016` | Test. The first sentence is closed on the branch by Step 7 (`gate_runs.sh`). The second sentence is closed by Step 3 (2026-11-15): the replay finds a generated method by its generator, so a statement or the expansion of a macro that defines one is evaluated again too; `gate_runs.sh` calls each form with a type that is new to the image |
 | 7 | An apply that fails stays in the server. The server answers `error` or `refused` and serves the next request on a heap that holds half of the edit. | An edit adds a method and has a mistake in a later file. The build fails. The fix removes the method again. The method stays in the server, and in each later image. | `server.jl` `rc_serve`; `child.jl:972`, `child.jl:1001-1005` | Read. Closed on the branch by D4 (Step 5): the trial of an apply runs in a fork, and a server with an open apply exits (`gate_runs.sh`, step `fail`) |
 | 8 | The store does not record its inputs outside the tracked files: the versions of the registry packages in the Manifest, the preferences, the Julia build, the build options, the text of the workload. A change of one is not applied and not refused. | `Pkg.update` moves a registry package. The rebuild keeps the old version in the image. | `reactive.jl:252-260` is all that the store records | Read. Closed on the branch by D5 (Step 5): the whole build records a print of each input, and a rebuild with another input stops with its name (`gate_runs.sh`, step `input`) |
-| 9 | The files that a top-level item reads are a guess: each string literal that names a file. | The read list of the IDE store holds `/usr/bin/time` and `/proc/sys/kernel/perf_event_paranoid`. A file read through a computed path is not in it. | `SourceDiff.jl:429` | Read, Log. The first half is closed on the branch by Step 7 (a file of the system is no read). The second half has its test since Step 3 (`gate_runs.sh`, step `read-unnamed`, which fails); the rule waits for Q4 |
+| 9 | The files that a top-level item reads are a guess: each string literal that names a file. | The read list of the IDE store holds `/usr/bin/time` and `/proc/sys/kernel/perf_event_paranoid`. A file read through a computed path is not in it. | `SourceDiff.jl:429` | Read, Log. The first half is closed on the branch by Step 7 (a file of the system is no read). The second half has its test since Step 3 (`gate_runs.sh`, step `read-unnamed`, which failed first). Closed on the branch by Step 3 (D15, Q4 and Q5; e14f69b054, 499b67a65a): the runtime records the files that the evaluation of a top-level expression opens, the cache file of a package keeps the reads of its load, and a string in a function is no input any more |
 | 29 | A `@ccallable` function whose signature changed keeps the C entry of the whole build. The build looks at the name only. | `foo(x::Cint)::Cint` becomes `foo(x::Cdouble)::Cdouble`. A C caller gets the old entry. | `codegen.cpp:7886` | Read. Closed on the branch (Step 5): a changed signature of a `@ccallable` function is refused as A4 (`gate_cases.sh`, the case `c_entry_signature`) |
 | 30 | The fork of a save has no guard against the collector threads. The server starts with `--threads=1`, but `JULIA_NUM_GC_THREADS` of the shell still counts. | A server started from such a shell can hang in a save. | `reactive.jl:809`, `cgmemmgr.cpp:408` | Read (audit); Test |
 
@@ -1275,8 +1275,10 @@ commits. The numbers of the steps stay as they are.
 
   *Open in this step:* the reason of the size of gate C after a `make`; the
   profile of the apply.
-- [ ] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
-  first.** Each is a small edit of the test program, compared through the
+- [x] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
+  first.** *Done, on the branch `rebuild-equals-moved-lines` of the Julia
+  worktree and `live-harness` of PackageCompiler (2026-11-16); not landed.*
+  Each is a small edit of the test program, compared through the
   oracle or through the list of what the program compiles at run time. A
   finding whose test passes on the branch leaves the plan, with a note.
 
@@ -1668,7 +1670,7 @@ commits. The numbers of the steps stay as they are.
   | 2 to 5 | `gate_runs.sh`: `users.jl` and `statements.jl` | closed (Step 7) |
   | 6 | `gate_runs.sh`: `staged`, `staged_by_statement`, `staged_by_macro`, each also with a type that is new to the image | closed by the rule below |
   | 7, 8 | `gate_runs.sh`: the steps `fail` and `input` | closed (D4, D5, Step 5) |
-  | 9 | `gate_runs.sh`: the step `read`; the step `read-unnamed` for a file that no string of the reader names | the first half closed (Step 7); the second half fails and waits for Q4 |
+  | 9 | `gate_runs.sh`: the step `read`; the step `read-unnamed` for a file that no string of the reader names | closed: the first half by Step 7, the second half by D15 |
   | 25 | `gate_runs.sh`: `release`, `scale_in_c`, `shout`, and check 5 | no difference |
   | 26 | the bench of gate M6 | closed (D11, Step 9) |
   | 27 | `gate_runs.sh`: `whisper` and `tiny`, the step `refresh`, and check 5 | no difference |
@@ -1748,8 +1750,9 @@ commits. The numbers of the steps stay as they are.
     (`live-harness` bc4743a3). Round r44 (2026-11-15, both forms) failed at
     the step `read` with the record in the process of the whole build, which
     gave Q5.
-  - [ ] The step `read-unnamed` joins the default list of `gate_runs.sh`
-    (849d6b20f5); the round of the gates passes. Round r45, the child form:
+  - [x] The step `read-unnamed` joins the default list of `gate_runs.sh`
+    (849d6b20f5); the round of the gates passes (r47, below). Round r45, the
+    child form:
     the step passes, the listing holds `greeting.txt`, `motto.txt` and
     `creed.txt` and not `note.txt`, and the five checks are equal (96 method
     lines, 11 roots, 35 output lines, 17 globals, 7 compiled calls).
@@ -1778,6 +1781,25 @@ commits. The numbers of the steps stay as they are.
   function with a generated name, deletes at the end of the apply. A
   generator that calls that function is then compiled again when the program
   runs: a slower first call, with the same result.
+
+  *Round r47 (2026-11-16), the 13 gates on 849d6b20f5 with PackageCompiler
+  bc4743a3, the installed harness: each gate passes.* `gate_runs.sh` in both
+  forms: the five checks are equal (96 method lines, 11 roots, 35 output
+  lines, 17 globals, 7 compiled calls), and the program compiles 7 calls
+  before and after a new recording. The counted numbers against round r42:
+
+  | gate | r42 | r47 |
+  | --- | --- | --- |
+  | `cases`, both forms: lines of roots that differ | 20 | 20 |
+  | `replay-28`: roots that differ from the whole build | 22 of 300 | 0 of 299 |
+  | `replay-28`: moves of the base | 3 | 2 |
+  | `replay-platform-17`: roots that differ | 0 of 2 268 | 0 of 2 267 |
+
+  The cause of the 22 roots that went to 0 is not examined. A run of
+  `replay-28` with the harness of 499b67a65a, the one before the deletion at
+  the replacement, gives 0 of 299 too; but it loads the harness from its
+  sources and moves the base 7 times, so it does not separate that change
+  from D15. Step 10 counts the roots again on the real commits.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
