@@ -693,6 +693,19 @@ function rc_write_reads(listing::String, reads::Vector{RcRead})
     return nothing
 end
 
+# The listing of the changes of an apply, for the record of the builds of a
+# store: a line for each removal and each change, with the id of the change
+# catalog, the place and the name of the item, and the note, with a tab
+# between them. The apply writes it beside its read listing.
+function rc_write_changes(listing::String, changes::Vector{RcChange})
+    open(listing, "w") do io
+        for change in changes
+            println(io, change.id, '\t', change.where, '\t', change.note)
+        end
+    end
+    return nothing
+end
+
 # The listing of the reads of the package of `root`, for the process that
 # makes its cache file (`Base.package_reads_file`). `raw` is the list that the
 # runtime filled while the package loaded, from the time `since`. The listing
@@ -2245,6 +2258,7 @@ function rc_apply_tracked(old_files::Vector{String}, old_roots::Vector{Vector{Sy
                 change.deleted > 0 ? string(", ", change.deleted, " deleted") : "")
     end
     rc_write_reads(reads_out, new_reads)
+    rc_write_changes(joinpath(dirname(reads_out), "changes.txt"), vcat(removals, queue.changes))
     closed = Core.MethodInstance[]
     before = Base.IdSet{Core.MethodInstance}()
     t_scan = @elapsed rc_each_instance() do mi
