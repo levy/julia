@@ -3446,6 +3446,14 @@ commits. The numbers of the steps stay as they are.
     of the chain of r49 has 17 lines: 1 whole build, 10 rebuilds, 1 move of
     the base, 2 refusals (S1 and B2), 2 stops and 1 recording. The record
     gave finding 65 at its first run.
+
+    *Round r51 (2026-11-16), the 13 gates on 45093957a8 with PackageCompiler
+    d34f59a8, the installed harness: each gate passes.* The step `record`
+    passes in both forms. The chain has 16 lines: the same kinds as in r49,
+    with no move of the base: the code of the overlay is 1.06 % or less of
+    the code in each rebuild, below the 2 % of a move. The counted numbers equal those of round r47: 20 lines
+    of roots in `cases`, both forms; 0 of 299 roots in `replay-28`, with 2
+    moves of the base; 0 of 2 267 roots in `replay-platform-17`.
   - [x] The documents. `doc/architecture.md` describes the system as it
     stands (e285c5708b): each name of a function in it is in the code. The
     build guide of projectured-julia (branch `build-record`, aa5a67f97) and
