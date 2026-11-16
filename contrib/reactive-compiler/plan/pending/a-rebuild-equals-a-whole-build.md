@@ -3461,9 +3461,30 @@ commits. The numbers of the steps stay as they are.
     2796f2ca4) say what a build does with an input, a read file, a refusal
     and a lost statement, and describe the record. The help texts of the
     build scripts say the same of `--compact` and `--status` (d53115ac6 in
-    projectured-julia, a40ede20e in omnet-julia). The two branches are not
-    landed.
+    projectured-julia, a40ede20e in omnet-julia).
   - [ ] A whole build of the IDE.
+
+  *Landed (2026-11-16, with the word of the owner: "yes").*
+  - *Julia.* `merged-next` moved forward by 7 commits to ad2e1d6076, with
+    the libraries and the images of the build of 45093957a8, and the caches
+    of the standard libraries made again (1 min 59 s). The checks of the
+    landing are true, and the image prints the commit 45093957a8.
+  - *PackageCompiler.* `live-harness` d34f59a8 is on the branch `reactive`
+    of the GitHub fork, a fast-forward from ec40e238. The build environments
+    of projectured-julia and omnet-julia hold it.
+  - *The documents.* The two branches `build-record` are on `main`, rebased
+    on one new commit of `main` in each repository: projectured-julia
+    1200c1462, omnet-julia 25637ec13.
+
+  *The whole build of the IDE fails for memory (2026-11-16 14:47 to 15:42).*
+  `bin/build_omnet_ide --found` with a cap of 28 G: the trace has 24 056
+  statements, and the kernel stops the process that compiles the system
+  image at 28 G, after 54 min. The foundings of 2026-11-09 and 2026-11-10
+  had peaks of 23 G with 22 962 statements; since the last founding of the
+  IDE (2026-11-12), `main` has 163 new commits in projectured-julia and 43
+  in omnet-julia. The gates show no growth of memory in the fork:
+  `replay-platform-17` has peaks from 16.0 to 18.0 G in the rounds r41 to
+  r51. The bundle of 2026-11-12 and its store stay, and the program starts.
 
 ## Not in this plan
 
