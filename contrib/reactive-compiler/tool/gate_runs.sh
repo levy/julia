@@ -110,6 +110,12 @@
 #   compare      - the four checks of the invariant: the method tables, the
 #                  roots, the output, the globals; and a fifth one: what the
 #                  program compiles when it runs
+#   record       - the record of the builds of the store of the chain has the
+#                  line of its whole build with the cause, of each rebuild
+#                  with the counts of its changes, of the refusal, of each
+#                  stop and of the new recording; the status of the store
+#                  prints how often each kind occurs; then a whole build of
+#                  the final bundle again keeps the record of its store
 # Pass step names to run some steps, or nothing to run all of them in order.
 # Run the gate under bounded-run: the steps take no cap of their own.
 set -u
@@ -426,6 +432,10 @@ refresh_trace(ARGS[1])
 EOF
     write_mat && lane refresh "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/refresh.jl" "$CHAIN" || return 1
     grep -q "refresh_trace: the trace is refreshed" "$OUT/refresh.log" || { echo "=== refresh: no refresh line"; return 1; }
+    # A harness that the recording loads from its sources is no part of the program.
+    if grep -q "ReactiveHarness\." "$CHAIN/reactive-store/trace.jl"; then
+        echo "=== refresh: the trace holds statements of the harness"; return 1
+    fi
     mat mat-refreshed "$CHAIN" || return 1
     compiled refreshed "$CHAIN" || return 1
     echo "=== refresh: the program compiled $before statements when it ran before the recording, and $(grep -c . "$OUT/compiled-refreshed.jl") after it"
@@ -490,7 +500,47 @@ compare() {
     return $failed
 }
 
-steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read read-unnamed input refresh trace found-final run-final compare}
+# The record of the builds of a store (decision D16). $1 = what the lines are,
+# $2 = a pattern of grep -E, $3 = the least count of lines, $4 = the record.
+record_lines() {
+    local n
+    n=$(grep -c -E "$2" "$4")
+    [ "$n" -ge "$3" ] && return 0
+    echo "=== record: $n lines for $1, at least $3 expected"
+    return 1
+}
+
+record() {
+    local file=$CHAIN/reactive-store/builds.txt again=$FINAL/reactive-store/builds.txt failed=0 tab=$'\t'
+    [ -f "$file" ] || { echo "=== record: the store of the chain has no record"; return 1; }
+    head -1 "$file" | grep -q -E "${tab}whole${tab}cause=no store${tab}seconds=[0-9.]+${tab}statements=[0-9]+${tab}image_bytes=[0-9]+\$" ||
+        { echo "=== record: the first line is not the whole build of a bundle with no store"; failed=1; }
+    record_lines "a rebuild with the counts of its changes" \
+        "${tab}rebuild${tab}snapshot=s[0-9]+${tab}form=(server|child)/[a-z]+${tab}seconds=[0-9.]+${tab}changes=[A-Z][0-9]:[0-9]+" 6 "$file" || failed=1
+    record_lines "a rebuild for a changed read file" "${tab}rebuild${tab}.*${tab}changes=E1:1${tab}" 4 "$file" || failed=1
+    record_lines "the refusal of the statement" "${tab}refused${tab}reasons=S1 " 1 "$file" || failed=1
+    record_lines "the stop for the Manifest entry" "${tab}stopped${tab}inputs=the Manifest entry of RunLib" 1 "$file" || failed=1
+    record_lines "the stop for the workload" "${tab}stopped${tab}inputs=the workload" 1 "$file" || failed=1
+    record_lines "the new recording" "${tab}recorded${tab}statements=[0-9]+${tab}kept=[0-9]+${tab}dropped=[0-9]+${tab}added=[0-9]+\$" 1 "$file" || failed=1
+    # The status of the store counts the kinds.
+    light record-status "$JULIA" --startup-file=no --project="$OUT/compile-env" \
+        -e 'using PackageCompiler; PackageCompiler.print_store_status(stdout, ARGS[1])' "$CHAIN" || failed=1
+    grep -q -E "^  builds:     1 whole, [0-9]+ rebuild, [0-9]+ base, [1-9][0-9]* refused, 2 stopped, 1 recorded, since " "$OUT/record-status.log" ||
+        { echo "=== record: the status of the store does not count the kinds"; failed=1; }
+    grep -q "^    refused, [0-9]* times: S1\$" "$OUT/record-status.log" ||
+        { echo "=== record: the status of the store does not name the refusal S1"; failed=1; }
+    # A whole build takes the record of the store that it replaces. The log
+    # has a name of its own: the step compare reads the logs mat-*.log.
+    [ "$(grep -c "${tab}whole${tab}" "$again")" == 1 ] || { echo "=== record: the final bundle has not one whole build"; failed=1; }
+    write_mat && JULIA_REACTIVE_FOUNDING=1 lane found-final-again "$JULIA" --startup-file=no --project="$OUT/compile-env" "$OUT/mat.jl" "$FINAL" || return 1
+    [ "$(grep -c "${tab}whole${tab}" "$again")" == 2 ] || { echo "=== record: the whole build did not keep the record of its store"; failed=1; }
+    tail -1 "$again" | grep -q "${tab}whole${tab}cause=founding = true${tab}" ||
+        { echo "=== record: the last line of the final bundle is not a whole build with its cause"; failed=1; }
+    [ $failed == 0 ] && echo "=== record: the store of the chain has $(grep -c . "$file") lines, and a whole build kept the record"
+    return $failed
+}
+
+steps=${*:-copy found-chain run-s1 edit mat-s2 run-s2 refuse move retype order fail late same read read-unnamed input refresh trace found-final run-final compare record}
 for step in $steps; do
     case $step in
         copy) copy ;;
@@ -514,6 +564,7 @@ for step in $steps; do
         found-final) rm -rf "$OUT/final" && mat mat-final "$FINAL" ;;
         run-final) runbin final "$FINAL" "$(values_after_read)" ;;
         compare) compare ;;
+        record) record ;;
         *) echo "unknown step $step"; exit 2 ;;
     esac || { echo "=== step $step failed"; exit 1; }
 done
