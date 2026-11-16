@@ -147,6 +147,7 @@ depend on an address.
 | 28 | `JULIA_REACTIVE_DELTA_OPT` in the environment lowers the level of the rebuilt code, and no line of the output says it. | A variable that a gate run left makes each rebuild compile at `-O1`. | `Executable.jl:327`, `reactive.jl:111` | Read |
 | 63 (new) | **An edit empties the leaf cache of dispatch.** A new method that takes over a method instance closes each entry of the leaf cache of the one global method cache, and puts an empty cache in its place; the other cache of dispatch closes only the entries of the method instances that the method takes over. After a rebuild, the program has the entries that the rebuild process made after the apply, and the first call of each other concrete signature takes the slow path of dispatch, which a whole build does not. The closed entries are dead objects of the base on written pages, and the save patches them too. | The one-line edit `reused_const() = 42` to `43` of gate M6, in the overlay form: the leaf cache of the whole build holds 36 351 entries and the program after the rebuild 663; the overlay patches 40 129 objects, 36 204 of them the field `max_world` of a dead `TypeMapEntry`, and 807 of its 2 724 written pages hold only such patches. A rebuild with no change patches 2 257 objects. In a session, `h(x::Int) = 3` over `h(x) = 1` closes the entry of `g(::Int)`. | `gf.c`, `jl_method_table_activate`: the leaf cache is dropped whole, and `_method_table_invalidate` walks it entry by entry | Found by the count of the patches of a one-line edit (Step 9, 2026-11-15). *Decision by the assistant:* the leaf cache takes the rule of the other cache. Closed on the branch (0d860317e3, Step 9): the one-line edit patches 2 431 objects, and the program keeps the leaf cache of the whole build |
 | 64 (new) | **The code of a generator is younger than its generated method, so the program compiles the generator again.** The apply deleted the old method of each change at its end. Julia keeps a replaced method in the method table until its deletion, and a lookup of its function is valid only from the world of that deletion on. A generator runs in the first world of its generated method, and the apply defines that method before its end. So the code of a generator that calls a changed function was valid only from a later world than the method, and the program compiled the generator again at the first call with a type that is new to the image. The result of the call is the same. | The edit of `gate_runs.sh` changes `generated_body`, which the generator of `staged` calls. After the rebuild, `staged` has the first world 41128, and the code of its generator is valid from world 41175. `runapp` with a new type prints `precompile(Tuple{RunLib.var"##14#15", Any, Any}) # recompile`; the founded program does not. | `child.jl`, the deletions at the end of `rc_apply_tracked`; `gf.c`, `jl_method_table_disable` and the lookup `ml_matches` | Seen by check 5 of `gate_runs.sh` in the server form (round r45, 2026-11-15). The fault came and went with the last apply of the chain: an apply that changes `generated_body` gave it, and a later apply that defines the generated methods again took it away. The two more applies of the step `read-unnamed` made it show at the end of the chain. Closed on the branch (359aed34e9, Step 3): an old method that a change replaced leaves at its replacement. Open rest: an old method with no replacement of its signature leaves at the end of the apply, as before |
+| 65 (new) | **A new recording under a harness from its sources takes the statements of the harness into the trace.** `refresh_trace` runs the workload under `--trace-compile`, and then loads the harness in the same process. When the store runs the harness of the installed Julia from its sources (D7), the process compiles the functions of that harness, and their statements joined the trace. No rebuild compiles them, so the count of the lost statements rose by their number, and stayed. | The step `refresh` of `gate_runs.sh` with `JULIA_REACTIVE_HARNESS`: the recording added 31 statements such as `precompile(Tuple{typeof(ReactiveHarness.ReactiveCompiler.rc_mentions), Any, Core.TypeName})`, and the next rebuild had 31 lost statements. | PackageCompiler `reactive.jl`, `_reactive_roots` | Seen in the record of the builds (round r49, 2026-11-16). Closed on the branch (`live-harness` d34f59a8, Step 11): the roots of a trace leave out the module `ReactiveHarness`, and the step `refresh` fails on such a statement. Round r50: the recording adds 0 statements, and the next rebuild has 0 lost ones |
 
 The code generation itself gives no slower code: the audit found the same LLVM
 passes and the same level for the code of a rebuild as for a whole build, and
@@ -560,7 +561,9 @@ These are my proposals. The owner approves them with the plan.
   `changes` holds the count of the changes of each id of the catalog, as
   `A2:14,C1:3,E1:1`. The harness lists the changes of an apply in a file
   beside the read listing of the snapshot, `changes.txt`, with the id, the
-  place and the note of each change.
+  place and the note of each change. The counts are those of the apply: a
+  server applies the changes since its last save, and a child of an overlay
+  store, as a move of the base, applies each change since the base.
 
   *Decisions of the design.*
   - *A line of text, and not a table of `store.toml`.* Each build writes
@@ -3429,13 +3432,29 @@ commits. The numbers of the steps stay as they are.
   one that this plan needs.
 
   *The parts (from 2026-11-16; D16 holds the design of the record).*
-  - [ ] The harness lists the changes of an apply in `changes.txt`.
-  - [ ] PackageCompiler appends the line of each build to `builds.txt`, and a
-    whole build takes the record of the store that it replaces.
-  - [ ] `print_store_status` prints how often each kind occurs, with the
-    causes of the whole builds and the ids of the refusals.
-  - [ ] The test: a step `record` of `gate_runs.sh`.
-  - [ ] The documents: `doc/architecture.md` and the two build guides.
+  - [x] The harness lists the changes of an apply in `changes.txt`
+    (e8284e40a9).
+  - [x] PackageCompiler appends the line of each build to `builds.txt`, and a
+    whole build takes the record of the store that it replaces (`live-harness`
+    d34f59a8). `build_record` answers the lines.
+  - [x] `print_store_status` prints how often each kind occurs, with the
+    causes of the whole builds, the ids of the refusals and the inputs of the
+    stops (d34f59a8).
+  - [x] The test: a step `record` of `gate_runs.sh` (d87606d5b8). Rounds r49
+    (the server form) and r50 (the child form), both with the harness from
+    its sources: the step passes, and the five checks are equal. The record
+    of the chain of r49 has 17 lines: 1 whole build, 10 rebuilds, 1 move of
+    the base, 2 refusals (S1 and B2), 2 stops and 1 recording. The record
+    gave finding 65 at its first run.
+  - [x] The documents. `doc/architecture.md` describes the system as it
+    stands (e285c5708b): each name of a function in it is in the code. The
+    build guide of projectured-julia (branch `build-record`, aa5a67f97) and
+    the reactive build guide of omnet-julia (branch `build-record`,
+    2796f2ca4) say what a build does with an input, a read file, a refusal
+    and a lost statement, and describe the record; the two branches are not
+    landed. Not changed: the help texts of the build scripts in the two
+    repositories, which still say that an overlay store founds again when
+    its image grew by a quarter.
   - [ ] A whole build of the IDE.
 
 ## Not in this plan
