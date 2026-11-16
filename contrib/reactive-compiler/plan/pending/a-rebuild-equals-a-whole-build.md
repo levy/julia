@@ -3451,10 +3451,10 @@ commits. The numbers of the steps stay as they are.
     build guide of projectured-julia (branch `build-record`, aa5a67f97) and
     the reactive build guide of omnet-julia (branch `build-record`,
     2796f2ca4) say what a build does with an input, a read file, a refusal
-    and a lost statement, and describe the record; the two branches are not
-    landed. Not changed: the help texts of the build scripts in the two
-    repositories, which still say that an overlay store founds again when
-    its image grew by a quarter.
+    and a lost statement, and describe the record. The help texts of the
+    build scripts say the same of `--compact` and `--status` (d53115ac6 in
+    projectured-julia, a40ede20e in omnet-julia). The two branches are not
+    landed.
   - [ ] A whole build of the IDE.
 
 ## Not in this plan
