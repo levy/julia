@@ -1276,9 +1276,9 @@ commits. The numbers of the steps stay as they are.
   *Open in this step:* the reason of the size of gate C after a `make`; the
   profile of the apply.
 - [x] **Step 3: one test for each finding 1 to 9, 25 to 27 and 29, which fails
-  first.** *Done, on the branch `rebuild-equals-moved-lines` of the Julia
-  worktree and `live-harness` of PackageCompiler (2026-11-16); not landed.*
-  Each is a small edit of the test program, compared through the
+  first.** *Done and landed (2026-11-16); the note of the landing is at the
+  end of the step.* Each is a small edit of the test program, compared
+  through the
   oracle or through the list of what the program compiles at run time. A
   finding whose test passes on the branch leaves the plan, with a note.
 
@@ -1800,6 +1800,34 @@ commits. The numbers of the steps stay as they are.
   the replacement, gives 0 of 299 too; but it loads the harness from its
   sources and moves the base 7 times, so it does not separate that change
   from D15. Step 10 counts the roots again on the real commits.
+
+  *Landed (2026-11-16, with the word of the owner: "Yes"), in three parts.*
+  - *Julia.* `merged-next` moved forward by 12 commits to 79ccb033a1, with
+    the libraries and the images of the build of 849d6b20f5, and the caches
+    of the standard libraries made again. Checked in the installed Julia:
+    REPL, Pkg and Test load in 0.31 s, the harness of the image equals its
+    folder, the frames of a moved method name the lines of now, the runtime
+    has the record of the reads, and the cache file of a small package gets
+    its listing. The installed Julia prints the commit 4490a9f8f5: the build
+    ran in a tree at that commit with the changes of D15 not committed yet.
+    Not pushed.
+  - *PackageCompiler.* The branch `reactive` of the fork on GitHub had one
+    commit that `live-harness` did not have (dd96ca2f, a founding keeps its
+    files in a folder of its own), so the push was no fast-forward. The
+    branch `reactive` was merged into `live-harness` (ec40e238): the listing
+    of the reads lands in the folder of the founding, and the count of the
+    lost statements is taken before their listing moves into the store.
+    Round r48 with the merged package: `gate_runs.sh` in both forms,
+    `gate_cases.sh` and the prelinked gate pass. Then `live-harness` was
+    pushed to `reactive`.
+  - *The build environments.* `Pkg.update("PackageCompiler")` in
+    `environment/build` of projectured-julia and of omnet-julia: each
+    Manifest names the tree of ec40e238, and each environment loads the
+    package with the new calls. The two Manifest files are not in git. Pkg
+    ran its garbage collection of the depot during the two updates.
+
+  A store of before this landing needs a whole build, and Julia makes each
+  cache file of a package again.
 - [x] **Step 4: the server runs the installed harness (D7).** *Done, on the
   branches `rebuild-equals-step-4` of the Julia worktree and `live-harness` of
   PackageCompiler; not landed.* Test: a store
