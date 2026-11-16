@@ -542,6 +542,48 @@ These are my proposals. The owner approves them with the plan.
     back. A candidate that an edit of a function makes read another file,
     with the same value, keeps its reads of before.
 
+- **D16. The record of the builds of a store (Step 11, finding 17; by the
+  assistant, 2026-11-16).** The store has one text file, `builds.txt`, with
+  one line for each build. A build appends its line at its end. The fields
+  of a line have a tab between them: the time, the kind, and then fields of
+  the form `name=value`.
+
+  | kind | when | fields |
+  | --- | --- | --- |
+  | `whole` | a whole build made the store | `cause`, `seconds`, `statements`, `image_bytes` |
+  | `rebuild` | a rebuild made a snapshot | `snapshot`, `form`, `seconds`, `changes`, `overlay_bytes`, `code_percent`, `growth_percent`, `lost` |
+  | `base` | the base of an overlay store moved forward (D6) | as a rebuild |
+  | `refused` | the apply refused the edit | `reasons` |
+  | `stopped` | an input of the store changed (D5) | `inputs` |
+  | `recorded` | a person recorded the workload again (Q1) | `statements`, `kept`, `dropped`, `added` |
+
+  `changes` holds the count of the changes of each id of the catalog, as
+  `A2:14,C1:3,E1:1`. The harness lists the changes of an apply in a file
+  beside the read listing of the snapshot, `changes.txt`, with the id, the
+  place and the note of each change.
+
+  *Decisions of the design.*
+  - *A line of text, and not a table of `store.toml`.* Each build writes
+    `store.toml` again; a line is appended, and a tool reads it with no
+    parser. Rejected: a table in `store.toml`, which grows the file that
+    each build reads.
+  - *The counts of the ids, and not the list of the items.* The list of one
+    rebuild can have 60 lines; it stays in `changes.txt` while its snapshot
+    stays. The question of finding 17 is how often each kind occurs.
+  - *A whole build takes the record of the store that it replaces.* Else the
+    record would start again at each whole build, and the causes of the
+    whole builds are what it must show.
+  - *A build with no change has no line.* It changes nothing, and its count
+    says how often a script runs.
+  - *A build that fails has no line:* an edit that throws at its load, a
+    link that fails. The step names the refusals and the causes of a whole
+    build.
+  - *The file has no bound.* A line has about 200 bytes.
+  - *The harness gets no new argument.* It writes `changes.txt` in the
+    folder of the read listing. An older PackageCompiler does not read the
+    file; a newer one with an older harness finds no file and records no
+    counts.
+
 ## The open questions
 
 Five decisions are the owner's. Q1 sets what property 3 means and what a
@@ -3385,6 +3427,16 @@ commits. The numbers of the steps stay as they are.
   times, the size of the overlay (finding 17). `doc/architecture.md` and the
   two build guides say what changed. Then a whole build of the IDE, the last
   one that this plan needs.
+
+  *The parts (from 2026-11-16; D16 holds the design of the record).*
+  - [ ] The harness lists the changes of an apply in `changes.txt`.
+  - [ ] PackageCompiler appends the line of each build to `builds.txt`, and a
+    whole build takes the record of the store that it replaces.
+  - [ ] `print_store_status` prints how often each kind occurs, with the
+    causes of the whole builds and the ids of the refusals.
+  - [ ] The test: a step `record` of `gate_runs.sh`.
+  - [ ] The documents: `doc/architecture.md` and the two build guides.
+  - [ ] A whole build of the IDE.
 
 ## Not in this plan
 
