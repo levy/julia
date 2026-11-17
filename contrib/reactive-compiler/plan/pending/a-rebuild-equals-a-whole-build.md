@@ -3498,6 +3498,19 @@ commits. The numbers of the steps stay as they are.
   a whole build of the IDE needs more than 28 G, and the machine must keep
   10 % free beside it.
 
+  *The third whole build (2026-11-17, 13:45 to 14:27) fails for the memory
+  of the machine again.* The start waits for room with a cap of 20 G, and
+  the cap of 40 G goes into the unit and into the record of bounded-run
+  directly after the start, so the other sessions of the account count it.
+  The trace has 24 274 statements. After 41 min 35 s, at a peak of 13.8 G,
+  `systemd-oomd` stops the 3 processes of the build: it stops a unit of a
+  user when the memory pressure of that user is above 50 % for 20 s. A test
+  run of the second account of the machine started at 14:25:33 with 13
+  simulation processes; the two accounts together had a peak of 57.6 G of
+  61 G. bounded-run sees the jobs of its own account only. A whole build of
+  the IDE thus needs one hour in which no other account and no other session
+  starts a large job.
+
 ## Not in this plan
 
 - The refusals F1 and C4, a new version of a registry package (F3), and a
