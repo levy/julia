@@ -3528,6 +3528,13 @@ commits. The numbers of the steps stay as they are.
   not track 3 source files; a rebuild stops when one of them changes. A
   whole build of the IDE needs 36 G now, and no other large job beside it.
 
+  *What comes next (2026-11-18, the owner: "It's (a)").* The owner uses the
+  IDE for some days, and each build writes its line into the record of the
+  builds. Then the record gives the real numbers: the kinds of the builds,
+  their times, the refusals and the moves of the base. The rest of Step 2,
+  the rest of Step 8 and Step 10 wait for these numbers, and the owner
+  decides with them which one is worth the work.
+
 ## Not in this plan
 
 - The refusals F1 and C4, a new version of a registry package (F3), and a
