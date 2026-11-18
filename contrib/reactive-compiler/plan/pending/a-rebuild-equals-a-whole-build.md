@@ -3425,7 +3425,7 @@ commits. The numbers of the steps stay as they are.
   this step makes fewer statements lost; with (b) a lost statement costs some
   speed until the next recording, so it waits behind the steps of
   correctness.
-- [ ] **Step 11: the record, the documents and the IDE.** The store keeps a
+- [x] **Step 11: the record, the documents and the IDE.** The store keeps a
   line for each build: the kind, the changed items by id, the refusals, the
   times, the size of the overlay (finding 17). `doc/architecture.md` and the
   two build guides say what changed. Then a whole build of the IDE, the last
@@ -3462,7 +3462,8 @@ commits. The numbers of the steps stay as they are.
     and a lost statement, and describe the record. The help texts of the
     build scripts say the same of `--compact` and `--status` (d53115ac6 in
     projectured-julia, a40ede20e in omnet-julia).
-  - [ ] A whole build of the IDE.
+  - [x] A whole build of the IDE (2026-11-18, the fourth try; see the last
+    note of this step).
 
   *Landed (2026-11-16, with the word of the owner: "yes").*
   - *Julia.* `merged-next` moved forward by 7 commits to ad2e1d6076, with
@@ -3510,6 +3511,22 @@ commits. The numbers of the steps stay as they are.
   61 G. bounded-run sees the jobs of its own account only. A whole build of
   the IDE thus needs one hour in which no other account and no other session
   starts a large job.
+
+  *The fourth whole build passes (2026-11-18, 00:26 to 01:11, with the word
+  of the owner: "It's (a), start now").* `bin/build_omnet_ide --found` on
+  Julia 45093957a8 with PackageCompiler d34f59a8, started in the same way as
+  the third build: 44 min 46 s, a peak of 35.8 G under the cap of 40 G. The
+  trace has 24 942 statements with 14 not resolved, and the store is founded
+  with 24 956 statements and 1068 tracked files. The image has 1616.9 MB,
+  and the bundle 4684.8 MB. The record of the builds holds one line,
+  `whole` with `cause=founding = true` and `seconds=2662.3`; the status
+  prints "1 whole, 0 rebuild, 0 base, 0 refused, 0 stopped, 0 recorded" and
+  no server. The program starts in 0.17 s and prints its build facts. The
+  warnings of the build are from the workload of the trace: 4 times "The
+  agent did not stop" (`stop_agent_connection!(::Nothing)` has no method),
+  one tool call on the thread of the window, and slow frames. The build does
+  not track 3 source files; a rebuild stops when one of them changes. A
+  whole build of the IDE needs 36 G now, and no other large job beside it.
 
 ## Not in this plan
 
