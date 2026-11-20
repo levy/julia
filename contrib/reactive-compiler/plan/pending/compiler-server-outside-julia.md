@@ -398,10 +398,14 @@ What the comments say, and what follows for this plan:
   deterministic write of an image is tractable. Issue D answers this doubt: a
   link orders the objects by key, not by the order of a walk of the heap.
 - On #63152, the same reviewer wrote that much more goes wrong when a Julia
-  process forks, and closed it. So CompilerServer.jl must not depend on a fork:
-  the trial of an edit and the write of a product run in separate processes.
-  The server of the fork writes each image from a fork today, so that changes
-  too.
+  process forks, and closed it. So we do not ask Julia to support a fork. The
+  fork stays in our fork, whose runtime repairs the descriptor of
+  `/proc/self/mem` in the child. The fork does not make a rebuild fast; the
+  reuse of compiled code does. In today's design the fork saves the restart of
+  the server: a rebuild through the server takes about 2 s on the routing
+  example, and a rebuild in a new process took 8 to 10 s (an older
+  measurement, with another write mode). In the target design the link needs
+  no heap of the server, so the fork saves almost nothing (open question 5).
 
 Two more texts exist. The work is announced on Discourse: "Building an
 incremental sysimage in seconds instead of minutes"
@@ -426,3 +430,7 @@ of the issue about the module identity is step S5 of Track C in the plan
 4. How does a definition part capture the effect of top-level code on the state
    of other modules? The fork handles this for its tracked sources, but not
    across packages.
+5. Does CompilerServer.jl need a fork? The owner agreed to decide it after
+   step B exists, by a measurement of a trial of an edit and of a write in
+   separate processes. Until then, no repair of the fork for stock Julia is
+   built.
