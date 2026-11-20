@@ -1,9 +1,10 @@
 # A compiler server outside Julia
 
-Status: an exploration with the owner, started 2026-11-20. Nothing in this note
-is decided, and it has no steps to execute yet. It records the facts, the
-options and the proposed architecture, so that the next discussion starts from
-here.
+Status: an exploration with the owner, started 2026-11-20. The owner approved
+the plan of issues and pull requests at the end of this note. No step of it is
+executed yet, and no text went upstream. The note records the facts, the
+options, the architecture and that plan, so that the next discussion starts
+from here.
 
 ## The goal
 
@@ -240,14 +241,123 @@ file format enters Julia. CompilerServer.jl then holds all of the reactive
 part: the store, the server, the rules, the edits that it applies at load, and
 the whole builds in the background.
 
+The owner chose another way for the edits: the definitions become parts too,
+and a link writes the products (issue D below). Options 6 to 8 stay as
+alternatives.
+
+## Products as if compiled from scratch
+
+The owner asked whether a written package file or binary can hold no obsolete
+part, as after a compile from scratch, and whether its write can be fast.
+
+- Today Julia writes a product as a snapshot of the heap of the process that
+  compiled it. After an edit, that heap holds the history: deleted methods, old
+  versions of names, the types of old closures, compiled code that is no longer
+  valid. A writer of a snapshot must prune each of these, and the fork keeps
+  some residue, for example the global slots of dead functions.
+- A link starts from the current definitions and takes only the parts that they
+  reach. A part that nothing reaches stays out, so nothing needs a prune. The
+  fork shows this already for machine code: the new function table names only
+  the live functions, and the linker drops the rest.
+- Steps 1 to 5 make the compiled code parts. The definitions (types, methods,
+  names, constant values) still live in the heap of the process. They need one
+  more step: definitions as parts (issue D below).
+- Without that step, a tool can evaluate the definitions again from scratch for
+  each product and take only the compiled code from the store. That product is
+  clean too, but each written file costs its evaluation and Julia's writer, and
+  so does each file above it. From the measured shares of the platform package
+  (evaluation 5.6 s and serial output about 24 s of the 80.5 s of its precompile
+  list), that is about a third to a half of a whole compile today.
+- With definitions as parts, a rebuild evaluates the changed expressions,
+  compiles the code that the change made invalid, and links. The fork's write
+  by pages, which copies the clean part of the heap, writes the heap of the
+  routing image in 0.7 s against 3.4 s for a whole write. A link from parts is
+  not measured.
+- The precompile workload still needs a run, because it finds the functions
+  that only calls at run time reach. A person runs it again when necessary, as
+  in the fork.
+- The owner accepted that a whole build also goes through the same link. Then
+  the proof that a rebuild equals a whole build is a byte comparison of two
+  files. The comparison with a stock build stays a comparison of content,
+  because Julia's writer orders the objects in another way.
+
+## The issues and the pull requests
+
+The owner likes steps 1 to 5, wants the result for binaries and for packages
+that Julia loads, and approved this plan. It follows the rules of the region GC
+work:
+
+- one pull request for each issue, with its parts as commits;
+- a pull request opens only after the one before it merged, so nothing stacks;
+- an issue is one screen: problem, measurement, proposal, questions;
+- a pull request body has 10 to 30 lines, with no bold and no table of costs;
+- the measurements go on a branch of `levy/julia`, and the text links them.
+
+The work moves to Julia master first, because the fork is on 1.13. The sizes
+are estimates.
+
+| | issue: what we ask | value for Julia alone | pull request and its parts | size | needs |
+| --- | --- | --- | --- | --- | --- |
+| 0 | the design: compile apart from load, with three questions | it decides the direction | none | – | – |
+| A | two builds of the same sources give different machine code (step 1) | package files and images that a build can reproduce | 1. a stable order of the GC root slots; 2. type hashes without the random part of the module identity; 3. names of constants and strings from their content | small | nothing |
+| B | code can not be compiled, described and installed apart from the load (steps 2 to 4) | one stable interface for GPUCompiler.jl, Enzyme.jl and juliac; a cache of compiled code that survives a restart; an answer to "why did this compile again" | 1. the interface: infer and generate code for a list of method instances, with no install; 2. generated code reports its slots and what it read; 3. an install of inferred code and machine code in a running process, with no LLVM | medium, new work | a yes to issue 0 |
+| C | the writers compile each function again (step 5) | a whole build that does not compile cached code again | 1. each function gets its own section and a name from its key; 2. the writers of package files and of system images take the code of a function from a part | large; the fork has a form of it for images | B merged |
+| D | definitions can only be written as a snapshot of a process heap | no precompile cascade; products that a byte comparison can check; a tool to inspect cache files | 1. a reader and writer of Julia's formats at the level of objects; 2. the definitions of a top-level expression as a part with keys, and generated names from content; 3. package files and system images written by a link of parts | large, new design | C merged |
+
+Two consequences matter for the acceptance:
+
+- The loader does not change. A linked product is an ordinary package file or
+  system image.
+- No exception to the four checks of fact 6 is necessary. The server compiles
+  in a process where Julia allows edits, and the products come from the link,
+  not from that process.
+
+What CompilerServer.jl can do after each pull request:
+
+- After A: nothing visible yet. The keys of compiled code become reliable.
+- After B: a session takes compiled code from the store and does not compile it
+  again. The cascade stays.
+- After C: a whole build of the package files or of a binary takes all
+  unchanged code from the store. The cascade stays, but each file in it costs
+  only its evaluation and its write.
+- After D: after an edit, the server compiles only the changed code, and the
+  link writes new package files and a new binary as if from scratch, with no
+  cascade and no obsolete part. A rebuild and our own whole build give the same
+  bytes.
+
+A draft of issue 0. On GitHub each paragraph is one line.
+
+```
+Title: Compile apart from load: compiled parts that a link writes into package files and system images
+
+Problem: one edit in a low package makes Julia compile again each package above it, because a cache file names the files below it by identity and by byte offset. In one of our projects, a one-line edit compiles 99 cache files again, in about 280 s. A system image has the same problem: a rebuild compiles each function again.
+
+Measurement: a fork of 1.13 that reuses the compiled code of the last image rebuilds an application image in 21 s instead of 117 s. Details: <link to the evidence branch>.
+
+Proposal: separate the compile from the load and from the write of products.
+- Inference and code generation give parts that do not depend on the process: inferred code and machine code, each with a list of what it read.
+- A part names other objects by a key (module path, name, method signature, types), not by a pointer or an offset.
+- Julia writes package files and system images by a link of parts. The loader does not change.
+- A package outside Julia keeps a store of parts and decides what to compile again. The existing edge check of Julia decides which parts are still valid.
+
+Steps: #A reproducible generated code. #B compile, describe and install code apart from the load. #C the writers take compiled code from parts. #D definitions as parts, and products written by a link.
+
+Questions:
+1. Is this direction acceptable to you?
+2. Where must the interface live: in Compiler.jl, or in Base.Experimental?
+3. Are keys for definitions acceptable, or do you prefer another way to remove the cascade?
+```
+
 ## Open questions
 
-1. Is a slower start of a development binary acceptable until the next whole
-   build? The owner answered "maybe". Not measured.
-2. How much compiled code of the packages above stays valid after a typical
-   edit? Not measured. This number decides the gain of each option.
-3. Which goal comes first: reuse of compiled code (steps 1 to 5), or edits
-   without the cascade (one of steps 6 to 8)?
-4. Do the Julia developers accept this direction at all? Item A3 of
-   `maturity-and-determinism.md` already says: send a short design note before
+1. Do the Julia developers accept this direction? Issue 0 asks it. Item A3 of
+   `maturity-and-determinism.md` says the same: send a short design note before
    more code for upstream.
+2. Where must the interface live: in Compiler.jl or in Base.Experimental?
+   Issue 0 asks it.
+3. How much compiled code of the packages above stays valid after a typical
+   edit? Not measured. This number decides the size of the compile after an
+   edit.
+4. How does a definition part capture the effect of top-level code on the state
+   of other modules? The fork handles this for its tracked sources, but not
+   across packages.
