@@ -299,7 +299,7 @@ are estimates.
 | | issue: what we ask | value for Julia alone | pull request and its parts | size | needs |
 | --- | --- | --- | --- | --- | --- |
 | 0 | the design: compile apart from load, with three questions | it decides the direction | none | – | – |
-| A | two builds of the same sources give different machine code (step 1) | package files and images that a build can reproduce | 1. a stable order of the GC root slots; 2. type hashes without the random part of the module identity; 3. names of constants and strings from their content | small | nothing |
+| A | two builds of the same sources give different machine code (step 1); this is the open issue JuliaLang/julia#63149, so step A continues it | package files and images that a build can reproduce | done: #63150 (open) sorts the GC root slots, the work list of a build and the global slots; #63151 (merged) keeps the inference times out of the image; to send: the issue about the random part of the module identity in type hashes (its text is ready), then one pull request that gives names of constants and strings from their content | small | nothing |
 | B | code can not be compiled, described and installed apart from the load (steps 2 to 4) | one stable interface for GPUCompiler.jl, Enzyme.jl and juliac; a cache of compiled code that survives a restart; an answer to "why did this compile again" | 1. the interface: infer and generate code for a list of method instances, with no install; 2. generated code reports its slots and what it read; 3. an install of inferred code and machine code in a running process, with no LLVM | medium, new work | a yes to issue 0 |
 | C | the writers compile each function again (step 5) | a whole build that does not compile cached code again | 1. each function gets its own section and a name from its key; 2. the writers of package files and of system images take the code of a function from a part | large; the fork has a form of it for images | B merged |
 | D | definitions can only be written as a snapshot of a process heap | no precompile cascade; products that a byte comparison can check; a tool to inspect cache files | 1. a reader and writer of Julia's formats at the level of objects; 2. the definitions of a top-level expression as a part with keys, and generated names from content; 3. package files and system images written by a link of parts | large, new design | C merged |
@@ -340,7 +340,7 @@ Proposal: separate the compile from the load and from the write of products.
 - Julia writes package files and system images by a link of parts. The loader does not change.
 - A package outside Julia keeps a store of parts and decides what to compile again. The existing edge check of Julia decides which parts are still valid.
 
-Steps: #A reproducible generated code. #B compile, describe and install code apart from the load. #C the writers take compiled code from parts. #D definitions as parts, and products written by a link.
+Steps: #63149 reproducible generated code (#63150 and #63151 are its first pull requests). #B compile, describe and install code apart from the load. #C the writers take compiled code from parts. #D definitions as parts, and products written by a link.
 
 Questions:
 1. Is this direction acceptable to you?
@@ -348,9 +348,74 @@ Questions:
 3. Are keys for definitions acceptable, or do you prefer another way to remove the cascade?
 ```
 
+## What the fork has of A to D
+
+Checked on 2026-11-20 in the branches `merged-next`, `determinism-experiment`,
+`pr-reproducible-image-code` and `pr-codeinstance-build-times`.
+
+| item and part | in the fork |
+| --- | --- |
+| A. a stable order of the GC root slots, the work list and the global slots | done, 63 lines; pull request #63150 |
+| A. no inference times in the image | done; merged as #63151 |
+| A. no random part of the module identity in type hashes | measured; the text of an issue is ready; no fix |
+| A. names of constants and strings from content | not done |
+| A. checks of the result | on `determinism-experiment`: two rebuilds give the same bytes; the machine code of a rebuild differs from a fresh build no more than two fresh builds differ from each other; the heaps of a rebuild and of a whole build hold the same objects |
+| B. an interface that compiles without an install | not done: the fork compiles inside its own process, through changes to the compiler front |
+| B. generated code reports what it read | a prototype only: `src/ReadKey.jl` computes a key for each compiled function and compares it with Julia's invalidation |
+| B. an install of compiled code without LLVM | not done; the nearest is the loader of the fork, which applies an overlay of compiled code at start |
+| C. one section and one name for each function | done for the program image: one function table with names, and a link that drops dead functions; the names carry a build tag, not a key |
+| C. the writer takes code from parts | done for the program image: it reuses the machine code of the loaded image, and new code calls it by name; not done for package files; the parts are earlier builds of the same output, not parts with keys |
+| D. a reader and writer of the formats at the level of objects | pieces only: the writers by pages and by overlay rewrite objects and merge the lists of pointers; a tool lists each object of the heap |
+| D. definitions as parts | the logic exists: which top-level expression made which methods and names, what it read, and when it must run again (about 5,300 lines); the parts with keys and the names from content do not exist |
+| D. products written by a link | machine code yes, for the program image; the heap no: the fork writes it whole, by pages, or as an overlay |
+
+Most of the part that CompilerServer.jl would hold exists: the server, the
+source diff, the change rules, the trial of an edit, the reads, the store with
+its record of builds, the command line, the driver in PackageCompiler, the gates
+and the oracle. It uses runtime functions that only the fork has.
+
+## The upstream history
+
+| number | title | state on 2026-11-20 |
+| --- | --- | --- |
+| JuliaLang/julia#63147 | gf: fix crash on a compile hint with a `where` | open, no comment |
+| JuliaLang/julia#63149 | The generated code of a system image is not reproducible | open issue |
+| JuliaLang/julia#63150 | Make image builds reproducible: sort three lists that follow object addresses | open, a review started |
+| JuliaLang/julia#63151 | staticdata: do not store the inference times in the image | merged 2026-10-11 |
+| JuliaLang/julia#63152 | cgmemmgr: a forked child opens its own /proc/self/mem | closed, not merged |
+| JuliaLang/PackageCompiler.jl#1125 | Speed up builds: cache the fresh base sysimage and overlap the copies | closed, replaced by #1126 |
+| JuliaLang/PackageCompiler.jl#1126 | Cache the fresh base sysimage between non-incremental builds | merged 2026-09-14 |
+| JuliaLang/PackageCompiler.jl#1127 | ensurecompiled: load the packages instead of precompiling them | closed, not merged |
+
+What the comments say, and what follows for this plan:
+
+- On #63149, one reviewer wrote that a fully reproducible compiler is "close to
+  not planned". Another one answered that reproducible builds are nice. Our
+  answer there: the goal is to remove the causes that are cheap to remove, not
+  full determinism, so that a comparison of binaries becomes useful.
+- On #63150, the reviewer of the image format, who also wrote #64840, wrote that
+  small steps toward reproducible builds are a good idea, but doubted that a
+  deterministic write of an image is tractable. Issue D answers this doubt: a
+  link orders the objects by key, not by the order of a walk of the heap.
+- On #63152, the same reviewer wrote that much more goes wrong when a Julia
+  process forks, and closed it. So CompilerServer.jl must not depend on a fork:
+  the trial of an edit and the write of a product run in separate processes.
+  The server of the fork writes each image from a fork today, so that changes
+  too.
+
+Two more texts exist. The work is announced on Discourse: "Building an
+incremental sysimage in seconds instead of minutes"
+(https://discourse.julialang.org/t/building-an-incremental-sysimage-in-seconds-instead-of-minutes/139352).
+A note for the core team, `doc/upstream-note.md` on the branch
+`determinism-experiment`, is ready and not sent; issue 0 replaces it. The text
+of the issue about the module identity is step S5 of Track C in the plan
+`maturity-and-determinism.md` on that branch.
+
 ## Open questions
 
-1. Do the Julia developers accept this direction? Issue 0 asks it. Item A3 of
+1. Do the Julia developers accept this direction? Issue 0 asks it. The
+   reviewer of the image format must also accept a link ordered by key as the
+   answer to the doubt on #63150. Item A3 of
    `maturity-and-determinism.md` says the same: send a short design note before
    more code for upstream.
 2. Where must the interface live: in Compiler.jl or in Base.Experimental?
