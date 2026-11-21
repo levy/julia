@@ -1009,11 +1009,35 @@ static jl_code_instance_t *jl_get_ci_equiv_range(jl_code_instance_t *ci JL_PROPA
 }
 
 
+// The place of each global value of `M`, which is the order of emission. The
+// link of the calls and the tables of an image take this order, and not the
+// order of the addresses of the code instances and of the objects: so two
+// writes of the same code give the same image.
+static DenseMap<const GlobalValue *, size_t> get_module_order(const Module &M) JL_NOTSAFEPOINT
+{
+    DenseMap<const GlobalValue *, size_t> order;
+    for (const GlobalValue &G : M.global_values())
+        order.try_emplace(&G, order.size());
+    return order;
+}
+
+static size_t module_place(const DenseMap<const GlobalValue *, size_t> &order, const GlobalValue *G) JL_NOTSAFEPOINT
+{
+    auto it = G ? order.find(G) : order.end();
+    return it == order.end() ? SIZE_MAX : it->second;
+}
+
 // Static version of JuliaOJIT::linkOutput
 static void aot_link_output(jl_codegen_output_t &out) JL_CANSAFEPOINT
 {
     jl_compiled_by_mi_t by_mi;
-    for (auto &[call, target] : out.call_targets) {
+    auto order = get_module_order(out.get_module());
+    SmallVector<std::pair<std::pair<jl_code_instance_t *, std::underlying_type_t<jl_invoke_api_t>>, jl_codegen_call_target_t>, 0>
+        calls(out.call_targets.begin(), out.call_targets.end());
+    llvm::stable_sort(calls, [&order](const auto &a, const auto &b) JL_NOTSAFEPOINT {
+        return module_place(order, a.second.decl) < module_place(order, b.second.decl);
+    });
+    for (auto &[call, target] : calls) {
         auto [ci, api] = call;
         jl_code_instance_t *call_ci = ci;
         assert(api == JL_INVOKE_ARGS || api == JL_INVOKE_SPECSIG);
@@ -1177,13 +1201,20 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
     data->jl_value_to_llvm.reserve(out.global_targets.size());
     data->jl_sysimg_gvars.reserve(out.global_targets.size() + out.external_fns.size());
 
-    for (auto &[val, gv] : out.global_targets) {
+    // The tables of slots and of functions take the order of the module.
+    Module &M = out.get_module();
+    auto order = get_module_order(M);
+    auto place = [&order](const GlobalValue *G) JL_NOTSAFEPOINT { return module_place(order, G); };
+    SmallVector<std::pair<void *, GlobalVariable *>, 0> targets(out.global_targets.begin(), out.global_targets.end());
+    llvm::stable_sort(targets, [&place](const auto &a, const auto &b) JL_NOTSAFEPOINT {
+        return place(a.second) < place(b.second);
+    });
+    for (auto &[val, gv] : targets) {
         data->jl_value_to_llvm.push_back(val);
         data->jl_sysimg_gvars.push_back(gv);
     }
     // The slots of the parts of the store: the objects of the parts define
     // them, and the loader fills them with the values as all other slots.
-    Module &M = out.get_module();
     data->part_gvars_begin = data->part_gvars_end = data->jl_sysimg_gvars.size();
     if (out.code_parts) {
         jl_array_t *objects = (jl_array_t *)jl_svecref(out.code_parts, 1);
@@ -1225,7 +1256,14 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
                                              covctr.second.first->getName().str()});
     }
 
-    for (auto &[ci, funcs] : out.ci_funcs) {
+    SmallVector<std::pair<jl_code_instance_t *, jl_llvm_functions_t>, 0> ci_funcs(out.ci_funcs.begin(), out.ci_funcs.end());
+    auto first_place = [&place](const jl_llvm_functions_t &funcs) JL_NOTSAFEPOINT {
+        return std::min(place(funcs.invoke), place(funcs.specptr));
+    };
+    llvm::stable_sort(ci_funcs, [&first_place](const auto &a, const auto &b) JL_NOTSAFEPOINT {
+        return first_place(a.second) < first_place(b.second);
+    });
+    for (auto &[ci, funcs] : ci_funcs) {
         uint32_t invoke_id, specptr_id = 0;
         if (funcs.invoke_api == JL_INVOKE_SPECSIG) {
             assert(funcs.invoke);
