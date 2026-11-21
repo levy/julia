@@ -116,24 +116,48 @@ executes it. Each decision below is proposed and is approved with the plan.
 
 ### Step 1: the worktree of master, and its baseline
 
-- [ ] Make the worktree `workspace/julia-compiler-server` with the branch
+- [x] Make the worktree `workspace/julia-compiler-server` with the branch
       `compiler-server-master` at the current upstream master.
-- [ ] Build it, and keep a private depot in
+- [x] Build it, and keep a private depot in
       `/var/tmp/julia-compiler-server-depot`.
 - [ ] Run `test/precompile.jl`, `test/cmdlineargs.jl`, `test/compiler/` and
       `test/loading.jl`. Write down here each failure of clean master.
 
 Gate: the build has no warning in `src/`, and the baseline is in this plan.
 
-### Step 2: the repository CompilerServer.jl
+Facts found:
 
-- [ ] Check that the name `CompilerServer` is free in the General registry (a
+- Master moved after the plan was written. The worktree is at `2aa7c9fd5b`
+  (2026-11-20), and the built Julia is `1.15.0-DEV.881`.
+- The build runs with a cap of 8 GB and `make -j4`. Its peak was 7.9 GB, so 8 GB
+  is the smallest cap for a build. A first try with 16 GB found no room,
+  because another session held a cap of 20 GB.
+- The build ran in two parts, because the owner stopped the first one. The log
+  of the first part is lost. The second part has no warning in `src/` or
+  `cli/`. For clean master, its own CI is the reference; the branches of this
+  plan get the check of warnings when they change `src/`.
+- The depot of each run is `JULIA_DEPOT_PATH=/var/tmp/julia-compiler-server-depot:`.
+  The trailing colon keeps the depots of the built Julia after it.
+
+### Step 2: the repository CompilerServer.jl  — done
+
+- [x] Check that the name `CompilerServer` is free in the General registry (a
       read only).
-- [ ] Make `workspace/CompilerServer.jl` with a git repository, `Project.toml`
+- [x] Make `workspace/CompilerServer.jl` with a git repository, `Project.toml`
       with a new UUID, `src/CompilerServer.jl`, `test/runtests.jl`, a short
       README, the MIT license, and `plan/pending/` with a link to this plan.
 
 Gate: `Pkg.test()` of the empty package passes on the build of Step 1.
+
+Facts found:
+
+- The name is free in the General registry, and no repository on GitHub has the
+  name `CompilerServer.jl` (2026-11-20).
+- The UUID is `b9f42e07-4c72-477d-b783-e20d04cdfd76`. The first commit is
+  `1cfef11` on the branch `main`. Each commit message ends with the disclosure
+  line of D9.
+- `Pkg.test()` passes on `1.15.0-DEV.881`; the compatibility entry
+  `julia = "1.15"` accepts that version.
 
 ## Part 2: CompilerServer.jl on stock master
 
