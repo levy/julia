@@ -173,6 +173,12 @@ typedef struct {
     // coverage counters emitted into the image: (file, line, flags, symbol),
     // serialized as the `jl_image_coverage` table
     SmallVector<std::tuple<std::string, int32_t, uint32_t, std::string>, 0> jl_coverage_entries;
+    // The parts of a store that the image takes (`jl_set_code_parts`): the
+    // ranges of their slots and of their functions in the tables, and their
+    // objects as (member name, bytes) for the archive.
+    size_t part_gvars_begin = 0, part_gvars_end = 0;
+    size_t part_fvars_begin = 0, part_fvars_end = 0;
+    std::vector<std::pair<std::string, std::string>> part_objects;
 } jl_native_code_desc_t;
 
 extern "C" JL_DLLEXPORT_CODEGEN
@@ -646,6 +652,36 @@ static bool canPartition(const Function &F)
 }
 
 // this builds the object file portion of the sysimage files for fast startup
+static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod,
+                                          const jl_cgparams_t *cgparams, int external_linkage,
+                                          const DenseMap<jl_code_instance_t *, std::string> *part_names,
+                                          jl_value_t *code_parts = nullptr) JL_CANSAFEPOINT;
+
+// The parts of a store for the next image that this process writes, which
+// `jl_set_code_parts` sets and `jl_create_native` takes. The caller keeps the
+// table alive until the image is written.
+static jl_value_t *jl_code_parts = nullptr;
+
+// Give the next image that this process writes the machine code of functions
+// from parts (`jl_emit_object` with names). `parts` is
+// `svec(functions, objects, aliases)`:
+// - `functions`: a `svec(mi, invoke_api, invoke, specptr)` for each method
+//   instance whose code a part holds, with the names of its symbols; the image
+//   does not compile its code instance, and its entries in the table of
+//   functions name the symbols of the part;
+// - `objects`: a `svec(bytes, prefix, slots)` for each part, with the Julia
+//   object of each of its slots, which the image fills as its own slots;
+// - `aliases`: a `svec(mi, invoke_api, name, ci)` for each name that a part
+//   calls and that the image defines: the code instance that the image
+//   compiles for `mi` when `ci` is `nothing`, else `ci`, the code of another
+//   image, which the image calls as it calls other images.
+// `nothing` clears the table.
+extern "C" JL_DLLEXPORT_CODEGEN
+void jl_set_code_parts_impl(jl_value_t *parts)
+{
+    jl_code_parts = jl_is_svec(parts) ? parts : nullptr;
+}
+
 // `external_linkage` create linkages between pkgimages.
 extern "C" JL_DLLEXPORT_CODEGEN
 void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int external_linkage, size_t world,
@@ -701,7 +737,69 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
     jl_value_t *ci_order = jl_svecref(result, 1);
     JL_TYPECHK(jl_create_native, array_any, codeinfos);
     JL_TYPECHK(jl_create_native, array_any, ci_order);
-    auto data = (jl_native_code_desc_t *)jl_emit_native((jl_array_t*)codeinfos, (jl_array_t*)ci_order, llvmmod, NULL, external_linkage ? 1 : 0);
+    // A code instance whose code a part of the store holds does not compile.
+    jl_value_t *code_parts = jl_code_parts;
+    jl_code_parts = nullptr;
+    DenseMap<jl_code_instance_t *, std::string> part_names;
+    if (code_parts) {
+        // The table names method instances; the code instances are those that
+        // this image takes.
+        DenseMap<jl_method_instance_t *, jl_svec_t *> by_mi;
+        jl_array_t *functions = (jl_array_t *)jl_svecref(code_parts, 0);
+        for (size_t k = 0; k < jl_array_nrows(functions); k++) {
+            jl_svec_t *entry = (jl_svec_t *)jl_array_ptr_ref(functions, k);
+            by_mi[(jl_method_instance_t *)jl_svecref(entry, 0)] = entry;
+        }
+        jl_array_t *all = (jl_array_t *)codeinfos;
+        jl_array_t *kept = jl_alloc_vec_any(0);
+        fargs[1] = (jl_value_t *)kept;
+        jl_array_t *taken = jl_alloc_vec_any(0);
+        fargs[2] = (jl_value_t *)taken;
+        DenseMap<jl_method_instance_t *, jl_code_instance_t *> compiled;
+        for (size_t i = 0; i < jl_array_nrows(all); i += 2) {
+            jl_value_t *item = jl_array_ptr_ref(all, i);
+            if (jl_is_code_instance(item)) {
+                jl_code_instance_t *ci = (jl_code_instance_t *)item;
+                auto part = by_mi.find(jl_get_ci_mi(ci));
+                if (part != by_mi.end()) {
+                    jl_svec_t *entry = part->second;
+                    part_names[ci] = jl_string_data(jl_svecref(entry, 3));
+                    jl_array_ptr_1d_push(taken, (jl_value_t *)jl_svec(4, (jl_value_t *)ci, jl_svecref(entry, 1),
+                                                                     jl_svecref(entry, 2), jl_svecref(entry, 3)));
+                    continue;
+                }
+                compiled[jl_get_ci_mi(ci)] = ci;
+            }
+            jl_array_ptr_1d_push(kept, item);
+            jl_array_ptr_1d_push(kept, jl_array_ptr_ref(all, i + 1));
+        }
+        // The callee of each alias: the code instance that this image
+        // compiles, else the one that the table names, else any of the method
+        // instance, which a call through `jl_invoke` serves.
+        jl_array_t *aliases = (jl_array_t *)jl_svecref(code_parts, 2);
+        jl_array_t *resolved = jl_alloc_vec_any(0);
+        fargs[3] = (jl_value_t *)resolved;
+        for (size_t k = 0; k < jl_array_nrows(aliases); k++) {
+            jl_svec_t *alias = (jl_svec_t *)jl_array_ptr_ref(aliases, k);
+            jl_method_instance_t *mi = (jl_method_instance_t *)jl_svecref(alias, 0);
+            jl_value_t *ci = jl_svecref(alias, 3);
+            auto here = compiled.find(mi);
+            if (here != compiled.end())
+                ci = (jl_value_t *)here->second;
+            else if (!jl_is_code_instance(ci))
+                ci = (jl_value_t *)jl_atomic_load_relaxed(&mi->cache);
+            if (ci == NULL || !jl_is_code_instance(ci))
+                continue;
+            jl_array_ptr_1d_push(resolved, (jl_value_t *)jl_svec(3, ci, jl_svecref(alias, 1), jl_svecref(alias, 2)));
+        }
+        codeinfos = (jl_value_t *)kept;
+        code_parts = (jl_value_t *)jl_svec(3, (jl_value_t *)taken, jl_svecref(code_parts, 1), (jl_value_t *)resolved);
+        fargs[4] = code_parts;
+    }
+    auto data = code_parts ?
+        emit_native_code((jl_array_t*)codeinfos, (jl_array_t*)ci_order, llvmmod, NULL, external_linkage ? 1 : 0,
+                         &part_names, code_parts) :
+        (jl_native_code_desc_t *)jl_emit_native((jl_array_t*)codeinfos, (jl_array_t*)ci_order, llvmmod, NULL, external_linkage ? 1 : 0);
     JL_GC_POP();
 
     // move everything inside, now that we've merged everything
@@ -895,6 +993,7 @@ static void aot_link_output(jl_codegen_output_t &out) JL_CANSAFEPOINT
     jl_compiled_by_mi_t by_mi;
     for (auto &[call, target] : out.call_targets) {
         auto [ci, api] = call;
+        jl_code_instance_t *call_ci = ci;
         assert(api == JL_INVOKE_ARGS || api == JL_INVOKE_SPECSIG);
         JL_GC_PROMISE_ROOTED(ci);
         if (!target.decl->isDeclaration())
@@ -945,6 +1044,13 @@ static void aot_link_output(jl_codegen_output_t &out) JL_CANSAFEPOINT
             funcs.specptr = f;
         }
 
+        // A name that a part of the store calls: an alias of the function of the
+        // call, which the link of the part resolves.
+        auto alias = out.part_aliases.find({call_ci, (jl_invoke_api_t)api});
+        if (alias != out.part_aliases.end()) {
+            auto GA = GlobalAlias::create(GlobalValue::ExternalLinkage, alias->second, cast<GlobalValue>(funcs.specptr));
+            GA->setVisibility(GlobalValue::HiddenVisibility);
+        }
         target.decl->replaceAllUsesWith(funcs.specptr);
         target.decl->eraseFromParent();
     }
@@ -1023,6 +1129,17 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
                        [&ci_infos](jl_code_instance_t *ci) { return ci_infos.lookup(ci); });
     emit_llvmcall_modules(out);
     // finally, make sure all referenced methods get fixed up, particularly if the user declined to compile them
+    // The names that the parts of the store call and that this image defines.
+    if (out.code_parts) {
+        jl_array_t *aliases = (jl_array_t *)jl_svecref(out.code_parts, 2);
+        for (size_t k = 0; k < jl_array_nrows(aliases); k++) {
+            jl_svec_t *alias = (jl_svec_t *)jl_array_ptr_ref(aliases, k);
+            jl_code_instance_t *ci = (jl_code_instance_t *)jl_svecref(alias, 0);
+            auto api = (jl_invoke_api_t)jl_unbox_int32(jl_svecref(alias, 1));
+            out.get_call_target(ci, api == JL_INVOKE_SPECSIG, false);
+            out.part_aliases[{ci, api}] = jl_string_data(jl_svecref(alias, 2));
+        }
+    }
     aot_link_output(out);
     // including generating cfunction thunks
     generate_cfunc_thunks(out);
@@ -1042,13 +1159,38 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
         data->jl_value_to_llvm.push_back(val);
         data->jl_sysimg_gvars.push_back(gv);
     }
+    // The slots of the parts of the store: the objects of the parts define
+    // them, and the loader fills them with the values as all other slots.
+    Module &M = out.get_module();
+    data->part_gvars_begin = data->part_gvars_end = data->jl_sysimg_gvars.size();
+    if (out.code_parts) {
+        jl_array_t *objects = (jl_array_t *)jl_svecref(out.code_parts, 1);
+        Type *T_ptr = PointerType::getUnqual(M.getContext());
+        for (size_t k = 0; k < jl_array_nrows(objects); k++) {
+            jl_svec_t *object = (jl_svec_t *)jl_array_ptr_ref(objects, k);
+            jl_array_t *bytes = (jl_array_t *)jl_svecref(object, 0);
+            std::string prefix = jl_string_data(jl_svecref(object, 1));
+            jl_array_t *slots = (jl_array_t *)jl_svecref(object, 2);
+            for (size_t i = 0; i < jl_array_nrows(slots); i++) {
+                auto gv = new GlobalVariable(M, T_ptr, false, GlobalValue::ExternalLinkage, nullptr,
+                                             prefix + "#slot#" + std::to_string(i));
+                data->jl_value_to_llvm.push_back(jl_array_ptr_ref(slots, i));
+                data->jl_sysimg_gvars.push_back(gv);
+            }
+            data->part_objects.emplace_back(prefix + ".o",
+                                            std::string(jl_array_data(bytes, char), jl_array_nrows(bytes)));
+        }
+        data->part_gvars_end = data->jl_sysimg_gvars.size();
+    }
     for (auto &[ci, gv] : out.external_fns) {
         data->jl_sysimg_gvars.push_back(gv);
         data->jl_external_to_llvm.push_back(ci);
     }
 
-    for (auto v : data->jl_sysimg_gvars) {
-        auto gv = (GlobalVariable *)v;
+    for (size_t i = 0; i < data->jl_sysimg_gvars.size(); i++) {
+        if (data->part_gvars_begin <= i && i < data->part_gvars_end)
+            continue;
+        auto gv = (GlobalVariable *)data->jl_sysimg_gvars[i];
         gv->setInitializer(Constant::getNullValue(gv->getValueType()));
         gv->setLinkage(GlobalValue::InternalLinkage);
         gv->setDSOLocal(true);
@@ -1076,11 +1218,33 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
         }
         data->jl_fvar_map[ci] = {invoke_id, specptr_id};
     }
+    // The functions of the parts of the store: the objects of the parts define
+    // them, and each code instance gets their indexes as a compiled one does.
+    data->part_fvars_begin = data->part_fvars_end = data->jl_sysimg_fvars.size();
+    if (out.code_parts) {
+        jl_array_t *functions = (jl_array_t *)jl_svecref(out.code_parts, 0);
+        FunctionType *FT = FunctionType::get(Type::getVoidTy(M.getContext()), false);
+        auto declare = [&](const char *name) -> GlobalValue * {
+            return cast<GlobalValue>(M.getOrInsertFunction(name, FT).getCallee());
+        };
+        for (size_t k = 0; k < jl_array_nrows(functions); k++) {
+            jl_svec_t *entry = (jl_svec_t *)jl_array_ptr_ref(functions, k);
+            jl_code_instance_t *ci = (jl_code_instance_t *)jl_svecref(entry, 0);
+            auto api = (jl_invoke_api_t)jl_unbox_int32(jl_svecref(entry, 1));
+            uint32_t invoke_id, specptr_id;
+            if (api == JL_INVOKE_SPECSIG) {
+                data->jl_sysimg_fvars.push_back(declare(jl_string_data(jl_svecref(entry, 2))));
+                invoke_id = data->jl_sysimg_fvars.size();
+            } else {
+                invoke_id = -api;
+            }
+            data->jl_sysimg_fvars.push_back(declare(jl_string_data(jl_svecref(entry, 3))));
+            specptr_id = data->jl_sysimg_fvars.size();
+            data->jl_fvar_map[ci] = {invoke_id, specptr_id};
+        }
+        data->part_fvars_end = data->jl_sysimg_fvars.size();
+    }
 }
-
-static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod,
-                                          const jl_cgparams_t *cgparams, int external_linkage,
-                                          const DenseMap<jl_code_instance_t *, std::string> *part_names) JL_CANSAFEPOINT;
 
 // also be used by extern consumers like GPUCompiler.jl to obtain a module containing
 // all reachable & inferrrable functions.
@@ -1092,7 +1256,8 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcTh
 
 static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod,
                                           const jl_cgparams_t *cgparams, int external_linkage,
-                                          const DenseMap<jl_code_instance_t *, std::string> *part_names)
+                                          const DenseMap<jl_code_instance_t *, std::string> *part_names,
+                                          jl_value_t *code_parts)
 {
     JL_TIMING(NATIVE_AOT, NATIVE_Create);
     ++CreateNativeCalls;
@@ -1115,6 +1280,7 @@ static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t
     data->TSM_ref->withModuleDo([&](Module &M) JL_CANSAFEPOINT {
         data->out = std::make_unique<jl_codegen_output_t>(M);
         data->out->part_names = part_names;
+        data->out->code_parts = code_parts;
         jl_emit_native_to_output(data, codeinfos, ci_order, cgparams, external_linkage);
     });
 
@@ -1152,12 +1318,65 @@ static void injectCRTAlias(Module &M, StringRef name, StringRef alias, FunctionT
     builder.CreateRet(val);
 }
 
+// The tables of the shard of the parts of a store (`jl_set_code_parts`), with
+// the suffix of the shard `index`: the objects of the parts define the
+// functions and the slots, and the link of the image resolves the names. The
+// parts have one target, so the clone tables are empty.
+static void emit_parts_shard(Module &M, Type *T_size, unsigned index,
+                             ArrayRef<std::pair<std::string, uint32_t>> fvars,
+                             ArrayRef<std::pair<std::string, uint32_t>> gvars)
+{
+    auto &Context = M.getContext();
+    auto suffix = "_" + std::to_string(index);
+    Type *T_ptr = PointerType::getUnqual(Context);
+    Type *T_int32 = Type::getInt32Ty(Context);
+    auto hide = [](GlobalVariable *gv) {
+        gv->setVisibility(GlobalValue::HiddenVisibility);
+        gv->setDSOLocal(true);
+    };
+    FunctionType *FT = FunctionType::get(Type::getVoidTy(Context), false);
+    SmallVector<Constant *, 0> fptrs;
+    SmallVector<uint32_t, 0> fidxs;
+    for (auto &[name, idx] : fvars) {
+        fptrs.push_back(cast<Constant>(M.getOrInsertFunction(name, FT).getCallee()));
+        fidxs.push_back(idx);
+    }
+    hide(new GlobalVariable(M, T_size, true, GlobalValue::ExternalLinkage,
+                            ConstantInt::get(T_size, fptrs.size()), "jl_fvar_count" + suffix));
+    auto fptrs_type = ArrayType::get(T_ptr, fptrs.size());
+    hide(new GlobalVariable(M, fptrs_type, false, GlobalValue::ExternalLinkage,
+                            ConstantArray::get(fptrs_type, fptrs), "jl_fvar_ptrs" + suffix));
+    hide(new GlobalVariable(M, ArrayType::get(T_int32, fidxs.size()), true, GlobalValue::ExternalLinkage,
+                            ConstantDataArray::get(Context, fidxs), "jl_fvar_idxs" + suffix));
+    SmallVector<Constant *, 0> slots;
+    SmallVector<uint32_t, 0> gidxs;
+    for (auto &[name, idx] : gvars) {
+        slots.push_back(cast<Constant>(M.getOrInsertGlobal(name, T_ptr)));
+        gidxs.push_back(idx);
+    }
+    emit_offset_table(M, T_size, slots, "jl_gvar", suffix);
+    hide(new GlobalVariable(M, ArrayType::get(T_int32, gidxs.size()), true, GlobalValue::ExternalLinkage,
+                            ConstantDataArray::get(Context, gidxs), "jl_gvar_idxs" + suffix));
+    SmallVector<uint32_t, 1> no_slots{0};
+    hide(new GlobalVariable(M, ArrayType::get(T_int32, 1), true, GlobalValue::ExternalLinkage,
+                            ConstantDataArray::get(Context, no_slots), "jl_clone_slots" + suffix));
+    SmallVector<uint32_t, 1> no_clones{jl_sysimg_tag_mask};
+    hide(new GlobalVariable(M, ArrayType::get(T_int32, 1), true, GlobalValue::ExternalLinkage,
+                            ConstantDataArray::get(Context, no_clones), "jl_clone_idxs" + suffix));
+    auto no_ptrs = ArrayType::get(T_ptr, 0);
+    hide(new GlobalVariable(M, no_ptrs, true, GlobalValue::ExternalLinkage,
+                            ConstantArray::get(no_ptrs, {}), "jl_clone_ptrs" + suffix));
+}
+
 // See src/processor.h for documentation about this table. Corresponds to jl_image_shard_t.
 static GlobalVariable *emit_shard_table(Module &M, Type *T_size, Type *T_psize, unsigned threads) {
     SmallVector<Constant *, 0> tables(sizeof(jl_image_shard_t) / sizeof(void *) * threads);
     for (unsigned i = 0; i < threads; i++) {
         auto suffix = "_" + std::to_string(i);
-        auto create_gv = [&](StringRef name, bool constant) {
+        auto create_gv = [&](StringRef name, bool constant) -> GlobalVariable * {
+            // The shard of the parts of a store has its tables in this module.
+            if (auto gv = M.getNamedGlobal((name + suffix).str()))
+                return gv;
             auto gv = new GlobalVariable(M, T_size, constant,
                                          GlobalValue::ExternalLinkage, nullptr, name + suffix);
             gv->setVisibility(GlobalValue::HiddenVisibility);
@@ -1236,18 +1455,23 @@ static void get_fvars_gvars(Module &M, DenseMap<GlobalValue *, unsigned> &fvars,
     assert(gvars_idxs);
     auto fvars_init = fvars_gv->getInitializer();
     auto gvars_init = gvars_gv->getInitializer();
+    // The index of an entry in the whole image: the slots and the functions of
+    // the parts of a store are in a shard of their own, so the indexes can
+    // have gaps.
+    auto fidxs = cast<ConstantDataArray>(fvars_idxs->getInitializer());
+    auto gidxs = cast<ConstantDataArray>(gvars_idxs->getInitializer());
     for (unsigned i = 0; i < fvars_init->getNumOperands(); ++i) {
         auto gv = cast<GlobalValue>(fvars_init->getOperand(i)->stripPointerCasts());
         assert(gv && gv->hasName() && "fvar must be a named global");
         assert(!fvars.count(gv) && "Duplicate fvar");
-        fvars[gv] = i;
+        fvars[gv] = fidxs->getElementAsInteger(i);
     }
     assert(fvars.size() == fvars_init->getNumOperands());
     for (unsigned i = 0; i < gvars_init->getNumOperands(); ++i) {
         auto gv = cast<GlobalValue>(gvars_init->getOperand(i)->stripPointerCasts());
         assert(gv && gv->hasName() && "gvar must be a named global");
         assert(!gvars.count(gv) && "Duplicate gvar");
-        gvars[gv] = i;
+        gvars[gv] = gidxs->getElementAsInteger(i);
     }
     assert(gvars.size() == gvars_init->getNumOperands());
     fvars_gv->eraseFromParent();
@@ -1344,8 +1568,13 @@ struct Partition {
 static inline bool verify_partitioning(const SmallVectorImpl<Partition> &partitions, const Module &M, DenseMap<GlobalValue *, unsigned> &fvars, DenseMap<GlobalValue *, unsigned> &gvars) {
     bool bad = false;
 #ifndef JL_NDEBUG
-    size_t fvars_size = fvars.size();
-    size_t gvars_size = gvars.size();
+    // The indexes can have gaps, where the shard of the parts of a store is.
+    size_t fvars_size = 0;
+    size_t gvars_size = 0;
+    for (auto &var : fvars)
+        fvars_size = std::max<size_t>(fvars_size, var.second + 1);
+    for (auto &var : gvars)
+        gvars_size = std::max<size_t>(gvars_size, var.second + 1);
     SmallVector<uint32_t, 0> fvars_partition(fvars_size);
     SmallVector<uint32_t, 0> gvars_partition(gvars_size);
     StringMap<uint32_t> GVNames;
@@ -1401,17 +1630,16 @@ static inline bool verify_partitioning(const SmallVectorImpl<Partition> &partiti
             }
         }
     }
-    for (uint32_t i = 0; i < fvars_size; i++) {
-        if (fvars_partition[i] == 0) {
-            auto gv = llvm::find_if(fvars, [i](auto var) { return var.second == i; });
+    for (auto &var : fvars) {
+        if (fvars_partition[var.second] == 0) {
             bad = true;
-            dbgs() << "fvar " << gv->first->getName() << " at " << i << " not in any partition\n";
+            dbgs() << "fvar " << var.first->getName() << " at " << var.second << " not in any partition\n";
         }
     }
-    for (uint32_t i = 0; i < gvars_size; i++) {
-        if (gvars_partition[i] == 0) {
+    for (auto &var : gvars) {
+        if (gvars_partition[var.second] == 0) {
             bad = true;
-            dbgs() << "gvar " << i << " not in any partition\n";
+            dbgs() << "gvar " << var.second << " not in any partition\n";
         }
     }
 #endif
@@ -2297,6 +2525,15 @@ static void jl_dump_native_locked(jl_native_code_desc_t *data, const char *bc_fn
     // `data` is deleted when the text outputs finish compiling, well before
     // the metadata module is built, so take what the coverage table needs now.
     auto coverage_entries = std::move(data->jl_coverage_entries);
+    // The same for the parts of a store: their objects, and the names and the
+    // indexes of their functions and slots, for the shard of the parts.
+    auto part_objects = std::move(data->part_objects);
+    std::vector<std::pair<std::string, uint32_t>> part_fvars, part_gvars;
+    for (size_t i = data->part_fvars_begin; i < data->part_fvars_end; i++)
+        part_fvars.emplace_back(data->jl_sysimg_fvars[i]->getName().str(), i);
+    for (size_t i = data->part_gvars_begin; i < data->part_gvars_end; i++)
+        part_gvars.emplace_back(data->jl_sysimg_gvars[i]->getName().str(), i);
+    bool has_parts = !part_objects.empty() || !part_fvars.empty();
 
     // We don't want to use MCJIT's target machine because
     // it uses the large code model and we may potentially
@@ -2469,20 +2706,32 @@ static void jl_dump_native_locked(jl_native_code_desc_t *data, const char *bc_fn
             LLVM_DEBUG(dbgs() << "Using " << shards << " shards and up to " << workers << " threads to emit aot image\n");
             nfvars = data->jl_sysimg_fvars.size();
             ngvars = data->jl_sysimg_gvars.size();
-            emit_table(dataM, data->jl_sysimg_gvars, "jl_gvars", T_psize);
-            emit_table(dataM, data->jl_sysimg_fvars, "jl_fvars", T_psize);
-            SmallVector<uint32_t, 0> idxs;
-            idxs.resize(data->jl_sysimg_gvars.size());
-            std::iota(idxs.begin(), idxs.end(), 0);
+            // The shards that this image compiles take all slots and functions
+            // but those of the parts of a store, which have a shard of their own.
+            SmallVector<GlobalValue *, 0> text_gvars, text_fvars;
+            SmallVector<uint32_t, 0> text_gidxs, text_fidxs;
+            for (size_t i = 0; i < data->jl_sysimg_gvars.size(); i++) {
+                if (i < data->part_gvars_begin || i >= data->part_gvars_end) {
+                    text_gvars.push_back(data->jl_sysimg_gvars[i]);
+                    text_gidxs.push_back(i);
+                }
+            }
+            for (size_t i = 0; i < data->jl_sysimg_fvars.size(); i++) {
+                if (i < data->part_fvars_begin || i >= data->part_fvars_end) {
+                    text_fvars.push_back(data->jl_sysimg_fvars[i]);
+                    text_fidxs.push_back(i);
+                }
+            }
+            emit_table(dataM, text_gvars, "jl_gvars", T_psize);
+            emit_table(dataM, text_fvars, "jl_fvars", T_psize);
+            SmallVector<uint32_t, 0> idxs = text_gidxs;
             auto gidxs = ConstantDataArray::get(Context, idxs);
             auto gidxs_var = new GlobalVariable(dataM, gidxs->getType(), true,
                                                 GlobalVariable::ExternalLinkage,
                                                 gidxs, "jl_gvar_idxs");
             gidxs_var->setVisibility(GlobalValue::HiddenVisibility);
             gidxs_var->setDSOLocal(true);
-            idxs.clear();
-            idxs.resize(data->jl_sysimg_fvars.size());
-            std::iota(idxs.begin(), idxs.end(), 0);
+            idxs = text_fidxs;
             auto fidxs = ConstantDataArray::get(Context, idxs);
             auto fidxs_var = new GlobalVariable(dataM, fidxs->getType(), true,
                                                 GlobalVariable::ExternalLinkage,
@@ -2561,9 +2810,12 @@ static void jl_dump_native_locked(jl_native_code_desc_t *data, const char *bc_fn
             auto target_ids = new GlobalVariable(metadataM, value->getType(), true,
                                         GlobalVariable::InternalLinkage,
                                         value, "jl_dispatch_target_ids");
-            auto shard_table = emit_shard_table(metadataM, T_size, T_psize, shards);
+            if (has_parts)
+                emit_parts_shard(metadataM, T_size, shards, part_fvars, part_gvars);
+            unsigned all_shards = shards + (has_parts ? 1 : 0);
+            auto shard_table = emit_shard_table(metadataM, T_size, T_psize, all_shards);
             auto ptls = emit_ptls_table(metadataM, T_size, T_ptr);
-            auto header = emit_image_header(metadataM, shards, nfvars, ngvars);
+            auto header = emit_image_header(metadataM, all_shards, nfvars, ngvars);
             auto AT = ArrayType::get(T_size, sizeof(jl_small_typeof) / sizeof(void*));
             auto jl_small_typeof_copy = new GlobalVariable(metadataM, AT, false,
                                                         GlobalVariable::ExternalLinkage,
@@ -2658,6 +2910,12 @@ static void jl_dump_native_locked(jl_native_code_desc_t *data, const char *bc_fn
         buffers.push_back(StringRef(metadata_outputs[0].field.data(), metadata_outputs[0].field.size())); \
         filenames.push_back("sysimg" prefix suffix); \
         buffers.push_back(StringRef(sysimg_outputs[0].field.data(), sysimg_outputs[0].field.size())); \
+        if (StringRef(suffix) == ".o") { \
+            for (auto &part : part_objects) { \
+                filenames.push_back(part.first); \
+                buffers.push_back(StringRef(part.second)); \
+            } \
+        } \
         for (size_t i = 0; i < filenames.size(); i++) { \
             archive.push_back(NewArchiveMember(MemoryBufferRef(buffers[i], filenames[i]))); \
         } \
@@ -2753,7 +3011,7 @@ jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos, jl_value_t *parts)
             auto gv = cast<GlobalVariable>(data->jl_sysimg_gvars[i]);
             gv->setName(prefix + "#slot#" + Twine(i));
             gv->setLinkage(GlobalValue::ExternalLinkage);
-            gv->setVisibility(GlobalValue::DefaultVisibility);
+            gv->setVisibility(named ? GlobalValue::ProtectedVisibility : GlobalValue::DefaultVisibility);
             keep.insert(gv);
         }
         // The state of the thread comes from the slots of the runtime, which it
@@ -2779,7 +3037,9 @@ jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos, jl_value_t *parts)
                 if (part != part_names.end())
                     f->setName(f == specptr ? part->second : part->second + ".jfptr");
                 f->setLinkage(GlobalValue::ExternalLinkage);
-                f->setVisibility(GlobalValue::DefaultVisibility);
+                // Protected: the JIT finds the symbol, and a link into an image
+                // binds each call to it directly, with no PLT.
+                f->setVisibility(named ? GlobalValue::ProtectedVisibility : GlobalValue::DefaultVisibility);
                 keep.insert(f);
             }
             funcs.emplace_back(ci, api, invoke ? invoke->getName().str() : "", specptr ? specptr->getName().str() : "");

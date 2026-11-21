@@ -460,6 +460,11 @@ public:
     // outputs: the calls to the functions of other parts, as
     // (code instance, calling convention, name).
     std::vector<std::tuple<jl_code_instance_t *, jl_invoke_api_t, std::string>> part_calls;
+    // The parts of a store that an image takes (`jl_set_code_parts`), and the
+    // names that the parts call and that the image defines: each such call
+    // target gets an alias of its name.
+    jl_value_t *code_parts = nullptr;
+    std::map<std::pair<jl_code_instance_t *, jl_invoke_api_t>, std::string> part_aliases;
 
     jl_codegen_output_t(Module &M) JL_NOTSAFEPOINT
       : M(M), DL(M.getDataLayout()), TargetTriple(M.getTargetTriple())
