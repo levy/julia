@@ -462,11 +462,14 @@ Facts found:
       product, and it does not bring the writing of binaries and package files
       closer. The install in a new process stays as the proof that the keys
       and the records give correct code in another process.
-- [ ] One stored object for each part, not one object for all: the parts call
+- [x] One stored object for each part, not one object for all: the parts call
       each other by symbols that a link resolves, as the parts of a stock image
       do, so that an edit compiles again only the parts that it changed. One
       object for each root repeats the shared code and takes 4 times the
-      emission (30.8 s against 7.2 s on the kernel list).
+      emission (30.8 s against 7.2 s on the kernel list). The owner decided
+      (2026-11-21): a part is one function, one code instance. Done: Julia
+      `ca20d6a9c0`, `5e30f7d3ea`, `7b54c22304`, `a6a7b7737e` on
+      `pr-compile-apart`; CompilerServer.jl `80d8735`.
 - [ ] Measure a trial and a write in separate processes (D7).
 
 Gate: the tests pass, the CompilerServer.jl check passes, and the owner approves
@@ -568,7 +571,32 @@ Facts of part 2 (CompilerServer.jl `92251f7`):
   would remove it.
 - Not covered yet: overlay method tables and opaque closures.
 
-Facts for the objects of each part:
+Facts of the objects of each part (Julia `pr-compile-apart` to `a6a7b7737e`,
+CompilerServer.jl `80d8735`):
+
+- One object for each function of the kernel list, with all 1,493 functions:
+  16.0 s of emission and 11.9 MB, against 7.2 s and 2.5 MB for one object. A
+  call of `jl_emit_object` has a fixed cost of 2.6 ms and a smallest object of
+  4.4 KB. The link of 1,493 objects takes 0.1 s.
+- The list of inference can hold two code instances of one method instance;
+  one part serves both.
+- A function of the system image needs no part: 743 of the 1,234 functions of
+  the kernel list. With them out, the compile emits 491 parts in 3.5 s, 3.0 MB,
+  which is less than one object for all (7.2 s). The install links 486 parts
+  in 0.37 s, 162 calls link to code of the system image, and the precompile
+  loop after it takes 0.2 s, against 1.22 s.
+- `jl_invoke_api` answers -1 for code with a specialized signature: it knows
+  only the trampolines of the runtime. The flags of the code instance tell the
+  specialized signature (0b01) and complete code (0b10).
+- In one object for all, a caller could pass its checks and call the old code
+  of a callee whose record failed, by a direct call inside the object (a
+  constant that a callee two calls deep reads). In parts such a call is a
+  symbol with no definition, and the install keeps the caller out. The test
+  package has that case.
+- The build of the system image needs more than 6 GB with the default count of
+  image threads; with `JULIA_IMAGE_THREADS=4` it peaks at 5.2 GB.
+
+Facts for the objects of each part, found before the work:
 
 - On master, a call to a function outside the object is direct when the
   callee is in the same object, goes through a table that the loader fills
