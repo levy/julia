@@ -1824,6 +1824,8 @@ extern uintptr_t jl_sysimage_start;
 extern uintptr_t jl_sysimage_size;
 // The linkage blob (image) owning `v`, or -1 for an object of no image.
 JL_DLLEXPORT size_t jl_external_blob_index(jl_value_t *v) JL_NOTSAFEPOINT;
+JL_DLLEXPORT jl_value_t *jl_object_image_offset(jl_value_t *v);
+JL_DLLEXPORT jl_value_t *jl_image_object_at(jl_value_t *v, size_t offset);
 // The world in which `blob` activated its methods if it is `image`, the sysimage, or a dependency of `image`, else 0.
 JL_DLLEXPORT size_t jl_linkage_blob_dep_world(size_t image, size_t blob) JL_NOTSAFEPOINT;
 // The world since which every method on the typenames of `sig` in `mt` came from `image` or one of its dependencies, else 0.

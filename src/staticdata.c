@@ -265,6 +265,36 @@ JL_DLLEXPORT size_t jl_external_blob_index(jl_value_t *v) JL_NOTSAFEPOINT
     return external_blob_index(v);
 }
 
+// For a reader of images at the level of objects: the index of the image that
+// holds `v`, and the word offset of `v` in the heap of that image, as a
+// reference of another image names it (`add_external_linkage`); `nothing` when
+// no image holds `v`.
+JL_DLLEXPORT jl_value_t *jl_object_image_offset(jl_value_t *v)
+{
+    image_metadata_t *meta = external_blob_metadata(v);
+    if (meta == NULL)
+        return jl_nothing;
+    size_t offset = ((uintptr_t)v - meta->base) / sizeof(void*); // the unit of `SYS_EXTERNAL_LINK_UNIT`
+    jl_value_t *index = NULL, *word = NULL;
+    JL_GC_PUSH2(&index, &word);
+    index = jl_box_ulong(meta->idx);
+    word = jl_box_ulong(offset);
+    jl_value_t *result = (jl_value_t *)jl_svec2(index, word);
+    JL_GC_POP();
+    return result;
+}
+
+// The object at the word offset `offset` of the heap of the image that holds
+// `v`, as a reference of another image names it; `nothing` when no image holds
+// `v`. The offset must be one that a reference names.
+JL_DLLEXPORT jl_value_t *jl_image_object_at(jl_value_t *v, size_t offset)
+{
+    image_metadata_t *meta = external_blob_metadata(v);
+    if (meta == NULL)
+        return jl_nothing;
+    return (jl_value_t *)(meta->base + offset * sizeof(void*));
+}
+
 // bitvector over blobs 0..idx: the sysimage, `depmods`, and itself.
 // `depmods` already lists every module the precompile worker had loaded.
 static uint32_t *image_deps_new(size_t idx, jl_array_t *depmods) JL_NOTSAFEPOINT
