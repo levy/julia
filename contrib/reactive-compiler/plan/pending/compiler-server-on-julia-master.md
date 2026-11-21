@@ -702,9 +702,11 @@ Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
 
 ### Step 11: D, the design and its first part
 
-- [ ] Write the design of D as a document in CompilerServer.jl: the keys of
+- [x] Write the design of D as a document in CompilerServer.jl: the keys of
       definitions, the parts of a top-level expression, the effects on other
       modules, the names from content, the worlds of a link.
+      (`docs/linked-products.md`, CompilerServer.jl `07f776f`; three open
+      questions, with proposals.)
 - [ ] On `pr-linked-products`, part 1: a reader and a writer of Julia's formats
       at the level of objects.
 - [ ] A prototype of the link on two packages, A and B: edit A, link new files
@@ -713,6 +715,25 @@ Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
+
+Facts of the design of D (CompilerServer.jl `07f776f`):
+
+- A package file names an object of another image by the index of that image
+  in its list of required modules and the word offset of the object in the
+  heap of that image (`add_external_linkage`, `src/staticdata.c:1314`). So a
+  change of A moves the offsets that B names, and the loader also checks the
+  build id of A in the header of B.
+- The heap of a split package file is in the `.ji` file; the `.so` file holds
+  the native code and the checksum of the heap.
+- The writer replaces worlds, code pointers and timings with fixed values, and
+  the loader sets them: no byte of a file depends on worlds.
+- Two stock writes of WriteApp differ in 2,110 of 47,258 bytes of the `.ji`
+  file and in 43 of 20,008 bytes of the `.so` file. The random low half of the
+  build id (`module.c:609`) appears 68 times: in the header, in the dump of the
+  module, and as the key of the roots in each compressed method source.
+- Proposed first prototype: the cascade by a link of references. A link of B
+  maps each reference into the old A to a key, by a table that the write of A
+  left, and the key to the offset in the new A.
 
 ## Part 5: the end
 
