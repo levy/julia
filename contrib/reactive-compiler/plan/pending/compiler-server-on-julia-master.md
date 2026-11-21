@@ -367,22 +367,42 @@ Facts found:
 
 ### Step 6: the evidence branch and issue 0
 
-- [ ] Make the branch `compiler-server-evidence` at master. Put on it the
+- [x] Make the branch `compiler-server-evidence` at master. Put on it the
       measurements that the texts quote: the cascade on 1.13 (99 cache files,
       about 280 s), the rebuild of the fork (21 s against 117 s), and the cases
       of Step 5.
-- [ ] Write issue 0 from the draft in the note, in one screen.
+- [x] Write issue 0 from the draft in the note, in one screen.
 
 Gate: the owner approves the text. A send is a separate word of the owner.
+Waits for the owner.
+
+Facts found:
+
+- The branch `compiler-server-evidence` is at master `2aa7c9fd5b`, in the
+  worktree `workspace/julia-compiler-server-evidence`, with
+  `contrib/compiler-server/README.md` and `measurements.md` (commit
+  `007cef27ca`). It is not pushed.
+- The texts of all the issues are in `doc/compiler-server-issues.md` of this
+  folder (commit `0304f23268`).
 
 ### Step 7: the issues about the module identity, B, C and D
 
-- [ ] Module identity: start from the text of step S5 in
+- [x] Module identity: start from the text of step S5 in
       `maturity-and-determinism.md` of the branch `determinism-experiment`, and
       measure again on master. It is a second issue of A, beside #63149.
-- [ ] B, C and D: one screen each.
+- [x] B, C and D: one screen each.
 
-Gate: the owner approves the four texts.
+Gate: the owner approves the four texts. Waits for the owner.
+
+Facts found:
+
+- The issue about the module identity is not needed. #65077 (maleadt, merged
+  2026-11-20) seeds the hash of a type name from `module->hash`, which master
+  derives from the name and the parent of the module, and no longer from the
+  random `build_id.lo`. Its text says that four builds of the system image give
+  identical hashes for 76,159 types. The `build_id.lo` of a module still comes
+  from the clock (`src/module.c`), but no type hash reads it now.
+- So three texts wait: B, C and D, beside issue 0.
 
 ## Part 4: the pull requests
 
