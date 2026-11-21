@@ -813,10 +813,19 @@ on our branch, with their cost measured first. The steps (on
       - The write takes 5.92 to 5.99 s with the option, and 5.94 to 6.14 s
         without it: the cost of the option is inside the noise.
 
-Next, proposed and waiting for the owner: the writer, in a process with the
-option, writes zeros in each byte that no field holds and in a new object
-before its fields are set; and the build id of each submodule gets the same
-choice from content as the top module.
+The owner, 2026-11-21: "Yes" to the two causes that are left. The steps:
+
+- [ ] In a process with the option, a new object starts with zero bytes (the
+      allocations of the GC: small, big, and the buffers of memory), and the
+      writer writes zeros in each byte of an object that no field holds (the
+      padding, by the layout of the type, also inside an inline field and in each
+      element of a memory).
+- [ ] The build id of each submodule gets the same choice from content as the
+      top module: `link_build_id!` gives each module of the file a low half from
+      the low half of the top module and the hash of the module.
+- [ ] Gate: two whole builds of ProjecturedKernel with the option are equal in
+      each byte, after one build id; the cascade gate gives 0 bytes; the tests
+      pass; the cost of the write with and without the option.
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
