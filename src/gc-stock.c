@@ -640,6 +640,10 @@ STATIC_INLINE jl_value_t *jl_gc_big_alloc_inner(jl_ptls_t ptls, size_t sz) JL_CA
     memset(v, 0xee, allocsz);
 #endif
     v->sz = allocsz;
+    // A process with deterministic object ids writes no byte that it did not
+    // set: a new object starts with zero bytes.
+    if (__unlikely(jl_options.deterministic_object_ids) && jl_generating_output())
+        memset(jl_valueof(&v->header), 0, allocsz - offs - sizeof(jl_taggedvalue_t));
 #ifndef NDEBUG
     v->header = 0; // must be initialized (and not gc_bigval_sentinel_tag) or gc_big_object_link assertions will get confused
 #endif
@@ -1052,8 +1056,22 @@ static NOINLINE jl_taggedvalue_t *gc_adopt_page(jl_gc_pool_t *p) JL_NOTSAFEPOINT
 }
 
 // Size includes the tag and the tag is not cleared!!
+STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner_(jl_ptls_t ptls, int offset,
+                                           int osize) JL_CANSAFEPOINT;
+
+// A process with deterministic object ids writes no byte that it did not set: a
+// new object starts with zero bytes.
 STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner(jl_ptls_t ptls, int offset,
                                           int osize) JL_CANSAFEPOINT
+{
+    jl_value_t *v = jl_gc_small_alloc_inner_(ptls, offset, osize);
+    if (__unlikely(jl_options.deterministic_object_ids) && jl_generating_output())
+        memset(v, 0, osize - sizeof(jl_taggedvalue_t));
+    return v;
+}
+
+STATIC_INLINE jl_value_t *jl_gc_small_alloc_inner_(jl_ptls_t ptls, int offset,
+                                           int osize) JL_CANSAFEPOINT
 {
     // Use the pool offset instead of the pool address as the argument
     // to workaround a llvm bug.
@@ -4633,6 +4651,10 @@ JL_DLLEXPORT void *jl_gc_managed_malloc(size_t sz)
     SetLastError(last_error);
 #endif
     errno = last_errno;
+    // A process with deterministic object ids writes no byte that it did not
+    // set: a new buffer starts with zero bytes.
+    if (__unlikely(jl_options.deterministic_object_ids) && jl_generating_output())
+        memset(b, 0, allocsz);
     // jl_gc_managed_malloc is currently always used for allocating array buffers.
     maybe_record_alloc_to_profile((jl_value_t*)b, sz, (jl_datatype_t*)jl_buff_tag);
     return b;

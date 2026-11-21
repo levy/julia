@@ -407,6 +407,64 @@ static size_t content_dedup_max;
 
 // Strings and plain immutables are interchangeable with any egal copy. Types and
 // singletons are excluded, since the runtime relies on their identity.
+// A process with deterministic object ids writes no byte that no field holds:
+// write zeros in the bytes of the value of the type `t` at `p` that are inside an
+// inline field but held by no field of it, and in the bytes of an inline union
+// after its value. With `gaps`, also in the bytes between the fields of `t` and
+// after them.
+static void zero_unheld_bytes(char *p, jl_datatype_t *t, int gaps) JL_NOTSAFEPOINT
+{
+    size_t nf = jl_datatype_nfields(t);
+    size_t held = 0;
+    for (size_t i = 0; i < nf; i++) {
+        size_t off = jl_field_offset(t, i), fsz = jl_field_size(t, i);
+        if (gaps && off > held)
+            memset(p + held, 0, off - held);
+        if (!jl_field_isptr(t, i) && fsz > 0) {
+            jl_value_t *ft = jl_field_type_concrete(t, i);
+            if (jl_is_uniontype(ft)) {
+                jl_value_t *active = jl_nth_union_component(ft, ((uint8_t*)p)[off + fsz - 1]);
+                size_t asz = 0;
+                if (active != NULL && jl_is_datatype(active)) {
+                    asz = jl_datatype_size(active);
+                    zero_unheld_bytes(p + off, (jl_datatype_t*)active, 1);
+                }
+                if (asz < fsz - 1)
+                    memset(p + off + asz, 0, fsz - 1 - asz);
+            }
+            else if (jl_is_datatype(ft) && jl_datatype_nfields(ft) > 0) {
+                zero_unheld_bytes(p + off, (jl_datatype_t*)ft, 1);
+            }
+        }
+        if (off + fsz > held)
+            held = off + fsz;
+    }
+    if (gaps && jl_datatype_size(t) > held)
+        memset(p + held, 0, jl_datatype_size(t) - held);
+}
+
+// The same for each of the `len` elements of the memory type `t` at `p`, with the
+// selector bytes `tags` of an inline union.
+static void zero_unheld_element_bytes(char *p, jl_datatype_t *t, size_t len, const uint8_t *tags) JL_NOTSAFEPOINT
+{
+    jl_value_t *et = jl_tparam1(t);
+    size_t elsz = t->layout->size;
+    if (tags == NULL && (!jl_is_datatype(et) || jl_datatype_nfields(et) == 0))
+        return;
+    for (size_t i = 0; i < len; i++) {
+        jl_value_t *active = et;
+        if (tags != NULL)
+            active = jl_nth_union_component(et, tags[i]);
+        if (active == NULL || !jl_is_datatype(active))
+            continue;
+        size_t asz = jl_datatype_size(active);
+        if (jl_datatype_nfields(active) > 0)
+            zero_unheld_bytes(p + i * elsz, (jl_datatype_t*)active, 1);
+        if (tags != NULL && asz < elsz)
+            memset(p + i * elsz + asz, 0, elsz - asz);
+    }
+}
+
 static int dedup_by_content(jl_value_t *v, jl_datatype_t *t) JL_NOTSAFEPOINT
 {
     if (t == jl_string_type)
@@ -1786,6 +1844,9 @@ static void jl_write_values(jl_serializer_state *s) JL_CANSAFEPOINT JL_GC_DISABL
                         else {
                             ios_write(s->const_data, (char*)m->ptr, tot);
                         }
+                        if (jl_deterministic_object_ids())
+                            zero_unheld_element_bytes(&s->const_data->buf[data * sizeof(void*)], t, len,
+                                                      isbitsunion ? (const uint8_t*)jl_genericmemory_typetagdata(m) : NULL);
                     }
                     if (len == 0) { // TODO: should we have a zero-page, instead of writing each type's fragment separately?
                         write_padding(s->const_data, layout->size ? layout->size : isbitsunion);
@@ -1809,6 +1870,9 @@ static void jl_write_values(jl_serializer_state *s) JL_CANSAFEPOINT JL_GC_DISABL
                         // copy all of the data first
                         const char *data = (const char*)m->ptr;
                         ios_write(f, data, datasize);
+                        if (jl_deterministic_object_ids())
+                            zero_unheld_element_bytes(&f->buf[reloc_offset + headersize], t, len,
+                                                      isbitsunion ? (const uint8_t*)jl_genericmemory_typetagdata(m) : NULL);
                         // the rewrite all of the embedded pointers to null+relocation
                         uint16_t elsz = layout->size;
                         size_t j, np = layout->first_ptr < 0 ? 0 : layout->npointers;
@@ -1975,6 +2039,9 @@ static void jl_write_values(jl_serializer_state *s) JL_CANSAFEPOINT JL_GC_DISABL
 
             // Need do a tricky fieldtype walk an record all memoryref we find inlined in this value
             record_memoryrefs_inside(s, t, reloc_offset, data);
+            // The bytes between the fields are zeros already (`write_padding`).
+            if (jl_deterministic_object_ids())
+                zero_unheld_bytes(&f->buf[reloc_offset], t, 0);
 
             // A few objects need additional handling beyond the generic serialization above
             if (s->incremental && jl_typetagis(v, jl_typemap_entry_type)) {
