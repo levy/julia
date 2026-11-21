@@ -771,6 +771,9 @@ Facts of the first prototype (CompilerServer.jl `1f35304`, `pr-linked-products`
   LinkB on the new LinkA differ only in the 260 object ids and in the checksums
   and the note that follow. With the object ids of the stock write, the `.ji`
   and the `.so` files are equal in each byte.
+- A `Core.BindingPartition` of A has no key yet. A LinkB with an `IdDict`
+  constant keyed by a `Ref` constant of LinkA names one, and the link stops
+  with an error and writes no file.
 - Open: the object ids. No link can give the bytes of a whole build in them
   unless they come from content. And a hash table of B whose key is a mutable
   object of A goes wrong after a link of B, because the new A gives that object
