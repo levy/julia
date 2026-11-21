@@ -770,9 +770,24 @@ on our branch, with their cost measured first. The steps (on
       immutable object before the write (the content hash of `dedup_by_content`),
       so a path id needs a change in the queue of the writer. The kernel package
       shows whether a larger package needs them.)
-- [ ] The cost on ProjecturedKernel: the time and the peak memory of a write
+- [x] The cost on ProjecturedKernel: the time and the peak memory of a write
       with and without the option, the count of the object ids in the file, and
       what still differs between two whole builds with the option.
+      (CompilerServer.jl `0889d22`, gate `test/gates/ids_kernel.jl`, three
+      writes each: 6.01 to 6.05 s with the option, 5.84 to 5.95 s without it,
+      about 3 % more; the precompile process peaks at 619 to 620 MiB, and at 614
+      to 619 MiB without it. The file holds at least 72,087 object ids: that many
+      differ between two whole builds without the option, and 7,567 with it.
+      Other words differ in both: 163,317 and 189,155 words of the `.ji` file,
+      the records of the functions and of the slots, and the size of the `.so`
+      file. The first other difference is at byte 664 of the heap, so the order
+      of the objects differs. 134,872 of the other words are in the sections after
+      the objects, 32,251 are references, and 7,777 are type tags. The owner's PR
+      #63150, branch `pr-reproducible-image-code`, sorts the work list of a
+      build and the GC frame slots, which our branch does not have.)
+
+Next, proposed and waiting for the owner: bring the three commits of #63150
+onto `pr-linked-products` and measure the kernel again.
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
