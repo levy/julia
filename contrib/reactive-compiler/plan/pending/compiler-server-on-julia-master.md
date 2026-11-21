@@ -177,12 +177,12 @@ Facts found:
 
 ## Part 2: CompilerServer.jl on stock master
 
-### Step 3: the rebuild logic
+### Step 3: the rebuild logic  — done
 
-- [ ] Copy `SourceDiff.jl`, `child.jl`, `replay.jl`, `server.jl` and
+- [x] Copy `SourceDiff.jl`, `child.jl`, `replay.jl`, `server.jl` and
       `entrypoints.jl` from `stdlib/ReactiveCompiler` of `merged-next`. Do not
       copy `patch.jl`, because package patches are not in the new design.
-- [ ] Replace each runtime function that only the fork has:
+- [x] Replace each runtime function that only the fork has:
 
   | the fork | stock master |
   | --- | --- |
@@ -195,10 +195,69 @@ Facts found:
   | `jl_reactive_set_output`, `_set_trim`, the trim memo | removed: in this part, products come from whole builds |
   | the package patch functions, `Base.package_*` | removed |
 
-- [ ] Write down here each rule of the change catalog that stock master must
+- [x] Write down here each rule of the change catalog that stock master must
       refuse and the fork applies.
 
-Gate: the unit tests of the rebuild logic pass on the build of Step 1.
+Gate: the unit tests of the rebuild logic pass on the build of Step 1. Done:
+the 13 tests of CompilerServer.jl pass on `1.15.0-DEV.881` (commit `4844236`).
+
+Facts found:
+
+- The stock layer is `src/runtime.jl`. A marked evaluation (`rc_marked_eval`)
+  puts a mark (a world and a place) before the evaluation, and before each
+  form of the body of a module block. When the outermost marked evaluation
+  ends, one walk of the method table gives each new method that is not in an
+  image the place of the last mark before its world (`primary_world`), and
+  then passes it to the filter. A nested evaluation, such as an `include` in a
+  module body, only adds marks.
+- The filter of identical redefinitions runs after the evaluation, with the
+  world of before it. When it keeps the old method, it deletes the new one, so
+  the old one is active again. So an identical redefinition moves the world
+  three times where the fork moves it once, and it invalidates the callers;
+  the program is the same.
+- The loader is `src/loader.jl`: `Base.__toplevel__` takes the UUID and the
+  edition of the package (`Base.locate_package_load_spec`), and each file is
+  evaluated from its stored copy under its real path. An `include(path)` of a
+  module body or of a file becomes a marked include. An `include` with two
+  arguments (a `mapexpr`) is not marked and reads the disk. After the load, the
+  triggers of the extensions and the callbacks of the package run under
+  `Base.require_lock`, as Base does.
+- Master changed the layout of the tables of a level of the method table: slot
+  1 holds the index of the hash, and the values are on the odd slots from 3 on.
+- Master has `Base.set_binding_visibility!(mod, name, :none)`, which takes an
+  export back in a new world. So a removed export applies on master, and D6
+  refuses less than the plan said.
+- The docstring of `Base.delete_binding` on master says that its
+  implementation is not complete. The removal of a name uses it.
+- A check of the replay runs in a new process (`rc_in_process`). It loads the
+  program from the copies of the request, runs the same apply, takes the
+  answers of the server for the checks before it, writes its answer and exits.
+  The trial and the check of the expressions of before the edit of a small
+  package cost about 2 s together, nearly all of it the start of the two
+  processes.
+- The warm-up of the fork is also a self-test of the ledger, the trace and the
+  filter. It runs once in each process, through the marks.
+- No read of a file is recorded (D5). A file of `include_dependency` becomes
+  an input of the store in Step 4.
+- `patch.jl` and `entrypoints.jl` are not copied: the package patches are not
+  in the new design, and the entry points serve only the write of a trimmed
+  image, which comes with step C.
+- The roots of dead code stay (`rc_drop_dead_roots!` is not called), because
+  no image follows an apply.
+
+The rules of the change catalog that stock master refuses and the fork
+applies:
+
+- C3, a removed `using`: stock Julia takes no `using` back.
+- A removed name (a type, a constant, a global, an imported name) that a module
+  used by its module exports: the guard that `Base.delete_binding` leaves hides
+  that export.
+
+The rules that stock master does not see, where the fork does:
+
+- E1, a changed file that a top-level expression reads: no read is recorded.
+  A file of `include_dependency` stops the rebuild (Step 4); another file is
+  not seen, as for stock Julia itself.
 
 ### Step 4: the driver
 
