@@ -408,14 +408,29 @@ Facts found:
 
 ### Step 8: A, the names from content
 
-- [ ] Check #63150 against the master of Step 1 again, and answer its review.
+- [x] Check #63150 against the master of Step 1 again, and answer its review.
 - [ ] On `pr-reproducible-names`: give constants (`_j_const`) and strings
       (`_j_str`) names from their content in place of a counter. Add a test that
-      builds one image twice and compares the object files.
+      builds one image twice and compares the object files. Proposed: this part
+      moves into Step 10 (see the facts).
 - [ ] Write the text of the pull request.
 
 Gate: the test passes; the suites of Step 1 show no new failure; the owner
 approves the text.
+
+Facts found:
+
+- #63150 still merges with no conflict into master `2aa7c9fd5b`. It has no new
+  comment since 2026-09-15, so nothing waits for an answer.
+- The names of the constants and strings are private globals. In a stock
+  package image built by this master, `_j_const` and `_j_str_` are in no
+  string, no symbol and no section name, so the counter does not change the
+  bytes of a stock image. The fork measured them in the LLVM module and with
+  one section for each global. A pull request for the names alone would show
+  no effect on stock Julia. Proposed: the names from content move into part 1
+  of step C (Step 10), where each function and each global gets its own named
+  section and the names become part of the bytes. Then step A has no pull
+  request left in this plan, beyond #63150.
 
 ### Step 9: B, compile apart from load
 
