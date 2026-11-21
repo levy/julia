@@ -453,6 +453,21 @@ Gate: the tests pass, the CompilerServer.jl check passes, and the owner approves
 the text. The pull request opens only after issue 0 has a yes, or on the owner's
 word.
 
+Facts found before the work (the design is `docs/compile-apart.md` of
+CompilerServer.jl, commit `a5e7d3d`):
+
+- Master has more than this step assumed: inference with a cache owner of its
+  own (`typeinf_ext_toplevel`, as `--trim` uses it), `jl_emit_native` and the
+  tables of its output (`jl_get_llvm_gvs`, `jl_get_llvm_external_fns`), and a C
+  API of the JIT that adds an object file (`JLJITAddObjectFile` in
+  `src/llvm_api.cpp`, `JuliaOJIT::addObjectFile`).
+- The gaps are three: no entry point turns inferred code into an optimized
+  relocatable object (only the image writer does, with the data of an image);
+  nothing records what generated code read; nothing sets the `invoke` and
+  `specptr` of a code instance to linked code.
+- Master uses LLVM 23. LLVM.jl may not support it, so a prototype in the
+  package uses `ccall` into the C APIs.
+
 ### Step 10: C, the writers take code from parts
 
 - [ ] On `pr-code-from-parts`, built on B here, part 1: each function gets its
