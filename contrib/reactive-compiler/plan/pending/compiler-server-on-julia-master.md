@@ -845,6 +845,19 @@ The owner, 2026-11-21: "Yes" to the two causes that are left. The steps:
       it. The parts test of Julia (3 of 3) and the tests of CompilerServer.jl
       (45 of 45) pass.)
 
+Landing (the owner, 2026-11-21: "Land and push and create remote repository for
+compiler server under projectured GitHub user and ProjecturedRegistry"):
+
+- `compiler-server-master` moved forward to `pr-linked-products` (`08c3a570ea`,
+  18 commits on master `2aa7c9fd5b`); it and `pr-compile-apart`,
+  `pr-code-from-parts` and `pr-linked-products` are on `levy/julia`.
+- The repository `projectured/CompilerServer.jl` is public (in place of the
+  `levy/CompilerServer.jl` of D3, by the owner's word); `main` = `af59f5e`.
+- ProjecturedRegistry `42a565e` "New package: CompilerServer v0.1.0", tree
+  `78a87590`, pushed.
+- Not pushed: `merged-next`, which holds this plan and 183 commits of other
+  work; `compiler-server-evidence`, which waits for the owner (Steps 6 and 7).
+
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
 
