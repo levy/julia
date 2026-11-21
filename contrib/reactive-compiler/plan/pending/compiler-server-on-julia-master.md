@@ -442,13 +442,13 @@ Facts found:
       method instances at a world and generates their code with
       `jl_emit_native`, with no install in the process. (`jl_emit_object`,
       commit `e77ae1533c`.)
-- [ ] Part 2 (first of the three items in the order of the owner, 2026-11-21:
+- [x] Part 2 (first of the three items in the order of the owner, 2026-11-21:
       the record, the objects for each part, then Step 10): generated code reports its slots (the Julia object of each slot)
       and what it read (each callee and its calling convention, the type
-      layouts, the code generation parameters, the target). Done: the slots,
-      and each function with its calling convention. The edges of inference
-      serve as the record of what the code read; the type layouts, the
-      parameters and the target are not recorded yet.
+      layouts, the code generation parameters, the target). Done in
+      CompilerServer.jl `92251f7`: the slots, each function with its calling
+      convention, the edges of inference, the globals that the sources read,
+      the definitions of the types, and the settings of the build.
 - [x] Part 3: an install of inferred code and machine code in a running process.
       The JIT links the object and binds its slots, with no LLVM.
       (`jl_install_object`, commit `eeb2968d30`; the records of inference in
@@ -532,9 +532,52 @@ no machine code):
   same in two processes. The test package ApartApp checks this case.
 - A return type with a free type variable never reads back equal. The record
   widens such a type to `Any` when the code returns a box; that is sound.
-- Open: a struct defined again with the same name gives another type under
-  the same key, because a type key resolves by name. The record of the type
-  layouts (part 2) closes this.
+- A struct defined again with the same name gives another type under the
+  same key, because a type key resolves by name. The record of the type
+  definitions (part 2) closes this.
+
+Facts of part 2 (CompilerServer.jl `92251f7`):
+
+- The check of the loader assumes that a cache file and the package that loads
+  come from the same sources (the cache file holds the checksums of its source
+  files). A store has no such tie. So the record holds the settings of the
+  build (Julia version and commit, the build id of the system image, the CPU
+  and its features, the cache flags), the globals that each function reads,
+  and the definitions of the types that it names.
+- Inference folds a constant without an edge: `g(x) = min(x, L)` has an edge
+  to the binding `L`, but `h() = ORIGIN.x` has none. Julia handles such reads
+  per method, by a scan of the source. So the record holds the globals of the
+  source of the method of each function and of the methods of its edges.
+- The compressed source of a method refers to its roots by the build id of
+  its cache file (`TAG_RELOC_METHODROOT` in `src/ircode.c`), which has a random
+  part, and holds a string literal only as the index of a root. Its hash is
+  not an identity of the definition. The hash comes from the uncompressed
+  source; a method of Core or Base in the system image has the hash 0, which
+  the build id of the system image in the settings fixes.
+- The place of a method key holds the path of the file, so a package at
+  another path does not reuse the store.
+- The test package installs into a process whose package has, at the same
+  place, another value of a constant, another order of the fields of a
+  struct, another body of a generated function, or another string literal.
+  With the checks, each case gives the result of a fresh process. A probe with
+  the checks off installs the old code and gives a wrong result in each case.
+- Cost on the kernel list: 2,739 globals and 605 type definitions; 0.2 s more
+  in the compile and about 0.05 s more in the install. The first install in a
+  process also spends about 0.2 s in the JIT for the install code of
+  CompilerServer.jl itself; a workload in the cache file of CompilerServer.jl
+  would remove it.
+- Not covered yet: overlay method tables and opaque closures.
+
+Facts for the objects of each part:
+
+- On master, a call to a function outside the object is direct when the
+  callee is in the same object, goes through a table that the loader fills
+  (`emit_pkg_plt_thunk`) when the callee is in another cache file, and goes
+  through `jl_invoke` otherwise. Stock splits one image into parts that call
+  each other directly by symbols that the linker resolves. So the objects of
+  parts need a fourth form in `jl_emit_native`: a call to a function of
+  another part, by a symbol that our link resolves, which gives the direct
+  call of stock.
 
 ### Step 10: C, the writers take code from parts
 
