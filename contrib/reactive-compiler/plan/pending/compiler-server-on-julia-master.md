@@ -721,6 +721,38 @@ Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
       stock write except in the object ids, which wait for a decision of the
       owner.)
 
+The owner, 2026-11-21: a deterministic build is better, above all when an
+incremental build equals a rebuild. After the estimate that upstream is not
+likely to accept the change of `objectid` as it is: "Yes" to opt-in object ids
+on our branch, with their cost measured first. The steps (on
+`pr-linked-products`):
+
+- [ ] Deterministic object ids, opt-in. A Julia option makes a process that
+      writes output give each new mutable object an id that does not come from
+      its address. At the first ask, the id is `bitmix(scope, n)`: `scope` is
+      the key of the top-level statement that runs, nested in the key of the
+      statement around it, and `n` counts the ids of that key before. A table of
+      the process holds the ids, and the GC sweep removes the entry of a dead
+      object. `julia_cmd` passes the option to the precompile process.
+      Proposed decisions:
+      - The option is `--deterministic-object-ids={yes|no}`, default `no`.
+      - The key of a statement is a hash of its form with no line numbers. A
+        `module` statement takes only its name, and a `toplevel` form makes no
+        key, so that the key of a statement does not depend on the other
+        statements around it.
+      - An object that no code asked for gets its id at the write, in the order
+        of the heap, in the key of the write.
+- [ ] The gate `link_cascade.jl` with the option: the linked LinkB is equal in
+      each byte to the rebuild, with no copy of the ids, and two whole builds of
+      LinkB are equal, after one build id in both.
+- [ ] At the write, an object that no code asked for gets its id from the
+      object that first reaches it and from the field. Gate: after an edit of
+      LinkA that moves objects, each unchanged mutable object of LinkA keeps its
+      id.
+- [ ] The cost on ProjecturedKernel: the time and the peak memory of a write
+      with and without the option, the count of the object ids in the file, and
+      what still differs between two whole builds with the option.
+
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
 
