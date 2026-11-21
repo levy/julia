@@ -607,22 +607,44 @@ static jl_value_t *jl_eval_toplevel_stmts(jl_module_t *JL_NONNULL m, jl_array_t 
     jl_value_t *root = NULL, *loc = NULL;
     JL_GC_PUSH2(&root, &loc);
     jl_value_t *res = jl_nothing;
+    int ids = jl_deterministic_object_ids();
     int i;
     for (i = 0; i < jl_array_nrows(stmts); i++) {
         root = jl_array_ptr_ref(stmts, i);
+        // The statement, before its lowering, is the scope of the object ids
+        // that its lowering and its run ask for.
+        uint64_t around = ids ? jl_object_id_scope_enter(m, root) : 0;
         if (jl_needs_lowering(root)) {
             loc = make_linenumbernode(*toplevel_filename, *toplevel_lineno);
             root = jl_svecref(jl_lower(m, root, ~(size_t)0, need_value, loc), 0);
         }
         ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
         res = jl_toplevel_eval_flex(m, root, fast, 1, toplevel_filename, toplevel_lineno);
+        if (ids)
+            jl_object_id_scope_leave(around);
     }
     ct->world_age = last_age;
     JL_GC_POP();
     return res;
 }
 
+static jl_value_t *jl_toplevel_eval_flex_(jl_module_t *JL_NONNULL m, jl_value_t *e, int fast, int expanded, const char **toplevel_filename, int *toplevel_lineno) JL_CANSAFEPOINT;
+
+// A statement that is not lowered yet comes from `Core.eval` or `include`, and it
+// is the scope of the object ids that it asks for. A `toplevel` form is no
+// scope: each of its statements is one.
 JL_DLLEXPORT jl_value_t *jl_toplevel_eval_flex(jl_module_t *JL_NONNULL m, jl_value_t *e, int fast, int expanded, const char **toplevel_filename, int *toplevel_lineno)
+{
+    if (expanded || !jl_deterministic_object_ids() ||
+            (jl_is_expr(e) && ((jl_expr_t*)e)->head == jl_toplevel_sym))
+        return jl_toplevel_eval_flex_(m, e, fast, expanded, toplevel_filename, toplevel_lineno);
+    uint64_t around = jl_object_id_scope_enter(m, e);
+    jl_value_t *res = jl_toplevel_eval_flex_(m, e, fast, expanded, toplevel_filename, toplevel_lineno);
+    jl_object_id_scope_leave(around);
+    return res;
+}
+
+static jl_value_t *jl_toplevel_eval_flex_(jl_module_t *JL_NONNULL m, jl_value_t *e, int fast, int expanded, const char **toplevel_filename, int *toplevel_lineno)
 {
     jl_task_t *ct = jl_current_task;
     if (jl_is_globalref(e)) {

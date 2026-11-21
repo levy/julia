@@ -406,6 +406,20 @@ STATIC_INLINE void clear_weak_ref(jl_ptls_t ptls, jl_weakref_t *wr, int remember
     }
 }
 
+// Remove the deterministic object id (`--deterministic-object-ids=yes`) of each
+// object that this collection did not mark, so that a new object at the same
+// address does not get the id of the dead one.
+static void sweep_object_ids(void) JL_NOTSAFEPOINT
+{
+    void **table = jl_object_ids.table;
+    for (size_t i = 0; i < jl_object_ids.size; i += 2) {
+        if (table[i + 1] != HT_NOTFOUND && !gc_marked(jl_astaggedvalue(table[i])->bits.gc)) {
+            table[i + 1] = HT_NOTFOUND;
+            jl_object_ids.live--;
+        }
+    }
+}
+
 static void clear_weak_refs(jl_ptls_t ptls) JL_NOTSAFEPOINT
 {
     assert(gc_n_threads != 0);
@@ -3717,6 +3731,9 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         mark_reset_age = 0;
         gc_sync_all_caches(ptls);
     }
+    // After the last mark, also of the objects of the finalizers: a dead object
+    // loses its deterministic object id.
+    sweep_object_ids();
 
     JL_PROBE_GC_MARK_END(scanned_bytes, perm_scanned_bytes);
     if (GC_TIME_ENABLED || GC_FINAL_STATS_ENABLED)
@@ -4722,9 +4739,9 @@ jl_value_t *jl_gc_permobj(jl_ptls_t _ptls, size_t sz, void *ty, unsigned align) 
     size_t idsz = dt && jl_is_datatype(dt) && dt->name && dt->name->mutabl ? sizeof(void*) : 0;
     char *p = (char*)jl_gc_perm_alloc(allocsz + idsz, 0, align, (idsz + sizeof(void*)) % align);
     jl_value_t *v = jl_valueof(p + idsz);
-    if (idsz)
-        ((uintptr_t*)v)[-2] = inthash((uintptr_t)v);
     jl_set_typeof(v, (void*)(((uintptr_t)(ty) | GC_PERM_BITS)));
+    if (idsz)
+        ((uintptr_t*)v)[-2] = jl_deterministic_object_ids() ? jl_deterministic_object_id(v) : inthash((uintptr_t)v);
     return v;
 }
 

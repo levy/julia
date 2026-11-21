@@ -212,6 +212,7 @@ function julia_cmd(julia=joinpath(Sys.BINDIR, julia_exename()); cpu_target::Unio
     opts.use_compiled_modules == 3 && push!(addflags, "--compiled-modules=strict")
     opts.use_pkgimages == 0 && push!(addflags, "--pkgimages=no")
     opts.use_pkgimages == 2 && push!(addflags, "--pkgimages=existing")
+    opts.deterministic_object_ids == 1 && push!(addflags, "--deterministic-object-ids=yes")
     opts.opt_level == 2 || push!(addflags, "-O$(opts.opt_level)")
     opts.opt_level_min == 0 || push!(addflags, "--min-optlevel=$(opts.opt_level_min)")
     push!(addflags, "-g$(opts.debug_level)")

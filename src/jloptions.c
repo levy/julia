@@ -167,6 +167,7 @@ JL_DLLEXPORT void jl_init_options(void) JL_NOTSAFEPOINT
                         0, // target_sanitize_memory
                         0, // target_sanitize_thread
                         0, // target_sanitize_address
+                        0, // deterministic_object_ids
                         NULL, // coverage_exclude
     };
     jl_options_initialized = 1;
@@ -382,6 +383,10 @@ static const char opts_hidden[] =
     "                                               B, K (kibibytes), M (mebibytes), G (gibibytes)\n"
     "                                               or T (tebibytes).\n"
     " --gc-sweep-always-full                        Makes the GC always do a full sweep of the heap\n"
+    " --deterministic-object-ids={yes|no*}          In a process that writes output, give each new\n"
+    "                                               mutable object an object id from the top-level\n"
+    "                                               statement that first asks for it, not from its\n"
+    "                                               address, so that two builds give the same ids.\n"
     " --target-sanitize=memory                      Instrument generated code for MemorySanitizer.\n"
     " --target-sanitize=thread                      Instrument generated code for ThreadSanitizer.\n"
     " --target-sanitize=address                     Instrument generated code for AddressSanitizer.\n"
@@ -452,6 +457,7 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
            opt_experimental_features,
            opt_compress_sysimage,
            opt_target_sanitize,
+           opt_deterministic_object_ids,
     };
     static const char* const shortopts = "+vhqH:e:E:L:J:C:it:p:O:g:m:P:";
     static const struct option longopts[] = {
@@ -527,6 +533,7 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
         { "compress-sysimage", required_argument, 0, opt_compress_sysimage },
         { "trace-eval",       optional_argument, 0, opt_trace_eval },
         { "target-sanitize", required_argument, 0, opt_target_sanitize },
+        { "deterministic-object-ids", required_argument, 0, opt_deterministic_object_ids },
         { 0, 0, 0, 0 }
     };
 
@@ -1167,6 +1174,14 @@ restart_switch:
                 jl_options.target_sanitize_address = 1;
             else
                 jl_errorf("julia: invalid argument to --target-sanitize={memory|thread|address} (%s)", optarg);
+            break;
+        case opt_deterministic_object_ids:
+            if (!strcmp(optarg, "yes"))
+                jl_options.deterministic_object_ids = 1;
+            else if (!strcmp(optarg, "no"))
+                jl_options.deterministic_object_ids = 0;
+            else
+                jl_errorf("julia: invalid argument to --deterministic-object-ids={yes|no} (%s)", optarg);
             break;
         default:
             jl_errorf("julia: unhandled option -- %c\n"

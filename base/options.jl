@@ -74,6 +74,7 @@ struct JLOptions
     target_sanitize_memory::Int8
     target_sanitize_thread::Int8
     target_sanitize_address::Int8
+    deterministic_object_ids::Int8
     coverage_exclude::Ptr{UInt8}
 end
 

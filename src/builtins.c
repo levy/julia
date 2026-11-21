@@ -447,6 +447,8 @@ static uintptr_t type_object_id_(jl_value_t *v, jl_varidx_t *env) JL_NOTSAFEPOIN
         uintptr_t bits = jl_astaggedvalue(v)->header;
         if (bits & GC_PERM)
             return ((uintptr_t*)v)[-2];
+        if (jl_options.deterministic_object_ids && jl_generating_output())
+            return jl_deterministic_object_id(v);
         return inthash((uintptr_t)v);
     }
     if (tv == jl_uniontype_type) {
@@ -547,6 +549,91 @@ static uintptr_t immut_id_(jl_datatype_t *dt, jl_value_t *v, uintptr_t h) JL_NOT
     return h;
 }
 
+// Deterministic object ids (`--deterministic-object-ids=yes`). In a process that
+// writes output, the id of a new mutable object does not come from its address:
+// at the first ask, it is `bitmix(scope, n)`, where `scope` is the key of the
+// top-level statement that runs (`jl_object_id_scope_enter`) and `n` counts the
+// ids that this key gave before. So two runs of the same statements give the
+// same ids, and each hash table that the run fills has the layout of the ids
+// that the writer stores. The GC sweep removes the entry of a dead object
+// (`jl_sweep_object_ids`), so that a new object at its address gets a new id.
+htable_t jl_object_ids;                 // the object => its id
+static htable_t object_id_counts;       // the key of a scope => 2 * (the count of its ids + 1)
+static jl_mutex_t object_ids_lock;
+// The scope before the first statement, and the scope of the write.
+static uint64_t object_id_scope = 0x4f626a6563744964;
+
+uintptr_t jl_deterministic_object_id(jl_value_t *v) JL_NOTSAFEPOINT
+{
+    JL_LOCK_NOGC(&object_ids_lock);
+    if (jl_object_ids.table == NULL) {
+        htable_new(&jl_object_ids, 0);
+        htable_new(&object_id_counts, 0);
+    }
+    void **bp = ptrhash_bp(&jl_object_ids, (void*)v);
+    if (*bp == HT_NOTFOUND) {
+        uint64_t scope = object_id_scope;
+        void **count = ptrhash_bp(&object_id_counts, (void*)(uintptr_t)(scope | 2));
+        uintptr_t n = *count == HT_NOTFOUND ? 0 : (uintptr_t)*count / 2 - 1;
+        *count = (void*)(2 * (n + 2));
+        uintptr_t id = bitmix(scope, n);
+        *bp = (void*)(id == (uintptr_t)HT_NOTFOUND ? id + 2 : id);
+    }
+    uintptr_t id = (uintptr_t)*bp;
+    JL_UNLOCK_NOGC(&object_ids_lock);
+    return id;
+}
+
+// The key of a top-level statement: a hash of its form with no line numbers. A
+// `module` statement takes only its name and its flags, and its statements get
+// their own keys, so that the key of a statement does not depend on the
+// statements around it.
+static uint64_t statement_key(jl_value_t *v, int depth) JL_NOTSAFEPOINT
+{
+    if (depth > 200)
+        return 0x64657074;
+    if (jl_is_linenode(v))
+        return 0;
+    if (jl_is_quotenode(v))
+        return bitmix(0x71756f74, statement_key(jl_quotenode_value(v), depth + 1));
+    if (!jl_is_expr(v))
+        return jl_object_id(v);
+    jl_expr_t *ex = (jl_expr_t*)v;
+    uint64_t h = ex->head->hash;
+    for (size_t i = 0; i < jl_expr_nargs(ex); i++) {
+        jl_value_t *a = jl_exprarg(ex, i);
+        if (jl_is_linenode(a))
+            continue;
+        if (ex->head == jl_module_sym && jl_is_expr(a))
+            continue;
+        h = bitmix(h, statement_key(a, depth + 1));
+    }
+    return h;
+}
+
+// Enter the scope of the top-level statement `stmt` of the module `m`, and
+// answer the scope around it, which `jl_object_id_scope_leave` takes back. The
+// key comes from the module and the statement, not from the statement around
+// it: the statement that starts a precompile process holds the paths of that
+// process. The scopes are those of the process, not of a task: a run whose
+// statements run tasks at the same time gives ids in a varying order.
+uint64_t jl_object_id_scope_enter(jl_module_t *m, jl_value_t *stmt) JL_NOTSAFEPOINT
+{
+    uint64_t around = object_id_scope;
+    object_id_scope = bitmix(m->hash, statement_key(stmt, 0));
+    return around;
+}
+
+void jl_object_id_scope_leave(uint64_t around) JL_NOTSAFEPOINT
+{
+    object_id_scope = around;
+}
+
+int jl_deterministic_object_ids(void) JL_NOTSAFEPOINT
+{
+    return jl_options.deterministic_object_ids && jl_generating_output();
+}
+
 static uintptr_t NOINLINE jl_object_id__cold(uintptr_t tv, jl_value_t *v) JL_NOTSAFEPOINT
 {
     jl_datatype_t *dt = (jl_datatype_t*)jl_to_typeof(tv);
@@ -572,6 +659,8 @@ static uintptr_t NOINLINE jl_object_id__cold(uintptr_t tv, jl_value_t *v) JL_NOT
         uintptr_t bits = jl_astaggedvalue(v)->header;
         if (bits & GC_PERM)
             return ((uintptr_t*)v)[-2];
+        if (jl_options.deterministic_object_ids && jl_generating_output())
+            return jl_deterministic_object_id(v);
         return inthash((uintptr_t)v);
     }
     return immut_id_(dt, v, dt->hash);

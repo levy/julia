@@ -2311,6 +2311,12 @@ jl_value_t *jl_memoryrefreplace(jl_genericmemoryref_t m, jl_value_t *expected, j
 jl_value_t *jl_memoryrefsetonce(jl_genericmemoryref_t m, jl_value_t *v, int isatomic) JL_CANSAFEPOINT;
 
 JL_DLLEXPORT uintptr_t jl_object_id_(uintptr_t tv, jl_value_t *v) JL_NOTSAFEPOINT;
+// Deterministic object ids (`--deterministic-object-ids=yes`, builtins.c)
+extern htable_t jl_object_ids;
+int jl_deterministic_object_ids(void) JL_NOTSAFEPOINT;
+uintptr_t jl_deterministic_object_id(jl_value_t *v) JL_NOTSAFEPOINT;
+uint64_t jl_object_id_scope_enter(jl_module_t *m, jl_value_t *stmt) JL_NOTSAFEPOINT;
+void jl_object_id_scope_leave(uint64_t around) JL_NOTSAFEPOINT;
 JL_DLLEXPORT void jl_set_next_task(jl_task_t *task) JL_NOTSAFEPOINT;
 
 JL_DLLEXPORT uint16_t julia_double_to_half(double param) JL_NOTSAFEPOINT;
