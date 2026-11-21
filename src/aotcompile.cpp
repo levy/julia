@@ -2682,6 +2682,90 @@ jl_dump_native_impl(void *native_code, const char *bc_fname, const char *unopt_b
     }
 }
 
+// Compile the inferred code instances of `codeinfos` (in the form that
+// `jl_emit_native` takes) into one relocatable object, which another process
+// installs later with `jl_install_object`. The code has the form of an image:
+// it reaches each Julia object through a slot, a global `jl_object_slot#<i>`
+// that the installer fills, and the state of the thread through the slots of
+// the runtime. Answer `svec(object, slots, functions)`: the bytes of the object,
+// the Julia object of each slot by its index, and for each code instance a
+// `svec(ci, invoke_api, invoke, specptr)` with the names of its symbols.
+extern "C" JL_DLLEXPORT_CODEGEN
+jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos)
+{
+    jl_array_t *ci_order = NULL, *object = NULL, *slots = NULL, *functions = NULL;
+    jl_value_t *result = NULL;
+    JL_GC_PUSH5(&ci_order, &object, &slots, &functions, &result);
+    ci_order = jl_alloc_vec_any(0);
+    auto data = (jl_native_code_desc_t *)jl_emit_native_impl(codeinfos, ci_order, NULL, NULL, 0);
+    size_t nslots = data->jl_sysimg_gvars.size();
+    assert(nslots == data->jl_value_to_llvm.size() && "a call through the PLT of an image needs external linkage");
+    SmallVector<char, 0> obj;
+    std::vector<std::tuple<jl_code_instance_t *, int32_t, std::string, std::string>> funcs;
+    data->TSM_ref->withModuleDo([&](Module &M) {
+        for (size_t i = 0; i < nslots; i++) {
+            auto gv = cast<GlobalVariable>(data->jl_sysimg_gvars[i]);
+            gv->setName("jl_object_slot#" + Twine(i));
+            gv->setLinkage(GlobalValue::ExternalLinkage);
+            gv->setVisibility(GlobalValue::DefaultVisibility);
+        }
+        // The state of the thread comes from the slots of the runtime, which it
+        // gives the JIT (`add_shared_named_global` in codegen.cpp).
+        Type *T_ptr = PointerType::getUnqual(M.getContext());
+        Type *T_size = M.getDataLayout().getIntPtrType(M.getContext());
+        for (auto &slot : {std::make_pair("jl_pgcstack_func_slot", T_ptr),
+                           std::make_pair("jl_pgcstack_key_slot", T_size),
+                           std::make_pair("jl_image_tls_offset", T_size)}) {
+            if (!M.getNamedGlobal(slot.first))
+                new GlobalVariable(M, slot.second, false, GlobalValue::ExternalLinkage, nullptr, slot.first);
+        }
+        for (auto &entry : data->jl_fvar_map) {
+            int32_t invoke_id = std::get<0>(entry.second), specptr_id = std::get<1>(entry.second);
+            int32_t api = invoke_id > 0 ? JL_INVOKE_SPECSIG : -invoke_id;
+            std::string invoke = invoke_id > 0 ? data->jl_sysimg_fvars[invoke_id - 1]->getName().str() : "";
+            std::string specptr = specptr_id > 0 ? data->jl_sysimg_fvars[specptr_id - 1]->getName().str() : "";
+            funcs.emplace_back(entry.first, api, std::move(invoke), std::move(specptr));
+        }
+        // The target machine of the image writer, with the small code model:
+        // the JIT links the object, and no image data goes with it.
+        Triple TheTriple = data->out->TargetTriple;
+        std::optional<Reloc::Model> RelocModel;
+        if (TheTriple.isOSLinux() || TheTriple.isOSFreeBSD() || TheTriple.isOSOpenBSD())
+            RelocModel = Reloc::PIC_;
+        std::unique_ptr<TargetMachine> TM(
+            jl_ExecutionEngine->getTarget().createTargetMachine(
+                TheTriple,
+                jl_ExecutionEngine->getTargetCPU(),
+                jl_ExecutionEngine->getTargetFeatureString(),
+                jl_ExecutionEngine->getTargetOptions(),
+                RelocModel,
+                CodeModel::Small,
+                CodeGenOptLevelFor(jl_options.opt_level)));
+        fixupTM(*TM);
+        ShardTimers timers;
+        AOTOutputs out = add_output_impl(M, *TM, timers, false, false, true, false);
+        obj = std::move(out.obj);
+    });
+    object = jl_alloc_array_1d(jl_array_uint8_type, obj.size());
+    memcpy(jl_array_data(object, char), obj.data(), obj.size());
+    slots = jl_alloc_vec_any(nslots);
+    for (size_t i = 0; i < nslots; i++)
+        jl_array_ptr_set(slots, i, (jl_value_t *)data->jl_value_to_llvm[i]);
+    functions = jl_alloc_vec_any(funcs.size());
+    for (size_t k = 0; k < funcs.size(); k++) {
+        jl_svec_t *entry = jl_alloc_svec(4);
+        jl_array_ptr_set(functions, k, (jl_value_t *)entry);
+        jl_svecset(entry, 0, (jl_value_t *)std::get<0>(funcs[k]));
+        jl_svecset(entry, 1, jl_box_int32(std::get<1>(funcs[k])));
+        jl_svecset(entry, 2, jl_cstr_to_string(std::get<2>(funcs[k]).c_str()));
+        jl_svecset(entry, 3, jl_cstr_to_string(std::get<3>(funcs[k]).c_str()));
+    }
+    delete data;
+    result = (jl_value_t *)jl_svec(3, object, slots, functions);
+    JL_GC_POP();
+    return result;
+}
+
 
 // sometimes in GDB you want to find out what code would be created from a mi
 extern "C" JL_DLLEXPORT_CODEGEN jl_code_info_t *jl_gdbdumpcode(jl_method_instance_t *mi) JL_CANSAFEPOINT
