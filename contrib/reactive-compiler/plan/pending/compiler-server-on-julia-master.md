@@ -786,8 +786,11 @@ on our branch, with their cost measured first. The steps (on
       #63150, branch `pr-reproducible-image-code`, sorts the work list of a
       build and the GC frame slots, which our branch does not have.)
 
-Next, proposed and waiting for the owner: bring the three commits of #63150
-onto `pr-linked-products` and measure the kernel again.
+- [ ] Bring the three commits of #63150 (branch `pr-reproducible-image-code`)
+      onto `pr-linked-products`, and measure the kernel again with
+      `ids_kernel.jl`. For the table of the global slots, take the sort by name
+      of #63150 in place of the order of the module of `f0a7bfd4b1`. (The owner:
+      "Yes".)
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
