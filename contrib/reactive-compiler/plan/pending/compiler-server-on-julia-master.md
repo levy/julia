@@ -304,17 +304,64 @@ Facts found:
   the build behind it in `JULIA_LOAD_PATH`, so it loads CompilerServer.jl too.
 - CompilerServer.jl now depends on PackageCompiler, TOML, Libdl and SHA.
 
-### Step 5: the checks
+### Step 5: the checks  — done
 
-- [ ] Move `tool/oracle.jl`, the cases of `gate_cases.sh` and of
+- [x] Move `tool/oracle.jl`, the cases of `gate_cases.sh` and of
       `gate_replay.sh`, `HazardApp`, `CaseApp` and `CaseLib` into the tests of
       CompilerServer.jl.
-- [ ] Compare the state of the server after each edit with a fresh process that
+- [x] Compare the state of the server after each edit with a fresh process that
       loads the final sources: the same method tables, roots, output and
       globals.
 
 Gate: each case gives the digest of the fresh process, or it is a refusal that
-`must-refuse.txt` or Step 3 lists.
+`must-refuse.txt` or Step 3 lists. Done on 2026-11-21 (commit `cffe664`):
+
+| gate | steps | result |
+| --- | --- | --- |
+| `test/gates/cases.jl`, the edit cases | 55 | 43 applied, 12 refused (the 10 of `must-refuse.txt` and 2 of stock master); the digest of 274 lines equals the fresh load, with no noise; 3 min 21 s, 1.2 GB |
+| `test/gates/hazard.jl`, HazardApp | 7 | 4 applied, 3 refused (F1, B2, and the removed `using` of stock master); the digest of 123 lines equals the fresh load |
+| `test/gates/hazard.jl ... data`, `data.txt` | 1 | the digest differs, as decision D5 says it must |
+| `test/gates/replay.jl`, ProjecturedKernel | 20 commits | each applied; the digest of 3,531 lines equals the fresh load; about 3 min |
+
+Facts found:
+
+- The check is `CompilerServer.check_chain` (`src/check.jl`). It applies each
+  edit in one process, as a server does, and compares the program with two
+  fresh loads of the final sources through the loader of Step 3. The lines that
+  differ between the two fresh loads are noise. The oracle is
+  `CompilerServer.oracle_lines` (`src/oracle.jl`). An input that changed stops a
+  step, as the driver stops a rebuild: a project file, a file that the load
+  included and that is no tracked source, or tracked files that the walk can
+  not find.
+- No product is built: on stock master a product of each step would be a whole
+  build of about two minutes. The checks of `gate_replay.sh` about overlays and
+  pre-relocated programs are not ported, because stock master writes neither.
+- The gates found five faults of the stock layer of Step 3, now fixed:
+  1. The loader loaded `CaseApp` before `CaseLib`, so the `using` loaded
+     `CaseLib` from its cache file, whose methods have no place; then a removal
+     can not find its methods. The loader now loads each tracked package after
+     the tracked packages that it depends on.
+  2. An `include` with a `mapexpr` function, and an `include` inside a
+     top-level loop or condition, read the disk without marks. They now load
+     with marks, and a file that has no stored copy is recorded as an input.
+  3. A module under a docstring is an argument of `@doc`, and its body got no
+     marks. `ProjecturedKernel` is such a module.
+  4. The refusal of D6 for a name that a used module exports ran in the world
+     of the loop of the chain, which does not see the bindings of the earlier
+     steps. It now runs in the newest world, and only for a name that the module
+     holds as its own.
+  5. The oracle ran in an old world and could not show the values of new types.
+- The cases that stock master refuses and the fork applies:
+  `orphaned_binding_realias` and `retract_removed_bindings` (an own binding
+  leaves, and `Base` exports the same name), and the reverse edit of
+  HazardApp (a removed `using`).
+- The replay takes the commits of the main line (`git log --first-parent`).
+  Without it, the list held commits of a side branch whose tree lacks
+  `package/ProjecturedPrecompile`, and their environments did not load.
+- The output of HazardApp has `bench:` lines that measure times; the gate
+  leaves them out.
+- The fixtures are in the package: `test/fixtures/r1_cases` and
+  `test/fixtures/m6_hazard`, copied from the fork.
 
 ## Part 3: the texts of the issues
 
