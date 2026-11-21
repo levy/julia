@@ -114,16 +114,32 @@ executes it. Each decision below is proposed and is approved with the plan.
 
 ## Part 1: setup
 
-### Step 1: the worktree of master, and its baseline
+### Step 1: the worktree of master, and its baseline  — done
 
 - [x] Make the worktree `workspace/julia-compiler-server` with the branch
       `compiler-server-master` at the current upstream master.
 - [x] Build it, and keep a private depot in
       `/var/tmp/julia-compiler-server-depot`.
-- [ ] Run `test/precompile.jl`, `test/cmdlineargs.jl`, `test/compiler/` and
+- [x] Run `test/precompile.jl`, `test/cmdlineargs.jl`, `test/compiler/` and
       `test/loading.jl`. Write down here each failure of clean master.
 
 Gate: the build has no warning in `src/`, and the baseline is in this plan.
+Done, with the limit on the warnings that the facts below give.
+
+The baseline of clean master `2aa7c9fd5b`, run on 2026-11-21 with
+`test/runtests.jl precompile cmdlineargs loading compiler`, two workers
+(`JULIA_CPU_THREADS=2`), a restart of a worker above 3.5 GB
+(`JULIA_TEST_MAXRSS_MB=3500`), and a cap of 8 GB. All 24 test files ran to
+their end in 7 min 44 s: 706,215 passes, 57 broken, and one failure.
+
+- The one failure: `test/cmdlineargs.jl:2014`, the test of
+  `--bug-report=rr-local`. The tool `rr` stops with "AMD CPU type 0x70f00 (ext
+  family 0xb) unknown", because it does not know the processor of this
+  machine, and the test accepts only two other causes. It is a fault of the
+  machine, not of master, and a branch of this plan has it too.
+- The test downloads the package `BugReporting` and its dependencies from the
+  network into the depot.
+- The peak was 8.0 GB, at the cap. A run with more workers needs a larger cap.
 
 Facts found:
 
