@@ -609,16 +609,20 @@ Facts for the objects of each part, found before the work:
 
 ### Step 10: C, the writers take code from parts
 
-- [ ] On `pr-code-from-parts`, built on B here, part 1: each function gets its
+- [x] On `pr-code-from-parts`, built on B here, part 1: each function gets its
       own section and a name from its key. Take the ideas of the fork's image
       format version 3 (one function table with names, calls by name), with no
-      overlay, no writes by pages and no pre-relocation.
+      overlay, no writes by pages and no pre-relocation. Done as one object
+      for each function (a part, with a name from its key) in one more shard
+      of the file; a whole build writes its parts into the store
+      (CompilerServer.jl `05255dc`).
 - [ ] Part 2: the writers of package files and of system images take the code
       of a function from a part. Done for package files: Julia `b786281c96`
       and `c092fb0570` on `pr-code-from-parts`, CompilerServer.jl `e8ca6d7`,
       `00cca6e`, `da451de`. Open: system images.
 - [ ] CompilerServer.jl: a whole build of a package file and of a binary takes
-      all unchanged code from the store.
+      all unchanged code from the store. Done for package files
+      (`compilecache_with_parts`); open for binaries.
 
 Gate: a package file and a system image written with all their code from the
 store load and pass the tests of `HazardApp`, and their write runs LLVM for no
@@ -667,6 +671,34 @@ Facts of part 2 for package files (to Julia `c092fb0570`, CompilerServer.jl
   compile process does not choose the same set of functions as the writer.
   So the parts of a package file must come from a writer process: a whole
   build must write its parts (part 1 of this step).
+
+Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
+
+- The provider of the writer takes the parts of the old store that hold,
+  compiles each other function of the file as a new part from the code
+  instance and the source of the writer, and writes the new store. Parts from
+  a separate compile process do not fit: that process infers some functions
+  otherwise, and chooses another set of functions.
+- ProjecturedKernel (test/gates/parts_kernel.jl): the stock writer takes 6.0
+  to 6.8 s and compiles 779 functions. The whole build with parts takes 16.2 s
+  and writes 985 parts (7.9 s of emission, one function at a time). After an
+  edit in a comment, in a string of code, or one that moves lines, a rebuild
+  keeps 981 to 983 parts, compiles 2 to 4 new ones, and takes 7.5 to 9.1 s.
+  The writer compiles 3 functions itself, which have no part. The precompile
+  loop after the load spends the same 0.3 s of compile time with each file.
+- Of a stock write of the kernel, the load of the source with its inference
+  takes 3.4 s, and the rest, with the LLVM work, 2.5 s. Parts remove only the
+  LLVM work. The provider adds about 2 s: the check of the held parts 0.6 s,
+  the map of the constants 0.3 s, the inference of the closure 0.3 to 0.5 s,
+  the round trip check 0.2 s, the read and the write of the store 0.3 s. So on
+  the writer of stock Julia, parts give no faster write of one package file:
+  the writer still runs the package and infers it. A write in seconds needs
+  the inference results from the store too, and no run of the package: the
+  link of step D.
+- An edit that moves lines changes the place of each method below it, so
+  their parts do not serve (2 in the case of the gate).
+- The key of `Core.methodtable`, an edge of each dynamic call, must not need
+  the map of the constants.
 
 ### Step 11: D, the design and its first part
 
