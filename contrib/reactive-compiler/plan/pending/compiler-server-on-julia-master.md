@@ -855,8 +855,10 @@ compiler server under projectured GitHub user and ProjecturedRegistry"):
   `levy/CompilerServer.jl` of D3, by the owner's word); `main` = `af59f5e`.
 - ProjecturedRegistry `42a565e` "New package: CompilerServer v0.1.0", tree
   `78a87590`, pushed.
-- Not pushed: `merged-next`, which holds this plan and 183 commits of other
-  work; `compiler-server-evidence`, which waits for the owner (Steps 6 and 7).
+- `merged-next`, with this plan and 183 commits of other work, is on
+  `levy/julia` (the owner: "push").
+- Not pushed: `compiler-server-evidence`, which waits for the owner (Steps 6
+  and 7).
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
