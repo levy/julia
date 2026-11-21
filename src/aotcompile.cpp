@@ -164,6 +164,9 @@ typedef struct {
     SmallVector<GlobalValue*, 0> jl_sysimg_fvars;
     SmallVector<GlobalValue*, 0> jl_sysimg_gvars;
     std::map<jl_code_instance_t*, std::tuple<uint32_t, uint32_t>> jl_fvar_map;
+    // the code instances of `jl_fvar_map` in the order of their functions: a
+    // walk of the map follows the addresses of the code instances
+    SmallVector<jl_code_instance_t*, 0> jl_fvar_order;
     SmallVector<void*, 0> jl_value_to_llvm;
     SmallVector<jl_code_instance_t*, 0> jl_external_to_llvm;
     // ordered list of CodeInstances emitted for this image, in the order they
@@ -199,17 +202,17 @@ extern "C" JL_DLLEXPORT_CODEGEN void
 jl_get_llvm_cis_impl(void *native_code, size_t *num_elements, jl_code_instance_t **data)
 {
     jl_native_code_desc_t *desc = (jl_native_code_desc_t *)native_code;
-    auto &map = desc->jl_fvar_map;
+    auto &order = desc->jl_fvar_order;
 
     if (data == NULL) {
-        *num_elements = map.size();
+        *num_elements = order.size();
         return;
     }
 
-    assert(*num_elements == map.size());
+    assert(*num_elements == order.size() && order.size() == desc->jl_fvar_map.size());
     size_t i = 0;
-    for (auto &ci : map) {
-        data[i++] = ci.first;
+    for (jl_code_instance_t *ci : order) {
+        data[i++] = ci;
     }
 }
 
@@ -1261,12 +1264,21 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
                                              covctr.second.first->getName().str()});
     }
 
+    // A code instance with no function (one that returns a constant) has no
+    // place in the module: it takes its place in the order of the code
+    // instances, and else its object id.
+    DenseMap<jl_code_instance_t *, size_t> ci_place;
+    for (jl_code_instance_t *ci : data->jl_ci_order)
+        ci_place.try_emplace(ci, ci_place.size());
     SmallVector<std::pair<jl_code_instance_t *, jl_llvm_functions_t>, 0> ci_funcs(out.ci_funcs.begin(), out.ci_funcs.end());
-    auto first_place = [&place](const jl_llvm_functions_t &funcs) JL_NOTSAFEPOINT {
-        return std::min(place(funcs.invoke), place(funcs.specptr));
+    auto ci_key = [&place, &ci_place](const std::pair<jl_code_instance_t *, jl_llvm_functions_t> &entry) JL_NOTSAFEPOINT {
+        auto it = ci_place.find(entry.first);
+        return std::make_tuple(std::min(place(entry.second.invoke), place(entry.second.specptr)),
+                               it == ci_place.end() ? SIZE_MAX : it->second,
+                               jl_object_id((jl_value_t *)entry.first));
     };
-    llvm::stable_sort(ci_funcs, [&first_place](const auto &a, const auto &b) JL_NOTSAFEPOINT {
-        return first_place(a.second) < first_place(b.second);
+    llvm::stable_sort(ci_funcs, [&ci_key](const auto &a, const auto &b) JL_NOTSAFEPOINT {
+        return ci_key(a) < ci_key(b);
     });
     for (auto &[ci, funcs] : ci_funcs) {
         uint32_t invoke_id, specptr_id = 0;
@@ -1281,7 +1293,8 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
             data->jl_sysimg_fvars.push_back(funcs.specptr);
             specptr_id = data->jl_sysimg_fvars.size();
         }
-        data->jl_fvar_map[ci] = {invoke_id, specptr_id};
+        if (data->jl_fvar_map.insert_or_assign(ci, std::tuple<uint32_t, uint32_t>{invoke_id, specptr_id}).second)
+            data->jl_fvar_order.push_back(ci);
     }
     // The functions of the parts of the store: the objects of the parts define
     // them, and each code instance gets their indexes as a compiled one does.
@@ -1305,7 +1318,8 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
             }
             data->jl_sysimg_fvars.push_back(declare(jl_string_data(jl_svecref(entry, 3))));
             specptr_id = data->jl_sysimg_fvars.size();
-            data->jl_fvar_map[ci] = {invoke_id, specptr_id};
+            if (data->jl_fvar_map.insert_or_assign(ci, std::tuple<uint32_t, uint32_t>{invoke_id, specptr_id}).second)
+                data->jl_fvar_order.push_back(ci);
         }
         data->part_fvars_end = data->jl_sysimg_fvars.size();
     }
@@ -3089,9 +3103,9 @@ jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos, jl_value_t *parts)
             if (!M.getNamedGlobal(slot.first))
                 new GlobalVariable(M, slot.second, false, GlobalValue::ExternalLinkage, nullptr, slot.first);
         }
-        for (auto &entry : data->jl_fvar_map) {
-            jl_code_instance_t *ci = entry.first;
-            int32_t invoke_id = std::get<0>(entry.second), specptr_id = std::get<1>(entry.second);
+        for (jl_code_instance_t *ci : data->jl_fvar_order) {
+            auto &ids = data->jl_fvar_map[ci];
+            int32_t invoke_id = std::get<0>(ids), specptr_id = std::get<1>(ids);
             int32_t api = invoke_id > 0 ? JL_INVOKE_SPECSIG : -invoke_id;
             Function *invoke = invoke_id > 0 ? cast<Function>(data->jl_sysimg_fvars[invoke_id - 1]) : nullptr;
             Function *specptr = specptr_id > 0 ? cast<Function>(data->jl_sysimg_fvars[specptr_id - 1]) : nullptr;
