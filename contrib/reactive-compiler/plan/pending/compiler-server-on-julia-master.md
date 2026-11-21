@@ -815,17 +815,32 @@ on our branch, with their cost measured first. The steps (on
 
 The owner, 2026-11-21: "Yes" to the two causes that are left. The steps:
 
-- [ ] In a process with the option, a new object starts with zero bytes (the
+- [x] In a process with the option, a new object starts with zero bytes (the
       allocations of the GC: small, big, and the buffers of memory), and the
       writer writes zeros in each byte of an object that no field holds (the
       padding, by the layout of the type, also inside an inline field and in each
-      element of a memory).
-- [ ] The build id of each submodule gets the same choice from content as the
+      element of a memory). (Julia `08c3a570ea`. Between the fields of an object
+      the writer already wrote zeros; the padding inside an inline field, the
+      bytes of an inline union after its value, the dump of a module and the
+      unset padding field of a `ReentrantLock` were the ones that held old
+      bytes.)
+- [x] The build id of each submodule gets the same choice from content as the
       top module: `link_build_id!` gives each module of the file a low half from
       the low half of the top module and the hash of the module.
-- [ ] Gate: two whole builds of ProjecturedKernel with the option are equal in
+      (CompilerServer.jl `af59f5e`. The objects of the modules of a file share
+      the type tag of the object of the top module; the places of the build id
+      and of the hash in a module object come from a module of the process.)
+- [x] Gate: two whole builds of ProjecturedKernel with the option are equal in
       each byte, after one build id; the cascade gate gives 0 bytes; the tests
-      pass; the cost of the write with and without the option.
+      pass; the cost of the write with and without the option. (Two whole builds
+      of the kernel: 0 bytes differ in the `.ji` file of 17,118,277 bytes and in
+      the `.so` file; without the option, 67,774 object ids and 92 other words
+      differ. A write takes 5.98 to 6.07 s with the option and 5.85 to 5.86 s
+      without it, about 3 %; the peak of the precompile process is 626 to 630
+      MiB with it and 620 to 630 MiB without it. The cascade gate gives 0 bytes
+      in each of the three edits with the option, and 260 differing ids without
+      it. The parts test of Julia (3 of 3) and the tests of CompilerServer.jl
+      (45 of 45) pass.)
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
