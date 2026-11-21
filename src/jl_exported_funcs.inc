@@ -567,7 +567,7 @@
     YY(jl_dump_fptr_asm) \
     YY(jl_emit_native) \
     YY(jl_emit_object) \
-    YY(jl_install_object) \
+    YY(jl_install_objects) \
     YY(jl_get_function_id) \
     YY(jl_struct_to_llvm) \
     YY(jl_type_to_llvm) \
