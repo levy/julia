@@ -453,6 +453,13 @@ public:
     bool imaging_mode = true;
     bool safepoint_on_entry = true;
     bool use_swiftcc = true;
+    // The names of the functions of the code instances of a store of parts
+    // (`jl_emit_object`): a call to such a code instance that this output does
+    // not compile stays a declaration of its name, which a link resolves.
+    const DenseMap<jl_code_instance_t *, std::string> *part_names = nullptr;
+    // outputs: the calls to the functions of other parts, as
+    // (code instance, calling convention, name).
+    std::vector<std::tuple<jl_code_instance_t *, jl_invoke_api_t, std::string>> part_calls;
 
     jl_codegen_output_t(Module &M) JL_NOTSAFEPOINT
       : M(M), DL(M.getDataLayout()), TargetTriple(M.getTargetTriple())

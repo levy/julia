@@ -907,6 +907,18 @@ static void aot_link_output(jl_codegen_output_t &out) JL_CANSAFEPOINT
             if (equiv != out.ci_funcs.end())
                 it = equiv;
         }
+        // A code instance of another part keeps its declaration, with the name
+        // of the part: the link of the parts resolves it, as a direct call.
+        if (it == out.ci_funcs.end() && out.part_names) {
+            auto part = out.part_names->find(ci);
+            if (part != out.part_names->end()) {
+                target.decl->setName(part->second);
+                target.decl->setLinkage(GlobalValue::ExternalLinkage);
+                target.decl->setVisibility(GlobalValue::DefaultVisibility);
+                out.part_calls.emplace_back(ci, (jl_invoke_api_t)api, target.decl->getName().str());
+                continue;
+            }
+        }
         // If that fails, look for an equivalent CodeInstance that we can link to.
         if (it == out.ci_funcs.end() && out.external_linkage &&
             !(jl_atomic_load_relaxed(&ci->flags) & JL_CI_FLAGS_FROM_IMAGE))
@@ -1066,10 +1078,21 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
     }
 }
 
+static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod,
+                                          const jl_cgparams_t *cgparams, int external_linkage,
+                                          const DenseMap<jl_code_instance_t *, std::string> *part_names) JL_CANSAFEPOINT;
+
 // also be used by extern consumers like GPUCompiler.jl to obtain a module containing
 // all reachable & inferrrable functions.
 extern "C" JL_DLLEXPORT_CODEGEN
 void *jl_emit_native_impl(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod, const jl_cgparams_t *cgparams, int external_linkage)
+{
+    return (void *)emit_native_code(codeinfos, ci_order, llvmmod, cgparams, external_linkage, nullptr);
+}
+
+static jl_native_code_desc_t *emit_native_code(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod,
+                                          const jl_cgparams_t *cgparams, int external_linkage,
+                                          const DenseMap<jl_code_instance_t *, std::string> *part_names)
 {
     JL_TIMING(NATIVE_AOT, NATIVE_Create);
     ++CreateNativeCalls;
@@ -1091,10 +1114,11 @@ void *jl_emit_native_impl(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcTh
 
     data->TSM_ref->withModuleDo([&](Module &M) JL_CANSAFEPOINT {
         data->out = std::make_unique<jl_codegen_output_t>(M);
+        data->out->part_names = part_names;
         jl_emit_native_to_output(data, codeinfos, ci_order, cgparams, external_linkage);
     });
 
-    return (void *)data;
+    return data;
 }
 
 static object::Archive::Kind getDefaultForHost(Triple &triple)
@@ -2684,30 +2708,53 @@ jl_dump_native_impl(void *native_code, const char *bc_fname, const char *unopt_b
 
 // Compile the inferred code instances of `codeinfos` (in the form that
 // `jl_emit_native` takes) into one relocatable object, which another process
-// installs later with `jl_install_object`. The code has the form of an image:
-// it reaches each Julia object through a slot, a global `jl_object_slot#<i>`
+// installs later with `jl_install_objects`. The code has the form of an image:
+// it reaches each Julia object through a slot, a global `<prefix>#slot#<i>`
 // that the installer fills, and the state of the thread through the slots of
-// the runtime. Answer `svec(object, slots, functions)`: the bytes of the object,
-// the Julia object of each slot by its index, and for each code instance a
-// `svec(ci, invoke_api, invoke, specptr)` with the names of its symbols.
+// the runtime.
+//
+// `parts` is `nothing` for an object of its own, with the prefix `jl_object`.
+// Else it is `svec(prefix, cis, names)`, the names of the functions of the
+// code instances of a store of parts: a function of a code instance of `cis`
+// gets its name of `names` (its invoke wrapper the name with `.jfptr`), and a
+// call to one that this object does not compile stays a declaration of that
+// name, which the link of the parts resolves. Each other definition becomes
+// internal, so that the objects of the parts do not clash.
+//
+// Answer `svec(object, slots, functions, calls)`: the bytes of the object, the
+// Julia object of each slot by its index, for each code instance a
+// `svec(ci, invoke_api, invoke, specptr)` with the names of its symbols, and
+// for each call to another part a `svec(ci, invoke_api, name)`.
 extern "C" JL_DLLEXPORT_CODEGEN
-jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos)
+jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos, jl_value_t *parts)
 {
-    jl_array_t *ci_order = NULL, *object = NULL, *slots = NULL, *functions = NULL;
+    jl_array_t *ci_order = NULL, *object = NULL, *slots = NULL, *functions = NULL, *calls = NULL;
     jl_value_t *result = NULL;
-    JL_GC_PUSH5(&ci_order, &object, &slots, &functions, &result);
+    JL_GC_PUSH6(&ci_order, &object, &slots, &functions, &calls, &result);
+    std::string prefix = "jl_object";
+    DenseMap<jl_code_instance_t *, std::string> part_names;
+    bool named = jl_is_svec(parts);
+    if (named) {
+        prefix = jl_string_data(jl_svecref(parts, 0));
+        jl_array_t *cis = (jl_array_t *)jl_svecref(parts, 1);
+        jl_array_t *names = (jl_array_t *)jl_svecref(parts, 2);
+        for (size_t i = 0; i < jl_array_nrows(cis); i++)
+            part_names[(jl_code_instance_t *)jl_array_ptr_ref(cis, i)] = jl_string_data(jl_array_ptr_ref(names, i));
+    }
     ci_order = jl_alloc_vec_any(0);
-    auto data = (jl_native_code_desc_t *)jl_emit_native_impl(codeinfos, ci_order, NULL, NULL, 0);
+    auto data = emit_native_code(codeinfos, ci_order, NULL, NULL, 0, named ? &part_names : nullptr);
     size_t nslots = data->jl_sysimg_gvars.size();
     assert(nslots == data->jl_value_to_llvm.size() && "a call through the PLT of an image needs external linkage");
     SmallVector<char, 0> obj;
     std::vector<std::tuple<jl_code_instance_t *, int32_t, std::string, std::string>> funcs;
     data->TSM_ref->withModuleDo([&](Module &M) {
+        SmallPtrSet<GlobalValue *, 16> keep;
         for (size_t i = 0; i < nslots; i++) {
             auto gv = cast<GlobalVariable>(data->jl_sysimg_gvars[i]);
-            gv->setName("jl_object_slot#" + Twine(i));
+            gv->setName(prefix + "#slot#" + Twine(i));
             gv->setLinkage(GlobalValue::ExternalLinkage);
             gv->setVisibility(GlobalValue::DefaultVisibility);
+            keep.insert(gv);
         }
         // The state of the thread comes from the slots of the runtime, which it
         // gives the JIT (`add_shared_named_global` in codegen.cpp).
@@ -2720,11 +2767,28 @@ jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos)
                 new GlobalVariable(M, slot.second, false, GlobalValue::ExternalLinkage, nullptr, slot.first);
         }
         for (auto &entry : data->jl_fvar_map) {
+            jl_code_instance_t *ci = entry.first;
             int32_t invoke_id = std::get<0>(entry.second), specptr_id = std::get<1>(entry.second);
             int32_t api = invoke_id > 0 ? JL_INVOKE_SPECSIG : -invoke_id;
-            std::string invoke = invoke_id > 0 ? data->jl_sysimg_fvars[invoke_id - 1]->getName().str() : "";
-            std::string specptr = specptr_id > 0 ? data->jl_sysimg_fvars[specptr_id - 1]->getName().str() : "";
-            funcs.emplace_back(entry.first, api, std::move(invoke), std::move(specptr));
+            Function *invoke = invoke_id > 0 ? cast<Function>(data->jl_sysimg_fvars[invoke_id - 1]) : nullptr;
+            Function *specptr = specptr_id > 0 ? cast<Function>(data->jl_sysimg_fvars[specptr_id - 1]) : nullptr;
+            auto part = part_names.find(ci);
+            for (auto f : {invoke, specptr}) {
+                if (f == nullptr)
+                    continue;
+                if (part != part_names.end())
+                    f->setName(f == specptr ? part->second : part->second + ".jfptr");
+                f->setLinkage(GlobalValue::ExternalLinkage);
+                f->setVisibility(GlobalValue::DefaultVisibility);
+                keep.insert(f);
+            }
+            funcs.emplace_back(ci, api, invoke ? invoke->getName().str() : "", specptr ? specptr->getName().str() : "");
+        }
+        if (named) {
+            for (auto &gv : M.global_values()) {
+                if (!gv.isDeclaration() && !keep.contains(&gv) && !gv.hasLocalLinkage())
+                    gv.setLinkage(GlobalValue::InternalLinkage);
+            }
         }
         // The target machine of the image writer, with the small code model:
         // the JIT links the object, and no image data goes with it.
@@ -2760,8 +2824,17 @@ jl_value_t *jl_emit_object_impl(jl_array_t *codeinfos)
         jl_svecset(entry, 2, jl_cstr_to_string(std::get<2>(funcs[k]).c_str()));
         jl_svecset(entry, 3, jl_cstr_to_string(std::get<3>(funcs[k]).c_str()));
     }
+    auto &part_calls = data->out->part_calls;
+    calls = jl_alloc_vec_any(part_calls.size());
+    for (size_t k = 0; k < part_calls.size(); k++) {
+        jl_svec_t *entry = jl_alloc_svec(3);
+        jl_array_ptr_set(calls, k, (jl_value_t *)entry);
+        jl_svecset(entry, 0, (jl_value_t *)std::get<0>(part_calls[k]));
+        jl_svecset(entry, 1, jl_box_int32(std::get<1>(part_calls[k])));
+        jl_svecset(entry, 2, jl_cstr_to_string(std::get<2>(part_calls[k]).c_str()));
+    }
     delete data;
-    result = (jl_value_t *)jl_svec(3, object, slots, functions);
+    result = (jl_value_t *)jl_svec(4, object, slots, functions, calls);
     JL_GC_POP();
     return result;
 }
