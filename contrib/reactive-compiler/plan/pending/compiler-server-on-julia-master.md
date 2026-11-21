@@ -644,6 +644,63 @@ and CompilerServer.jl `main`:
       loads and gives the output of the stock image, and its writer compiles no
       unchanged function with LLVM; the time and the memory against S1.
 
+Facts so far (S1, S2):
+
+- S1: the stock system image of HazardApp takes 87.6 to 142.1 s, peaks at
+  5.1 to 5.2 GB (`JULIA_IMAGE_THREADS=4`), compiles 21,766 functions, and is
+  180 MB. The workload with an image gives another `ccallable` line than with
+  no image, and its `bench:` lines hold timings: the gate compares two images.
+- PackageCompiler starts the build process with `--pkgimages=no`, and the
+  image holds every module that the process loaded: with parts, CompilerServer
+  and PackageCompiler too.
+- In the mode of a system image, the provider met values that a store can not
+  hold: an implicit import that more than one module offers (`binding_module`
+  throws), a constant `Cstring` (no `write`), and a type of an anonymous module
+  (no read back). A value that holds an address now has no key, and the round
+  trip check drops what a stream can not hold or read back.
+- The whole build with parts made 38,734 parts in 782 s of emission, one at a
+  time, and a store of 245 MB; it went past 7 GB 10 s after the store was
+  written. With 8 GB, the provider alone is at 6.0 GB during the emission: it
+  keeps each part, each record and the whole store in memory.
+
+The owner, 2026-11-22: "We should try to avoid keeping everything in memory if
+that's possible with using the file system or some other mechanism better.
+Smaller peak allows more parallelization in the real system", and "Yes" to these
+steps:
+
+- [ ] M1. A store on the file system: a folder with one file for the object of
+      each part and one for its record, named by the part, and an index with
+      the settings, the tables of the globals and the types, the records of
+      other images, and the list of the parts. The provider writes the files of
+      a part as soon as it emits the part, and keeps only its name, its path,
+      its calls and the objects of its slots. The compile apart of Step 9 takes
+      the same store.
+- [ ] M2. The table of the writer names the path of the object of a part, and
+      the C side reads the object only when it writes the archive (a change of
+      C, which belongs to `pr-code-from-parts`; here on `pr-linked-products`).
+- [ ] M3. The round trip check of each part before its record is written: no
+      buffer of all parts, and no copy of all of them.
+- [ ] M4. In the mode of a system image, no second inference of the callees:
+      each callee of a system image is in the list of the writer.
+- [ ] M5. A rebuild reads the index and the records that it needs, and leaves
+      the objects on disk.
+- [ ] Gate: the whole build and the rebuild of S2 and S3, with the peak of the
+      build process against S1 and against the build before M1.
+
+For the future (written down by the owner's word, not a step of this plan):
+
+- The bridge of the writer infers all code before it calls the provider, and
+  that inferred code is most of the peak of a stock build. If the bridge called
+  the provider before inference, with the list of the method instances, the
+  provider could take a held part together with the record of its inference
+  result (the records of Step 9, with which the install runs no inference), and
+  the bridge would infer only the code with no held part. A rebuild after a
+  small edit would then infer and compile only what the edit touches. It needs a
+  change of the bridge (`compile_and_emit_native` in `Compiler/src/precompile.jl`
+  and `jl_create_native`), and the check of a held part can then not compare
+  with an inference of the writer: it must rest on the records alone, as the
+  install of Step 9 does.
+
 Facts of part 2 for package files (to Julia `c092fb0570`, CompilerServer.jl
 `da451de`):
 
