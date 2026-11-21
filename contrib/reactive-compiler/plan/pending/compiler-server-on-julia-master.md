@@ -442,7 +442,8 @@ Facts found:
       method instances at a world and generates their code with
       `jl_emit_native`, with no install in the process. (`jl_emit_object`,
       commit `e77ae1533c`.)
-- [ ] Part 2: generated code reports its slots (the Julia object of each slot)
+- [ ] Part 2 (first of the three items in the order of the owner, 2026-11-21:
+      the record, the objects for each part, then Step 10): generated code reports its slots (the Julia object of each slot)
       and what it read (each callee and its calling convention, the type
       layouts, the code generation parameters, the target). Done: the slots,
       and each function with its calling convention. The edges of inference
@@ -455,8 +456,17 @@ Facts found:
 - [x] Tests in Julia's tree: compile a function apart, install it in a new
       process, call it, and check that no LLVM ran. (`test/compile_apart.jl`,
       commit `14687ab4f5`; the run of test/runtests.jl passes.)
-- [ ] CompilerServer.jl on `compiler-server-master`: after an edit, a session
-      takes the compiled code of the edit from the store and compiles nothing.
+- [ ] ~~CompilerServer.jl on `compiler-server-master`: after an edit, a session
+      takes the compiled code of the edit from the store and compiles nothing.~~
+      Dropped by the owner (2026-11-21): a faster running session is another
+      product, and it does not bring the writing of binaries and package files
+      closer. The install in a new process stays as the proof that the keys
+      and the records give correct code in another process.
+- [ ] One stored object for each part, not one object for all: the parts call
+      each other by symbols that a link resolves, as the parts of a stock image
+      do, so that an edit compiles again only the parts that it changed. One
+      object for each root repeats the shared code and takes 4 times the
+      emission (30.8 s against 7.2 s on the kernel list).
 - [ ] Measure a trial and a write in separate processes (D7).
 
 Gate: the tests pass, the CompilerServer.jl check passes, and the owner approves
