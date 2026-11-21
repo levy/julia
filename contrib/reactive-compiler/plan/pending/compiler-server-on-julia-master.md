@@ -101,6 +101,9 @@ executes it. Each decision below is proposed and is approved with the plan.
   the texts link to them. On GitHub, each paragraph is one line.
 - D11. Nothing goes out without the owner's word: no push, no issue, no pull
   request, no repository on GitHub. Each send needs its own approval.
+- D12 (the owner, 2026-11-21). No issue and no pull request is created in this
+  plan: "let's work through this so we see what it costs and what it gives".
+  The texts and the branches are made and measured, and nothing is sent.
 
 ## Practices
 
