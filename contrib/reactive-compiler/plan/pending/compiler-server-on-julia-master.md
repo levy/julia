@@ -727,24 +727,34 @@ likely to accept the change of `objectid` as it is: "Yes" to opt-in object ids
 on our branch, with their cost measured first. The steps (on
 `pr-linked-products`):
 
-- [ ] Deterministic object ids, opt-in. A Julia option makes a process that
+- [x] Deterministic object ids, opt-in. A Julia option makes a process that
       writes output give each new mutable object an id that does not come from
       its address. At the first ask, the id is `bitmix(scope, n)`: `scope` is
-      the key of the top-level statement that runs, nested in the key of the
-      statement around it, and `n` counts the ids of that key before. A table of
+      the key of the top-level statement that runs, and `n` counts the ids of
+      that key before. A table of
       the process holds the ids, and the GC sweep removes the entry of a dead
       object. `julia_cmd` passes the option to the precompile process.
       Proposed decisions:
       - The option is `--deterministic-object-ids={yes|no}`, default `no`.
-      - The key of a statement is a hash of its form with no line numbers. A
-        `module` statement takes only its name, and a `toplevel` form makes no
-        key, so that the key of a statement does not depend on the other
-        statements around it.
+      - The key of a statement is a hash of its module and of its form with
+        no line numbers. A `module` statement takes only its name, and a
+        `toplevel` form makes no key, so that the key of a statement does not
+        depend on the other statements around it. (Found in the build: a key
+        nested in the key of the statement around it differs between two
+        processes, because the statement that starts a precompile process holds
+        the depot path of that process.)
       - An object that no code asked for gets its id at the write, in the order
         of the heap, in the key of the write.
-- [ ] The gate `link_cascade.jl` with the option: the linked LinkB is equal in
+- [x] The gate `link_cascade.jl` with the option: the linked LinkB is equal in
       each byte to the rebuild, with no copy of the ids, and two whole builds of
-      LinkB are equal, after one build id in both.
+      LinkB are equal, after one build id in both. (Julia `b0b587bf20`,
+      CompilerServer.jl `171145f`: 0 bytes differ in each of the three edits,
+      and the 9 objects of LinkA with an id that LinkB names keep it. With no
+      option, 260 ids differ and none of the 9 keeps its id. The empty instance
+      of a new memory type is a permanent object, `jl_gc_permobj`, which also
+      takes its id from the table. The full build with the change takes 7 min,
+      with a peak of 5.6 GB. The parts test of Julia (3 of 3) and the tests of
+      CompilerServer.jl (45 of 45) pass.)
 - [ ] At the write, an object that no code asked for gets its id from the
       object that first reaches it and from the field. Gate: after an edit of
       LinkA that moves objects, each unchanged mutable object of LinkA keeps its
