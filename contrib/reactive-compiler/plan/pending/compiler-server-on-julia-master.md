@@ -438,16 +438,23 @@ Facts found:
 
 ### Step 9: B, compile apart from load
 
-- [ ] On `pr-compile-apart`, part 1: the interface (D8). It infers a list of
+- [x] On `pr-compile-apart`, part 1: the interface (D8). It infers a list of
       method instances at a world and generates their code with
-      `jl_emit_native`, with no install in the process.
+      `jl_emit_native`, with no install in the process. (`jl_emit_object`,
+      commit `e77ae1533c`.)
 - [ ] Part 2: generated code reports its slots (the Julia object of each slot)
       and what it read (each callee and its calling convention, the type
-      layouts, the code generation parameters, the target).
-- [ ] Part 3: an install of inferred code and machine code in a running process.
+      layouts, the code generation parameters, the target). Done: the slots,
+      and each function with its calling convention. The edges of inference
+      serve as the record of what the code read; the type layouts, the
+      parameters and the target are not recorded yet.
+- [x] Part 3: an install of inferred code and machine code in a running process.
       The JIT links the object and binds its slots, with no LLVM.
-- [ ] Tests in Julia's tree: compile a function apart, install it in a new
-      process, call it, and check that no LLVM ran.
+      (`jl_install_object`, commit `eeb2968d30`; the records of inference in
+      CompilerServer.jl `1984d6c`.)
+- [x] Tests in Julia's tree: compile a function apart, install it in a new
+      process, call it, and check that no LLVM ran. (`test/compile_apart.jl`,
+      commit `14687ab4f5`; the run of test/runtests.jl passes.)
 - [ ] CompilerServer.jl on `compiler-server-master`: after an edit, a session
       takes the compiled code of the edit from the store and compiles nothing.
 - [ ] Measure a trial and a write in separate processes (D7).
@@ -470,6 +477,54 @@ CompilerServer.jl, commit `a5e7d3d`):
   `specptr` of a code instance to linked code.
 - Master uses LLVM 23. LLVM.jl may not support it, so a prototype in the
   package uses `ccall` into the C APIs.
+
+Facts found in the work (CompilerServer.jl `src/apart.jl`, commit `1984d6c`;
+the gate `test/gates/apart_kernel.jl` on the 296 signatures of the kernel list,
+in processes with `--pkgimages=no`, so the cache files hold inferred code and
+no machine code):
+
+- One object for all 290 method instances holds 1,233 functions in 2.5 MB. The
+  compile takes 1.7 s of inference and 7.2 s of emission. 744 of the functions
+  already have code in the process of the install (the system image), so about
+  60 % of the emission is not needed. An object that calls such code by external
+  links needs more work in `jl_install_object`.
+- The JIT cost of the list is mostly inference: the baseline `precompile` loop
+  takes 1.22 s. An install that infers again in its own process takes 1.1 s, so
+  it gains only the LLVM part. The record of the inference results of each
+  function removes the inference too.
+- The install makes 334 code instances from the records with no inference, and
+  the check of the loader (`scan_new_code!`) finds 333 valid. The install takes
+  0.19 s: read 0.05 s, make 0.14 s, check 0.002 s, slots 0.013 s, link 0.009 s.
+  The `precompile` loop after it takes 0.19 s, against 1.22 s, so the total is
+  about 0.4 s, which is 67 % less.
+- The keys of the slots: all 1,414 slots get a key. Three of them are roots of
+  a method definition (the variables of a `let` block around
+  `Base.CoreLogging.env_override_minlevel`). `Base.quoted_syms` is a `Set`, an
+  immutable struct, so the walk of the constants takes every constant that is
+  not plain bits.
+- A key of one tuple type for each kind of key made the JIT compile
+  `getindex`, `hash` and `isequal` for each key, and a dictionary keyed by
+  types compiled `setindex!` 318 times (967 ms). One concrete key type and
+  method instances as dictionary keys remove that.
+- `Base.method_instance` on the abstract signature of an edge corrupts the
+  method cache, and a later lookup crashes in `jl_lookup_cache_type_`. The
+  install takes the specialization of the method for exactly the types
+  (`Base.specialize_method`), with no dispatch.
+- On master, `Serialization` breaks a type that holds the type variable of a
+  struct, as the signature of an inner constructor `S{T}(x) where T` does: it
+  reads back with a free `T`. Julia 1.13.1 reads it back right. The key of a
+  method has its place, and the compile reads its store back and takes out
+  what does not read back the same. Two constructor records still go (about
+  0.12 s of JIT compile).
+- A method key with only the signature finds a method defined again with
+  another body, and the check of the edges then passes with old code. The key
+  holds the hash of the compressed source of the definition, which is the
+  same in two processes. The test package ApartApp checks this case.
+- A return type with a free type variable never reads back equal. The record
+  widens such a type to `Any` when the code returns a box; that is sound.
+- Open: a struct defined again with the same name gives another type under
+  the same key, because a type key resolves by name. The record of the type
+  layouts (part 2) closes this.
 
 ### Step 10: C, the writers take code from parts
 
