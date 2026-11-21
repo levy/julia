@@ -3752,6 +3752,182 @@ static void jl_strip_all_codeinfos(jl_array_t *mod_array)
     jl_foreach_reachable_mtable(strip_all_codeinfos_mt, mod_array, NULL);
 }
 
+// --strip-uncompiled: a code instance that this image holds no machine code for
+// is a cache of the compiler. No call reaches it: the machine code of the image
+// already holds what the compiler inlined. Only a compilation at run time reads
+// it, and without it the compiler infers that call again. `code` keeps each entry
+// with its inference result, and drops its inferred code and its line table.
+// `entries` drops the entry from the cache of its method instance, and an edge
+// that names it names its method instance. The method instance keeps its
+// backedges, so a new method still invalidates the code that calls it.
+typedef struct {
+    htable_t roots;     // the code instances that a global or an external function of the native code names
+    htable_t visited;   // the code instances whose edges `entries` has read
+    arraylist_t kept;   // the code instances whose edges `entries` reads
+    size_t entries;     // the code instances seen in the caches
+    size_t stripped;    // the code instances with no machine code
+} strip_uncompiled_env_t;
+
+static int jl_ci_has_image_code(jl_code_instance_t *ci, strip_uncompiled_env_t *env)
+{
+    if (ci->owner != jl_nothing)
+        return 1; // the cache of another compiler
+    if (ptrhash_get(&env->roots, ci) != HT_NOTFOUND)
+        return 1;
+    if (jl_atomic_load_relaxed(&ci->invoke) == jl_fptr_const_return)
+        return 1;
+    jl_method_instance_t *mi = jl_get_ci_mi(ci);
+    if (!jl_is_method(mi->def.method))
+        return 1; // a top-level thunk
+    if (jl_fptr_id(jl_atomic_load_relaxed(&ci->specptr.fptr)))
+        return 1; // a builtin
+    int32_t invokeptr_id = 0;
+    int32_t specfptr_id = 0;
+    jl_get_function_id(native_functions, ci, &invokeptr_id, &specfptr_id);
+    return invokeptr_id != 0 || specfptr_id != 0;
+}
+
+static void strip_uncompiled_mi(jl_method_instance_t *mi, strip_uncompiled_env_t *env)
+{
+    jl_code_instance_t *ci = jl_atomic_load_relaxed(&mi->cache);
+    jl_code_instance_t *last_kept = NULL;
+    int changed = 0;
+    while (ci) {
+        jl_code_instance_t *next = jl_atomic_load_relaxed(&ci->next);
+        env->entries++;
+        if (jl_ci_has_image_code(ci, env)) {
+            if (changed) {
+                if (last_kept)
+                    record_field_change((jl_value_t**)&last_kept->next, (jl_value_t*)ci);
+                else
+                    record_field_change((jl_value_t**)&mi->cache, (jl_value_t*)ci);
+                changed = 0;
+            }
+            last_kept = ci;
+            if (jl_options.strip_uncompiled == 2)
+                arraylist_push(&env->kept, ci);
+        }
+        else {
+            env->stripped++;
+            if (jl_options.strip_uncompiled == 1) {
+                jl_value_t *inferred = jl_atomic_load_relaxed(&ci->inferred);
+                if (inferred && inferred != jl_nothing && !jl_is_uint8(inferred))
+                    record_field_change((jl_value_t**)&ci->inferred, jl_nothing);
+                if (jl_nulldebuginfo)
+                    record_field_change((jl_value_t**)&ci->debuginfo, (jl_value_t*)jl_nulldebuginfo);
+            }
+            else {
+                changed = 1;
+            }
+        }
+        ci = next;
+    }
+    if (changed) {
+        if (last_kept)
+            record_field_change((jl_value_t**)&last_kept->next, NULL);
+        else
+            record_field_change((jl_value_t**)&mi->cache, NULL);
+    }
+}
+
+static int strip_uncompiled__(jl_typemap_entry_t *def, void *_env)
+{
+    strip_uncompiled_env_t *env = (strip_uncompiled_env_t*)_env;
+    jl_method_t *m = def->func.method;
+    jl_value_t *specializations = jl_atomic_load_relaxed(&m->specializations);
+    if (!jl_is_svec(specializations)) {
+        strip_uncompiled_mi((jl_method_instance_t*)specializations, env);
+    }
+    else {
+        size_t i, l = jl_svec_len(specializations);
+        for (i = 0; i < l; i++) {
+            jl_value_t *mi = jl_svecref(specializations, i);
+            if (mi != jl_nothing)
+                strip_uncompiled_mi((jl_method_instance_t*)mi, env);
+        }
+    }
+    if (jl_atomic_load_relaxed(&m->unspecialized))
+        strip_uncompiled_mi(jl_atomic_load_relaxed(&m->unspecialized), env);
+    return 1;
+}
+
+static int strip_uncompiled_mt(jl_methtable_t *mt, void *env)
+{
+    return jl_typemap_visitor(jl_atomic_load_relaxed(&mt->defs), strip_uncompiled__, env);
+}
+
+// `entries`: each edge of a code instance that stays, to a code instance that
+// goes, names the method instance of the one that goes. A code instance with
+// machine code that an edge names stays, so its edges are read too.
+static void strip_uncompiled_edges(strip_uncompiled_env_t *env) JL_GC_DISABLED
+{
+    while (env->kept.len > 0) {
+        jl_code_instance_t *ci = (jl_code_instance_t*)arraylist_pop(&env->kept);
+        if (ptrhash_get(&env->visited, ci) != HT_NOTFOUND)
+            continue;
+        ptrhash_put(&env->visited, ci, ci);
+        jl_svec_t *edges = jl_atomic_load_relaxed(&ci->edges);
+        if (edges == NULL || !jl_is_svec(edges))
+            continue;
+        size_t i, n = jl_svec_len(edges);
+        int changed = 0;
+        for (i = 0; i < n; i++) {
+            jl_value_t *edge = jl_svecref(edges, i);
+            if (edge == NULL || !jl_is_code_instance(edge))
+                continue;
+            if (jl_ci_has_image_code((jl_code_instance_t*)edge, env))
+                arraylist_push(&env->kept, edge);
+            else
+                changed = 1;
+        }
+        if (!changed)
+            continue;
+        jl_svec_t *named = jl_alloc_svec(n);
+        for (i = 0; i < n; i++) {
+            jl_value_t *edge = jl_svecref(edges, i);
+            if (edge == NULL)
+                continue;
+            if (jl_is_code_instance(edge) && !jl_ci_has_image_code((jl_code_instance_t*)edge, env))
+                edge = (jl_value_t*)jl_get_ci_mi((jl_code_instance_t*)edge);
+            jl_svecset(named, i, edge);
+        }
+        record_field_change((jl_value_t**)&ci->edges, (jl_value_t*)named);
+    }
+}
+
+// Runs with the collector off, after the native code names its globals and its
+// external functions: `entries` allocates the new lists of edges.
+static void jl_strip_uncompiled(jl_array_t *mod_array, arraylist_t *gvars, arraylist_t *external_fns) JL_GC_DISABLED
+{
+    strip_uncompiled_env_t env;
+    htable_new(&env.roots, 0);
+    htable_new(&env.visited, 0);
+    arraylist_new(&env.kept, 0);
+    env.entries = 0;
+    env.stripped = 0;
+    for (size_t i = 0; i < gvars->len; i++) {
+        jl_value_t *v = (jl_value_t*)gvars->items[i];
+        if (v && jl_is_code_instance(v))
+            ptrhash_put(&env.roots, v, v);
+    }
+    for (size_t i = 0; i < external_fns->len; i++) {
+        jl_value_t *v = (jl_value_t*)external_fns->items[i];
+        if (v)
+            ptrhash_put(&env.roots, v, v);
+    }
+    if (jl_options.strip_uncompiled == 1)
+        jl_nulldebuginfo = (jl_debuginfo_t*)jl_get_global(jl_core_module, jl_symbol("NullDebugInfo"));
+    jl_foreach_reachable_mtable(strip_uncompiled_mt, mod_array, &env);
+    if (jl_options.strip_uncompiled == 2)
+        strip_uncompiled_edges(&env);
+    jl_safe_printf("strip-uncompiled: %s of %zu of %zu code instances in the caches, which have no machine code\n",
+                   jl_options.strip_uncompiled == 1 ? "dropped the code" : "dropped the entries",
+                   env.stripped, env.entries);
+    htable_free(&env.roots);
+    htable_free(&env.visited);
+    arraylist_free(&env.kept);
+}
+
 static int strip_module(jl_module_t *m, jl_sym_t *docmeta_sym)
 {
     size_t world = jl_atomic_load_relaxed(&jl_world_counter);
@@ -5166,6 +5342,8 @@ static int jl_save_system_image_to_stream(ios_t *f, jl_array_t *mod_array,
     reactive_pages_on = 0;
     if (reactive_prune_heap && !jl_options.trim && reactive_pages_mode() && !reactive_pages_retry)
         reactive_pages_begin(&sysimg, &const_data, &symbols);
+    if (worklist == NULL && native_functions && jl_options.strip_uncompiled && !jl_reactive_image_format())
+        jl_strip_uncompiled(mod_array, &gvars, &external_fns);
     { // step 1: record values (recursively) that need to go in the image
         size_t i;
         if (reactive_pages_on) {

@@ -81,6 +81,7 @@ struct JLOptions
     reactive_trim_memo::Ptr{UInt8}
     reactive_heapdump::Ptr{UInt8}
     reactive_dirty_pages::Ptr{UInt8}
+    strip_uncompiled::Int8
 end
 
 # This runs early in the sysimage != is not defined yet

@@ -89,6 +89,10 @@ typedef struct {
     const char *reactive_trim_memo;   // JULIA_REACTIVE_TRIM_MEMO
     const char *reactive_heapdump;    // JULIA_REACTIVE_HEAPDUMP
     const char *reactive_dirty_pages; // JULIA_REACTIVE_DIRTY_PAGES
+    // --strip-uncompiled: 0 none, 1 `code` (drop the inferred code and the line
+    // table of each code instance with no machine code in the image), 2 `entries`
+    // (drop each such code instance from the image).
+    int8_t strip_uncompiled;
 } jl_options_t;
 
 #endif

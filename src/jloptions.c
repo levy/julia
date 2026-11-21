@@ -174,6 +174,7 @@ JL_DLLEXPORT void jl_init_options(void)
                         NULL, // reactive_trim_memo
                         NULL, // reactive_heapdump
                         NULL, // reactive_dirty_pages
+                        0, // strip_uncompiled
     };
     jl_options_initialized = 1;
 }
@@ -326,6 +327,9 @@ static const char opts_hidden[]  =
     "                                               system image\n"
     " --strip-ir                                    Remove IR (intermediate representation) of compiled\n"
     "                                               functions\n"
+    " --strip-uncompiled={code|entries}             For the code instances that a system image holds no\n"
+    "                                               machine code for: drop their inferred code and line\n"
+    "                                               tables (code), or drop them (entries)\n"
     " --compress-sysimage={yes|no*}                 Compress the sys/pkgimage heap at the expense of\n"
     "                                               slightly increased load time.\n"
     " --sysimage-prelink={yes|no*}                  Reserve room in the system image being written for\n"
@@ -441,6 +445,7 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
            opt_rr_detach,
            opt_strip_metadata,
            opt_strip_ir,
+           opt_strip_uncompiled,
            opt_sysimage_prelink,
            opt_output_prelinked,
            opt_heap_size_hint,
@@ -527,6 +532,7 @@ JL_DLLEXPORT void jl_parse_opts(int *argcp, char ***argvp)
         { "rr-detach",       no_argument,       0, opt_rr_detach },
         { "strip-metadata",  no_argument,       0, opt_strip_metadata },
         { "strip-ir",        no_argument,       0, opt_strip_ir },
+        { "strip-uncompiled", required_argument, 0, opt_strip_uncompiled },
         { "sysimage-prelink",required_argument, 0, opt_sysimage_prelink },
         { "output-prelinked",required_argument, 0, opt_output_prelinked },
         { "permalloc-pkgimg",required_argument, 0, opt_permalloc_pkgimg },
@@ -1058,6 +1064,14 @@ restart_switch:
             break;
         case opt_strip_ir:
             jl_options.strip_ir = 1;
+            break;
+        case opt_strip_uncompiled:
+            if (!strcmp(optarg, "code"))
+                jl_options.strip_uncompiled = 1;
+            else if (!strcmp(optarg, "entries"))
+                jl_options.strip_uncompiled = 2;
+            else
+                jl_errorf("julia: --strip-uncompiled takes code or entries (%s)", optarg);
             break;
         case opt_sysimage_prelink:
             if (!strcmp(optarg, "yes"))
