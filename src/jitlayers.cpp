@@ -451,6 +451,64 @@ static void jl_do_dump_compile(jl_code_instance_t *codeinst, uint64_t time) JL_N
                             julia_double_to_half(orig_time + time * 1e-9));
 }
 
+// Install an object of `jl_emit_object` in this process. The object links into
+// a JITDylib of its own. Each slot `jl_object_slot#<i>` gets `slots[i]`, the
+// Julia object of this process for that slot, which becomes a global root. Then
+// each code instance of `functions` gets the code of its symbols, as a compile
+// of the JIT gives it (`jl_publish_compiled_ci`), and no LLVM runs. A code
+// instance that has code already keeps it. Answer the count of the code
+// instances that got code, or -1 when the object does not link.
+extern "C" JL_DLLEXPORT_CODEGEN int
+jl_install_object_impl(jl_array_t *object, jl_array_t *slots, jl_array_t *functions)
+{
+    auto &JIT = *jl_ExecutionEngine;
+    orc::JITDylib &JD = JIT.createJITDylib("jl_installed");
+    auto buffer = MemoryBuffer::getMemBufferCopy(
+        StringRef(jl_array_data(object, char), jl_array_nrows(object)), "jl_installed_object");
+    if (auto Err = JIT.addObjectFile(JD, std::move(buffer))) {
+        jl_safe_printf("jl_install_object: %s\n", toString(std::move(Err)).c_str());
+        return -1;
+    }
+    auto address = [&](const std::string &name) -> void * {
+        auto sym = JIT.findJDSymbol(JD, name, true);
+        if (!sym) {
+            jl_safe_printf("jl_install_object: %s\n", toString(sym.takeError()).c_str());
+            return nullptr;
+        }
+        return sym->getAddress().toPtr<void *>();
+    };
+    // The slots first: the code reads them as soon as it runs.
+    size_t nslots = jl_array_nrows(slots);
+    for (size_t i = 0; i < nslots; i++) {
+        void *slot = address("jl_object_slot#" + std::to_string(i));
+        if (slot == nullptr)
+            return -1;
+        jl_value_t *value = jl_array_ptr_ref(slots, i);
+        if (value != NULL)
+            value = jl_as_global_root(value, 1);
+        *(jl_value_t **)slot = value;
+    }
+    int installed = 0;
+    size_t nfuncs = jl_array_nrows(functions);
+    for (size_t k = 0; k < nfuncs; k++) {
+        jl_svec_t *entry = (jl_svec_t *)jl_array_ptr_ref(functions, k);
+        jl_code_instance_t *ci = (jl_code_instance_t *)jl_svecref(entry, 0);
+        jl_codeinst_funcs_t<void *> addrs;
+        addrs.invoke_api = (jl_invoke_api_t)jl_unbox_int32(jl_svecref(entry, 1));
+        if (addrs.invoke_api == JL_INVOKE_CONST || jl_atomic_load_relaxed(&ci->invoke) != NULL)
+            continue;
+        std::string invoke = jl_string_data(jl_svecref(entry, 2));
+        std::string specptr = jl_string_data(jl_svecref(entry, 3));
+        addrs.invoke = invoke.empty() ? nullptr : address(invoke);
+        addrs.specptr = specptr.empty() ? nullptr : address(specptr);
+        if (addrs.specptr == nullptr || (addrs.invoke_api == JL_INVOKE_SPECSIG && addrs.invoke == nullptr))
+            continue;
+        jl_publish_compiled_ci(ci, addrs);
+        installed++;
+    }
+    return installed;
+}
+
 extern "C" JL_DLLEXPORT_CODEGEN void
 jl_emit_codeinsts_to_jit_impl(jl_code_instance_t **codeinsts, jl_code_info_t **srcs, int len)
 {
