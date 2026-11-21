@@ -675,11 +675,15 @@ static jl_value_t *jl_code_parts = nullptr;
 //   calls and that the image defines: the code instance that the image
 //   compiles for `mi` when `ci` is `nothing`, else `ci`, the code of another
 //   image, which the image calls as it calls other images.
+// `parts` can also be a function of the list of code that the image takes (as
+// the bridge of the compiler answers it), which `jl_create_native` calls in
+// the latest world and which answers such a table or `nothing`; it can then
+// check each part against the code instance that the image takes.
 // `nothing` clears the table.
 extern "C" JL_DLLEXPORT_CODEGEN
 void jl_set_code_parts_impl(jl_value_t *parts)
 {
-    jl_code_parts = jl_is_svec(parts) ? parts : nullptr;
+    jl_code_parts = parts == jl_nothing ? nullptr : parts;
 }
 
 // `external_linkage` create linkages between pkgimages.
@@ -740,6 +744,19 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
     // A code instance whose code a part of the store holds does not compile.
     jl_value_t *code_parts = jl_code_parts;
     jl_code_parts = nullptr;
+    if (code_parts && !jl_is_svec(code_parts)) {
+        size_t world_before = ct->world_age;
+        ct->world_age = jl_atomic_load_acquire(&jl_world_counter);
+        jl_value_t *table = jl_call1(code_parts, codeinfos);
+        ct->world_age = world_before;
+        if (table == NULL) {
+            jl_safe_printf("jl_create_native: the function of the parts failed: ");
+            jl_static_show(JL_STDERR, jl_current_exception(ct));
+            jl_safe_printf("\n");
+        }
+        code_parts = table && jl_is_svec(table) ? table : nullptr;
+        fargs[5] = code_parts;
+    }
     DenseMap<jl_code_instance_t *, std::string> part_names;
     if (code_parts) {
         // The table names method instances; the code instances are those that
@@ -756,22 +773,27 @@ void *jl_create_native_impl(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int ex
         jl_array_t *taken = jl_alloc_vec_any(0);
         fargs[2] = (jl_value_t *)taken;
         DenseMap<jl_method_instance_t *, jl_code_instance_t *> compiled;
-        for (size_t i = 0; i < jl_array_nrows(all); i += 2) {
+        // Each item is a code instance followed by its source, or one
+        // `svec(rettype, sig)` of a C-callable alias.
+        for (size_t i = 0; i < jl_array_nrows(all); i++) {
             jl_value_t *item = jl_array_ptr_ref(all, i);
-            if (jl_is_code_instance(item)) {
-                jl_code_instance_t *ci = (jl_code_instance_t *)item;
-                auto part = by_mi.find(jl_get_ci_mi(ci));
-                if (part != by_mi.end()) {
-                    jl_svec_t *entry = part->second;
-                    part_names[ci] = jl_string_data(jl_svecref(entry, 3));
-                    jl_array_ptr_1d_push(taken, (jl_value_t *)jl_svec(4, (jl_value_t *)ci, jl_svecref(entry, 1),
-                                                                     jl_svecref(entry, 2), jl_svecref(entry, 3)));
-                    continue;
-                }
-                compiled[jl_get_ci_mi(ci)] = ci;
+            if (!jl_is_code_instance(item)) {
+                jl_array_ptr_1d_push(kept, item);
+                continue;
             }
+            jl_code_instance_t *ci = (jl_code_instance_t *)item;
+            jl_value_t *src = jl_array_ptr_ref(all, ++i);
+            auto part = by_mi.find(jl_get_ci_mi(ci));
+            if (part != by_mi.end()) {
+                jl_svec_t *entry = part->second;
+                part_names[ci] = jl_string_data(jl_svecref(entry, 3));
+                jl_array_ptr_1d_push(taken, (jl_value_t *)jl_svec(4, (jl_value_t *)ci, jl_svecref(entry, 1),
+                                                                 jl_svecref(entry, 2), jl_svecref(entry, 3)));
+                continue;
+            }
+            compiled[jl_get_ci_mi(ci)] = ci;
             jl_array_ptr_1d_push(kept, item);
-            jl_array_ptr_1d_push(kept, jl_array_ptr_ref(all, i + 1));
+            jl_array_ptr_1d_push(kept, src);
         }
         // The callee of each alias: the code instance that this image
         // compiles, else the one that the table names, else any of the method
@@ -1128,7 +1150,6 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
     emit_always_inline(out,
                        [&ci_infos](jl_code_instance_t *ci) { return ci_infos.lookup(ci); });
     emit_llvmcall_modules(out);
-    // finally, make sure all referenced methods get fixed up, particularly if the user declined to compile them
     // The names that the parts of the store call and that this image defines.
     if (out.code_parts) {
         jl_array_t *aliases = (jl_array_t *)jl_svecref(out.code_parts, 2);
@@ -1140,6 +1161,7 @@ static void jl_emit_native_to_output(jl_native_code_desc_t *data, jl_array_t *co
             out.part_aliases[{ci, api}] = jl_string_data(jl_svecref(alias, 2));
         }
     }
+    // finally, make sure all referenced methods get fixed up, particularly if the user declined to compile them
     aot_link_output(out);
     // including generating cfunction thunks
     generate_cfunc_thunks(out);
