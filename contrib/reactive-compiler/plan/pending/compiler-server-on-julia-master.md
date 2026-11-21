@@ -635,7 +635,7 @@ and CompilerServer.jl `main`:
       incremental, `cpu_target = "native"`, its workload as the precompile
       file): the time and the peak memory of the build, the count of the
       functions that the writer compiles, and the output of the workload.
-- [ ] S2. `create_sysimage_with_parts`: the build process sets the provider in
+- [x] S2. `create_sysimage_with_parts`: the build process sets the provider in
       the mode of a system image (`-L` of a prelude). In that mode the provider
       makes parts also for the code of other images, because a system image
       can not call the code of a package file. A whole build writes the store,
@@ -668,24 +668,50 @@ that's possible with using the file system or some other mechanism better.
 Smaller peak allows more parallelization in the real system", and "Yes" to these
 steps:
 
-- [ ] M1. A store on the file system: a folder with one file for the object of
+- [x] M1. A store on the file system: a folder with one file for the object of
       each part and one for its record, named by the part, and an index with
       the settings, the tables of the globals and the types, the records of
       other images, and the list of the parts. The provider writes the files of
       a part as soon as it emits the part, and keeps only its name, its path,
       its calls and the objects of its slots. The compile apart of Step 9 takes
       the same store.
-- [ ] M2. The table of the writer names the path of the object of a part, and
+- [x] M2. The table of the writer names the path of the object of a part, and
       the C side reads the object only when it writes the archive (a change of
       C, which belongs to `pr-code-from-parts`; here on `pr-linked-products`).
-- [ ] M3. The round trip check of each part before its record is written: no
+- [x] M3. The round trip check of each part before its record is written: no
       buffer of all parts, and no copy of all of them.
-- [ ] M4. In the mode of a system image, no second inference of the callees:
+- [x] M4. In the mode of a system image, no second inference of the callees:
       each callee of a system image is in the list of the writer.
-- [ ] M5. A rebuild reads the index and the records that it needs, and leaves
+- [x] M5. A rebuild reads the index and the records that it needs, and leaves
       the objects on disk.
-- [ ] Gate: the whole build and the rebuild of S2 and S3, with the peak of the
+- [x] Gate: the whole build and the rebuild of S2 and S3, with the peak of the
       build process against S1 and against the build before M1.
+      (Julia `3975fe4802`, CompilerServer.jl `6f56ac5`.) Facts:
+      - Before M1, the whole build with parts needed the cap of 8 GB: the job
+        peaked at 7.7 GiB, the provider ended at 6.3 GiB, and 1.7 GiB stayed
+        live after a full GC. Its image did not load: 12 names that parts called
+        had no definition.
+      - The cause: the provider kept one part for each method instance, and the
+        writer mapped the table by method instance, but a method instance can
+        have two code instances in the list of the writer, with other return
+        types and so two names. Parts now go by name, the table names each code
+        instance, and a call by the name of another code instance of a method
+        instance with a part gets a thunk through `jl_invoke`.
+      - After M1 to M5 (each build in a process of its own, the peak by
+        `getrusage`): stock 90.3 s, 5,165 MiB, 21,766 functions compiled by the
+        writer, 180 MB; the whole build with parts 714.3 s (593.2 s of emission
+        of 38,788 parts), 5,239 MiB, 79 functions compiled by the writer, an
+        image of 362 MB and a store of 325 MB; the rebuild with no change
+        88.7 s, 6,469 MiB, 38,552 parts kept and 236 new ones (refused: 25 for
+        the method, 80 for the edges, 60 for the slots), 79 functions compiled
+        by the writer. Both images with parts load and give the output of the
+        stock image.
+      - The provider of the whole build ended at 4.8 GiB with 1.2 GB live after
+        a full GC; the one of the rebuild took 21.6 s and ended at 5.8 GiB with
+        1.2 GB live. So the rebuild peaks higher than the whole build, and
+        above the stock build: open.
+      - The rebuild takes as long as the stock build: the bridge infers all code
+        before the provider runs (the idea for the future below).
 
 For the future (written down by the owner's word, not a step of this plan):
 
