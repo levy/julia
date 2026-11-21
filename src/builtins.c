@@ -551,9 +551,10 @@ static uintptr_t immut_id_(jl_datatype_t *dt, jl_value_t *v, uintptr_t h) JL_NOT
 
 // Deterministic object ids (`--deterministic-object-ids=yes`). In a process that
 // writes output, the id of a new mutable object does not come from its address:
-// at the first ask, it is `bitmix(scope, n)`, where `scope` is the key of the
-// top-level statement that runs (`jl_object_id_scope_enter`) and `n` counts the
-// ids that this key gave before. So two runs of the same statements give the
+// at the first ask, it is `bitmix(key, n)`, where `key` is the key of the object
+// by its kind (`natural_object_key`), else the key of the top-level statement
+// that runs (`jl_object_id_scope_enter`), and `n` counts the ids that this key
+// gave before. So two runs of the same statements give the
 // same ids, and each hash table that the run fills has the layout of the ids
 // that the writer stores. The GC sweep removes the entry of a dead object
 // (`jl_sweep_object_ids`), so that a new object at its address gets a new id.
@@ -563,6 +564,39 @@ static jl_mutex_t object_ids_lock;
 // The scope before the first statement, and the scope of the write.
 static uint64_t object_id_scope = 0x4f626a6563744964;
 
+// The key of an object that has one by its kind, the same in each process: a
+// method by its module, name and signature; a method instance by its method and
+// its types; a code instance by its method instance and its owner; a binding by
+// its module and name. 0 for another object, which takes the key of the scope.
+static uint64_t natural_object_key(jl_value_t *v) JL_NOTSAFEPOINT
+{
+    if (jl_is_method(v)) {
+        jl_method_t *m = (jl_method_t*)v;
+        if (m->sig == NULL || m->module == NULL || m->name == NULL)
+            return 0;
+        return bitmix(bitmix(0x4d657468, m->module->hash), bitmix(m->name->hash, jl_object_id(m->sig)));
+    }
+    if (jl_is_method_instance(v)) {
+        jl_method_instance_t *mi = (jl_method_instance_t*)v;
+        if (mi->def.value == NULL || mi->specTypes == NULL)
+            return 0;
+        return bitmix(bitmix(0x4d49, jl_object_id(mi->def.value)), jl_object_id(mi->specTypes));
+    }
+    if (jl_is_code_instance(v)) {
+        jl_code_instance_t *ci = (jl_code_instance_t*)v;
+        if (ci->def == NULL)
+            return 0;
+        return bitmix(bitmix(0x4349, jl_object_id(ci->def)), ci->owner ? jl_object_id(ci->owner) : 0);
+    }
+    if (jl_is_binding(v)) {
+        jl_binding_t *b = (jl_binding_t*)v;
+        if (b->globalref == NULL)
+            return 0;
+        return bitmix(bitmix(0x42, jl_globalref_mod(b->globalref)->hash), jl_globalref_name(b->globalref)->hash);
+    }
+    return 0;
+}
+
 uintptr_t jl_deterministic_object_id(jl_value_t *v) JL_NOTSAFEPOINT
 {
     JL_LOCK_NOGC(&object_ids_lock);
@@ -570,13 +604,23 @@ uintptr_t jl_deterministic_object_id(jl_value_t *v) JL_NOTSAFEPOINT
         htable_new(&jl_object_ids, 0);
         htable_new(&object_id_counts, 0);
     }
+    void *found = ptrhash_get(&jl_object_ids, (void*)v);
+    JL_UNLOCK_NOGC(&object_ids_lock);
+    if (found != HT_NOTFOUND)
+        return (uintptr_t)found;
+    // The key of the id: the key of the object by its kind, else the scope. The
+    // key of a method instance asks for the id of its method, so it is outside
+    // of the lock.
+    uint64_t key = natural_object_key(v);
+    if (key == 0)
+        key = object_id_scope;
+    JL_LOCK_NOGC(&object_ids_lock);
     void **bp = ptrhash_bp(&jl_object_ids, (void*)v);
     if (*bp == HT_NOTFOUND) {
-        uint64_t scope = object_id_scope;
-        void **count = ptrhash_bp(&object_id_counts, (void*)(uintptr_t)(scope | 2));
+        void **count = ptrhash_bp(&object_id_counts, (void*)(uintptr_t)(key | 2));
         uintptr_t n = *count == HT_NOTFOUND ? 0 : (uintptr_t)*count / 2 - 1;
         *count = (void*)(2 * (n + 2));
-        uintptr_t id = bitmix(scope, n);
+        uintptr_t id = bitmix(key, n);
         *bp = (void*)(id == (uintptr_t)HT_NOTFOUND ? id + 2 : id);
     }
     uintptr_t id = (uintptr_t)*bp;
