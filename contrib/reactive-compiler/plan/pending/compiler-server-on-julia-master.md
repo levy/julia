@@ -614,13 +614,59 @@ Facts for the objects of each part, found before the work:
       format version 3 (one function table with names, calls by name), with no
       overlay, no writes by pages and no pre-relocation.
 - [ ] Part 2: the writers of package files and of system images take the code
-      of a function from a part.
+      of a function from a part. Done for package files: Julia `b786281c96`
+      and `c092fb0570` on `pr-code-from-parts`, CompilerServer.jl `e8ca6d7`,
+      `00cca6e`, `da451de`. Open: system images.
 - [ ] CompilerServer.jl: a whole build of a package file and of a binary takes
       all unchanged code from the store.
 
 Gate: a package file and a system image written with all their code from the
 store load and pass the tests of `HazardApp`, and their write runs LLVM for no
 unchanged function. The pull request opens only after B is merged.
+
+Facts of part 2 for package files (to Julia `c092fb0570`, CompilerServer.jl
+`da451de`):
+
+- The parts enter a package file as one more shard. A shard has a table of
+  absolute function pointers and a table of slot offsets from the table
+  itself, so a shard can name functions and slots of other objects of the same
+  file, and the loader needs no change. The parts have one target, so the
+  clone tables of their shard are empty; the writer must refuse parts for a
+  cpu target with more than one target.
+- `jl_set_code_parts` takes a function of this package, which
+  `jl_create_native` calls after the bridge of the compiler, in the latest
+  world, with the list of code that the file takes. A wrap of the bridge can
+  not serve: the writer calls the bridge in the world of the compiler, where
+  no method of this package exists. A hook at exit inferred the code itself
+  and put more code into the file than the stock writer does.
+- The function of the parts must have its code in the package file of
+  CompilerServer: code that the writer infers before the function switches the
+  tracking of new code off becomes code of the new file.
+- The writer reads the objects of the slots after `jl_create_native`, so the
+  table must live until the output is written.
+- The indexes of the functions and the slots of the parts are fixed when
+  `jl_create_native` runs; `jl_dump_native` appends more functions later. So
+  the tables of the other shards have gaps, which `get_fvars_gvars` and
+  `verify_partitioning` now accept.
+- In the list of code, a C-callable alias is one item, not a pair.
+- In code from a package file, a `ccall` of a `jl_` name with no library looks
+  in `libjulia-internal`, which holds only the fallback of a function of the
+  code generator. CompilerServer.jl calls these functions by their address in
+  `libjulia`.
+- The named symbols of a part are protected: the JIT still finds them, and the
+  link of a file binds a call between parts directly, with no PLT.
+- HazardApp with two precompile statements: the stock writer compiles 18
+  functions in 0.35 s, the writer with parts compiles 1 in 1.44 s (the load of
+  CompilerServer.jl in the writer is most of the time), and both files give
+  the same output of the workload.
+- ProjecturedKernel with its recorded list: the stock writer compiles 779
+  functions in 5.0 s (1.19 MB); with the parts of a separate compile, the
+  writer compiles 221 in 5.9 s (1.83 MB). 17 parts are refused because the
+  inference of the writer gives other edges than the inference of the
+  compile process (other callees), and the other functions have no part: the
+  compile process does not choose the same set of functions as the writer.
+  So the parts of a package file must come from a writer process: a whole
+  build must write its parts (part 1 of this step).
 
 ### Step 11: D, the design and its first part
 
