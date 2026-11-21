@@ -786,11 +786,37 @@ on our branch, with their cost measured first. The steps (on
       #63150, branch `pr-reproducible-image-code`, sorts the work list of a
       build and the GC frame slots, which our branch does not have.)
 
-- [ ] Bring the three commits of #63150 (branch `pr-reproducible-image-code`)
+- [x] Bring the three commits of #63150 (branch `pr-reproducible-image-code`)
       onto `pr-linked-products`, and measure the kernel again with
       `ids_kernel.jl`. For the table of the global slots, take the sort by name
       of #63150 in place of the order of the module of `f0a7bfd4b1`. (The owner:
-      "Yes".)
+      "Yes".) (Julia `9376816a09`, `8f619ca202`, `f8cec77e7c`, and `a6430b45de`;
+      CompilerServer.jl `13a9ca3`.) Facts:
+      - The first two commits apply with no conflict; the third replaces the
+        order of the module for the slot table.
+      - With them, the `.so` files of two whole builds of the kernel have the
+        same code; they differ only in the checksum of the heap and the build id
+        note (24 bytes).
+      - Two more orders of addresses were left: `jl_get_llvm_cis` walked
+        `jl_fvar_map`, a std::map keyed by the code instance (the list `new_ext`
+        and the method instances of the writer), and the sort of the function
+        table left the code instances with no function in the order of a
+        DenseMap. `a6430b45de` fixes both.
+      - With the option, two whole builds of the kernel now have the same order
+        of their 152,226 objects and the same object ids. They differ in 102
+        words (443 bytes): the random low half of the build id of the 24
+        submodules (module byte 328), and 78 words of bytes that no one wrote:
+        padding in the dump of a module (bytes 40, 368 and 384), padding after a
+        `Bool`, the padding field `_` of a `ReentrantLock` (its constructor does
+        not set it), and 16 words of constant data. Without the option, 67,774
+        object ids and 110 other words differ.
+      - The write takes 5.92 to 5.99 s with the option, and 5.94 to 6.14 s
+        without it: the cost of the option is inside the noise.
+
+Next, proposed and waiting for the owner: the writer, in a process with the
+option, writes zeros in each byte that no field holds and in a new object
+before its fields are set; and the build id of each submodule gets the same
+choice from content as the top module.
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
