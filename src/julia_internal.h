@@ -2768,7 +2768,7 @@ typedef jl_value_t *(*jl_codeinstance_lookup_t)(jl_method_instance_t *mi JL_PROP
 JL_DLLIMPORT void *jl_create_native(LLVMOrcThreadSafeModuleRef llvmmod, int trim, int cache, size_t world, jl_array_t *mod_array, jl_array_t *worklist, int all, jl_array_t *module_init_order, jl_array_t *ext_foreign_cis) JL_CANSAFEPOINT;
 JL_DLLIMPORT void *jl_emit_native(jl_array_t *codeinfos, jl_array_t *ci_order, LLVMOrcThreadSafeModuleRef llvmmod, const jl_cgparams_t *cgparams, int _external_linkage) JL_CANSAFEPOINT;
 JL_DLLIMPORT jl_value_t *jl_emit_object(jl_array_t *codeinfos, jl_value_t *parts) JL_CANSAFEPOINT;
-JL_DLLIMPORT int jl_install_objects(jl_array_t *objects, jl_array_t *functions) JL_CANSAFEPOINT;
+JL_DLLIMPORT int jl_install_objects(jl_array_t *objects, jl_array_t *functions, jl_array_t *externals) JL_CANSAFEPOINT;
 JL_DLLIMPORT void jl_dump_native(void *native_code,
         const char *bc_fname, const char *unopt_bc_fname, const char *obj_fname, const char *asm_fname,
         ios_t *z, uint32_t checksum, const char *unpack_func, jl_emission_params_t *params);

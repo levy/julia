@@ -452,7 +452,9 @@ static void jl_do_dump_compile(jl_code_instance_t *codeinst, uint64_t time) JL_N
 }
 
 // Install objects of `jl_emit_object` in this process. The objects link into
-// one JITDylib, so that a call of one to a function of another resolves. Each
+// one JITDylib, so that a call of one to a function of another resolves; each
+// `svec(name, address)` of `externals` defines a name of a part as code that
+// this process has already, so that a call to that part needs no object. Each
 // object is `svec(bytes, prefix, slots)`: each slot `<prefix>#slot#<i>` gets
 // `slots[i]`, the Julia object of this process for that slot, which becomes a
 // global root. Then each code instance of `functions` gets the code of its
@@ -460,10 +462,23 @@ static void jl_do_dump_compile(jl_code_instance_t *codeinst, uint64_t time) JL_N
 // LLVM runs. A code instance that has code already keeps it. Answer the count
 // of the code instances that got code, or -1 when an object does not link.
 extern "C" JL_DLLEXPORT_CODEGEN int
-jl_install_objects_impl(jl_array_t *objects, jl_array_t *functions)
+jl_install_objects_impl(jl_array_t *objects, jl_array_t *functions, jl_array_t *externals)
 {
     auto &JIT = *jl_ExecutionEngine;
     orc::JITDylib &JD = JIT.createJITDylib("jl_installed");
+    orc::SymbolMap existing;
+    for (size_t k = 0; k < jl_array_nrows(externals); k++) {
+        jl_svec_t *entry = (jl_svec_t *)jl_array_ptr_ref(externals, k);
+        void *addr = jl_unbox_voidpointer(jl_svecref(entry, 1));
+        existing[JIT.mangle(jl_string_data(jl_svecref(entry, 0)))] = {
+            orc::ExecutorAddr::fromPtr(addr), JITSymbolFlags::Exported | JITSymbolFlags::Callable};
+    }
+    if (!existing.empty()) {
+        if (auto Err = JD.define(orc::absoluteSymbols(std::move(existing)))) {
+            jl_safe_printf("jl_install_objects: %s\n", toString(std::move(Err)).c_str());
+            return -1;
+        }
+    }
     size_t nobjects = jl_array_nrows(objects);
     for (size_t k = 0; k < nobjects; k++) {
         jl_svec_t *entry = (jl_svec_t *)jl_array_ptr_ref(objects, k);

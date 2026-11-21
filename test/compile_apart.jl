@@ -29,7 +29,7 @@ else
     object = read(joinpath(dir, "object.o"))
     Base.cumulative_compile_timing(true)
     before = Base.cumulative_compile_time_ns()[1]
-    n = ccall(:jl_install_objects, Cint, (Any, Any), Any[Core.svec(object, "jl_object", slots)], functions)
+    n = ccall(:jl_install_objects, Cint, (Any, Any, Any), Any[Core.svec(object, "jl_object", slots)], functions, Any[])
     y = Base.invokelatest(greet, 13)
     compiled = Base.cumulative_compile_time_ns()[1] - before
     print(n, " ", repr(y), " ", compiled)
@@ -71,7 +71,7 @@ else
     calls = sum(s -> length(s[5]), stored)
     Base.cumulative_compile_timing(true)
     before = Base.cumulative_compile_time_ns()[1]
-    n = ccall(:jl_install_objects, Cint, (Any, Any), objects, functions)
+    n = ccall(:jl_install_objects, Cint, (Any, Any, Any), objects, functions, Any[])
     y = Base.invokelatest(outer, 13)
     compiled = Base.cumulative_compile_time_ns()[1] - before
     print(length(objects), " ", calls, " ", n, " ", y, " ", compiled)
