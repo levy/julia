@@ -628,6 +628,22 @@ Gate: a package file and a system image written with all their code from the
 store load and pass the tests of `HazardApp`, and their write runs LLVM for no
 unchanged function. The pull request opens only after B is merged.
 
+The system images (after Step 11, the owner: "Continue"), on `pr-linked-products`
+and CompilerServer.jl `main`:
+
+- [ ] S1. Measure a stock system image of HazardApp (`create_sysimage`,
+      incremental, `cpu_target = "native"`, its workload as the precompile
+      file): the time and the peak memory of the build, the count of the
+      functions that the writer compiles, and the output of the workload.
+- [ ] S2. `create_sysimage_with_parts`: the build process sets the provider in
+      the mode of a system image (`-L` of a prelude). In that mode the provider
+      makes parts also for the code of other images, because a system image
+      can not call the code of a package file. A whole build writes the store,
+      and a rebuild takes the parts that hold.
+- [ ] S3. Gate: the system image of a rebuild with all its code from the store
+      loads and gives the output of the stock image, and its writer compiles no
+      unchanged function with LLVM; the time and the memory against S1.
+
 Facts of part 2 for package files (to Julia `c092fb0570`, CompilerServer.jl
 `da451de`):
 
