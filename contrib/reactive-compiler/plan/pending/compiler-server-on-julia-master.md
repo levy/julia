@@ -259,17 +259,50 @@ The rules that stock master does not see, where the fork does:
   A file of `include_dependency` stops the rebuild (Step 4); another file is
   not seen, as for stock Julia itself.
 
-### Step 4: the driver
+### Step 4: the driver  — done
 
-- [ ] Move the store, the inputs, the record of the builds, the status, the
+- [x] Move the store, the inputs, the record of the builds, the status, the
       early end when nothing changed, the watch and the command line from the
       PackageCompiler fork into `CompilerServer.build`, `CompilerServer.watch`
       and `julia -m CompilerServer`.
-- [ ] Make the products with stock PackageCompiler (`create_sysimage`,
+- [x] Make the products with stock PackageCompiler (`create_sysimage`,
       `create_app`) and with the stock precompile. CompilerServer.jl needs no
       fork of PackageCompiler.
 
-Gate: `build`, `status` and `watch` work on `HazardApp`.
+Gate: `build`, `status` and `watch` work on `HazardApp`. Done: the gate
+`test/gates/build_status_watch.jl` passes on 2026-11-21 (commit `3a97ffb`).
+The whole build takes 163 s, a rebuild through the server 132 s, a build with
+no change ends at once, the status prints the store, and the watch rebuilds
+an edit in 120 s and stops the server at its end. The built application prints
+the edited output after each rebuild. The peak is 6.5 GB.
+
+Facts found:
+
+- The newest driver is at `d34f59a8` of the branch `reactive` of the remote
+  `projectured` (the worktree `package-compiler-live-harness`). The checkout
+  `PackageCompiler.jl` is behind it, at `dd96ca2f`. The driver came from
+  `d34f59a8` by a copy of its parts that serve no image: the store, the
+  inputs, the record of the builds, the early end, the requests to the server,
+  the snapshots, the walk of the tracked sources, the status, the watch and the
+  command line.
+- On stock Julia a rebuild still builds the application whole: the server
+  applies and checks the edit, then stock `create_app` builds the application
+  from its sources and the trace of the store. Steps B and C replace that whole
+  build.
+- The trace process of a whole build also lists the files of the cache files
+  of the loaded packages (`Base.parse_cache_header(cache)[2][1]`). A file of a
+  path package there that the build does not track, a file of
+  `include_dependency` among them, is an input of the store (D5).
+- Stock PackageCompiler 2.4.5 installs and loads on master. Its default
+  processor target for an application starts with `generic`, which lacks the
+  CX16 instruction that Julia master needs, and the build of the image stops
+  at its start. The whole build of CompilerServer.jl takes `native` when the
+  caller gives no target, as the command line of the fork did.
+- The store records the keywords of `create_app` (`create_app` in the
+  config), and a rebuild passes them again.
+- The server runs in the environment of the package, with the environment of
+  the build behind it in `JULIA_LOAD_PATH`, so it loads CompilerServer.jl too.
+- CompilerServer.jl now depends on PackageCompiler, TOML, Libdl and SHA.
 
 ### Step 5: the checks
 
