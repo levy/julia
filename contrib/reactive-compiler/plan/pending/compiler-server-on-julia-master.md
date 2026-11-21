@@ -365,7 +365,7 @@ Facts found:
 
 ## Part 3: the texts of the issues
 
-### Step 6: the evidence branch and issue 0
+### Step 6: the evidence branch and issue 0  — done
 
 - [x] Make the branch `compiler-server-evidence` at master. Put on it the
       measurements that the texts quote: the cascade on 1.13 (99 cache files,
@@ -374,7 +374,7 @@ Facts found:
 - [x] Write issue 0 from the draft in the note, in one screen.
 
 Gate: the owner approves the text. A send is a separate word of the owner.
-Waits for the owner.
+The owner approved the text on 2026-11-21. Nothing is sent.
 
 Facts found:
 
@@ -385,14 +385,15 @@ Facts found:
 - The texts of all the issues are in `doc/compiler-server-issues.md` of this
   folder (commit `0304f23268`).
 
-### Step 7: the issues about the module identity, B, C and D
+### Step 7: the issues about the module identity, B, C and D  — done
 
 - [x] Module identity: start from the text of step S5 in
       `maturity-and-determinism.md` of the branch `determinism-experiment`, and
       measure again on master. It is a second issue of A, beside #63149.
 - [x] B, C and D: one screen each.
 
-Gate: the owner approves the four texts. Waits for the owner.
+Gate: the owner approves the four texts. The owner approved the texts of B, C
+and D on 2026-11-21. Nothing is sent.
 
 Facts found:
 
