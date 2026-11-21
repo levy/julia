@@ -708,10 +708,18 @@ Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
       (`docs/linked-products.md`, CompilerServer.jl `07f776f`; three open
       questions, with proposals.)
 - [ ] On `pr-linked-products`, part 1: a reader and a writer of Julia's formats
-      at the level of objects.
+      at the level of objects. (First, by the owner's choice of the prototype
+      order: a reader of package files in Julia, `src/link.jl` of
+      CompilerServer.jl `1f35304`, with two functions of `src/staticdata.c` that
+      map an object of a loaded image to its offset and back, `b5ddc38ad0`.
+      The C interface waits for what the prototype shows that it must give.)
 - [ ] A prototype of the link on two packages, A and B: edit A, link new files
       of A and B, and compare them byte for byte with our own whole build of the
-      same sources.
+      same sources. (The cascade by a link of references is built: the gate
+      `test/gates/link_cascade.jl`, CompilerServer.jl `1f35304`. The linked file
+      loads and runs for each of three edits. It is equal in each byte to a
+      stock write except in the object ids, which wait for a decision of the
+      owner.)
 
 Gate: the prototype gives the same bytes, and the design document exists. Parts
 2 and 3 of D get their own plan.
@@ -733,7 +741,40 @@ Facts of the design of D (CompilerServer.jl `07f776f`):
   module, and as the key of the roots in each compressed method source.
 - Proposed first prototype: the cascade by a link of references. A link of B
   maps each reference into the old A to a key, by a table that the write of A
-  left, and the key to the offset in the new A.
+  left, and the key to the offset in the new A. (The owner: "Yes".)
+
+Facts of the first prototype (CompilerServer.jl `1f35304`, `pr-linked-products`
+`f0a7bfd4b1`):
+
+- LinkB names 16 objects of LinkA; each has a key, and each key finds its
+  object in the new LinkA. Three edits of LinkA: no change, a new function at
+  the end (it moves 4 of the objects, and the link changes 6 references), and
+  another body of a function that LinkB does not call. In each, the linked LinkB
+  loads from the linked file and gives the same output. The link takes about
+  0.65 s; a stock write of LinkB takes about 0.76 s; both include the start of
+  a process.
+- The heap of B holds the low half of the build id of A as the key of the roots
+  of the methods of A in the compressed sources of B. The link replaces it; the
+  linked file did not load before this.
+- Two writes of the same sources differ, word by word, in: the build id; the
+  object id that the writer puts before each mutable object
+  (`jl_object_id`, a hash of the address of a new object, `src/staticdata.c:1659-1671`),
+  which the loader keeps so that `objectid`, `IdDict` and `Dict` of the image
+  stay valid; three tables of `src/aotcompile.cpp` in the order of addresses
+  (`ci_funcs`, `global_targets`, `call_targets`); and the checksums and the GNU
+  build id note that follow from them. `f0a7bfd4b1` gives the three tables the
+  order of the module (the order of emission).
+- `lld --build-id` makes the note as the BLAKE3 hash (20 bytes) of the BLAKE3
+  hashes of each MiB of the file, with the note set to zeros. `link_finish!`
+  writes it again after a change.
+- After the build id gets one value, the linked LinkB and a stock write of
+  LinkB on the new LinkA differ only in the 260 object ids and in the checksums
+  and the note that follow. With the object ids of the stock write, the `.ji`
+  and the `.so` files are equal in each byte.
+- Open: the object ids. No link can give the bytes of a whole build in them
+  unless they come from content. And a hash table of B whose key is a mutable
+  object of A goes wrong after a link of B, because the new A gives that object
+  another id.
 
 ## Part 5: the end
 
