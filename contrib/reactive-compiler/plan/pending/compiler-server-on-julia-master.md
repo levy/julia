@@ -755,10 +755,21 @@ on our branch, with their cost measured first. The steps (on
       takes its id from the table. The full build with the change takes 7 min,
       with a peak of 5.6 GB. The parts test of Julia (3 of 3) and the tests of
       CompilerServer.jl (45 of 45) pass.)
-- [ ] At the write, an object that no code asked for gets its id from the
+- [x] At the write, an object that no code asked for gets its id from the
       object that first reaches it and from the field. Gate: after an edit of
       LinkA that moves objects, each unchanged mutable object of LinkA keeps its
-      id.
+      id. (Done with another rule, Julia `07400635b9`, CompilerServer.jl
+      `540d359`: an object that has a key by its kind takes `bitmix(key, n)` at
+      the first ask, at any time: a method by its module, name and signature, a
+      method instance by its method and types, a code instance by its method
+      instance and owner, a binding by its module and name. In each of the three
+      edits, each object of LinkA with an id keeps it: 27 or 28 with a key, and
+      49 with no key (arrays, memories, binding partitions). Before this rule, 5
+      of 27 with a key lost their id after the new function. The path ids are
+      not built: the writer asks for ids of mutable objects in the fields of an
+      immutable object before the write (the content hash of `dedup_by_content`),
+      so a path id needs a change in the queue of the writer. The kernel package
+      shows whether a larger package needs them.)
 - [ ] The cost on ProjecturedKernel: the time and the peak memory of a write
       with and without the option, the count of the object ids in the file, and
       what still differs between two whole builds with the option.
