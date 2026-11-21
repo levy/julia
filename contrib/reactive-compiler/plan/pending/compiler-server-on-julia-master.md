@@ -713,9 +713,12 @@ Facts of a whole build that writes its parts (CompilerServer.jl `05255dc`):
       CompilerServer.jl `1f35304`, with two functions of `src/staticdata.c` that
       map an object of a loaded image to its offset and back, `b5ddc38ad0`.
       The C interface waits for what the prototype shows that it must give.)
-- [ ] A prototype of the link on two packages, A and B: edit A, link new files
+- [x] A prototype of the link on two packages, A and B: edit A, link new files
       of A and B, and compare them byte for byte with our own whole build of the
-      same sources. (The cascade by a link of references is built: the gate
+      same sources. (Met with `--deterministic-object-ids=yes`, see the steps
+      below: the linked LinkB is equal in each byte to the rebuild; our own whole
+      build takes the build id from our writer, `link_build_id!`, as the design
+      says.) (The cascade by a link of references is built: the gate
       `test/gates/link_cascade.jl`, CompilerServer.jl `1f35304`. The linked file
       loads and runs for each of three edits. It is equal in each byte to a
       stock write except in the object ids, which wait for a decision of the
