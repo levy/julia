@@ -3535,6 +3535,15 @@ commits. The numbers of the steps stay as they are.
   the rest of Step 8 and Step 10 wait for these numbers, and the owner
   decides with them which one is worth the work.
 
+  *The Julia of `merged` changed (2026-11-22).* Another session added the
+  option `--strip-uncompiled` (26ac73f77b) and installed a new build of
+  `merged-next` on 2026-11-21 at 23:14. That build holds the landing of this
+  plan. The store of the IDE keeps the build 45093957a8, so the next build
+  of the IDE stops and needs `--found`. Before that, the record holds one
+  rebuild (2026-11-18 10:06): 7.9 s, 475 changed items, 18 lost statements,
+  1.45 % of the code in the overlay, a growth of 3.24 %. The build server
+  of that rebuild still runs on the old binaries.
+
 ## Not in this plan
 
 - The refusals F1 and C4, a new version of a registry package (F3), and a
