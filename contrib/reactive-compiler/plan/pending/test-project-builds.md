@@ -608,6 +608,34 @@ Each measure runs on the generated project, for stock and for our build, in
         selection, so no shell is saved; 2. no method that is newer than the
         selection (the methods of the provider); then the byte comparison shows
         what else the run of the provider changes.
+      - The probe of the first change (the owner approved it; not finished, not
+        in the Julia branch; kept as `docs/probes/weak-specializations.patch` of
+        CompilerServer.jl, commit `6924e54`). It is not the small change that I
+        expected:
+        - With it an executable builds and runs; 2,623 method instances with no
+          code go that the stock image also has; the image goes from 203.6 MB
+          to 201.9 MB.
+        - The entries of the dispatch cache still refer to the shells of the
+          provider's run: 2,121 extra method instances stay in a rebuild and
+          3,110 in a whole build. With the whole dispatch cache dropped (a
+          measurement only: the image then starts with a cold cache), no method
+          instance is only in the whole build, 33 are only in the rebuild, and
+          the image is 195.1 MB. So the dispatch cache needs the same rule: an
+          entry only for a method instance that the image has code for. It has
+          its own structure in `src/gf.c`.
+        - The pruning of `--trim` is not correct for an image that compiles
+          more code when it runs: a build of Julia itself with the probe fails.
+          A method that keeps no specialization got a copy of the shared empty
+          vector (fixed in the probe); the second stage still crashes in
+          `jl_specializations_get_linfo_`. The next step there is a debug build
+          of Julia.
+        - The Julia tree is back at `67820a0472` and builds; the 158 tests of
+          CompilerServer.jl pass on it.
+      - Decision point (the owner decides): go on with these Julia changes for
+        an equal executable (a medium change, general, in the writer and in
+        `src/gf.c`), or keep the comparison of the executable as a named gap
+        and go on with the next steps. The executable already starts as stock
+        and has its peak; its image is 203.6 MB against 188.6 MB.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
