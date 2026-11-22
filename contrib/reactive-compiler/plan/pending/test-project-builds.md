@@ -508,8 +508,7 @@ Each measure runs on the generated project, for stock and for our build, in
         local symbols of the functions and slots of the parts), the debug
         information +4.5 MB (a compile unit for each part), `.rela.dyn` +1.4
         MB and `.bss` +0.8 MB (the slots of the parts).
-      - Decision point: the probe is a change of the Julia branch, so the owner
-        decides.
+      - The owner approved the probe: Julia branch `67820a0472`.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
