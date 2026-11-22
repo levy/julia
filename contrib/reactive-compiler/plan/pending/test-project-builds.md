@@ -198,7 +198,7 @@ Each measure runs on the generated project, for stock and for our build, in
 
 ## Steps
 
-- [ ] **S1. The test project covers the whole life cycle, and each goal has a
+- [x] **S1. The test project covers the whole life cycle, and each goal has a
       measure.**
       - The generator makes a test suite for each package (a test set for each
         unit, with the expected values that it knows), an executable of GenApp
@@ -215,6 +215,90 @@ Each measure runs on the generated project, for stock and for our build, in
         stock and for parts.
       - Gate: one run gives the table of the measures above, for stock and for
         our build, with the definition of each number.
+      Facts found in the work (CompilerServer.jl worktree
+      `CompilerServer.jl-test-project`, branch `test-project-builds`, commits
+      `177cc63`, `24aa3f9`):
+      - The items of a writer (`bench/phases.jl`; medians of 3 runs, 4 cores;
+        parts with 0 new parts; in s):
+
+        | item | GenMid stock | GenMid parts | GenLow, no workload |
+        |---|---|---|---|
+        | process start | 0.066 | 0.066 | 0.069 |
+        | load of the dependencies | 0.121 | 0.124 | 0 |
+        | source and workload | 0.523 | 0.522 | 0.487 |
+        | provider | 0 | 0.140 | 0 |
+        | LLVM of the image | 0.246 | 0.012 | 0.250 |
+        | rest (selection, serialization, link, write) | 0.139 | 0.124 | 0.113 |
+        | total | 1.093 | 0.987 | 0.919 |
+
+        For GenLow, parts are slower than stock (0.943 s against 0.933 s): the
+        load of CompilerServer in the writer costs 0.116 s.
+      - The workload adds only 0.02 s to 0.03 s, and with no workload the image
+        still has 362 of its 370 compiled functions: `report1` to `report8`
+        take no argument, so the writer compiles them and their callees
+        anyway.
+      - The item "source and workload" is mostly JIT compilation: a normal
+        process that loads GenLow from its source takes 0.47 s, of which 0.375
+        s is compilation of 274 methods with the JIT. The cause is the code
+        that runs at the top level: the constants (`Dict`, `IdDict`,
+        comprehensions over the types of each unit), the calls of the macros.
+        So the largest cost that is left in a writer, in the tests and in use
+        is the JIT, and the levers of S5 change: a code provider for the JIT
+        (ask the store before a method compiles) would remove it in each of
+        them. It needs one small hook in Julia; the decision point of S5
+        holds.
+      - The session of use and the frames compile 270 methods with the JIT
+        from package files, and 23 in the executable, with stock and with
+        parts: the workload does not cover the use (S8).
+      - The executable (GenApp, small, 8 cores, one build each): stock 75.0 s
+        for the first build and 70.6 s after an edit, image 188,551,856 bytes,
+        app folder 860 MB, start 80 ms; parts 241.6 s for the first build and
+        60.3 s after an edit, image 291,769,512 bytes, start 101 ms. The larger
+        image of parts costs about 20 ms of start, so S3 is also start-time
+        work. The build of the executable is the largest cost of a cycle that
+        needs it.
+      - N agents (each makes a worktree, edits a leaf function, builds and runs
+        the tests; cycles in an hour on 8 cores): stock 1,103, 1,891 and 2,835
+        for 2, 4 and 8; parts 1,074, 2,059 and 3,719.
+      - The gate run (2026-11-22, `24aa3f9`, small, 8 cores, one run of each
+        step, `--executable some --agents 2,4,8`, 190 checks pass;
+        `bench/report.jl`, the medians over the steps of each group;
+        `bench/measures.jl` defines each number):
+
+        | goal | stock | parts | parts/stock |
+        |---|---|---|---|
+        | the build of an edit, wall s | 2.86 | 2.54 | 0.89 |
+        | the build of an edit, CPU s | 5.01 | 2.80 | 0.56 |
+        | the build of an edit, CPU use | 0.22 | 0.13 | 0.60 |
+        | the build of an edit, peak MiB of one writer | 338 | 355 | 1.05 |
+        | the first build, wall s | 3.70 | 5.36 | 1.45 |
+        | the cycle of an edit (build and full tests), s | 3.49 | 3.18 | 0.91 |
+        | the full test suite, s | 0.62 | 0.65 | 1.05 |
+        | the package files, `.ji` bytes | 6,712,819 | 6,723,507 | 1.00 |
+        | the package files, `.so` bytes | 922,200 | 1,989,024 | 2.16 |
+        | the session of use from package files, JIT compilations | 270 | 270 | 1.00 |
+        | the first frame from package files, ms | 11.47 | 10.95 | 0.95 |
+        | the slowest frame from package files, ms | 28.11 | 21.42 | 0.76 |
+        | the session from package files, peak MiB | 369 | 377 | 1.02 |
+        | the executable, first build s | 74.83 | 241.02 | 3.22 |
+        | the executable, build after an edit s | 70.59 | 59.83 | 0.85 |
+        | the executable, build peak MiB | 5,596 | 4,886 | 0.87 |
+        | the executable, image bytes | 188,551,624 | 291,731,608 | 1.55 |
+        | the executable, app folder bytes | 860,064,529 | 963,244,513 | 1.12 |
+        | the executable, start ms | 80.0 | 101.4 | 1.27 |
+        | the executable, JIT compilations in use | 23 | 23 | 1.00 |
+        | the executable, first frame ms | 11.82 | 11.59 | 0.98 |
+        | the executable, peak MiB | 367 | 377 | 1.03 |
+        | 2 agents, cycles in an hour | 1,048 | 1,080 | 1.03 |
+        | 4 agents, cycles in an hour | 1,925 | 2,062 | 1.07 |
+        | 8 agents, cycles in an hour | 2,943 | 3,801 | 1.29 |
+        | 8 agents, the longest build s | 6.94 | 4.53 | 0.65 |
+
+        Goals with no measure in the run yet, each in its own step: the byte
+        difference between an incremental product and a whole build (S2), the
+        selection of tests (S7), the build of the user while agents run (S9),
+        and the lines of the Julia changes (S10; now 18 files, 1,241 lines
+        added, 41 removed).
 
 - [ ] **S2. An incremental product equals the whole build in every byte.**
       - A guard compares the bytes of each package file and of the executable
