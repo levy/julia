@@ -654,6 +654,54 @@ Each measure runs on the generated project, for stock and for our build, in
         and its test; remove each change that the final design does not need.
       - Gate: a table of the four themes, each with its lines and its test, and
         no change outside them.
+      A review before the end (2026-11-22; the owner asked for it): the branch
+      `pr-linked-products` at `67820a0472` against the upstream master
+      `2aa7c9fd5b`, which did not move: 25 commits, 22 files, 1,435 lines added
+      and 46 removed. The whole diff was read. The lines of a group are the sum
+      of the added lines of its commits (later commits replace some).
+
+      | group (theme) | lines | CompilerServer needs it | a test in the Julia tree | the case for upstream |
+      |---|---|---|---|---|
+      | A1. the order of the work list, of the GC frame slots, of the global slots (pull request #63150, open), of the tables and of the list of the emitted code | 127 | yes, for equal bytes | none | strong: each one removes an order that follows addresses; no option |
+      | A2. fixed object ids, and no byte that the process did not set (`--deterministic-object-ids`) | 293 | yes, for equal bytes | none | the hardest: an option that reaches `builtins.c`, `toplevel.c` and the GC |
+      | A3. the writer computes each memoized fact of a `UnionAll` | 17 | yes, for equal bytes | none | good: small, and the image gets the full memo |
+      | B. compile apart: `jl_emit_object`, `jl_emit_objects`, `jl_install_objects`, hidden symbols | 550, 108 of them tests | yes: the core | 2 test sets (`compile_apart`) | good: an entry point beside `jl_emit_native`, which other compilers use already |
+      | B. the source names of an image, and the map back in a stack trace | 62 | yes: a part fits each worktree | none | good in principle (no absolute path in an image); the form of the name needs their word |
+      | C. the writer takes code from parts: `jl_set_code_parts`, the call of the provider, the shard of the parts, the root of the table | 506 | yes: the core | none | the weakest form now (below) |
+      | D. a reader of images by object: `jl_object_image_offset`, `jl_image_object_at` | 32 | no: only the link cascade of `link.jl` calls them, and only a gate test runs it | none | none without the link |
+
+      What the review found:
+      - Each group but D is needed. Nothing is missing for the package files. For
+        system images, the experiment of S3 can add two small changes (weak
+        specializations, and no method that is newer than the selection).
+      - C has the weakest form for upstream. `jl_set_code_parts` keeps the
+        provider in a static pointer that the GC does not see, and its comment
+        asks the caller to keep "that very object" alive in a box. It takes three
+        forms (a table, a function, a package by name). The code generator calls
+        `Base.require`. The C++ code matches the table against the list (about 75
+        lines), also by method instance, a path that CompilerServer no longer
+        uses. Upstream moved the driver of an image build into Julia
+        (`compile_and_emit_native` in `Compiler/src/precompile.jl`), which makes
+        the list and the order of the code: a hook there is Julia code, with no
+        static pointer and no `require` from C++, and the provider can answer the
+        list to compile with the table. After the experiment, one form is enough.
+      - A2: the zero bytes of a new object are set on the path of each allocation
+        (one test of the option for each process), only in the stock GC and not
+        in the MMTk GC. One option does two things (ids and zero bytes).
+      - A1: the sort key of the work list (file, line, name) is the same for two
+        method instances of one method; their order then follows the input.
+      - B: CompilerServer calls only `jl_emit_objects`; the single
+        `jl_emit_object` serves two tests.
+      - The change of the helpers of 16-bit floats (one copy for each image)
+        also changes stock images on each platform; only Linux x86-64 was built
+        and run. The same holds for each other change.
+      - `Base.fixup_package_path` makes a string for each frame that a stack
+        trace takes from a line table, in each process; a first test of the
+        first byte removes that.
+      - Tests in the Julia tree exist only for B. A pull request for A needs a
+        test that builds a small package twice and compares the bytes; C a
+        package file with its code from parts; the names a frame that maps back.
+      - No change adds a line to the documentation or to NEWS yet.
 
 - [ ] **S11. The end.**
       - One run of the harness with all measures, the guards, and the named
