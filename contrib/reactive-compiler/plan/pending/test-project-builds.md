@@ -636,6 +636,50 @@ Each measure runs on the generated project, for stock and for our build, in
         `src/gf.c`), or keep the comparison of the executable as a named gap
         and go on with the next steps. The executable already starts as stock
         and has its peak; its image is 203.6 MB against 188.6 MB.
+      - The owner: add a log of what goes into an image, and hunt the byte
+        equality down. The log (`--trace-image-objects=<file>`, Julia branch
+        `137800835e`; a tool, not for upstream): a line for each object that the
+        writer saves, with its place, its type, a name with no address and its
+        referrer. `bench/image_log.jl` (CompilerServer.jl `c50f02d`) compares
+        two logs and maps each byte that differs to its object.
+      - What the log found, each in one comparison:
+        1. A rebuild put copies into the slots of the parts: a value that a
+           record holds reads back as a copy (1,722 expressions, 714 unions,
+           323 `UnionAll` types, 308 type variables, 39 regular expressions).
+           Now a new part resolves its slots from its record too
+           (CompilerServer.jl `a6db749`). The rebuild then holds 651 objects
+           that the whole build does not (before: 7,251).
+        2. Two rebuilds, each with all its code from parts, differed in 131
+           bytes. 6 were stored ids of empty memories that the provider's code
+           made first: a permanent object stored an id from its address while
+           the ids were frozen. 3 were build ids of modules made at run time,
+           from the clock (the two modules of the build script of
+           PackageCompiler and the module of the provider). Both fixed in the
+           Julia branch (`459678ed26`, 38 lines, in the code of the fixed ids).
+           1 was the temporary name of our prelude, now a name from its text in
+           the store (CompilerServer.jl `0f160c1`).
+        3. Now two rebuilds differ in 50 bytes, in 5 places: the build id note,
+           two checksums, and the temporary path of the build script of
+           PackageCompiler (a string and a symbol). Two stock builds differ in
+           these too.
+      - What is left between a whole build and a rebuild (the objects that only
+        one image saves, of 1.63 million): 1,151 method instances only in the
+        whole build and 110 only in the rebuild, 1,067 and 50 entries of the
+        dispatch cache, 32 code instances only in the rebuild (held by the
+        roots of the methods of the provider), and the vectors, memories and
+        debug information below them. All of it is what the run of the provider
+        makes: a whole build runs the emission, a rebuild runs the checks of the
+        held parts.
+      - Decision point (the owner decides) for that rest:
+        1. The image is always written by a process that takes each part from
+           the store. The reactive cycle of S6 gives that: the server compiles
+           the new parts, and the writer of an image only takes parts. Until
+           S6, a build that made new parts in the writer of an image can write
+           the image once more (57.7 s more for the executable of the test
+           project). No Julia change.
+        2. Julia changes that leave out what the run of the provider makes: the
+           method instances, the entries of the dispatch cache, the roots, the
+           methods (the probe of the first one is not finished).
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
