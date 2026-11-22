@@ -1,5 +1,5 @@
 #!/bin/bash
-# The replay gate (Step 2 of plan/pending/a-rebuild-equals-a-whole-build.md):
+# The replay gate (Step 2 of plan/done/a-rebuild-equals-a-whole-build.md):
 # a store takes the commits of a real package one by one, and the result is
 # compared with a whole build of the last commit. The program is ReplayApp
 # (written by this gate), which loads one package of a repository and prints

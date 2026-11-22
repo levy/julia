@@ -16,8 +16,11 @@ The owner asked on 2026-11-09 for a build that has four properties:
    build is rare.
 
 This plan reads the build against those four properties, lists what it found,
-and gives the steps that close the gaps. It is not approved. No step is
-started.
+and gives the steps that close the gaps.
+
+*Status: closed on 2026-11-22, with the word of the owner.* Steps 1, 3 to 7,
+9 and 11 are done, landed and pushed. Steps 2, 8 and 10 are not done; the
+section "Why the plan closes" at the end gives the reason.
 
 ## The parts, in short
 
@@ -904,7 +907,8 @@ commits. The numbers of the steps stay as they are.
   specialization and no binding is missing. The check reads the image in its
   file form; it does not read the prelinked copy inside the program, and it
   says so. Not pushed: the push to `levy/julia` waits for the owner.
-- [ ] **Step 2: the two gates and the baseline (D8).** The program gate on the
+- [ ] **Step 2: the two gates and the baseline (D8).** *Not done: the plan
+  closed with the rest of this step open (see "Why the plan closes").* The program gate on the
   test program of gate I1; it runs `tool/overlay_check.py` after each
   rebuild. The replay gate on the smallest real program whose whole build
   takes less than 5 minutes; the step picks it by measurement. The baseline
@@ -3008,7 +3012,8 @@ commits. The numbers of the steps stay as they are.
     now. The second half of finding 6, the save that removes the old helper
     of a generator, has its test and its rule since Step 3.
 - [ ] **Step 8: the rebuild time (D6, D9; findings 14, 16, 18 to 21, 32, 35,
-  37).** First the measurement of one rebase of the IDE store by hand. Then
+  37).** *Not done: the plan closed with the rest of this step open (see "Why
+  the plan closes").* First the measurement of one rebase of the IDE store by hand. Then
   the request `rebase` of the server, the link, the program, the swap of the
   base in the store, the bound, and the check of the room. The build with no
   change ends early. The profile of Step 2 names the three largest parts of
@@ -3415,7 +3420,8 @@ commits. The numbers of the steps stay as they are.
   move of the base. The overlays of 45.6 MB and 7.9 MB of round r32 are gone;
   *by the assistant:* the same kind of cause is likely, and it is not shown.
 - [ ] **Step 10: the roots follow the edit (D10; findings 10, 11, 25, 27,
-  31).** The dead-type test and its three uses. A statement whose code
+  31).** *Not done: the plan closed with the rest of this step open (see "Why
+  the plan closes").* The dead-type test and its three uses. A statement whose code
   instance of the image has no machine code is compiled. ~~Each rebuild prints
   the statements that stay lost and writes them into the record of the
   store.~~ *Done (2026-11-13): the store keeps the list, and the build prints
@@ -3554,3 +3560,39 @@ commits. The numbers of the steps stay as they are.
   (Stage I3), and the trimmed product.
 - A chain of more than one overlay, and a save that reuses the machine code
   of the save before it.
+
+## Why the plan closes
+
+The owner agreed on 2026-11-22 to close the plan with Steps 2, 8 and 10 not
+done. The goal of the owner since 2026-11-12 is reached: `merged` makes
+correct incremental builds and passes the tests. The IDE builds with it, and
+its rebuild of 2026-11-18 took 7.9 s. The open steps give speed only.
+
+The builds move to CompilerServer.jl (`compiler-server-on-julia-master.md`,
+`test-project-builds.md`) under one condition. The owner, 2026-11-22: "I
+expect to move projectured and omnet IDE build to the compiler server but
+only when it will be better then the current build approach in every
+possible ways." Until then, the IDE builds with this compiler on `merged`.
+
+| open step | its content | when the IDE builds with CompilerServer.jl |
+| --- | --- | --- |
+| Step 8, the rest | a new base for the image when the overlay grows too large; a faster save of a rebuild | obsolete: CompilerServer.jl does not take the overlays of the fork, and other writers of the image replace them |
+| Step 2, the rest | the growth of the image of gate C after a `make`; the profile of the apply | half obsolete: the growth of gate C is a question of the fork only; the profile of the apply stays useful, because CompilerServer.jl reuses the apply |
+| Step 10 | fewer lost statements: a statement whose code instance in the image has no machine code, so the program compiles it at run time | the fix is obsolete, because it works in the image path of the fork; the goal is in `test-project-builds.md` ("minimise compilation during application use") |
+
+*For the CompilerServer work.* CompilerServer.jl reuses the rebuild logic of
+the stdlib `ReactiveCompiler`, so two open parts go with it:
+
+- The time of the apply (findings 20 and 21). A rebuild of the IDE logs
+  9.6 s for the ledger, but the parts of the ledger take 2.0 s in a new
+  process, and the rest is not found. The replay of an edit at the start of
+  the load order of the IDE takes about 16 s.
+- The lost statements. The rebuild of the IDE of 2026-11-18 had 18.
+
+*The IDE build that a move must beat* (2026-11-18, Julia 45093957a8): the
+whole build takes 44 min 46 s with a peak of 35.8 G, and precompiles 24 956
+statements. The image has 1616.9 MB, the bundle 4684.8 MB, and the program
+starts in 0.17 s. A rebuild of 475 changed items takes 7.9 s, with 18 lost
+statements; its overlay holds 1.45 % of the code, and the image grows by
+3.24 %. The store keeps each build in
+`omnet-julia/build/omnet_ide/reactive-store/builds.txt`.

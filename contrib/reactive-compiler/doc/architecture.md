@@ -6,9 +6,9 @@ by gate — lives in
 [plan/done/reactive-materialization.md](../plan/done/reactive-materialization.md)
 and in [plan/done/hypothesis-case.md](../plan/done/hypothesis-case.md). The
 plan
-[plan/pending/a-rebuild-equals-a-whole-build.md](../plan/pending/a-rebuild-equals-a-whole-build.md)
-holds the findings, the decisions and the open steps of the work that makes a
-rebuild give the program that a whole build gives.
+[plan/done/a-rebuild-equals-a-whole-build.md](../plan/done/a-rebuild-equals-a-whole-build.md)
+holds the findings and the decisions of the work that makes a rebuild give
+the program that a whole build gives, and the steps that it did not do.
 Read this file to work on the system; read the plans to learn how it got here.
 
 ## What this is
@@ -37,7 +37,7 @@ The measured effect: the routing example image rebuilds in 21 s against
 | --- | --- |
 | the patched Julia (1.13.0-rc4) | branch `merged-next`, worktree `julia-merged-next`; built in `usr/` |
 | the campaign: plan, code, gates, this document | `contrib/reactive-compiler/` in the same branch |
-| the plan of the work that makes a rebuild equal a whole build | `plan/pending/a-rebuild-equals-a-whole-build.md` |
+| the plan of the work that makes a rebuild equal a whole build | `plan/done/a-rebuild-equals-a-whole-build.md` |
 | the harness: the ledger and classifier, the apply, the reads, the replay, the save, the trim entry points, the server | the stdlib `stdlib/ReactiveCompiler` of the patched Julia, built into the system image: `src/child.jl` (ledger, classifier, apply, reads, listing of the changes), `src/replay.jl` (the trial in a fork and the checks of the load order), `src/server.jl` (the server and the save), `src/patch.jl` (the patch of a package file and the record of its top-level reads), `src/SourceDiff.jl`, `src/entrypoints.jl`, `src/ReactiveCompiler.jl`; `julia --reactive-server=<socket>` runs its server |
 | the runtime | `src/toplevel.c` (the place of the top-level expression, the record of reads), `src/method.c` (the method filter, the place of a method), `src/gf.c` (the leaf cache of dispatch, the batch that disables methods), `src/module.c` (the removal of names, the batch that hides names), `src/stackwalk.c` (the frames of a moved method), `src/staticdata.c`, `src/aotcompile.cpp`, `src/processor.cpp`, `src/codegen.cpp` (the image, the overlay, the delta), `base/loading.jl` (the listing beside a cache file), `base/iostream.jl` and `base/filesystem.jl` (the hooks in `open`) |
 | PackageCompiler, the client | branch `reactive` of the fork `projectured/PackageCompiler.jl`: `src/reactive.jl` (the driver, the store, the inputs, the record of the builds, the status) and `src/reactive_cli.jl` (the command line) |

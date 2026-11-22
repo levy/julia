@@ -1,6 +1,6 @@
 #!/bin/bash
 # The gate of the harness that a rebuild runs (Step 4 of
-# plan/pending/a-rebuild-equals-a-whole-build.md): a store whose image holds
+# plan/done/a-rebuild-equals-a-whole-build.md): a store whose image holds
 # another harness than the client has is rebuilt with the sources of the
 # client's harness, loaded into a module of their own, and the image of the
 # rebuild holds no code of that module. The gate makes the two differ in each

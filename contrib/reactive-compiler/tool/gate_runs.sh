@@ -1,6 +1,6 @@
 #!/bin/bash
 # The gate of the code that an expression runs (Step 7 of
-# plan/pending/a-rebuild-equals-a-whole-build.md): an expression is evaluated
+# plan/done/a-rebuild-equals-a-whole-build.md): an expression is evaluated
 # again when the code that its evaluation runs changed, and its text did not.
 # The application RunApp (tool/r1_runs) loads the path package RunLib. The edit
 # of the gate replaces helpers.jl of RunLib: the function of an initializer,

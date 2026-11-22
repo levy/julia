@@ -1,5 +1,5 @@
 # The test of the place that a method keeps (decision D13 of
-# plan/pending/a-rebuild-equals-a-whole-build.md): the file and the first line
+# plan/done/a-rebuild-equals-a-whole-build.md): the file and the first line
 # of the top-level expression that defined it (`toplevel_file`,
 # `toplevel_line`), beside the place of its text (`file`, `line`).
 #

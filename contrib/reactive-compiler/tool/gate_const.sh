@@ -1,6 +1,6 @@
 #!/bin/bash
 # The gate of the constant data of an overlay (Step 1 of
-# plan/pending/a-rebuild-equals-a-whole-build.md): an overlay holds each write
+# plan/done/a-rebuild-equals-a-whole-build.md): an overlay holds each write
 # of a rebuild into the constant data of the base image. The constant data
 # holds the bytes of the number tables of the image, and it starts at a cache
 # line, not at a page limit. The application is DepApp of gate I1

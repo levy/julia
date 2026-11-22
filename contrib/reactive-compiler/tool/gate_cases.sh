@@ -1,6 +1,6 @@
 #!/bin/bash
 # The gate of the edit cases (Step 3 of
-# plan/pending/a-rebuild-equals-a-whole-build.md): a table of small edits, each
+# plan/done/a-rebuild-equals-a-whole-build.md): a table of small edits, each
 # one a case that a rebuild must apply as a whole build does, or refuse. The
 # cases say again, in the form of this gate, the documented limits of Revise.jl
 # and the edits of its test suite: the server of a rebuild does the job of

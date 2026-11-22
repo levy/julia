@@ -2,7 +2,7 @@
 
 Read-only scripts. Each one maps a base image and an overlay, and counts. They
 are the evidence of finding 33 and of findings 12, 13 and 22 of
-`plan/pending/a-rebuild-equals-a-whole-build.md`. Step 1 of that plan makes
+`plan/done/a-rebuild-equals-a-whole-build.md`. Step 1 of that plan makes
 `tool/overlay_check.py` from the first two.
 
 The arguments are a file, the offset of its blob and the size of its blob, for
