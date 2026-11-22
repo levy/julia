@@ -713,6 +713,30 @@ steps:
       - The rebuild takes as long as the stock build: the bridge infers all code
         before the provider runs (the idea for the future below).
 
+The owner, 2026-11-22, after "the founding is 10x slower?": "Yes to all" to the
+emission of parts on many threads, a provider of the system image with no
+PackageCompiler, and one setup of LLVM for many parts; "You can utilise all CPU
+cores and threads if it helps. The store is shared between worktrees, the
+founding is rarely done."
+
+- [x] The emission on many threads, with one target machine (Julia
+      `1c16fbf215`, `jl_emit_objects`; CompilerServer.jl `575640e`): the
+      codegen of a chunk on the thread of the caller, the LLVM work on all the
+      processors that the process may use.
+- [x] The provider of a system image loads alone: `walk.jl`, `apart.jl`,
+      `store.jl` and `provider.jl`, in a module that nothing names, which the
+      storage of the root task keeps alive. Found on the way: a record that
+      held a struct of that module did not read back, so each key and entry
+      went and the writer compiled each function itself; `ApartKey` and
+      `ApartMethod` are now named tuples, and a record holds only types of
+      Base.
+- [x] Facts (12 processors, `test/gates/parts_sysimage.jl`): stock 80.9 s,
+      5,679 MiB, 21,766 functions compiled by the writer; the whole build with
+      parts 221.7 s (143.5 s of emission of 30,809 parts; was 714.3 s), 4,506
+      MiB, 180 functions compiled by the writer; the rebuild with no change
+      61.4 s (24 % less than stock), 4,688 MiB (was 6,469), 30,516 parts kept
+      and 293 new. Both images give the output of the stock image.
+
 For the future (written down by the owner's word, not a step of this plan):
 
 - The bridge of the writer infers all code before it calls the provider, and
@@ -1061,13 +1085,22 @@ Proposed decisions (approved with this step):
 - HazardApp stays the check of correctness, and ProjecturedKernel an occasional
   check on a real project.
 
-- [ ] T1. The generator of the project, with its sizes and the kinds of code above.
-- [ ] T2. The list of edits.
-- [ ] T3. The harness: the scenarios, the products, the versions, the measures,
-      the CSV file and the table.
+- [x] T1. The generator of the project, with its sizes and the kinds of code above.
+- [x] T2. The list of edits.
+- [x] T3. The harness: the scenarios, the products, the versions, the measures,
+      the CSV file and the table. (CompilerServer.jl `e5a9f3b`, `bench/`; the
+      system image step is still the gate `test/gates/parts_sysimage.jl`.)
 - [ ] T4. Gate: the small size runs each scenario of the package loop for stock
       and for our build in less than 5 minutes for each version, and the table
       compares them; one run of the system image step.
+      (The first run, small, 4 processors: 4 min 52 s for both versions. Stock
+      rebuilds the three packages in 2.8 s for each edit, 1,116 functions;
+      parts gives the output of stock in each step, compiles no function with
+      the writer, but keeps 2 or 3 parts of 1,600 and takes 7.0 s; the two
+      builds at the same time fail with "failed to emit output file". The
+      cause: a store has one index, and its write deletes each part that it
+      does not name, so the write of GenMid deletes the parts of GenLow, and
+      two builds delete the objects of each other. Open: the shared store.)
 
 ### Step 13: the measurement and the end of the plan
 
