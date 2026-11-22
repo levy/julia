@@ -1102,6 +1102,55 @@ Proposed decisions (approved with this step):
       does not name, so the write of GenMid deletes the parts of GenLow, and
       two builds delete the objects of each other. Open: the shared store.)
 
+The owner, 2026-11-22: "Yes, build it" (the shared store), and: "As rule of
+thumb we should be able to build better than the stock build in every aspect
+due to incremental, reactive, and parallel shared builds. Write guards that
+protect the performance gains." Also: "When reporting numbers be more specific
+what's measured."
+
+The shared store. Decisions found in the design (mine, from the first run of
+the harness):
+
+- The store is a pool of parts and one manifest for each product. A part is
+  `parts/<name>.o` and `parts/<name>.record`; a manifest
+  (`manifests/<id>.index`) holds the settings, the names of the parts of one
+  product (a package of one worktree, a system image, a compile apart), its
+  root, and the records of the code of other images that it calls.
+- The name of a part is the key of its inputs: a hash of the settings, the place
+  of its method with the file relative to the root of its package, the hash of
+  the source of its method, its types and its return type. So two worktrees of
+  the same code name a part the same, two bodies of a function never share a
+  name, and parts of other settings never mix.
+- A writer looks a part up by its name in the pool, so a new worktree takes each
+  part that holds, with no manifest of its own yet.
+- A record holds the prints of the types that it names: it is checked alone.
+- A file of a part is written whole by a rename, so a reader that has the old
+  file keeps it; nothing deletes a part that a manifest names. The cleanup
+  removes a part that no manifest names and that is older than a grace time,
+  so a build that runs at the same time keeps the parts that it has written.
+
+- [ ] SH1. The pool, the manifests, the names from the inputs, and the lookup by
+      name; the writers of package files and of system images, the compile
+      apart and the install take it.
+- [ ] SH2. The cleanup with a grace time.
+- [ ] SH3. Gate: the harness keeps the parts that hold in each step, and the two
+      builds at the same time succeed.
+
+The guards. Each gain against stock gets a check that fails when it is lost,
+with the measured values in its message; where stock is still better, the check
+guards against more loss and names the gap.
+
+- [ ] G1. `bench/guard.jl` reads the CSV file of a run and checks, for each step:
+      the output of parts is the output of stock; the writer with parts compiles
+      no more functions with LLVM than stock; the wall time and the peak memory
+      of parts are not above those of stock (a gap of stock is a named
+      exception with its own bound, as long as it lasts).
+- [ ] G2. The gate of the system image checks the same for its rebuild: less
+      wall time than stock, a lower peak, and fewer functions compiled by LLVM.
+- [ ] G3. The reports give, for each number, what it measures: the span of a
+      time and its process, the kind of memory and its process, what a count
+      counts, and the cores and runs.
+
 ### Step 13: the measurement and the end of the plan
 
 - [ ] On `compiler-server-master`, measure CompilerServer.jl with B and C: an
