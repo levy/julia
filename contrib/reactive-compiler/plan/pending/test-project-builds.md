@@ -509,6 +509,36 @@ Each measure runs on the generated project, for stock and for our build, in
         information +4.5 MB (a compile unit for each part), `.rela.dyn` +1.4
         MB and `.bss` +0.8 MB (the slots of the parts).
       - The owner approved the probe: Julia branch `67820a0472`.
+      - The start scales with the heap of the image: in 10 loads of each image
+        (`perf`, 20 kHz, `julia -J <image> -e ""`), parts take 7 % more samples
+        than stock, +7.6 % in the kernel (page faults, 57 % of all) and +5 % in
+        `jl_read_reloclist` (25 % of all); the heap is 6.8 % larger. The
+        dynamic loader takes 0.07 ms in both. So the start reaches stock only
+        when the heap does.
+      - What the heap holds more (a census of the objects that the roots reach;
+        it counts 6.6 MB of the 10.5 MB): 17,528 method instances that stock
+        does not have, with their tuple types (19,510 more `DataType`s, 23,988
+        more `SimpleVector`s, 5,345 more `Type{T}` kinds). 9,887 of them are of
+        Serialization and 3,828 of Base, with no code instance: dispatch made
+        them, for one `Type{X}` value each (for example
+        `serialize(::Serializer{IOBuffer}, ::Type{GenApp.Counter6})`). The
+        provider writes its records with Serialization, reads them back in a
+        rebuild, and checks that each value of a new part reads back equal
+        (`apart_round_trip`); on this Julia each `Type{X}` value has a kind of
+        its own (`Core.TypeEgal{X}`), so each gets its own specialization of
+        `serialize`, `deserialize`, `sertag` and others. Most of the other
+        method instances have code that the provider made in its run (1,833
+        inferred ones of Base), and the provider module has 190 methods.
+      - Decision point (the owner decides):
+        1. The store writes its records in a format of its own, with no
+           Serialization: a type as its text or key, by code with no
+           specialization for each type (a new format of the store). This also
+           takes the JIT of Serialization out of each writer that makes new
+           parts. Then I measure what is left.
+        2. A Julia change: the writer of a system image leaves out what the
+           provider made (the method instances and the code instances of its
+           call, their cache entries, and its module). A larger change in
+           several places of the writer.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
