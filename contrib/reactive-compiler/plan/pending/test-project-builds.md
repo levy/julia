@@ -448,6 +448,39 @@ Each measure runs on the generated project, for stock and for our build, in
         information, and `--trim` where it keeps the session of use correct.
       - Gate: the package files and the executable are within the bounds of the
         size of stock that S1 sets.
+      Facts found in the work (CompilerServer.jl `06736aa`):
+      - The image of the executable of parts held the provider module
+        `Main.CompilerServerParts` (190 methods) and its globals: about 158 MB
+        by `Base.summarysize` (the table of the writer 102 MB, the caches of
+        the type texts 24 MB and 18 MB, the part names 6 MB). The provider now
+        empties its caches at the end of its call (`apart_forget_caches!`):
+        the image is 244,890,768 bytes (before: 292,041,640; stock
+        188,578,848), the start to the line `ready` 87.3 ms (before: 101.6 ms;
+        stock 80.8 ms), its own peak 263 MiB (before: 295; stock 250).
+      - A system image saves the storage of the root task (`root_task->tls`)
+        and restores it at load. So the table, which the writer needs until it
+        has saved the image, was still in the image there (`Base.roottask` held
+        about 60 MB by `Base.summarysize`).
+      - The writer copies the bytes, the paths and the names of the table when
+        it gets it; after that it needs only the Julia objects of the slots,
+        until it saves the heap, and the image saves these objects anyway as
+        the values of its slots. A probe (not committed): codegen gives the
+        table of a native code (`jl_get_llvm_code_parts`), and
+        `jl_create_system_image` roots it in its own frame until the image is
+        saved; the provider keeps nothing (5 files, about 25 lines). The
+        executable (a whole build, because a new system image of Base gives new
+        part names): the image is 230,698,912 bytes, its heap 163,796,688
+        (stock 153,741,920), the start 84.5 ms (stock 81.6 ms), its own peak
+        258 MiB (stock 250), and its output is that of stock. The 63 tests
+        pass.
+      - Left in the heap, about 10 MB: the entries of the dispatch caches from
+        the work of the provider (the method table is about 15 MB larger by
+        `Base.summarysize`), the code of the provider (190 methods and 819
+        specializations), and 7,676 more method instances. Left in the file:
+        the symbol tables, the unwind tables and the debug information of the
+        parts.
+      - Decision point: the probe is a new change of the Julia branch, so the
+        owner decides.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
