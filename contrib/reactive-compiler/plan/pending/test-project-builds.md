@@ -539,6 +539,32 @@ Each measure runs on the generated project, for stock and for our build, in
            provider made (the method instances and the code instances of its
            call, their cache entries, and its module). A larger change in
            several places of the writer.
+      - The owner chose way 1 (CompilerServer.jl `9b6e724`, store format 4).
+        The records and the manifests are only written and read by this
+        package; the writer of a product only gets the table and the objects.
+        `codec.jl` takes each value with `@nospecialize` and passes values only
+        to builtins and to functions with `@nospecialize`: one specialization
+        for each kind of value. A type is its structure (the reference of its
+        type name and its parameters; `Type{X}` of kind `TypeEq` and
+        `Core.TypeEgal{X}` each with a tag, because signatures of method
+        instances hold the second kind); the wrapper of a type name reads back
+        as that very object, because a `UnionAll` is not interned and an image
+        saved a copy as another object (the rebuild then differed in 550 kB of
+        each `.ji`); a struct is its type and its fields. A test set checks the
+        kinds of values, the same bytes, the identity of a wrapper, and no new
+        specialization for more type values. The package no longer loads
+        Serialization.
+      - With it: the 158 tests pass; the harness (`--executable none --agents
+        2`) passes its 211 checks, each step equal to a whole build. The build
+        of an edit takes 2.53 s (stock 2.85 s; before 2.57 s), its CPU 2.70 s
+        (stock 4.99 s), the peak of one writer 331 MiB (stock 340 MiB; before
+        347 MiB), the first build 4.96 s (stock 3.69 s; before 5.43 s), the
+        cycle of an edit 3.15 s (stock 3.46 s), 2 agents 1,127 cycles in an hour
+        (stock 1,109). The executable (a whole build on the same Julia as
+        stock): the image 206,811,256 bytes (stock 188,590,976), its heap
+        159,683,880 (stock 153,743,728), the start to the line `ready` 79.6 ms
+        (stock 81.2 ms; medians of 7), its own peak 228 MiB (stock 228 MiB), its
+        output that of stock, its first build 217.1 s (before 243.1 s).
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
