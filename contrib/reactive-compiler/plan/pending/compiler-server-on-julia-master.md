@@ -1324,8 +1324,22 @@ versions are about 4 % slower than in the run above):
 | two at the same time, each | 4.84, 6.36, 338 | 3.62, 3.66, 320 | 0 |
 
 The table of the run before the defect was found has valid times, but its
-output column compared stock with stock. Pending: the gate of the system image
-with `4b7f1ca` (it needs about 7 GiB; the other job left no room). A test of WriteApp now edits a
+output column compared stock with stock.
+
+The gate of the system image with `4b7f1ca` (8 cores, `JULIA_IMAGE_THREADS=8`
+for stock, one run of each build; after the owner raised the total of the caps
+of `bounded-run` to 48 GiB): each image gives the output of stock.
+
+| build | s | CPU s | peak MiB | LLVM functions | image bytes |
+|---|---|---|---|---|---|
+| stock | 69.9 | 198.2 | 5,658 | 21,766 | 179,551,312 |
+| whole with parts | 261.0 | 415.2 | 4,696 | 227 | 269,450,264 |
+| rebuild with parts | 59.5 | 65.1 | 4,863 | 227 | 275,250,320 |
+
+The rebuild is better than stock in time (15 %), CPU time (67 %), peak (18 %)
+and LLVM functions. The guard of the bytes fails: the images are 1.50 and 1.53
+times as large as stock, against 1.42 and 1.46 with `f004679` (bound 1.5). The
+cause of that growth is not found yet. A test of WriteApp now edits a
 function that a closure inlines; with the check off, it fails with the value of
 the old body. Open: `install_apart` (the JIT path of Step 9) does not check the
 identity yet.
