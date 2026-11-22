@@ -312,8 +312,8 @@ Each measure runs on the generated project, for stock and for our build, in
         decides.
       - Gate: 0 bytes of difference in each scenario; the difference against
         stock is reported by section.
-      Facts found in the work (CompilerServer.jl `4e299b7`, Julia branch
-      `e2c61fc4af`):
+      Facts found in the work (CompilerServer.jl `4e299b7` to `1ec2a8a`, Julia branch
+      `e2c61fc4af` to `dde6b68e60`):
       - All writers run with `--deterministic-object-ids=yes`; with no fixed
         ids, no two builds can be equal. A file names the path of its depot,
         so the builds that are compared write into one depot.
@@ -349,36 +349,64 @@ Each measure runs on the generated project, for stock and for our build, in
         harness builds the same sources again with an empty store into the
         same depot and compares the six package files. The 21 steps in the
         first worktree are equal in every byte.
-      - The 4 steps in other worktrees differ (a new worktree of the same
+      - The 4 steps in other worktrees differed (a new worktree of the same
         commit, of another commit, and two at the same time; 38 kB to 513 kB of
-        the six files). 841 of the 1,627 parts hold the absolute path of the
+        the six files). 841 of the 1,627 parts held the absolute path of the
         source folder of the worktree that compiled them in their line tables;
-        the path is their only difference (checked by a replacement of the
-        path). The version of a part does not cover its object, so a new
-        worktree takes these parts with the path of the first worktree. This
-        is also a defect beyond the bytes: in worktree B, the frames of
-        `report1` and `pick1` (`Base.StackTraces.lookup`) name the files of
-        worktree A.
+        the path was their only difference. The version of a part does not
+        cover its object, so a new worktree took these parts with the path of
+        the first worktree, and in worktree B some frames of `report1` and
+        `pick1` (`Base.StackTraces.lookup`) named the files of worktree A. Most
+        frames were right, because `lookup` builds them from the `DebugInfo`
+        of the code instance when the code gives a statement index; 28 of
+        2,036 frames came from the line table.
+      - Way 1 of the decision (the owner approved it): a part names each source
+        file of a package relative to the package (Julia branch `dde6b68e60`,
+        CompilerServer.jl `c9fe441`). `jl_set_image_source_paths` registers
+        prefix rewrites for the debug info of code for an image, and the writer
+        with parts names each file of a loaded package `@<name>/<uuid>/<path
+        in the package>`. `Base.fixup_package_path` maps such a name to the
+        file in the folder of that package, and `Base.StackTraces.lookup`
+        applies it to the frames from the line tables. A new setting of the
+        part names (`source_names`) keeps the old objects out of use. Now the
+        objects of a part are equal in each worktree, and a test checks that
+        no object names the folder of a worktree and that the frames in another
+        worktree name its own file.
+      - With it, each of the 25 steps of parts, in each worktree, writes the
+        bytes of a whole build of the same sources (`whole_bytes_differ` 0).
+      - A defect of the harness, found here: a child process on Linux reports
+        the peak of its parent as its own `Sys.maxrss()` when that is larger
+        (a child of an 828 MiB parent reported 828 MiB; of a small parent, 224
+        MiB). The session of use reported the peak of the harness process,
+        which is larger when it measures parts, after stock: 415 against 380
+        MiB. The session now reports its own peak (`VmHWM`): about 325 against
+        323 MiB. The peak of a writer holds: the build process stays at 230 MiB
+        or less, below each writer.
+      - The report against stock (`bench/against_stock.jl`, on the run of
+        `c9fe441`, small project, the base sources): both versions have machine
+        code for the same 1,261 method instances; 496 have the same bytes, 320
+        the same size, 444 are smaller with parts (38,115 bytes in all) and 1
+        larger (16 bytes); the machine code is 295,941 bytes with stock and
+        257,842 with parts. The `.ji` files are 3.7 kB larger each. The `.so`
+        files of parts are 1,066,504 bytes larger (1,988,632 against 922,128),
+        by section: the symbol tables `.symtab`, `.strtab`, `.dynsym`, `.dynstr`
+        and `.gnu.hash` +744 kB, the unwind tables `.eh_frame` and
+        `.eh_frame_hdr` +284 kB, `.bss` +17 kB (the slots of the parts),
+        `.text` +13 kB, the debug sections -4 kB. These are the items of S3.
+      - The executable is not compared in S2: its build process loads the
+        provider, and a system image keeps each module that is loaded, so the
+        image of a rebuild and of a whole build hold other provider tables. The
+        comparison moves to S3, which takes the provider out of the image.
       - The names of the callees from the edges of the code instances, in place
         of the inference of the provider, left 91 functions without their
         parts and made a whole build non-deterministic: the inference stays.
-      - The 58 tests pass; the harness (`--executable none --agents 2`) passes
-        207 of its 211 checks, and the 4 that fail are those steps.
-      - Decision point (the owner decides):
-        1. A part names each source file relative to its package, and the
-           lookup of a frame maps the name to the folder of the loaded package.
-           Julia has both kinds of map now: codegen maps source paths for JIT
-           code (`jl_set_debuginfo_source_paths`, not for images), and a stack
-           trace maps the build paths of the stdlib (`fixup_stdlib_path`). A
-           Julia change in codegen and in Base; each worktree takes each part.
-        2. The version of a part covers the folder of the worktree when its
-           object names it: no Julia change, but a new worktree compiles about
-           half of the parts again.
-      - The executable is not compared yet: its writer loads the provider into
-        the image (S3), and it runs with no fixed ids.
+      - The 63 tests pass; the harness (`--executable none --agents 2`) passes
+        its 211 checks.
 
 - [ ] **S3. Small products.**
       - The image does not hold the provider or its tables.
+      - The executable of a rebuild equals that of a whole build in every byte
+        (from S2): the guard of the bytes also compares the executable.
       - The part symbols are hidden (the emission in the Julia branch, and a
         lookup of the install that finds hidden symbols); the unwind tables and
         the symbol table get as small as those of stock.
