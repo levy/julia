@@ -680,6 +680,74 @@ Each measure runs on the generated project, for stock and for our build, in
         2. Julia changes that leave out what the run of the provider makes: the
            method instances, the entries of the dispatch cache, the roots, the
            methods (the probe of the first one is not finished).
+      - The owner chose way 1 (2026-11-22): "Yes, I hope that won't make the
+        performance worse. Let's see".
+      - Way 1 is done, with no change of Julia (CompilerServer.jl `4dc7a07`,
+        `abaa8c1`; 166 tests pass):
+        - `create_sysimage_with_parts` and `create_app_with_parts` run the
+          build once more when the process that wrote the image made new parts
+          (`apart_image_passes`).
+        - A build of the code of the store made 128 parts again each time, so
+          each build needed the second pass. The causes, found with debug
+          lines of the provider: 100 parts had an edge to
+          `Base.type_parameter(::Type{Type{T}})`, where `T` is the type
+          variable of the wrapper `Type`, and a free type variable read back as
+          a new object; 13 had the null address as a constant; the other 15 can
+          serve no build (the literal `Dict` of an `@enum`, a `BigFloat`
+          constant, a type of the module with no path of the build script of
+          PackageCompiler, the method `Base.include` that Base deleted).
+        - The format of a store (format 5) holds a type variable of a wrapper
+          as that very object, and the null address.
+        - The writer compiles a function itself when the newest version of its
+          part was made from the same code and serves no build, or when the
+          format does not hold the interface of the function: 17 of the 32,198
+          functions of the executable. So a build of the code of the store
+          makes no part.
+      - The result (test project, small, 8 cores): the image of a whole build
+        and the image of a rebuild differ in 50 bytes of 203,407,912, the same
+        50 bytes as two rebuilds and as two stock builds (the name of the
+        temporary folder of PackageCompiler). The guard compares the image of
+        each executable step with a whole build and takes at most 64 bytes:
+        218 checks pass. The four Julia changes that were planned for an equal
+        executable (weak specializations, the rule for the dispatch cache, the
+        correct pruning, no method newer than the selection) are not needed
+        for it; `docs/julia-changes.md` keeps them as possible gains of size.
+      - The cost (the harness, wall time of the build of the executable):
+
+        | step | stock | parts | passes | new parts in the image writer |
+        |---|---|---|---|---|
+        | the first build | 76.6 s | 266.4 s | 2 | 32,197 |
+        | after an edit of a leaf function | 70.5 s | 109.4 s | 2 | 17 |
+        | the edit taken back | 70.9 s | 55.5 s | 1 | 0 |
+        | a new worktree, the same commit | 75.8 s | 115.2 s | 2 | 3 |
+
+        A pass with all parts held takes about 55 s. So the second pass costs
+        about 55 s in each step that makes a new part in the writer of the
+        image: the build after an edit is then 1.55 times stock.
+      - Why the writer of the image makes new parts when the writers of the
+        package files made theirs before:
+        - The image has specializations that no package file has, from the
+          workload of the executable. After the edit of a function that callers
+          inline, the package writers made 5 parts and the writer of the image
+          needed 8 more (`GenLow.pick1(::Rational{Int64})`, `GenLow.report()`,
+          `GenMid.report1()`, `GenApp.julia_main()` and others).
+        - Inference gives a function other code in another worktree:
+          `GenApp.julia_main` has 57 edges in the first worktree and 60 in each
+          other one (it inlines `println` there). The image of stock differs
+          between worktrees too (188,582,768 and 188,583,416 bytes).
+      - Decision point (the owner decides): the second pass is the price of
+        equal bytes until S6 makes the parts before the image is written.
+        1. A setting: the second pass runs only on request (for a release, and
+           in the guard); the build of the edit cycle takes one pass (55 s), and
+           its image differs from a whole build by what the run of the provider
+           makes.
+        2. Keep the two passes for each build until S6.
+        3. Do S6 next, before the other items of S3.
+      - Left of S3: the provider code in the image (3,866 objects with its
+        name), the static symbol tables (+5.4 MB), the debug information of
+        the parts (+4.5 MB), the heap (+4.3 MB), the relocations of the slots
+        (+1.4 MB); the measurement of the debug level and of `--trim`; the gate
+        of the sizes.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
@@ -772,9 +840,11 @@ Each measure runs on the generated project, for stock and for our build, in
       | D. a reader of images by object: `jl_object_image_offset`, `jl_image_object_at` | 32 | no: only the link cascade of `link.jl` calls them, and only a gate test runs it | none | none without the link |
 
       What the review found:
-      - Each group but D is needed. Nothing is missing for the package files. For
-        system images, the experiment of S3 can add two small changes (weak
-        specializations, and no method that is newer than the selection).
+      - Each group but D is needed. Nothing is missing for the package files, and
+        nothing for an equal executable: S3 reached it with no change of Julia
+        (the image is written by a process that only takes parts). Two small
+        changes can make the image smaller (weak specializations, and no method
+        that is newer than the selection).
       - C has the weakest form for upstream. `jl_set_code_parts` keeps the
         provider in a static pointer that the GC does not see, and its comment
         asks the caller to keep "that very object" alive in a box. It takes three
