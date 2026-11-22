@@ -1129,27 +1129,213 @@ the harness):
   removes a part that no manifest names and that is older than a grace time,
   so a build that runs at the same time keeps the parts that it has written.
 
-- [ ] SH1. The pool, the manifests, the names from the inputs, and the lookup by
+- [x] SH1. The pool, the manifests, the names from the inputs, and the lookup by
       name; the writers of package files and of system images, the compile
-      apart and the install take it.
-- [ ] SH2. The cleanup with a grace time.
-- [ ] SH3. Gate: the harness keeps the parts that hold in each step, and the two
-      builds at the same time succeed.
+      apart and the install take it. (CompilerServer.jl `f004679`; the names
+      as interfaces and the identity of the code in `4b7f1ca`.)
+      Facts found in the work:
+      - A name does not fix the code: the code of a function also depends on
+        what it inlines and on the definitions that it reads (the edges, the
+        globals and the types of its record). So one name has versions:
+        `pool/<name>/<version>.{o,record}`, and the version is a hash of the
+        bytes of the record. A writer reads the versions of each name, the
+        newest first, and takes the first one whose record holds. Two builds
+        that make one version write the same record, so a version never
+        changes; with one file for each name, a reader could check one
+        record and get the object of another.
+      - The hash of a version is the hash of the record as a string: the hash
+        of a large array in Julia reads only some of its elements.
+      - A file is written to a name of its process (pid and time) and renamed
+        with `Base.Filesystem.rename`: `mv(...; force = true)` removes the old
+        file first, so a reader could find no file.
+      - A record holds the records of its callees (name, types, method, return
+        type) in place of the list of the code of other images in the index,
+        and the prints of its own types; the print of each type name is kept
+        in the process, so the records of a system image do not print a type
+        again and again.
+      - The file of a method of a package is relative to the root of its
+        package (`@src/x.jl`), from `Base.pkgorigins`, which the writer of a
+        package file sets for the package that it writes.
+      - The name of a product: the package with a hash of its UUID and of the
+        path of its source, with the folder of the package as its root; a
+        system image by the path of the image; `compile_apart` by
+        `product = "apart"`. A build touches each record that it takes, so the
+        cleanup keeps it for the grace time.
+      - Open: the debug information of a part names the files of the worktree
+        that compiled it first, so a backtrace in another worktree names the
+        files of that worktree.
+      - The generator of a generated function holds a `LineNumberNode` with the
+        absolute file of its method: the hash of a source takes the file of a
+        line node relative to the root of the package.
+      - The time of one writer of GenLow (about 530 functions, 4 cores, the
+        wall time of one `compilecache` call, 3 runs): stock 0.91 s to 0.94 s.
+        With parts and 0 new parts it was 1.29 s to 1.34 s. The causes, in
+        the order of their cost, and the fixes:
+        1. The writer loaded Pkg through PackageCompiler (0.26 s): CompilerServer
+           loads PackageCompiler only in the functions that call it.
+        2. The writer compiled 55 methods of CompilerServer and Serialization
+           with the JIT (121 ms; the compile timer of Base shows 0 for it,
+           `--trace-compile` shows it): closures over a record take the type
+           of the record, and the entries had many types. Now an entry and a
+           callee have one concrete type each (`ApartEntry`, `ApartCallee`),
+           the check is loops over `@nospecialize` values, and a precompile
+           workload (`src/workload.jl`) runs the store once. 12 methods of
+           Serialization (30 ms) still compile in the writer.
+        3. The names: `Type{T}` is a new kind on Julia master
+           (`Core.TypeEgal`), which `apart_type_string` gave to `string`, and
+           `string` of a type searches the aliases of all modules. Now it has
+           its own text, and the text of each type is kept in the process.
+        4. The check of the types walked all edges of each record again: now
+           the type names of each type object are kept in the process.
+        5. A full collection after the provider (0.04 s) runs only above 1 GiB
+           of heap.
+        Then: stock 0.92 s to 0.95 s, parts 0.79 s, the `.ji` file of parts
+        0.2 % larger than the one of stock, the `.so` file 2.1 times as large.
+      - A defect found by the test of the taking back: the memo of the check of
+        the globals kept the answer, which depends on the record, so the old
+        version of a part did not hold after the check of the new one. It
+        keeps the print of each global now.
+      - A global of Core or Base is fixed by the system image of the settings,
+        as a type of Core or Base is: the records do not hold them, and the
+        check passes them.
+- [x] SH2. The cleanup with a grace time: `apart_clean_store(store; grace)`
+      (7 days). The test of WriteApp builds the source, an edit of a constant,
+      the source again, and a second worktree in another folder: the third
+      build and the second worktree keep each part and compile none, and the
+      cleanup removes only the parts of the edit, then the manifest of the
+      worktree that is gone.
+- [x] SH3. Gate: the harness keeps the parts that hold in each step, and the two
+      builds at the same time succeed. The run of 2026-11-22 (small, 4 cores,
+      one run of each step): each taking back, both new worktrees and the two
+      builds at the same time keep 1,603 parts and compile 0; an edit compiles
+      only its parts (0 to 6, 144 for lines that move, 160 for a file with a
+      new name); each output is the output of stock.
 
 The guards. Each gain against stock gets a check that fails when it is lost,
 with the measured values in its message; where stock is still better, the check
 guards against more loss and names the gap.
 
-- [ ] G1. `bench/guard.jl` reads the CSV file of a run and checks, for each step:
+- [x] G1. `bench/guard.jl` reads the CSV file of a run and checks, for each step:
       the output of parts is the output of stock; the writer with parts compiles
       no more functions with LLVM than stock; the wall time and the peak memory
       of parts are not above those of stock (a gap of stock is a named
       exception with its own bound, as long as it lasts).
-- [ ] G2. The gate of the system image checks the same for its rebuild: less
+- [x] G2. The gate of the system image checks the same for its rebuild: less
       wall time than stock, a lower peak, and fewer functions compiled by LLVM.
-- [ ] G3. The reports give, for each number, what it measures: the span of a
+      The run of 2026-11-22 (HazardApp, 12 cores, `JULIA_IMAGE_THREADS=12` for
+      stock, one run of each build; the time is the wall time of the call
+      `create_sysimage` or `create_sysimage_with_parts` in a build process of
+      its own; the CPU time and the peak are those of the child processes of
+      that build process):
+
+      | build | s | CPU s | peak MiB | LLVM functions | image bytes |
+      |---|---|---|---|---|---|
+      | stock | 60.4 | 189.8 | 5,787 | 21,766 | 179,576,392 |
+      | whole with parts | 217.0 | 371.0 | 4,822 | 218 | 255,890,608 |
+      | rebuild with parts | 53.4 | 64.4 | 4,886 | 218 | 262,843,696 |
+
+      The rebuild is better than stock in time (12 %), CPU time (66 %), peak
+      (16 %) and LLVM functions; each image gives the output of stock. The
+      gaps, with their bounds in the gate: the whole build (3.59 times the wall
+      time of stock, bound 4.0; 1.95 times its CPU time, bound 2.5) and the
+      bytes of the image (1.42 to 1.46 times, bound 1.5). With 12 image
+      threads, stock is faster than in the first gate with 4 (60.4 s against
+      80.9 s), so the gain of the rebuild is smaller than the 24 % of then.
+      The rebuild still makes 315 new parts with no change: 75 other edges,
+      221 records with no entry, 19 slots that do not resolve.
+- [x] G3. The reports give, for each number, what it measures: the span of a
       time and its process, the kind of memory and its process, what a count
-      counts, and the cores and runs.
+      counts, and the cores and runs. (`bench/measures.jl`, printed by
+      `table.jl`, `guard.jl` and `run.jl`; the gate of the system image
+      prints its own.)
+
+The run of 2026-11-22 after G1 (CompilerServer.jl `f004679`, small, 4 cores,
+one run of each step). The time is the wall time of the calls that write the
+package files of one step, in the build process; the CPU time is the one of
+the writer processes of the step; the peak is the largest resident size of one
+writer process of the step:
+
+| step | stock: s, cpu s, MiB | parts: s, cpu s, MiB | parts new |
+|---|---|---|---|
+| founding | 3.59, 5.69, 337 | 5.82, 9.76, 360 | 1,601 |
+| an edit of a comment | 2.79, 4.91, 334 | 2.44, 2.54, 318 | 0 |
+| the body of a leaf function | 2.80, 4.90, 333 | 2.69, 2.81, 352 | 6 |
+| lines that move | 2.85, 4.96, 333 | 2.92, 3.47, 355 | 144 |
+| a file with a new name | 2.01, 3.43, 334 | 2.18, 2.77, 356 | 160 |
+| a new worktree, the same commit | 3.59, 5.70, 336 | 3.36, 3.43, 324 | 0 |
+| two at the same time, each | 4.46, 5.94, 336 | 3.44, 3.50, 319 | 0 |
+
+All 129 checks of the guard pass. The gaps, each with a name and a bound in
+`guard.jl`: the founding (wall time, CPU time, peak), the peak of a writer that
+makes new parts, and the wall time of an edit with many new parts. Not in the
+guard yet: the `.so` files of parts are 2.1 times as large as those of stock
+(GenLow: 643,728 bytes against 300,168); the `.ji` files are 0.2 % larger.
+
+A defect of the harness, found after that run: the name of a package file
+depends on the active project, and the build process of parts had another load
+path (with CompilerServer.jl) than its workload process. So the workload did not
+find the files of the build, and wrote its own with stock code: the output
+check of parts compared stock with stock. The times are still valid (they are
+measured in the build process). Now the workload runs in the environment of
+its build, and a workload that writes a package file gives "REBUILT", which
+fails the guard. The system image gate runs its image with `-J`, and the tests
+use one load path for the build and the run, so they were not affected.
+
+The defect that the fixed harness showed: with parts, three steps gave another
+output than stock (the edit of the body of a leaf function, the edit of a
+function that callers inline, and the worktree of the other commit). `poly1`
+calls a closure that inlines `leaf1`; the source of the closure did not change,
+so the key of the edge to it was the same, but its code changed with `leaf1`.
+The check of the records compared only the direct edges. The owner asked
+whether a check in depth invalidates everything, and agreed to the precise
+rule:
+
+- The name of a part is the interface of its function: the settings, the place
+  of its method, its types and its return type, with no hash of the source.
+  The versions keep two bodies of one name apart.
+- Each entry of a record holds the identity of its code
+  (`apart_code_identity`): the name, the hash of the source, and for each edge
+  the interface of a callee that the code calls by its name and does not inline
+  (the name, the effects, the exception type), else the identity of the callee
+  in depth by the same rule. The inlined callees are the frames of the debug
+  information of the code instance. Code of Core and Base for types of Core and
+  Base stops the walk.
+- The check of the direct edges compares the method by its place; the source
+  enters through the identity.
+- The link resolves a callee of another image by its method place and checks
+  that its current name is the name that the part calls.
+
+The first fix, the identity in depth over every edge, gave the output of stock
+in each step and rebuilt 14 parts for the leaf edit, 7 for the inlined
+function, 176 for lines that move (of 1,603). The precise rule
+(CompilerServer.jl `4b7f1ca`) gives the output of stock in each step too, all
+129 checks pass, and rebuilds 12, 5 and 160. The run (small, 4 cores, one run
+of each step, with a large job of another session on the machine, so both
+versions are about 4 % slower than in the run above):
+
+| step | stock: s, cpu s, MiB | parts: s, cpu s, MiB | parts new |
+|---|---|---|---|
+| founding | 3.89, 6.07, 336 | 6.57, 10.75, 363 | 1,601 |
+| an edit of a comment | 2.92, 5.11, 336 | 2.70, 2.81, 322 | 0 |
+| the body of a leaf function | 2.94, 5.12, 333 | 3.05, 3.20, 361 | 12 |
+| a function that callers inline | 2.94, 5.12, 334 | 2.99, 3.11, 354 | 5 |
+| lines that move | 3.05, 5.25, 334 | 3.25, 3.94, 360 | 160 |
+| a new worktree, the same commit | 3.89, 6.08, 335 | 3.60, 3.67, 324 | 0 |
+| two at the same time, each | 4.84, 6.36, 338 | 3.62, 3.66, 320 | 0 |
+
+The table of the run before the defect was found has valid times, but its
+output column compared stock with stock. Pending: the gate of the system image
+with `4b7f1ca` (it needs about 7 GiB; the other job left no room). A test of WriteApp now edits a
+function that a closure inlines; with the check off, it fails with the value of
+the old body. Open: `install_apart` (the JIT path of Step 9) does not check the
+identity yet.
+
+Why the `.so` of parts is larger (GenLow): the part symbols are exported
+(`.dynsym`, `.dynstr`, `.gnu.hash`, `.gnu.version`: about 92 KB, stock 2 KB);
+the unwind tables have 3,621 entries against 814 (`.eh_frame` and its header:
+126 KB against 36 KB); the symbol table has 6,453 symbols against 1,258, as each
+part has its `japart_` name besides the names of its functions. `.text` is 3 %
+larger.
 
 ### Step 13: the measurement and the end of the plan
 
