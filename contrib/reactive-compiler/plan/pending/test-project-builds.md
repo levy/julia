@@ -702,6 +702,13 @@ Each measure runs on the generated project, for stock and for our build, in
         test that builds a small package twice and compares the bytes; C a
         package file with its code from parts; the names a frame that maps back.
       - No change adds a line to the documentation or to NEWS yet.
+      - The suites of Julia that the changes can reach, run for the first time
+        on this branch (`compile_apart`, `stacktraces`, `cmdlineargs`,
+        `precompile`, `gc`, `subtype`, `loading`, `errorshow`; 8 cores): 489,206
+        checks pass, 49 are marked broken upstream, and 1 fails. The failure is
+        the test of `--bug-report=rr-local` in `cmdlineargs`: the `rr` recorder
+        does not know the CPU of this machine ("AMD CPU type 0x70f00 unknown"),
+        so it is no fault of the branch.
 
 - [ ] **S11. The end.**
       - One run of the harness with all measures, the guards, and the named
