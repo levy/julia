@@ -678,6 +678,11 @@ Each measure runs on the generated project, for stock and for our build, in
         and its test; remove each change that the final design does not need.
       - Gate: a table of the four themes, each with its lines and its test, and
         no change outside them.
+      - The list lives in `docs/julia-changes.md` of CompilerServer.jl (the
+        owner asked for one place, 2026-11-22; commit `8f4d452`). It splits the
+        changes into the minimum (11 changes, 1,101 lines), equal bytes (9
+        changes, 454 lines), not needed now (1 change, 32 lines) and not
+        written yet. Each commit of the Julia branch updates it.
       A review before the end (2026-11-22; the owner asked for it): the branch
       `pr-linked-products` at `67820a0472` against the upstream master
       `2aa7c9fd5b`, which did not move: 25 commits, 22 files, 1,435 lines added
