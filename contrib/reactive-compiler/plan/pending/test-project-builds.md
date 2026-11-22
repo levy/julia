@@ -565,6 +565,25 @@ Each measure runs on the generated project, for stock and for our build, in
         159,683,880 (stock 153,743,728), the start to the line `ready` 79.6 ms
         (stock 81.2 ms; medians of 7), its own peak 228 MiB (stock 228 MiB), its
         output that of stock, its first build 217.1 s (before 243.1 s).
+      - The executable of a rebuild (the same store, the same folder) differs
+        from that of a whole build: its image is 148 kB smaller, and 113 MB of
+        its bytes differ. Two stock builds differ in 1,454,103 bytes of the
+        image, and in 66 bytes with `--deterministic-object-ids=yes`; the build
+        of an image with parts now has that option too (CompilerServer.jl
+        `0e1058b`), and the difference stays. The cause is the provider in the
+        build process: the image keeps what its run made, and that depends on
+        whether it emits new parts or checks held ones. Against stock the image
+        holds 3,797 more method instances (before the format of our own:
+        17,528) and about 3.3 MB more objects by the census: Base code inferred
+        for the types of the provider (1,726 inferred instances), its 190
+        methods, and 167 instances for one type value each.
+      - Decision point (the owner decides): the executable equals a whole build
+        only when its image holds nothing of the provider. That needs a Julia
+        change: the writer of a system image leaves out the provider module
+        with its methods, and the method instances, code instances, cache
+        entries and types that only the provider made. The other way: the
+        image keeps the provider, and the comparison of the executable is a
+        named gap.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
