@@ -341,18 +341,41 @@ Each measure runs on the generated project, for stock and for our build, in
         The emission of new parts asks one more fact. The build id of a file
         comes from its content, so it differs too, and the code of the file
         names the build id in each block of method roots.
-      - A probe (not committed) makes the writer compute the three facts of each
-        `UnionAll` before it writes them (`jl_unionall_compute_flags`; 3 files,
-        about 15 lines). With it, the rebuild equals the whole build in every
-        byte, all six files.
+      - The writer computes the three facts of each `UnionAll` before it saves
+        them (`jl_unionall_compute_flags`, Julia branch `6f0e495eaf`; the owner
+        approved it). `compilecache_with_parts` gives its writer
+        `--deterministic-object-ids=yes` itself.
+      - The guard (CompilerServer.jl `b71fb9f`): after each step of parts, the
+        harness builds the same sources again with an empty store into the
+        same depot and compares the six package files. The 21 steps in the
+        first worktree are equal in every byte.
+      - The 4 steps in other worktrees differ (a new worktree of the same
+        commit, of another commit, and two at the same time; 38 kB to 513 kB of
+        the six files). 841 of the 1,627 parts hold the absolute path of the
+        source folder of the worktree that compiled them in their line tables;
+        the path is their only difference (checked by a replacement of the
+        path). The version of a part does not cover its object, so a new
+        worktree takes these parts with the path of the first worktree. This
+        is also a defect beyond the bytes: in worktree B, the frames of
+        `report1` and `pick1` (`Base.StackTraces.lookup`) name the files of
+        worktree A.
       - The names of the callees from the edges of the code instances, in place
         of the inference of the provider, left 91 functions without their
         parts and made a whole build non-deterministic: the inference stays.
-      - The 58 tests pass, and the harness (`--executable none --agents 2`)
-        passes its 186 checks, with F2 and F5 and with no probe.
-      - Decision point: the probe is a new change of the Julia branch, so the
-        owner decides. The guard of the bytes in each scenario of the harness
-        comes after that decision.
+      - The 58 tests pass; the harness (`--executable none --agents 2`) passes
+        207 of its 211 checks, and the 4 that fail are those steps.
+      - Decision point (the owner decides):
+        1. A part names each source file relative to its package, and the
+           lookup of a frame maps the name to the folder of the loaded package.
+           Julia has both kinds of map now: codegen maps source paths for JIT
+           code (`jl_set_debuginfo_source_paths`, not for images), and a stack
+           trace maps the build paths of the stdlib (`fixup_stdlib_path`). A
+           Julia change in codegen and in Base; each worktree takes each part.
+        2. The version of a part covers the folder of the worktree when its
+           object names it: no Julia change, but a new worktree compiles about
+           half of the parts again.
+      - The executable is not compared yet: its writer loads the provider into
+        the image (S3), and it runs with no fixed ids.
 
 - [ ] **S3. Small products.**
       - The image does not hold the provider or its tables.
