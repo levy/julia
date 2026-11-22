@@ -312,46 +312,47 @@ Each measure runs on the generated project, for stock and for our build, in
         decides.
       - Gate: 0 bytes of difference in each scenario; the difference against
         stock is reported by section.
-      Facts found in the work (CompilerServer.jl `5dbe593`):
+      Facts found in the work (CompilerServer.jl `4e299b7`, Julia branch
+      `e2c61fc4af`):
       - All writers run with `--deterministic-object-ids=yes`; with no fixed
         ids, no two builds can be equal. A file names the path of its depot,
         so the builds that are compared write into one depot.
-      - Two whole builds with parts are now equal in every byte (all six files
+      - Two whole builds with parts are equal in every byte (all six files
         of the test project): the parts are in the order of the list of the
         writer, and the build id of each file comes from its content. Two
         stock builds differ in 39 kB to 46 kB of each `.ji`, from their random
         build ids.
-      - A rebuild (each part held) differs from a whole build only in its `.ji`
-        files (GenLow 830 kB of 2.3 MB, GenMid 97 kB, GenApp 534 kB); the
-        `.so` files differ only in the checksum of the heap. Three causes:
-        1. The provider runs in the scope of the write, so each id that it
-           gives to an object with no natural key (its tables, Serialization,
-           the walk over the globals) moves the counter of that scope, and the
-           writer gives other ids to the objects of the image. A fix needs a
-           small Julia change (F2): while the provider runs, an object with no
-           id gets a provisional one that the table does not record.
-        2. The emission of new parts makes types that go into the image: the
-           whole build of GenLow has 3 `DataType`s, 3 `SimpleVector`s and 9
-           `Union`s more (unions of the types of `report1` to `report8`, and
-           tuple types over them, from the loop of `report()`). Not from the
-           inference of the provider: an inference of all functions in the
-           rebuild did not change it. Where the image takes them from is not
-           found yet (F6).
-        3. Not a difference between the two, but a defect of each package file
-           with parts since Step 10: the writer records each loaded module of
-           an image as a requirement (`write_mod_list`), and the prelude loads
-           CompilerServer, Serialization, TOML, Dates and Printf. So each
-           process that loads such a file loads CompilerServer, and another
-           file of Serialization makes the loader reject it (the test steps of
-           the harness then wrote stock files). A fix needs a small Julia
-           change (F5): the writer leaves out the modules that the prelude
-           loaded.
+      - F2 and F5 are in the Julia branch (the owner approved them). The call of
+        the provider leaves no trace in the image: the roots that its code
+        makes get no tag of the package, the code that it infers is no new code
+        of the package, and its objects get provisional ids that the table does
+        not record. The writer of a package file loads the provider by name at
+        exit (`jl_set_code_parts` with `(package id, function name,
+        arguments)`), so a package file with parts requires only the modules of
+        stock. The writer must get the very object that the prelude keeps (an
+        element of an array): a tuple gets a new box at the `ccall`, and the GC
+        freed that box before the writer called it.
+      - With F2 and F5, a rebuild (each part held) differs from a whole build in
+        about 40 kB of each `.ji` (before: 830 kB, 97 kB and 534 kB). F6 (the
+        search): the extra types are gone. The rest is one byte in each of 8
+        `UnionAll` types of GenLow. Upstream Julia (#63932, 2026-11-11) keeps
+        three facts about the structure of a `UnionAll` in a hidden field when
+        a caller asks for them, and the writer saves the field as it finds it.
+        The emission of new parts asks one more fact. The build id of a file
+        comes from its content, so it differs too, and the code of the file
+        names the build id in each block of method roots.
+      - A probe (not committed) makes the writer compute the three facts of each
+        `UnionAll` before it writes them (`jl_unionall_compute_flags`; 3 files,
+        about 15 lines). With it, the rebuild equals the whole build in every
+        byte, all six files.
       - The names of the callees from the edges of the code instances, in place
         of the inference of the provider, left 91 functions without their
         parts and made a whole build non-deterministic: the inference stays.
-      - Decision point: F2 and F5 are new hooks of the Julia branch (themes A
-        and C), so the owner decides. The other way of this step is the link
-        of Step 11 for the package files.
+      - The 58 tests pass, and the harness (`--executable none --agents 2`)
+        passes its 186 checks, with F2 and F5 and with no probe.
+      - Decision point: the probe is a new change of the Julia branch, so the
+        owner decides. The guard of the bytes in each scenario of the harness
+        comes after that decision.
 
 - [ ] **S3. Small products.**
       - The image does not hold the provider or its tables.
