@@ -43,6 +43,19 @@ the tools that build it: CompilerServer.jl and the Julia branch
 `pr-linked-products`. Projectured is out of scope until the owner says
 otherwise.
 
+The owner, 2026-11-23, on where this work must end:
+
+> I expect this work to lead to a final result where an incremental small
+> change in a large project like projectured or omnet can be written into an
+> executable binary or package binary within seconds just like the merged
+> branch of the Julia repo could do that. We will work until we reach that
+> goal. But until then, let's focus what we are doing now.
+
+So the test project stays the scope of this plan, and each step is judged by
+whether it moves toward that end: the build of a small edit must lose its fixed
+cost (a new process for each package file, a whole PackageCompiler run for each
+executable).
+
 ## What exists, and what we measured
 
 The mechanisms:
@@ -743,6 +756,11 @@ Each measure runs on the generated project, for stock and for our build, in
            makes.
         2. Keep the two passes for each build until S6.
         3. Do S6 next, before the other items of S3.
+
+        Asked 2026-11-23, with my recommendation (way 1). The owner gave no
+        answer before the night and said to continue as planned: the question
+        waits, each build keeps its two passes, and the work goes on with the
+        other items of S3.
       - Left of S3: the provider code in the image (3,866 objects with its
         name), the static symbol tables (+5.4 MB), the debug information of
         the parts (+4.5 MB), the heap (+4.3 MB), the relocations of the slots
