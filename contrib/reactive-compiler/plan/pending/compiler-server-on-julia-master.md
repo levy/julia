@@ -1017,9 +1017,59 @@ Facts of the first prototype (CompilerServer.jl `1f35304`, `pr-linked-products`
   object of A goes wrong after a link of B, because the new A gives that object
   another id.
 
-## Part 5: the end
+## Part 5: the test project and the end
 
-### Step 12: the measurement and the end of the plan
+### Step 12: a test project for measurements
+
+The owner, 2026-11-22: "We should have a non trivial but cheap to test project
+where we can test the founding, the changes, the worktrees. Where we can do
+measurements to compare to the stock compiler or to other versions of our own",
+and "Yes, add that" to the proposal below. The store is shared between
+worktrees, and a founding is rare: the first build of a new worktree must be
+cheap.
+
+Proposed decisions (approved with this step):
+
+- The project is generated, in CompilerServer.jl (`bench/`), by a script from a
+  seed and a size: small (about 1,000 functions) and medium (about 5,000). The
+  same seed gives the same files. Three packages in a chain, `GenLow` below
+  `GenMid` below `GenApp`, each with modules and files, and the kinds of code
+  that matter for parts: parametric types, generic functions with many
+  specializations, closures, keyword arguments, generated functions, macros,
+  constants (a `Dict` and an `IdDict` keyed by objects among them), docstrings,
+  methods that extend a function of the package below, a C-callable entry, and
+  a precompile workload.
+- A fixed list of edits, each applied and taken back by the harness: a comment;
+  the body of a leaf function; the body of a function that many callers inline;
+  a new function; a new method of a function of the package below; a field of a
+  struct; the value of a constant; lines that move; a file with a new name.
+- The scenarios: the founding with an empty store; each edit; a new worktree of
+  the same commit with the shared store; a worktree of another commit; two
+  worktrees that build at the same time.
+- The products: the package files of the chain, the cheap loop for frequent
+  runs; a system image of `GenApp` as a slow step on request (it holds the code
+  of Base again, so it costs about 90 s even for a small project).
+- The versions: stock Julia with its own writer, and our build at a given commit
+  of the Julia worktree and of CompilerServer.jl; each version runs the same
+  scenarios.
+- The measures of each step: wall time, CPU time, peak memory, the functions
+  that LLVM compiles, the parts kept and new, the bytes equal to a whole build,
+  and the output equal to stock; one row for each step in a CSV file, and a table
+  that compares the versions.
+- The cost: all scenarios of the package loop of the small size in less than 5
+  minutes.
+- HazardApp stays the check of correctness, and ProjecturedKernel an occasional
+  check on a real project.
+
+- [ ] T1. The generator of the project, with its sizes and the kinds of code above.
+- [ ] T2. The list of edits.
+- [ ] T3. The harness: the scenarios, the products, the versions, the measures,
+      the CSV file and the table.
+- [ ] T4. Gate: the small size runs each scenario of the package loop for stock
+      and for our build in less than 5 minutes for each version, and the table
+      compares them; one run of the system image step.
+
+### Step 13: the measurement and the end of the plan
 
 - [ ] On `compiler-server-master`, measure CompilerServer.jl with B and C: an
       edit in the package that `gate_replay.sh` replays, a package above it,
