@@ -300,7 +300,7 @@ Each measure runs on the generated project, for stock and for our build, in
         and the lines of the Julia changes (S10; now 18 files, 1,241 lines
         added, 41 removed).
 
-- [ ] **S2. An incremental product equals the whole build in every byte.**
+- [x] **S2. An incremental product equals the whole build in every byte.**
       - A guard compares the bytes of each package file and of the executable
         with those of a whole build of the same sources, in each scenario.
       - Find and remove each difference: the provider module in the image, the
@@ -402,6 +402,40 @@ Each measure runs on the generated project, for stock and for our build, in
         parts and made a whole build non-deterministic: the inference stays.
       - The 63 tests pass; the harness (`--executable none --agents 2`) passes
         its 211 checks.
+      - The harness found one more defect of its own in the full run: the build
+        of the executable compiled the packages into the depot of the step, in
+        its own environment and with no `.so` files, and the comparison took
+        that newer `.ji` file. The build of the executable now takes a depot of
+        its own (CompilerServer.jl `b657cc5`).
+      - The gate run (2026-11-22, `b657cc5`, Julia branch `dde6b68e60`, small,
+        8 cores, one run of each step, `--executable some --agents 2,4,8`):
+        215 checks pass; each of the 25 steps of parts, in each worktree, is
+        equal to a whole build in every byte. The goals (`bench/report.jl`):
+
+        | goal | stock | parts | parts/stock |
+        |---|---|---|---|
+        | the build of an edit, wall s | 2.85 | 2.66 | 0.93 |
+        | the build of an edit, CPU s | 5.00 | 2.89 | 0.58 |
+        | the build of an edit, peak MiB of one writer | 339 | 349 | 1.03 |
+        | the first build, wall s | 3.70 | 5.43 | 1.47 |
+        | the cycle of an edit (build and full tests), s | 3.48 | 3.29 | 0.95 |
+        | the package files, `.so` bytes (the first build) | 921,520 | 1,989,008 | 2.16 |
+        | the session of use, peak MiB (its own) | 325 | 326 | 1.00 |
+        | the executable, first build s | 75.9 | 239.1 | 3.15 |
+        | the executable, build after an edit s | 70.4 | 59.8 | 0.85 |
+        | the executable, image bytes | 188,578,848 | 292,041,640 | 1.55 |
+        | the executable, start ms | 80.6 | 98.3 | 1.22 |
+        | the executable, peak MiB (its own) | 232 | 277 | 1.19 |
+        | 8 agents, cycles in an hour | 2,735 | 3,623 | 1.32 |
+        | 8 agents, the longest build s | 7.59 | 4.68 | 0.62 |
+
+        Against stock (`bench/against_stock.jl`, the same run): machine code for
+        the same 1,261 method instances; 494 with the same bytes, 320 the same
+        size, 446 smaller with parts (38,060 bytes) and 1 larger (16 bytes).
+        The `.so` files of parts are 1,067,488 bytes larger, by section: the
+        symbol tables +744 kB, the unwind tables +284 kB, `.bss` +17 kB,
+        `.text` +13 kB. The peak of the executable is now its own (`VmHWM`):
+        with the larger image of parts it is 19 % above stock, an item of S3.
 
 - [ ] **S3. Small products.**
       - The image does not hold the provider or its tables.
