@@ -479,8 +479,37 @@ Each measure runs on the generated project, for stock and for our build, in
         specializations), and 7,676 more method instances. Left in the file:
         the symbol tables, the unwind tables and the debug information of the
         parts.
-      - Decision point: the probe is a new change of the Julia branch, so the
-        owner decides.
+      - The owner approved the probe: Julia branch `0e707a7430`, CompilerServer.jl
+        `b09342c`.
+      - The dynamic symbol table of the image held 136,581 symbols of parts
+        (48,378 functions and 88,203 slots; stock: 8 symbols), because the part
+        symbols were protected. And each of the 25,046 objects of the parts had
+        its own copy of the 7 helpers of 16-bit floats that codegen adds to each
+        module (`injectCRTAlias`, internal): 175,000 local functions, each with
+        a symbol and an unwind entry. Each object had its own `ccall` slots too
+        (8,556 against 809).
+      - A probe (not committed, 2 files): the functions and the slots of a part
+        are hidden, and `jl_install_objects` looks them up among all symbols of
+        its JITDylib; the 7 helpers are `linkonce_odr`, hidden and in a COMDAT
+        group where the format has groups, so the link keeps one copy. The
+        install already finds the code that a process has through its code
+        instances (`apart_existing_address`), not by `dlsym`.
+      - With it, on the same system image of Base (GenApp, small, whole builds):
+        the image is 211,016,944 bytes (stock 188,590,976; before the probe
+        230,698,912), 8 dynamic symbols, the start 85.4 ms (stock 80.8 ms), its
+        own peak 232 MiB (stock 228 MiB), and its output is that of stock. The
+        three `.so` files of the packages are 1,014,816 bytes (stock 915,304;
+        before 1,989,008); their unwind tables and dynamic symbols are those of
+        stock, and their `.text` is 60 kB smaller. The 63 tests pass, and the
+        harness (`--executable none --agents 2`) passes its 211 checks.
+      - Left in the image against stock: the heap +10.5 MB (`.ldata`: the code
+        of the provider and the entries of the dispatch caches of its work),
+        `.symtab` and `.strtab` +5.6 MB (154,303 symbols against 65,488: the
+        local symbols of the functions and slots of the parts), the debug
+        information +4.5 MB (a compile unit for each part), `.rela.dyn` +1.4
+        MB and `.bss` +0.8 MB (the slots of the parts).
+      - Decision point: the probe is a change of the Julia branch, so the owner
+        decides.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
