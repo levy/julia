@@ -584,6 +584,30 @@ Each measure runs on the generated project, for stock and for our build, in
         entries and types that only the provider made. The other way: the
         image keeps the provider, and the comparison of the executable is a
         named gap.
+      - How the writer filters already (read 2026-11-22): it asks the compiler
+        for the code instances of the image before it calls the provider, saves
+        for each method instance exactly those (`jl_rewrite_mi_caches`,
+        upstream), and gives each other method instance an empty cache; a type
+        of a type cache and a backedge are saved only when something else needs
+        them. One more pruning exists only for `--trim`
+        (`jl_prune_method_specializations`): a method instance is saved only
+        when something else needs it.
+      - The experiment (CompilerServer.jl `78dfe0e`, no Julia change): the prelude
+        loads nothing; the writer includes the files of the provider at its
+        exit, after the selection. The image is 203,562,344 bytes for a whole
+        build and 203,455,560 for a rebuild (stock 188,590,976), its heap
+        157,811,744 (stock 153,743,728), the start 79.3 ms (stock 80.3 ms), its
+        own peak 227 MiB (stock 228), its output that of stock; a whole build
+        takes 205.5 s, a rebuild 54.7 s. Against stock the image holds 3,067
+        more method instances in a rebuild and 4,100 in a whole build; all but
+        35 have no code instance (shells from the run of the provider). 1,151
+        are only in the whole build and 118 only in the rebuild: the byte
+        difference of the two.
+      - Left for an equal executable, each a small change of the Julia branch
+        (the owner decides): 1. the pruning of `--trim` for each image with a
+        selection, so no shell is saved; 2. no method that is newer than the
+        selection (the methods of the provider); then the byte comparison shows
+        what else the run of the provider changes.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
