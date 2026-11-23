@@ -1445,13 +1445,40 @@ Each measure runs on the generated project, for stock and for our build, in
             - What the time is now: the save (the heap and the objects of one
               image for all) and the link are 14 of the 19.6 s. The apply is
               2.6 s, of which the trial is about 2 s.
-      - [ ] F4. The mechanism goes from the bench script into the package (the
-            fork that writes an image, the driver, the prepare step), with a
-            gate script and with its section in `docs/architecture.md`.
+      - [x] F4. The mechanism is in the package (CompilerServer.jl `5981b48`):
+            `src/image.jl` with `ImageWriter`, `image_prepare!` and
+            `image_save`; the repair of the handle of the JIT is one function
+            for the checks of an apply and for the save
+            (`rc_own_jit_memory!`). `bench/fork_image.jl` is the measure with
+            these functions, and needs no prelude of a store.
+            `test/gates/fork_image.jl` is the gate: the normal build, the
+            loaded process with a save with no edit and a save after an edit,
+            the link of each archive, and the output of the executable with
+            each image against the reference of its sources. It passes on a
+            new store with the edit of the type of a field of a struct: the
+            first prepare 51.8 s, a save 9.2 s; then the apply 3.2 s, the
+            workload 0.7 s, the prepare 3.7 s, the save 9.7 s, the link 3.8 s:
+            21.0 s from the edit to the executable. 177 tests pass, and the
+            harness passes all 369 checks with the provider of F1.
       Not in these parts: the order of the list as a whole build gives it
       (the image of a fork is not compared byte for byte with a whole build),
       the code that the loaded process itself needs and the replaced methods
       in the image, and the names of closures.
+      What is open after these parts, for the fork way:
+      - The save and the link are 14 of the 20 s: one image of 200 MB for
+        each edit. Under that floor are only a file of the changes that the
+        binary installs when it starts, and the package files.
+      - The image of a fork is 247 MB against 201 MB of the normal build: it
+        holds CompilerServer.jl, the code that the loaded process compiled
+        for its own work, and the methods that an edit replaced.
+      - The image of a fork is not compared byte for byte with a whole build.
+      - The apply is 2.6 to 3.2 s, of which the trial is about 2 s; the trial
+        does not know which expressions an edit can reach.
+      - The first prepare of a loaded process does the whole work once (about
+        50 s here); a loaded process that starts from an image, as the server
+        of the merged branch does, would not need it.
+      - The loaded process is one process of the measure script; the server
+        of the package (`src/server.jl`) does not have the image writer yet.
 
       An option to investigate (the owner, 2026-11-23: "We should also
       consider storing the inferred types, etc and other intermediate steps in
