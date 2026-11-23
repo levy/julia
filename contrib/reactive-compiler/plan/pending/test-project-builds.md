@@ -1289,7 +1289,76 @@ Each measure runs on the generated project, for stock and for our build, in
         code that the loaded process itself needs (CompilerServer.jl); the
         merged branch prunes them in its image writer.
       - Decision point (the owner decides): the change of the hook in the
-        Julia branch, after a probe.
+        Julia branch, after a probe. The owner, 2026-11-23: "yes" to the
+        probe.
+
+      The probe (2026-11-23; CompilerServer.jl `d421d09`,
+      `bench/fork_image.jl`): the loaded process prepares the answers of the
+      image build.
+      - It needs NO change of Julia. Stock Julia exports
+        `jl_set_compile_and_emit_func`: a process can put its own function in
+        place of the driver of an image build
+        (`Compiler.compile_and_emit_native`, which selects the code and infers
+        each function of it). The writer calls the driver in the world of the
+        compiler, where a new method does not exist, so the function is an
+        opaque closure, which runs in the world that made it. The provider
+        stays our hook (`jl_set_code_parts`).
+      - The way: the loaded process calls the stock driver and then the
+        provider itself (`prepare!`), and keeps the two answers: `svec(code,
+        code instances)`, with no source for a function that the table
+        serves, and the table. Its driver and its provider answer them in the
+        fork. A fork has the memory of its parent, so the answers hold in it
+        as they are: the same code instances, the same objects of the slots.
+        The fork takes each answer out of its global before the image is
+        saved.
+      - Measured (test project, small, 8 cores, a quiet machine; the edit of
+        the body of a leaf function):
+
+        | step | time |
+        |---|---|
+        | a save where the fork does the whole work | 62.0 s (53.8 s before the write) |
+        | prepare in the loaded process, no edit | 40.2 s (driver) + 8.8 s (provider: 36,335 taken, 126 new) |
+        | a save with prepared answers, no edit | 9.96 s |
+        | apply of the edit | 3.1 s |
+        | prepare in the loaded process, after the edit | 41.6 s + 164.2 s (1,798 new parts) |
+        | a save with prepared answers, after the edit | 13.1 s |
+        | the link of an archive | 3.6 to 3.8 s |
+
+        The executable gives the output of its sources with each image and
+        compiles 1 function when it runs. The peak of the job is 14.0 GiB (the
+        prepare step holds the code of all functions for a time). The images
+        have 246 to 253 MB (the normal build: 201.7 MB): the inference in the
+        loaded process leaves code instances in the caches of the methods.
+      - What it shows: with the answers ready, a save is the heap, the objects
+        and the link: 10 to 13 s and 4 s. That is the floor of one image for
+        all, and it is 4 to 8 times less than the writer way (56.9 to
+        110.3 s).
+      - What is not built: the prepare step does the whole work in the loaded
+        process. It must become incremental: after an apply, infer only the
+        functions with new code, give the provider only those, change the
+        kept table for them, and keep the order of the code instances of a
+        whole build. The stock driver has no entry for a part of the list;
+        its inner steps are functions of `Base.Compiler`
+        (`collect_all_method_defs`, `enqueue_specializations!`,
+        `typeinf_ext_toplevel` with a list).
+      - Two faults in the names of the parts, found and repaired: the same
+        function had three names (in the normal build of the executable, in
+        the fork, in the loaded process), so no part of one served the others.
+        1. The package kept the hash of its settings in a global. The workload
+           that runs when the package compiles filled it, and the package
+           file saved it. A process that loaded the package took the hash of
+           the compile process (with `--pkgimages=no`: of a process with
+           optimization level 0). The workload now leaves no global of its
+           process.
+        2. The settings took the name of the processor from `Sys.CPU_NAME`,
+           which a process that writes an image empties before it calls the
+           provider (`Sys.__uninit_build`). Each normal build of an image had
+           the name "". The settings now ask the runtime (`jl_get_cpu_name`).
+        After the repair, the first save of the loaded process takes 32,600 of
+        its 36,346 parts from the store of the normal build (before: none).
+        Each part name changes with this commit. 175 tests pass.
+      - Decision point (the owner decides): build the incremental prepare
+        step. No Julia change is in it, so far.
 
       An option to investigate (the owner, 2026-11-23: "We should also
       consider storing the inferred types, etc and other intermediate steps in
