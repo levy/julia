@@ -861,6 +861,72 @@ Each measure runs on the generated project, for stock and for our build, in
       - Decision point: I report both ways with their numbers, and the owner
         decides.
       - Gate: the first build with an empty store is not slower than stock.
+      Facts found in the work (2026-11-23):
+      - Where a build of the executable spends its time (test project, small,
+        8 cores; the stages from the output of PackageCompiler, the timers of
+        the provider and the image timings of Julia):
+
+        | stage | stock | parts, each part in the store | parts, an empty store |
+        |---|---|---|---|
+        | before the image process | 2.7 s | 2.0 s | 2.0 s |
+        | the image process until the machine code: its start, the load of the packages from their sources, the statements of the workload, inference | about 34 s | 34.1 s | about 34 s |
+        | the machine code | 21.7 s: LLVM in 8 threads, 147.7 s of CPU time | 7.9 s: the provider checks 32,197 records | 167 s: the provider (emission 142.8 s, files of the store 8.9 s, checks 6.7 s, table 4.0 s, records 2.8 s) |
+        | the heap of the image, the object files, the link | in the rest | 8.7 s | about 9 s |
+        | all | 68.9 s | 53.9 s | about 212 s, then the second pass |
+
+        A build with each part in the store runs on one core: 55 s of wall
+        time, 54 s of CPU time.
+      - Why the emission was slow. In the 146 s of the emission the main thread
+        of the writer had 112 s of CPU time, and the worker threads 170 s
+        together (1.2 cores; stock has 147.7 s for the same functions). A
+        profile of the main thread: about 80 % of its time in
+        `emit_part_module`, almost all of it for the map of the names of all
+        code instances, which the branch made again for each part: 32 thousand
+        parts with 50 thousand names each. The code generation had under 3 %
+        of the samples.
+      - A probe in the Julia tree (22 changed lines in code that the branch
+        added; `docs/probes/one-names-map-for-each-emission-call.patch` of
+        CompilerServer.jl): the map is made once for each call of
+        `jl_emit_objects`. The whole build of the executable, with its two
+        passes: 172.5 s (before: 258 s); the main thread has 31 s of CPU time in
+        the emission.
+      - With it, larger groups of parts for each call (CompilerServer.jl only;
+        before: 4 parts for each thread). The whole build of the executable and
+        the peak of a writer in the first build of the package files (stock:
+        335 MiB, bound 1.15), by the parts for each thread in a group:
+
+        | group | whole build of the executable | peak of a package writer |
+        |---|---|---|
+        | 4 | 172.5 s | 366 MiB |
+        | 16 | 159.7 s | 367 MiB |
+        | 32 | 149.5 s | 376 MiB |
+        | 64 | 145.8 s | 387 MiB |
+
+        The group is 32 now. The first build of the package files takes 4.9 s
+        with each group (stock 3.7 s).
+      - The harness with both probes of the Julia tree and groups of 64
+        (2026-11-23): the first build of the executable 156.3 s (stock 76.0 s;
+        before 266 to 272 s), after an edit 109.1 s (2 passes), with no new
+        part 56.2 s, a whole build in the comparison 148 s (before 258 s), the
+        image of each step 49 or 50 bytes from a whole build. 364 of 365 checks
+        pass; the one that fails is the peak of the first build of the package
+        files (394 MiB), which the group of 32 keeps at 376 MiB.
+      - What is left of the first build against stock (about 70 s), each with
+        its way:
+        1. The second pass, 54 s: it goes when S6 makes the parts before the
+           image is written, or with the setting of the open question of S3.
+        2. The emission, about 44 s against 22 s: the code generation of the
+           next parts while the worker threads compile (one pipeline in
+           `jl_emit_objects` in place of groups) gives about 31 s.
+        3. The first pass writes and links an image that the second pass
+           writes again: about 9 s.
+        4. The other way of this step, a first build by stock with the parts
+           made after it: the executable is there after about 70 s, but it is
+           not the executable of a rebuild in every byte; the parts cost one
+           more build process of about 92 s on the free cores.
+      - Decision point (the owner decides): commit the probe to the Julia
+        branch (a fix inside change 2). The Julia tree is back at `459678ed26`
+        until then. After that, which of the ways 1 to 4 to take.
 
 - [ ] **S5. Inference results from records.**
       - A writer takes the inference results of each function whose record
@@ -872,6 +938,33 @@ Each measure runs on the generated project, for stock and for our build, in
       - Gate: the writers of an edit infer only the new parts; each output
         equals stock; the time of item 5 drops as S1 measures it.
 
+      Facts found before the work (2026-11-23; nothing is built):
+      - The hook is in stock Julia: `jl_set_typeinf_func(f)`, which is exported
+        and which `Compiler.activate_codegen!()` uses. The runtime calls
+        `f(mi, world, source_mode, trim_mode)` when it needs the code of a method
+        instance, and takes the code instance that `f` answers. So a package can
+        answer from the store first, and call the inference of Julia for the
+        rest: no change of Julia for the hook.
+      - The hook sees the requests of the runtime, not the inference of a
+        callee inside the compiler. That fits: a function whose result comes
+        from the store needs no inference of itself or of its callees.
+      - What an answer from the store needs, each a question of design:
+        1. The stored results of a method instance with no return type known:
+           the name of a part holds the return type, so the store needs an
+           index by method and types.
+        2. The check of a record from records alone: the check of today
+           (`apart_record_holds`) reads the code instances that inference made
+           (their edges, and the identity of the code of the callees in depth).
+        3. The code instance from the record, with the machine code of its
+           part in the process (`jl_install_objects` of the branch), before the
+           workload of a package runs.
+        4. The inferred source, which later inference inlines: a record holds
+           none, so a caller that is inferred new would get other code than in
+           a whole build.
+      - What it can save: of the 34 s that a build of the executable needs
+        before its machine code, and of the 0.84 s of a writer of one package
+        file, the part that is inference. That part is not measured alone yet.
+
 - [ ] **S6. The reactive cycle.**
       - The compiler server of CompilerServer.jl keeps the worktree loaded,
         applies each edit, compiles only what the edit makes invalid, writes
@@ -881,6 +974,62 @@ Each measure runs on the generated project, for stock and for our build, in
         that, on the free cores, and S2 checks their bytes.
       - Gate: the cycle time of each edit is below stock; the products equal a
         whole build in every byte.
+
+      Facts found before the work (2026-11-23; a measure only,
+      `bench/reactive.jl` of CompilerServer.jl `fbfdbab`):
+      - CompilerServer.jl has the loaded process already: `rc_load_tracked`
+        loads the packages of a worktree from their sources, and
+        `rc_apply_request` applies an edit (the ledger of the top-level
+        expressions, and the replay of the items whose result an edit changes).
+        The measure adds the store: after each apply the process runs the
+        workload of the packages again and calls the provider of a writer with
+        its own code instances, so the store gets the parts of its code. Then
+        the writers of the package files build as in the harness.
+      - It works from end to end on the test project: the 10 edits of
+        `edits.jl` and their takings back are all applied.
+      - A fault found on the way and repaired: the loaded process gave a
+        package no origin, so `pkgdir` was nothing, each method had the absolute
+        path of its file as its place, and no part of the store had a name of
+        that process.
+      - With no edit, the loaded process takes 1,606 of the 1,627 parts of the
+        writers from the store: the two sides agree on the names and on the
+        records. The loaded process has 4,039 more functions, which it compiled
+        with the JIT and no package file has.
+      - After an edit, the loaded process makes parts that the writers then
+        take. The parts that the writers still make:
+
+        | edit | the writers alone | after the loaded process |
+        |---|---|---|
+        | the body of a leaf function | 12 | 2 |
+        | the body of a function that callers inline | 5 | 2 |
+        | the bottom of a chain of inlined functions | 2 | 1 |
+        | the type of a field of a struct | 7 | 3 |
+        | lines that move | 168 | 168 |
+        | a file with a new name | 168 | 168 |
+
+      - What the cycle costs in the loaded process today, for an edit of a
+        body: the apply about 8 s, the workload 0.4 s, the parts about 2 s.
+        The writers after it take 2.6 to 2.8 s, as with no loaded process. So
+        it is no gain yet. The causes:
+        1. The apply: 0.2 s for a comment, 3.5 s for lines that move, about 8 s
+           for a body. The checks of the replay start two processes that load
+           the program of before the edit from its sources (4.5 s and 3.9 s in
+           one measured apply).
+        2. The parts: after an edit of a body the loaded process makes about
+           630 parts, 576 of them with names that no build had before (the
+           apply evaluates about 25 expressions again, and the code of them and
+           of their callers gets new names).
+        3. Lines that move, and a file with a new name: the methods of the
+           loaded process keep their old places, and the place of a method is
+           in the name of its part.
+        4. The list of functions: the loaded process has what its session
+           compiled, the writer has what the workload of its package compiled.
+      - Design questions for the owner, before the work of this step: how the
+        replay gets the program of before the edit with no new load; which
+        list of functions the loaded process compiles; how a method keeps its
+        place when its lines move; who writes the package files and the image
+        after the loaded process (a writer process of today takes 0.84 s for a
+        package and 54 s for the executable with each part in the store).
 
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
