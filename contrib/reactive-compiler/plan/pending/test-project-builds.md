@@ -1054,6 +1054,53 @@ Each measure runs on the generated project, for stock and for our build, in
         the start below 100 ms, or a named gap; the memory of the executable
         not above stock.
 
+      Facts found in the work (2026-11-23; the first item):
+      - What a session compiled before: the executable 25 functions with the
+        JIT (stock the same), the session from package files 272. In the
+        executable: the 16 painters of the frames (`leaf1(::Int)` and others,
+        which the workload inlines and the frames call with dynamic dispatch),
+        the output of a number to the standard output (a dynamic call for each
+        kind of stream), and one call of the start code.
+      - A rule of Julia that decides the form of the recording: a package file
+        keeps the code of a callee of a dynamic call only when a `precompile`
+        statement of the package that has the method names it. A run of the
+        session in the writer of the application keeps no painter of the
+        package below, and a statement in the application for a method of the
+        package below keeps none either.
+      - So the generated project now has (CompilerServer.jl `78d80e7`):
+        1. the application runs its session once in its own precompile
+           workload, and compiles its run for each kind of stream that the
+           standard output can be (a terminal, a pipe, a file);
+        2. each package has a recorded list for its own methods: the painters;
+        3. the executable has a recorded list of the calls that no workload
+           compiles (`statements.jl`, a `precompile_statements_file` of
+           PackageCompiler): the output of a number to each kind of stream,
+           and the call of the start code.
+      - The result (harness of 2026-11-23, stock and parts the same): the
+        executable compiles no function in its session, with a file and with a
+        pipe as its output (before 25); its first frame takes 7.7 ms (before
+        11.7 ms), its slowest frame 8.5 ms, its start 76 ms with parts and
+        79 ms with stock. The session from package files compiles 1 function
+        (before 272; the one left is a function of Base for the text of an
+        error), its first frame takes 7.7 ms (before 11.5 ms), its slowest
+        frame 12.1 ms (before 29.1 ms), its peak is 265 MiB (before 353 MiB).
+        The guard fails when the executable with parts compiles a function in
+        its session; 362 checks pass on the run, 366 with that check.
+      - Of the gate: no JIT compilation in the session of use, each frame
+        below 30 ms and the start below 100 ms hold. The memory of the
+        executable is above stock: 275 MiB against 240 MiB, the gap of the
+        debug information of the parts (S3).
+      - The cost: the writer of the application runs the session, so each
+        build of the chain is longer, for stock and for parts: the cycle of an
+        edit 4.28 s and 4.08 s (before 3.47 s and 3.14 s), the first build
+        4.83 s and 6.87 s (before 3.7 s and 4.9 s), the `.ji` files 8.3 MB
+        (before 6.7 MB), the peak of a writer 488 MiB and 466 MiB (before 334
+        and 328 MiB).
+      - Not done: the recording as a tool (a run of the session under
+        `--trace-compile`, and its statements sorted into the lists of the
+        packages); here the generator writes the lists. The start part by
+        part.
+
 - [ ] **S9. Parallel agents and the single user.**
       - `bounded-run` gets a CPU weight for the jobs of agents and a reserve for
         a build of the user.
