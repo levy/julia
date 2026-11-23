@@ -1181,6 +1181,28 @@ Each measure runs on the generated project, for stock and for our build, in
         CompilerServer.jl side by side, four case studies, and the three
         decisions with their options. The question of the shape waits until
         the owner read it.
+      - The owner read it, 2026-11-23: "decision 1: all shapes should be
+        possible like in merged branch, no? decision 2: I don't understand why
+        would a forked child write the parents memory? copy-on-write?
+        decision 3: fix the counter issue".
+        - Decision 1 (the owner): each shape of the binary must be possible.
+          The shapes are writers behind one front (the loaded process that
+          applies the edit and makes the parts of the cone); only the order of
+          the writers is open.
+        - Decision 2: the owner is right that a fork is copy-on-write. The one
+          exception is the JIT: on Linux it writes new code through a handle
+          of `/proc/self/mem` that it opened at its start, and after a fork
+          that handle still names the memory of the parent. Measured
+          (`test/gates/fork_compile.jl` of CompilerServer.jl, 40 forks, parent
+          and child each compile 30 new functions, one Julia thread, one GC
+          thread): a plain fork fails (children: illegal instruction; the
+          parent: segmentation fault); when the child first opens its own
+          `/proc/self/mem` and puts it on the same handle number (`open`,
+          `dup3`, `close` from Julia code), 0 of 40 children fail and all
+          1,200 functions of the parent are right. So the checks of an apply
+          can run in a fork with no change of Julia. Asked 2026-11-23: do I
+          use it.
+        - Decision 3 (the owner): fix the names from a counter.
 
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
