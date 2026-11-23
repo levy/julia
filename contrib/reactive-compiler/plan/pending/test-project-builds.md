@@ -1203,6 +1203,22 @@ Each measure runs on the generated project, for stock and for our build, in
           can run in a fork with no change of Julia. Asked 2026-11-23: do I
           use it.
         - Decision 3 (the owner): fix the names from a counter.
+          The cause is wider than the counter (`test/gates/closure_names.jl`
+          of CompilerServer.jl `4df9d06`). Julia names a closure by the history
+          of the process, with two rules: at the top level a counter of the
+          module (`jl_module_next_counter`), and inside a function `f` the
+          first name `f##0`, `f##1`, ... that the module does not have
+          (`julia-module-unique-name` in `src/ast.c`). The definition
+          `f(v) = map(x -> x + 1, v)`, evaluated three times in one process,
+          gives `#f##0#f##1`, `#f##2#f##3` and `#f##4#f##5`. So each edit of a
+          function with a closure gives, in the loaded process, a name that no
+          writer process has. The ways (section 11.5 of
+          `docs/architecture.md`): the loaded process gives an expression the
+          names of its first evaluation (needs a way to set the counter and to
+          free the old names: two small Julia changes); names from the place
+          of the definition (a change of the lowering); or the loaded process
+          writes the products itself in a fork, so that no name must agree in
+          the cycle of the person. Not chosen yet.
 
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
