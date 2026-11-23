@@ -1220,6 +1220,36 @@ Each measure runs on the generated project, for stock and for our build, in
           writes the products itself in a fork, so that no name must agree in
           the cycle of the person. Not chosen yet.
 
+      An option to investigate (the owner, 2026-11-23: "We should also
+      consider storing the inferred types, etc and other intermediate steps in
+      1-5 as you mentioned if that makes the process faster. Add this to the
+      plan as an option to investigate."). Not started.
+      - What it is: the stages 1 to 5 of a build (start, load of the
+        dependencies, evaluation of the source, workload, inference) leave
+        their results only in the memory of the process that did them. The
+        store keeps only the result of stage 6, the machine code. The option:
+        the store also keeps results of the earlier stages, so that a later
+        process takes them and does not make them again.
+      - The results that a store can keep, by stage:
+
+        | stage | its result | where it stands today |
+        |---|---|---|
+        | 3 evaluation | the objects that one top-level expression makes: methods, types, constants, the types of closures | the "definition part" of `docs/linked-products.md`: a design, not built |
+        | 3 evaluation | the machine code that the top level itself runs (the JIT compiles 274 methods in a load of GenLow: 0.375 s of 0.47 s) | not kept; a code provider for the JIT could give it from parts (`jl_install_objects` of the branch) |
+        | 4 workload | the list of the calls that the workload compiled | kept as statements in the executable build; a package writer runs the workload each time |
+        | 5 inference | the typed code of each function, with its edges | step S5: a record holds the results of inference for the install; the hook `jl_set_typeinf_func` is in stock Julia |
+
+      - What to measure first: the time of each stage alone, in a package
+        writer and in the image process of an executable (inference is not
+        measured alone yet), and then the time that each stored result saves.
+      - How it joins the other work: with a fork, the loaded process holds
+        these results in memory and a copy of it can write a product, so the
+        cycle of one person does not need them from a store. A batch writer
+        (an agent, a new worktree, a first build) has no loaded process, and
+        there a store of these results is the way to skip the stages.
+      - Decision point (the owner decides): after the measure, which results
+        go into the store.
+
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
         lines it reached.
