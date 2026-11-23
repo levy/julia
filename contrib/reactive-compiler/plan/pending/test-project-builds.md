@@ -826,9 +826,10 @@ Each measure runs on the generated project, for stock and for our build, in
           the start 76.0 ms against 79.6 ms, the stack trace is that of stock in
           the 4 executable steps and in the 23 sessions of use, and the image of
           each step differs from a whole build in 49 or 50 bytes.
-        - Decision point (the owner decides): commit the probe to the Julia
-          branch. It is a fix inside change 4, not a new change. The Julia tree
-          is back at `459678ed26` until then.
+        - The owner approved the fix on 2026-11-23: Julia branch
+          `dd7c4b9ec4`. The guard has no known failure now, and the stack trace
+          of the executable equals that of stock in each step (CompilerServer.jl
+          `09a3f24`).
       - What the stack trace in the app showed next: the first stack trace of a
         process reads the debug information of the image, and the image with
         parts has a compile unit for each part. In the executable of the test
@@ -837,6 +838,61 @@ Each measure runs on the generated project, for stock and for our build, in
         peak of the executable, which now has a stack trace in it, is 283 MiB
         against 250 MiB (with no stack trace: 227 against 228). The guard has
         it as a gap with the bound 1.2.
+      - A fault that the harness found on 2026-11-23, on the Julia branch
+        with the two fixes (`ff99565fbb`): the image of the executable of the
+        second worktree differed from a whole build in 112 bytes (the bound is
+        64). 368 of 369 checks pass; this is the one that fails.
+        - The 112 bytes: 50 as between two stock builds, and 62 in the numbers
+          of the names of 30 adapter functions (`j_13_gfthunk` against
+          `j_61_gfthunk`). The code is equal.
+        - Cause: stock codegen names the adapters of a `@cfunction` with a
+          counter of the process, and a part keeps them as local definitions.
+          So the bytes of a part with a C callback depend on which parts the
+          process made before it. The smallest example: one part, emitted two
+          times in one process, gives two objects that differ in 1 byte.
+        - Why it shows only now: the app records its session since S8, so the
+          image has four functions that write to a terminal or a pipe, each
+          with a C callback. The build of the second worktree listed them at
+          another place: they are near text symbol 4,376 of the 48,444 of the
+          image, by address, against 13,961 and 22,953 in the first worktree.
+          A whole build there numbers their
+          adapters in its own order; a rebuild takes the parts with the
+          numbers of the process that made them. The fault is older than the
+          two fixes: an edit that moves such a function in the list shows it
+          too.
+        - The same commit in a second worktree gives 0, 1 or 3 new parts, by
+          the run (8 runs: 3, 0, 0, 0, 0, 1, 3, 0). With a new part the build
+          takes two passes (about 115 s against about 62 s). The cause is the
+          fact above
+          that inference gives a function other code in another worktree; why
+          it differs between runs is not known.
+        - A probe in the Julia tree (10 changed lines in `emit_part_module`,
+          in code that the branch added, and a test in `compile_apart`;
+          `docs/probes/local-names-from-the-part.patch` of CompilerServer.jl):
+          a definition that a part keeps for itself gets the name
+          `jl_local#<index>`, by its place in the module of the part. With it:
+          the two objects of the smallest example are equal; the image of the
+          executable is 44,016 bytes smaller (201,686,216 against 201,730,232);
+          the output and the stack trace of the executable are the same; a
+          build of the package files with each part in the store takes the
+          same time (3.48 s against 3.53 s, the median of 8 builds each, in
+          turn); the 166 tests of CompilerServer.jl and the `compile_apart`
+          tests pass.
+        - A harness run with a first form of the probe (names that also hold
+          the name of the part; the image was 0.46 MB larger): 366 of 369
+          checks pass, and the image of each step differs from a whole build
+          in 48 to 50 bytes. In that run the second worktree listed the code
+          in the order of the first, so the run does not test the fix; the
+          smallest example does. The 3 checks that fail are times, above their
+          bounds by 0.1 to 4.5 %; the machine was busier, and the measure in
+          turn shows no cost.
+        - Decision point (the owner decides): commit the probe to the Julia
+          branch. The Julia tree is at `ff99565fbb` until then, and the guard
+          fails in a run where the second worktree lists that code in another
+          order.
+      - The bounds of the guard after the two fixes (CompilerServer.jl
+        `09a3f24`): the image of the executable 1.07 (before 1.09), its first
+        build 2.2 (before 3.7), a later build 1.6 (before 1.7).
       - Proposals for the size, each a change of how the branch emits a part
         (the owner decides; none is started):
         1. One slot for one object in an image, as stock has: the name of a
@@ -924,9 +980,21 @@ Each measure runs on the generated project, for stock and for our build, in
            made after it: the executable is there after about 70 s, but it is
            not the executable of a rebuild in every byte; the parts cost one
            more build process of about 92 s on the free cores.
-      - Decision point (the owner decides): commit the probe to the Julia
-        branch (a fix inside change 2). The Julia tree is back at `459678ed26`
-        until then. After that, which of the ways 1 to 4 to take.
+      - The owner approved the fix on 2026-11-23: Julia branch `ff99565fbb`.
+      - The harness on that state (2026-11-23; test project, small, 8 cores,
+        groups of 32 parts for each thread, wall time of the build of the
+        executable):
+
+        | step | stock | parts | passes |
+        |---|---|---|---|
+        | the first build | 78.4 s | 160.8 s | 2 |
+        | after an edit of a leaf function | 72.2 s | 110.3 s | 2 |
+        | the edit taken back | 71.3 s | 56.9 s | 1 |
+        | a new worktree, the same commit | 77.5 s | 114.6 s | 2 |
+
+        A whole build in the comparison takes 149 to 151 s. The first build is
+        2.05 times stock (before the fix: 3.3 times).
+      - Decision point (the owner decides): which of the ways 1 to 4 to take.
 
 - [ ] **S5. Inference results from records.**
       - A writer takes the inference results of each function whose record
