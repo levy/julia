@@ -1239,6 +1239,58 @@ Each measure runs on the generated project, for stock and for our build, in
           writes the products itself in a fork, so that no name must agree in
           the cycle of the person. Not chosen yet.
 
+      The image of the executable from a fork of the loaded process
+      (2026-11-23; the owner approved the experiment: "Yes"; CompilerServer.jl
+      `f79b8fa`, `bench/fork_image.jl`):
+      - The way: the loaded process runs in the output mode of the image
+        process of PackageCompiler (`--output-o`, `--pkgimages=no`, one Julia
+        thread, one thread of the collector, the prelude of the provider). For
+        a save it forks. The fork repairs the handle of the JIT, does the end
+        of the script of the image process, points the image writer at a new
+        archive (it writes the field `outputo` of `jl_options`) and calls
+        `jl_write_compiler_output`, which Julia exports. The archive links as
+        PackageCompiler links its own. No change of Julia.
+      - It works: the executable with the image of a save gives the output of
+        its sources, with no edit and after the edit of the body of a leaf
+        function; it compiles 1 function when it runs.
+      - A fault of the provider, found and repaired on the way: a process that
+        defined a method again holds the method that dispatch finds and the one
+        that it replaced; Julia keeps the code instances of both, and both have
+        one part name (the same place and types). The provider gave both the
+        machine code of the first in the list, so a dynamic call of the edited
+        function ran the old code (4 of the 5 numbers of the output were new,
+        the picture was old). Now a name stands for the code instances of the
+        method that dispatch finds (`apart_dispatch_finds`), and the writer
+        compiles the function of the replaced method itself. 172 tests pass.
+      - The cost (busy machine, load 5 to 13): a save 59.5 to 68.6 s, of which
+        50.6 to 59.2 s until the provider ends and 8.9 to 9.4 s for the heap
+        and the objects; the link 3.8 s; the apply 3.0 s. So about 67 s from
+        the edit to the executable (the writer way: 56.9 s with no new part,
+        110.3 s with one). The image has 229 to 232 MB against 201.7 MB: it
+        holds CompilerServer.jl and the measure script too. The job peaks at
+        6.1 GiB.
+      - Why the 50 to 59 s: the image writer of Julia infers the code of each
+        selected function before it calls the provider, and the provider
+        checks the record of each of the 36,700 functions. Both are work for
+        code that did not change, and the fork does it again at each save.
+      - What does not help: an inference of all code in the loaded process
+        before the save. Julia does not keep the result between two calls
+        (99,166 functions: 28.8 s, then 27.6 s again; 1.1 GB more memory for
+        each call).
+      - What helps, by the measure: the provider answers before inference,
+        from a table that the loaded process keeps (a code instance that is
+        still valid has its checked part). Then the fork infers and checks
+        only new code, and about 13 s are left (heap, objects, link): the
+        floor of one image for all. This is the form of the hook that the
+        review of 2026-11-22 proposed ("the provider answers the list to
+        compile with the table", `docs/julia-changes.md`), and it is a change
+        of the Julia branch.
+      - Also open for this way: the image keeps the replaced methods and the
+        code that the loaded process itself needs (CompilerServer.jl); the
+        merged branch prunes them in its image writer.
+      - Decision point (the owner decides): the change of the hook in the
+        Julia branch, after a probe.
+
       An option to investigate (the owner, 2026-11-23: "We should also
       consider storing the inferred types, etc and other intermediate steps in
       1-5 as you mentioned if that makes the process faster. Add this to the
