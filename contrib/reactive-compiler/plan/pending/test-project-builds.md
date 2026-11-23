@@ -1201,7 +1201,26 @@ Each measure runs on the generated project, for stock and for our build, in
           `dup3`, `close` from Julia code), 0 of 40 children fail and all
           1,200 functions of the parent are right. So the checks of an apply
           can run in a fork with no change of Julia. Asked 2026-11-23: do I
-          use it.
+          use it. The owner: "yes".
+          Done (CompilerServer.jl `42e980e`): `rc_in_copy` of `src/replay.jl`
+          forks where the process can fork (Linux, one Julia thread, a JIT
+          that writes through `/proc/self/mem`), and else starts a new process
+          as before. The child repairs the handle first, collects no garbage,
+          answers through a pipe and leaves through `_exit`. 167 tests pass
+          (one new: an apply whose checks fork, in a process that compiles new
+          code after the forks). The gate of the edit cases passes with
+          `--threads=1`: 43 applied, 12 refused, each as expected, and the
+          program equals a fresh load. Measured on a busy machine (load 26 to
+          29), the edit of a body: an apply takes 3.0 to 4.0 s (before, on the
+          same machine: 11 to 19 s; about 8 s on a quiet one). Of that: the
+          trial 2.1 s, the check of the load order 0.3 s, the evaluation of
+          the changed expressions 0.3 s.
+          What is left: the trial evaluates each expression whose result can
+          depend on an edit (97 here) and compares the results. It does not
+          know which of them the edit can reach, so its time grows with the
+          project. A record of what each such expression ran, taken at the
+          load, can limit the trial to the expressions that the edit reaches;
+          not designed.
         - Decision 3 (the owner): fix the names from a counter.
           The cause is wider than the counter (`test/gates/closure_names.jl`
           of CompilerServer.jl `4df9d06`). Julia names a closure by the history
