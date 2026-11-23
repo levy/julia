@@ -1159,6 +1159,19 @@ Each measure runs on the generated project, for stock and for our build, in
         cycle of seconds (asked 2026-11-23); how the check of an apply gets
         the program of before the edit with no new load; names of anonymous
         functions of the top level that do not come from a counter.
+      - The provider with only the new code (CompilerServer.jl `79fe1ab`,
+        `bench/reactive.jl`; CPU time of the loaded process, because the
+        machine ran other jobs): a function with a new code instance since
+        the last call goes to the provider, the others not. With no edit:
+        0.08 s (all 7,168 functions: 2.7 to 3.2 s). After an edit of a body:
+        827 functions, 672 new parts, median 6.3 s (all functions: 6.6 to
+        10.0 s, and that list grows with each apply, from 7,732 to 10,342 in
+        6 applies). The cost is the new parts: 576 of code with counter names
+        and about 110 of functions that call such code, which are made again
+        at each edit. Without the 576 (a filter by the form of the name, for
+        the measure): 203 functions, 120 new parts, median 2.5 s. The code
+        that the edit really changed is about 60 parts. So the names from a
+        counter are the next blocker of this stage.
       - The owner, 2026-11-23, about the question of the shape: "I need more
         documentation, especially diagrams, to understand the whole build
         process. [...] I can't decide becuase I don't understand what's going
