@@ -1397,17 +1397,54 @@ Each measure runs on the generated project, for stock and for our build, in
             and checks a record only for a code instance that the session does
             not have under the same name. A writer process has no session, so
             its work does not change. 177 tests pass.
-      - [ ] F2. The loaded process does the work of the driver only for new
-            code: the selection as the stock driver does it (functions of
-            `Base.Compiler`), then the compile pass with each code instance
-            that stays marked as done, so that inference runs only for a
-            function with no valid code instance of the last prepare, and the
-            walk of the callees stops at code that stays. The list of the code
-            instances of the method caches is made again from the whole list.
-            First in `bench/fork_image.jl`.
-      - [ ] F3. The measure: the edit of a body, then prepare, save, link and
-            run, with the time of each; the output of the executable against
-            the reference.
+      - [x] F2. The loaded process does the work of the driver only for new
+            code (`bench/fork_image.jl`: `image_selection`, `driver_update`,
+            `method_cache_list`, `prepare!`): the selection as the stock
+            driver does it (functions of `Base.Compiler`), then the compile
+            pass with each code instance that stays marked as done in its
+            queue, so that inference runs only for a function with no valid
+            code instance of the last prepare, and the walk of the callees
+            stops at code that stays. A pair stays when its code instance is
+            valid and it has its source, or its part of the session under the
+            name of now. A function whose part stops to serve (a function that
+            it calls is gone) gets its source again (`restore_sources!`): the
+            writer then compiles it itself, and without that the fork crashed
+            in the code generator. The list of the code instances of the
+            method caches is made again from the whole list (0.07 s).
+      - [x] F3. The measure (CompilerServer.jl, the commit of 2026-11-23 with
+            F1 to F3; test project, small, 8 cores, a quiet machine; the edit
+            of the bottom of a chain of inlined functions):
+
+            | step | time |
+            |---|---|
+            | load of the project in the loaded process | 3.2 s, once |
+            | the first prepare: the whole work | 38.8 s (driver) + 8.6 s (provider), once |
+            | apply of the edit | 2.6 s |
+            | workload and statements again | 1.3 s |
+            | prepare after the edit | 1.7 s: driver 0.65 s, list 0.06 s, provider 0.95 s |
+            | save in a fork | 10.2 s |
+            | link | 3.8 s |
+            | from the edit to the executable | 19.6 s |
+
+            The writer way takes 57.6 s with no new part and 112.4 s with a
+            new part; stock takes 73 to 80 s. The executable gives the output
+            of its sources. A prepare with no change takes 1.6 s. With an edit
+            whose parts the store did not have ("a new function": 6 new
+            parts): prepare 2.0 s, save 11.1 s.
+            - A fault found on the way, in each kind of build: the manifest of
+              a product was made with `Tuple{String, String}[parts...]`, a
+              call with one argument for each part (36,584 here). Julia
+              compiles a version of that call for each count of arguments.
+              When the loaded process made the part of that version, LLVM
+              took 133 s for it (the SLP vectorizer, 95 % of the samples of a
+              profile). The same form was at four more places of the provider
+              and of the emission; each is a `collect` now.
+            - The fork empties the kept pairs, the session and the caches of
+              the package before the image is saved: the image is 247 MB
+              (before: up to 334 MB; the normal build: 201.7 MB).
+            - What the time is now: the save (the heap and the objects of one
+              image for all) and the link are 14 of the 19.6 s. The apply is
+              2.6 s, of which the trial is about 2 s.
       - [ ] F4. The mechanism goes from the bench script into the package (the
             fork that writes an image, the driver, the prepare step), with a
             gate script and with its section in `docs/architecture.md`.
