@@ -1159,6 +1159,15 @@ Each measure runs on the generated project, for stock and for our build, in
         cycle of seconds (asked 2026-11-23); how the check of an apply gets
         the program of before the edit with no new load; names of anonymous
         functions of the top level that do not come from a counter.
+      - The owner, 2026-11-23, about the question of the shape: "I need more
+        documentation, especially diagrams, to understand the whole build
+        process. [...] I can't decide becuase I don't understand what's going
+        on." The answer is `docs/architecture.md` of CompilerServer.jl
+        (`6197728`), with nine diagrams: the stages of a build, what depends
+        on what, the files, stock Julia, the merged branch and
+        CompilerServer.jl side by side, four case studies, and the three
+        decisions with their options. The question of the shape waits until
+        the owner read it.
 
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
