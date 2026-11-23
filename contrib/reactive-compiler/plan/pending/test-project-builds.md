@@ -1576,31 +1576,138 @@ Each measure runs on the generated project, for stock and for our build, in
               one, a write by a fork, and the load at the start of the
               executable itself (the probe runs the entry of the application
               in a Julia process with the image).
-      - [ ] C3. Decision point (the owner decides): commit the change
-            `jl_set_session_methods` to the Julia branch (change 25 of the
-            list). The Julia worktree is back at `d697d45a14` after the
-            probe.
-      - [ ] C4. The mechanism in the package (`src/changes.jl`): the start of
-            a session, the selection (the new methods, the names, the code to
-            compile again, its new code instances, only of the program), the
-            write and the link, and the load with the install of the names.
-            First form: a process for each build that starts from the image
-            of the first build. A probe decides between a file for each build
-            that depends on the files before it, and one file with all
-            changes since the first image.
-      - [ ] C5. The start of the executable loads the file when it is beside
-            the image: a module with an `__init__` in the image of the first
-            build.
-      - [ ] C6. The join with the apply of the server: the changed
-            expressions and the cone of a changed type come from the apply; a
-            deleted method is deleted again at the load; an edit that the
-            file can not carry (`using`, `import`, `export`, a top-level
-            statement with a state) goes to the write of the whole image.
-      - [ ] C7. The gate (each edit of `bench/edits.jl`: the executable with
-            the file gives the output of its sources and compiles nothing),
-            the scenario of the harness, the measure from an edit to the
-            binary, and the documents (`docs/architecture.md`,
+      - [x] C3. Decision point (the owner decides): commit the change
+            `jl_set_session_methods` to the Julia branch. The owner,
+            2026-11-23: "Yes". It is Julia `27c6d4974d` (change 25 of the
+            list), with a test in `test/compile_apart.jl`: a process adds a
+            method to `Base.sum` and writes it; a new process restores the
+            file, with the list (the call gives the new result) and without
+            it (no method matches).
+      - [x] C4. The mechanism in the package (`src/changes.jl`, CompilerServer.jl `13bd47e`):
+            `changes_begin!` (the session), `changes_stale` and
+            `changes_compile_again!`, `changes_select`, `changes_write!`,
+            `changes_link`, `changes_put`, `changes_load` with
+            `changes_install!`. The process of the changes is a new process
+            for each build that starts from the first image
+            (`changes_build`). The facts and the decisions:
+            - The first image is the image of a loaded process (the fork
+              way): only that image holds CompilerServer.jl, which the
+              process of the changes needs for the apply and the program
+              needs for the load. An image of the normal build does not
+              serve.
+            - One file with all changes since the first image, and no chain
+              of files: the process starts from the first image and applies
+              the sources of now against the copy of the sources of the
+              image, so each file is whole by itself. The case with two
+              edits of the gate shows it.
+            - The process starts from the image by another path (a link to
+              the image), so it finds no file of changes beside its image.
+            - A fault found: the image kept the build driver that the first
+              loaded process had put in place (the driver of Julia is a root
+              of an image), and its machine code was in the memory of that
+              process only. The process of the changes crashed in its write.
+              Now the fork that writes an image puts the stock driver back
+              (`src/image.jl`).
+            - A fault found: the stock check looks up the callees of a code
+              instance in the first world of that code instance, which the
+              restore sets to the world in which the methods of the file get
+              active. A method that the install deletes after that was still
+              active in that world, and the check refused the callers. Now
+              the loader gives the code of the file the world after the
+              install (a write of the field `min_world`).
+            - A build does not compile again what was invalid in the image
+              before the edit (94 specializations of the first image here):
+              the session takes that list at its start.
+            - A file belongs to one image: `changes_base!` gives the image
+              a token, each file names the token of its image
+              (`Changes.id`), and the program refuses a file of another image
+              before it restores it. The module ids of two images can be
+              equal (with fixed object ids they come from the names), and a
+              file of another image names objects by their place in an image
+              that is not there.
+            - The functions of the load and of the build are compiled in the
+              loaded process of the first build (`changes_warm`), and not in
+              the package file. With compile statements in the package file,
+              that file had 13.2 MB and not 6.5 MB, and each process that
+              loads the package took 20 ms and 13 MB more (measured in turn,
+              6 times each). The guard of the harness showed it.
+      - [x] C5. The start of the executable loads the file when it is beside
+            the image, in the folder `<image>.changes`: the start function
+            (`__init__`) of CompilerServer.jl, which the image of a loaded
+            process holds. A run of the executable takes 5 to 20 ms more with
+            a file (0.57 to 0.64 s against 0.565 s).
+      - [x] C6. The join with the apply of the server: the apply runs in the
+            process of the changes itself, because that process starts from
+            an image with the package. What it carries, by the ids of the
+            change catalog: methods (A), types with their cone (B),
+            constants (C1), an include (C4), macros (D1), moved lines (H1)
+            and a file with a new name (H3). The apply records each move of
+            a method of the image and each removal of a name for the file
+            (`changes_record_move!`, `changes_record_removal!`); the load
+            does them again. A method that the apply deleted is found by a
+            look at the method table, and the load deletes it again.
+            - Each other change gives the status `:whole` with its reason (a
+              global variable, `using`, `import`, `export`, a new module, a
+              docstring of a module, a statement with a state; a refusal of
+              the apply; a changed project file). NOT built: the command
+              that then writes the whole image by itself.
+      - [x] C7. The gate `test/gates/changes.jl`: the first build, then each
+            of the 10 edits of `bench/edits.jl` and one case with two edits.
+            For each one the executable with the first image and the file
+            gives the output of a session from the edited sources, and it
+            compiles no function of the project; its stack trace is that
+            of the edited sources too, also after an edit that moves lines.
+            The measure (small test project, 8 cores; jobs of another session
+            ran on other cores):
+
+            | edit | from the start of the process to the linked file | of that: the apply | compile again | the file |
+            |---|---|---|---|---|
+            | a comment | 1.1 s (nothing changed: no file) | 0.6 s |  |  |
+            | lines that move | 0.6 s | 0.3 s | 0 | 10 KB |
+            | a new method of a function of the package below | 2.0 s | 1.2 s | 0.2 s | 140 KB |
+            | a file with a new name | 2.7 s | 1.5 s | 0.5 s | 216 KB |
+            | a new function | 3.0 s | 1.9 s | 0.4 s | 218 KB |
+            | the value of a constant | 3.1 s | 1.9 s | 0.4 s | 223 KB |
+            | the bottom of a chain of inlined functions | 3.9 s | 2.6 s | 0.6 s | 294 KB |
+            | the body of a function that callers inline | 4.1 s | 2.7 s | 0.6 s | 293 KB |
+            | the type of a field of a struct | 4.3 s | 2.9 s | 0.6 s | 315 KB |
+            | the body of a leaf function | 5.4 s | 3.2 s | 1.3 s | 304 KB |
+            | two edits together | 3.4 s | 2.1 s | 0.5 s | 304 KB |
+
+            The whole image for such an edit takes 19.6 to 21.0 s. The first
+            build: the normal build 161 s, then the loaded process 69 s and
+            the link 4 s. The tests of the package: 186 pass, with a test of
+            7 kinds of edit of a small package (`test/packages/ChangesApp`).
+            The gate of the image from a fork passes.
+            The gate of the 55 edit cases of the apply passes. The documents
+            are current (`docs/architecture.md` with a diagram,
             `docs/julia-changes.md`).
+            - NOT done: a scenario of the harness (`bench/run.jl`) for the
+              file of changes.
+      What is open after these parts, for the file of changes:
+      - The apply is most of the time of a build (0.3 to 3.2 s of 0.6 to
+        5.4 s): its trial takes about 2 s, and each edit evaluates again the
+        8 generated functions of the project with their helpers (24 changes
+        of the id A6). So each file holds 49 to 81 methods and 300 to 1,000
+        code instances, where the edit needs some tens.
+      - The command that writes the whole image when a file can not carry
+        the edit, and that makes a new base when the file is large.
+      - A server that stays and writes the file in a fork: it would apply
+        only the last edit. The write of a package file in a fork is not
+        tried.
+      - The names: the loader writes the first world of a new partition,
+        the mark of the methods that read the name, and the first world of
+        the code of the file. The clean form is a change of Julia (the last
+        row but one of section 4 of `docs/julia-changes.md`). Until then, a
+        package file that the program loads after the file of changes is
+        checked as if the new names were in the first image.
+      - Not carried, and not seen as a difference by the gate: a docstring
+        of a function (the table of the docstrings of a module is a value
+        of the image).
+      - The image of the first build holds CompilerServer.jl (246 MB against
+        201 MB), and the first build needs the normal build before it (for
+        the app folder and the store).
+      - A large project is not measured.
       Proposed decisions of this part (mine):
       - The image of the first build stays until a whole build: the binary of
         an edit is that image and the file. A whole build makes the base
