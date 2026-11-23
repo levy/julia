@@ -886,10 +886,15 @@ Each measure runs on the generated project, for stock and for our build, in
           smallest example does. The 3 checks that fail are times, above their
           bounds by 0.1 to 4.5 %; the machine was busier, and the measure in
           turn shows no cost.
-        - Decision point (the owner decides): commit the probe to the Julia
-          branch. The Julia tree is at `ff99565fbb` until then, and the guard
-          fails in a run where the second worktree lists that code in another
-          order.
+        - The owner approved the probe on 2026-11-23: Julia branch
+          `d697d45a14`, with a test in `compile_apart`; change 24 of
+          `docs/julia-changes.md` (CompilerServer.jl `9777558`).
+        - The harness on that state: all 369 checks pass. The run had the case
+          that failed before: the second worktree listed the four functions at
+          another place again (text symbols 3,950 to 3,997 against 13,977 to
+          23,025 in the first worktree) and made 4 new parts, and its image
+          differs from a whole build in 49 bytes. The machine was busy in that
+          run (load 16 to 20), so its times are no measure of the speed.
       - The bounds of the guard after the two fixes (CompilerServer.jl
         `09a3f24`): the image of the executable 1.07 (before 1.09), its first
         build 2.2 (before 3.7), a later build 1.6 (before 1.7).
