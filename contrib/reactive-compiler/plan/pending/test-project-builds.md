@@ -1380,6 +1380,11 @@ Each measure runs on the generated project, for stock and for our build, in
         - The other 5 checks that failed are times, on a machine that ran
           other jobs in that half hour (the stock builds of the executable
           took 87 s, not 78 s).
+        - The harness with the rule (CompilerServer.jl `3367bf0`, a quiet
+          machine): all 369 checks pass. The executable by the writer way:
+          the first build 162.3 s, after an edit 112.4 s, with no new part
+          57.6 s, a new worktree 64.5 s; each image is 47 to 50 bytes from a
+          whole build.
       - Decision point (the owner decides): build the incremental prepare
         step. No Julia change is in it, so far.
 
