@@ -56,6 +56,20 @@ whether it moves toward that end: the build of a small edit must lose its fixed
 cost (a new process for each package file, a whole PackageCompiler run for each
 executable).
 
+The owner, 2026-11-23 at noon, when I asked which way to take for the second
+pass of an executable build (110 s after an edit, 72 s for stock):
+
+> what? we want to have a reactive incremental compiler which produces
+> binaryes in a few seconds not 100 seconds. we should go that direction
+
+So the order of the steps changes. S6, the reactive cycle, is the next step,
+and its target is seconds from an edit to the package files and to the
+executable of the test project. The open items of S3 and S4 (the second pass,
+the size of the image, the rest of the first build) wait: they tune builds
+that take a minute. The owner also asked for a file with the current numbers
+(times, memory), open in the editor: `STATUS.md` in the CompilerServer.jl
+worktree, not tracked.
+
 ## What exists, and what we measured
 
 The mechanisms:
@@ -1103,6 +1117,48 @@ Each measure runs on the generated project, for stock and for our build, in
         place when its lines move; who writes the package files and the image
         after the loaded process (a writer process of today takes 0.84 s for a
         package and 54 s for the executable with each part in the store).
+
+      Facts of 2026-11-23, noon, after the owner made this step the next one
+      (`bench/reactive.jl` with the memory of the process; the machine was
+      busy, load 13 to 23, so each time is an upper bound):
+      - The loaded process: the load of the 3 packages from source 5.45 s, the
+        first workload 1.2 s, resident memory 725 MiB after the load and
+        1,069 MiB after 20 applies (about 17 MiB for each apply).
+      - The apply of an edit of a body takes 11.6 s there (about 8 s on a
+        quiet machine), but its own work is 0.40 s: "applied 25 expressions
+        and 0 removals in 401.2 ms". The rest is the two check processes,
+        each of which loads the project again.
+      - The 25 expressions: the edited method, and 24 expressions of
+        `src/part2.jl` of the three packages whose result the trial found
+        changed (8 for each package). They are right to evaluate again.
+      - The 576 parts with new names after an edit of a body (192 for each
+        package whose expressions the apply evaluates again): each of the 24
+        expressions has an anonymous function at the top level, and Julia
+        names it with a counter of the module (`GenLow.var"#159#160"`). The
+        new evaluation gives it the next numbers, so the function and the
+        code of Base for it (`iterate`, `collect_to_with_first!`, `grow_to!`,
+        8 functions for each) have types that no build has. A writer process
+        gives them the numbers of a load from the start. So these parts serve
+        no build: about 2 s of the cycle is lost on them. The parts of really
+        changed code are about 60 (the writers alone make 21).
+      - The apply already knows what it made invalid: 172 method instances of
+        methods that it defined again ("cone replaced") and 145 whose code
+        the edit closed ("cone closed"). The measure does not use that list:
+        it gives the provider all 7,168 functions of the process, and the
+        provider checks each record again (1.44 s with nothing to do).
+      - The start of a binary by its shape (time to the first line, median of
+        7 starts, the same busy machine): Julia with the base image 104.5 ms;
+        the base image and the 3 package files of the project 132.7 ms; the
+        first line of the app from them 133.9 ms. The executable with one
+        image for all: 78.2 ms (stock), 80.2 ms (parts), on a quiet machine.
+      - What follows for the work, with no decision needed: the loaded process
+        gives the store only the parts of the code that the apply made
+        invalid, and keeps the result of each record check for a code
+        instance that stays valid.
+      - Decision points (the owner decides): the shape of the binary in the
+        cycle of seconds (asked 2026-11-23); how the check of an apply gets
+        the program of before the edit with no new load; names of anonymous
+        functions of the top level that do not come from a counter.
 
 - [ ] **S7. The selection of tests and the test builds.**
       - Record what each test ran, once for each full run: the methods whose
