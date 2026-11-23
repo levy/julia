@@ -761,11 +761,97 @@ Each measure runs on the generated project, for stock and for our build, in
         answer before the night and said to continue as planned: the question
         waits, each build keeps its two passes, and the work goes on with the
         other items of S3.
-      - Left of S3: the provider code in the image (3,866 objects with its
-        name), the static symbol tables (+5.4 MB), the debug information of
-        the parts (+4.5 MB), the heap (+4.3 MB), the relocations of the slots
-        (+1.4 MB); the measurement of the debug level and of `--trim`; the gate
-        of the sizes.
+      - The guard has bounds for the sizes now (CompilerServer.jl `f36cf00`):
+        each measure of `GEN_MEASURE_BOUNDS` is not above stock in the same
+        step, or inside the bound of its gap: the package files (`.ji` 1.01,
+        `.so` 1.13), the image of the executable (1.09), its folder (1.02), its
+        build (3.7 for the first one, 1.7 for a later one), its build peak, its
+        start, its peak, and the JIT compilations in use. 338 checks pass on the
+        run of 2026-11-23.
+      - Where the 14.8 MB of the image above stock are (the executable of the
+        test project, 203,407,912 against 188,592,352 bytes; sections of the
+        two files, and the logs of their objects):
+
+        | what | bytes above stock | cause |
+        |---|---|---|
+        | `.symtab` and `.strtab` | 5.37 MB | 149,827 symbols against 65,614: 85,997 slots of parts (stock has 8,815 slots in all), and each part has its own symbols of the `ccall` slots |
+        | the debug sections | 4.5 MB | a compile unit for each part: its own abbreviations, line program header, name tables |
+        | the objects of the heap | 2.75 MB | what the run of the provider leaves: its module (0.90 MB: 222 methods, their bindings, code instances and types) and the code of Base for its types (1.85 MB: 2,467 method instances, 3,377 types, 1,448 entries of the dispatch cache, with inferred code) |
+        | the tables after the objects of the heap | 1.6 MB | the slots and the functions of the parts in the tables of the image |
+        | `.rela.dyn`, `.lrodata`, `.data.rel.ro`, `.eh_frame` | 2.4 MB | a relocation and a table entry for each slot and each function of a part |
+        | `.text` | -1.9 MB | |
+
+        A part has a slot of its own for each object that its code names, so
+        the image has 9.8 times the slots of stock, each with a symbol, a
+        relocation and a table entry: about 8 MB of the 14.8 MB follow from the
+        slots.
+      - The level of the debug information (`-g0` in the arguments of the
+        image build; both images built again; the whole run of the executable,
+        median of 7, is 558 to 565 ms for all four):
+
+        | | image, level 1 | image, level 0 | a stack trace at level 0 |
+        |---|---|---|---|
+        | stock | 188,592,352 | 181,243,864 | function names, no file and no line |
+        | parts | 203,407,912 | 191,666,896 | no frame of the image (built with the fault below) |
+
+        Level 0 is no choice for a product that must show where an error is.
+        `--trim` is not measured: `create_app` of PackageCompiler has no way
+        for it, and the trim needs a build script of its own.
+      - A fault found on the way: a stack trace in an executable with parts
+        had no inlined frames and no method instances. The list of code of the
+        writer of an image names a code instance more than once (50 thousand
+        items for 32 thousand functions). The branch gives each item two
+        indexes in the table of function pointers of the image, and only the
+        last pair gets the code instance. The lookup of a frame takes the first
+        index with the address of the function. So 23,197 of 24,577 function
+        pointers found no code instance (stock: 0 of 12,631), and the table had
+        99,937 indexes, 51,910 of them with no code instance. The package files
+        do not have the fault.
+        - A probe in the Julia tree (6 lines in `jl_create_native`, in code
+          that the branch added; `docs/probes/one-table-index-for-each-code-instance.patch`
+          of CompilerServer.jl): the table takes a code instance once. With it
+          no pointer misses, the stack trace is that of stock, and the image is
+          2.27 MB smaller (201,136,368 bytes). The 166 tests of CompilerServer.jl
+          and the `compile_apart` tests of Julia pass.
+        - The generated app now prints a stack trace of an error in compiled
+          code (the line `trace` of `GenApp.julia_main()`), and the harness
+          compares it with stock in the session of use and in the executable
+          (`use_trace`, `exe_trace`). The guard has `exe_trace` as a known
+          failure until the fix is in the branch (CompilerServer.jl `2f565bf`): on
+          the committed Julia branch 362 checks pass, and the 4 executable steps
+          report the known failure.
+        - The harness with the probe (2026-11-23, executables with the
+          comparison, 2, 4 and 8 agents): 365 checks pass. The image is
+          201,193,792 bytes against 188,640,320 of stock (1.07; before 1.08),
+          the start 76.0 ms against 79.6 ms, the stack trace is that of stock in
+          the 4 executable steps and in the 23 sessions of use, and the image of
+          each step differs from a whole build in 49 or 50 bytes.
+        - Decision point (the owner decides): commit the probe to the Julia
+          branch. It is a fix inside change 4, not a new change. The Julia tree
+          is back at `459678ed26` until then.
+      - What the stack trace in the app showed next: the first stack trace of a
+        process reads the debug information of the image, and the image with
+        parts has a compile unit for each part. In the executable of the test
+        project the first stack trace takes 35.9 ms and 34 MiB with stock, and
+        49.4 ms and 69 MiB with parts (the second one 0.4 ms in both). So the
+        peak of the executable, which now has a stack trace in it, is 283 MiB
+        against 250 MiB (with no stack trace: 227 against 228). The guard has
+        it as a gap with the bound 1.2.
+      - Proposals for the size, each a change of how the branch emits a part
+        (the owner decides; none is started):
+        1. One slot for one object in an image, as stock has: the name of a
+           slot comes from the key of its object, not from its part, and the
+           link keeps one copy. It removes most of the 8 MB of the slots. It
+           changes the objects of the store and the call of the emission.
+        2. The debug information of the parts in a form that costs less: no
+           name tables (about 1 MB of the file), and a table of the address
+           ranges of the units, so that the first stack trace need not read
+           each unit (the 35 MiB and 13 ms above; not tried).
+        3. The image leaves out what the run of the provider made (2.75 MB):
+           the changes of `docs/julia-changes.md` that were planned for equal
+           bytes.
+      - Left of S3: the decisions above, and the gate of the sizes with the
+        bounds that they give.
 
 - [ ] **S4. A first build that is not slower than stock.**
       - Measure where the time of the emission of all parts goes (the LLVM work
