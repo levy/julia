@@ -1387,6 +1387,34 @@ Each measure runs on the generated project, for stock and for our build, in
           whole build.
       - Decision point (the owner decides): build the incremental prepare
         step. No Julia change is in it, so far.
+        The owner, 2026-11-23: "Yes".
+
+      The incremental prepare step (the owner approved it on 2026-11-23). Its
+      parts, fixed here:
+      - [x] F1. The provider keeps what it served: a session
+            (`ApartSession` of `src/provider.jl`) holds the part of each code
+            instance that its last call served. A call with a session reads
+            and checks a record only for a code instance that the session does
+            not have under the same name. A writer process has no session, so
+            its work does not change. 177 tests pass.
+      - [ ] F2. The loaded process does the work of the driver only for new
+            code: the selection as the stock driver does it (functions of
+            `Base.Compiler`), then the compile pass with each code instance
+            that stays marked as done, so that inference runs only for a
+            function with no valid code instance of the last prepare, and the
+            walk of the callees stops at code that stays. The list of the code
+            instances of the method caches is made again from the whole list.
+            First in `bench/fork_image.jl`.
+      - [ ] F3. The measure: the edit of a body, then prepare, save, link and
+            run, with the time of each; the output of the executable against
+            the reference.
+      - [ ] F4. The mechanism goes from the bench script into the package (the
+            fork that writes an image, the driver, the prepare step), with a
+            gate script and with its section in `docs/architecture.md`.
+      Not in these parts: the order of the list as a whole build gives it
+      (the image of a fork is not compared byte for byte with a whole build),
+      the code that the loaded process itself needs and the replaced methods
+      in the image, and the names of closures.
 
       An option to investigate (the owner, 2026-11-23: "We should also
       consider storing the inferred types, etc and other intermediate steps in
