@@ -1357,6 +1357,29 @@ Each measure runs on the generated project, for stock and for our build, in
         After the repair, the first save of the loaded process takes 32,600 of
         its 36,346 parts from the store of the normal build (before: none).
         Each part name changes with this commit. 175 tests pass.
+      - The harness after the repair of the names (2026-11-23) failed: 16 of
+        369 checks, of which 11 are one fault: the executable with parts did
+        not load (`undefined symbol: japart_e509374c7db46d08.2`). With one
+        name for a function in each kind of process, the writer of the image
+        took 1,842 parts that the package writers of the same store made.
+        Before, a package build and an image build never shared a part, by
+        the accident of the two faults above.
+        - The fault that it showed, and that is OPEN: a part that a package
+          writer makes can call a function under a name with a suffix (`.2`).
+          The package writer resolves that name by an alias. No object of a
+          system image defines it.
+        - The rule until it is repaired (CompilerServer.jl, the commit after
+          `d421d09`): the kind of product is one of the settings of a part
+          name (`apart_for_image!`: a system image, or a package file and a
+          running process). The provider sets it from its `system_image`
+          argument. The order of the harness (the package files, then the
+          executable, with one store) gives a correct executable again, with
+          32,640 new parts as before. 177 tests pass.
+        - What the rule costs: a function of a package has two parts in a
+          store, one for each kind of product, as before the repair.
+        - The other 5 checks that failed are times, on a machine that ran
+          other jobs in that half hour (the stock builds of the executable
+          took 87 s, not 78 s).
       - Decision point (the owner decides): build the incremental prepare
         step. No Julia change is in it, so far.
 
