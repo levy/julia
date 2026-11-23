@@ -1480,6 +1480,135 @@ Each measure runs on the generated project, for stock and for our build, in
       - The loaded process is one process of the measure script; the server
         of the package (`src/server.jl`) does not have the image writer yet.
 
+      The file of changes (the owner, 2026-11-23, to the question "Do I build
+      that shape next?": "Yes"). The binary keeps the image of the first
+      build, and it loads a small file with the changed code when it starts.
+      An edit then writes some hundred kilobytes, not one image of 200 MB.
+      Its parts, fixed here:
+      - [x] C1. The probe at small size (`docs/probes/changes` of
+            CompilerServer.jl `261eeaa`: a package of 5 functions, `kinds.sh`): what a
+            package file of stock Julia can carry of the changes of a process.
+            The facts:
+            - A normal Julia process that has the program from images can
+              write a package file: it sets the options of a package build
+              (`incremental`, `outputo`, `outputji` of `jl_options`) and
+              exits. No output mode from the start, no new Julia function.
+            - The module of the changes (`Changes`) must be the module of the
+              build: the process makes it in `Base.__toplevel__` while the
+              options of a package build are set, before the first edit. Then
+              each new root of a method gets the key of that module. Without
+              it the load crashed in `jl_copy_roots`.
+            - The code: the process gives its new code instances with the
+              stock list (`jl_set_newly_inferred`, `jl_push_newly_inferred`
+              with `jl_tag_newly_inferred_enable`). The stock driver compiles
+              them, and the file keeps them. The list must be a global: the
+              runtime does not keep it alive (a crash in `queue_used` with a
+              temporary list).
+            - The methods need a change of Julia. The writer lists a method
+              for the load only when no image holds its module. A new method
+              of a module of an image is saved as an object, and the load
+              does not make it active: the program gave the old result. An
+              insert by hand after the load fails the check by one world. The
+              probe patch (`session-methods.patch`, 25 lines in
+              `src/staticdata_utils.c`): `jl_set_session_methods(list)`, the
+              methods that a process asks its package file to carry. A first
+              form, "each method that no image holds", also took the helper
+              functions of the tool; so the form is a list.
+            - The load is stock: `jl_restore_package_image_from_file`, then
+              the check `Base.ReinferUtils.insert_backedges_typeinf`.
+            - The names. Stock Julia does not carry a new or changed name of
+              a module of an image (a closure type, a new function, a
+              constant, a struct that is defined again). Without the names, a
+              specialization that the program compiles at its run fails with
+              `UndefVarError`, and a changed struct gives the old result with
+              no error. In package code, with no Julia change: the values of
+              the names travel as data of the module of the changes; the
+              loader installs each with the stock `jl_replace_binding`, which
+              makes the code that read the old meaning invalid. Then it gives
+              the new partition the world of the images
+              (`jl_require_world`), and it removes the mark
+              (`did_scan_source & 0x4`) that these replaces put on the
+              methods of the module; else the check refuses the code of the
+              file. These are two writes into internals of Julia.
+            - The limit of that way: a package file that the program loads
+              after the file of changes is checked as if the new names were
+              in the first image. The clean form is a rule in the check of
+              Julia: a partition that an image brought is not a change for
+              the code of that image. Not written.
+            - Result: an edit of a body, a closure, a new function, a
+              constant and a struct that is defined again: each code instance
+              of the file is valid at the load, the result is that of the
+              edit, and no function of the package compiles again.
+      - [x] C2. The probe at the size of the test project
+            (`docs/probes/changes/scale.jl`; small project, 8 cores, load
+            average 4): the executable of the normal build (169.7 s, image
+            201.4 MB), then one process that starts from that image, evaluates
+            the changed expression, compiles again, and writes the file at
+            its exit; then the program with the image and the file.
+
+            | edit | compiled again | the whole process, from its start to its exit | the file (`Changes.so`) |
+            |---|---|---|---|
+            | the body of a leaf function | 53 specializations, 0.29 s | 1.46 s | 128 KB |
+            | the body of a function that callers inline | 14, 0.06 s | 0.92 s | 102 KB |
+            | the bottom of a chain of inlined functions | 11, 0.17 s | 1.12 s | 113 KB |
+            | a new function | 0 | 0.81 s | 73 KB, 2 names |
+            | a new method of a function of the package below | 0 | 0.81 s | 73 KB |
+            | the value of a constant | 9, 0.06 s | 1.04 s | 98 KB, 1 name |
+
+            - In that time: the start of the process from the image 0.27 s,
+              the evaluation of the changed expression 0.4 to 9 ms, the write
+              at the exit about 0.5 s. The link of the file takes 0.012 s.
+            - The program with the first image and the file gives the output
+              of a session from the edited sources, for each edit. The load
+              of the file: restore 0.6 to 1.5 ms, check 0.5 to 0.9 ms. The
+              program compiles no function of the project when it runs.
+            - What compiles again needs no run of the workload: each
+              specialization whose machine code of the image is invalid now,
+              or whose method the edit replaced, by its signature (so the
+              method that dispatch finds now gets it).
+            - The probe takes each new code instance of its process, also
+              those of its own script (147 with no invalid code). The
+              mechanism takes only the code of the program, so its files are
+              smaller.
+            - Not in the probe: the cone of a changed type at this size (the
+              apply of the server makes it), a method that an edit deletes,
+              `using`, `import` and `export`, a second edit after the first
+              one, a write by a fork, and the load at the start of the
+              executable itself (the probe runs the entry of the application
+              in a Julia process with the image).
+      - [ ] C3. Decision point (the owner decides): commit the change
+            `jl_set_session_methods` to the Julia branch (change 25 of the
+            list). The Julia worktree is back at `d697d45a14` after the
+            probe.
+      - [ ] C4. The mechanism in the package (`src/changes.jl`): the start of
+            a session, the selection (the new methods, the names, the code to
+            compile again, its new code instances, only of the program), the
+            write and the link, and the load with the install of the names.
+            First form: a process for each build that starts from the image
+            of the first build. A probe decides between a file for each build
+            that depends on the files before it, and one file with all
+            changes since the first image.
+      - [ ] C5. The start of the executable loads the file when it is beside
+            the image: a module with an `__init__` in the image of the first
+            build.
+      - [ ] C6. The join with the apply of the server: the changed
+            expressions and the cone of a changed type come from the apply; a
+            deleted method is deleted again at the load; an edit that the
+            file can not carry (`using`, `import`, `export`, a top-level
+            statement with a state) goes to the write of the whole image.
+      - [ ] C7. The gate (each edit of `bench/edits.jl`: the executable with
+            the file gives the output of its sources and compiles nothing),
+            the scenario of the harness, the measure from an edit to the
+            binary, and the documents (`docs/architecture.md`,
+            `docs/julia-changes.md`).
+      Proposed decisions of this part (mine):
+      - The image of the first build stays until a whole build: the binary of
+        an edit is that image and the file. A whole build makes the base
+        again when the file is large (the merged branch does it at 2 % of
+        the code).
+      - An edit that the file can not carry is not refused: the build writes
+        the whole image for it (the fork way, about 20 s).
+
       An option to investigate (the owner, 2026-11-23: "We should also
       consider storing the inferred types, etc and other intermediate steps in
       1-5 as you mentioned if that makes the process faster. Add this to the
