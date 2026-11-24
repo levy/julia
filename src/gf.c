@@ -2863,8 +2863,8 @@ JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
     size_t world = jl_atomic_load_relaxed(&jl_world_counter);
     struct disable_set_env env = {&set, &disabled, world};
     // the tables and the methods come through the lists, which hold no root
-    jl_value_t *root = NULL;
-    JL_GC_PUSH1(&root);
+    jl_value_t *root = NULL, *isect = NULL, *isect2 = NULL;
+    JL_GC_PUSH3(&root, &isect, &isect2);
     for (size_t j = 0; j < tables.len; j++) {
         root = (jl_value_t*)jl_atomic_load_relaxed(&((jl_methtable_t*)tables.items[j])->defs);
         jl_typemap_visitor((jl_typemap_t*)root, disable_set_entry, &env);
@@ -2895,6 +2895,20 @@ JL_DLLEXPORT size_t jl_reactive_methods_disable(jl_array_t *methods)
                 oldentry = jl_atomic_load_relaxed(&oldentry->next);
             }
         }
+    }
+    // A caller of an ambiguous call can have no backedge to the method, so the
+    // signature of each method also invalidates the callers that the backedges
+    // of its function types name, as jl_method_table_invalidate does for a
+    // deleted method.
+    if (disabled.len > 0) {
+        jl_methcache_t *mc = jl_method_table->cache;
+        JL_LOCK(&mc->writelock);
+        for (size_t k = 0; k < disabled.len; k++) {
+            jl_method_t *m = (jl_method_t*)disabled.items[k];
+            struct _typename_invalidate_backedge typename_env = {(jl_value_t*)m->sig, &isect, &isect2, NULL, 0, world, 0};
+            invalidate_missing_backedges(&typename_env);
+        }
+        JL_UNLOCK(&mc->writelock);
     }
     JL_GC_POP();
     size_t count = disabled.len;
