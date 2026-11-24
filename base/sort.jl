@@ -5,7 +5,7 @@ module Sort
 using Base.Order
 
 using Base: copymutable, midpoint, require_one_based_indexing, uinttype, tail,
-    sub_with_overflow, add_with_overflow, OneTo, BitSigned, BitIntegerType, top_set_bit
+    sub_with_overflow, add_with_overflow, OneTo, BitSigned, BitIntegerType, top_set_bit, maybe_unsigned
 
 import Base:
     sort,
@@ -496,11 +496,12 @@ end
 """
     make_scratch(scratch::Union{Nothing, Vector}, T::Type, len::Integer)
 
-Returns `(s, t)` where `t` is an `AbstractVector` of type `T` with length at least `len`
-that is backed by the `Vector` `s`. If `scratch !== nothing`, then `s === scratch`.
+Return `(s, t)` where `t` is an `AbstractVector` with eltype `T` and length at least
+`len`, backed by the `Vector` `s`.
 
-This function will allocate a new vector if `scratch === nothing`, `resize!` `scratch` if it
-is too short, and `reinterpret` `scratch` if its eltype is not `T`.
+Reuse `scratch`, resizing it if needed and reinterpreting it if its eltype differs
+from `T`. Allocate a new vector if `scratch === nothing` or the eltypes differ
+and either is not a bits type. When reusing `scratch`, `s === scratch`.
 """
 function make_scratch(scratch::Nothing, T::Type, len::Integer)
     s = Vector{T}(undef, len)
@@ -511,6 +512,7 @@ function make_scratch(scratch::Vector{T}, ::Type{T}, len::Integer) where T
     scratch, scratch
 end
 function make_scratch(scratch::Vector, T::Type, len::Integer)
+    isbitstype(eltype(scratch)) && isbitstype(T) || return make_scratch(nothing, T, len)
     len_bytes = len * sizeof(T)
     len_scratch = div(len_bytes, sizeof(eltype(scratch)))
     len_scratch > length(scratch) && resize!(scratch, len_scratch)
@@ -1442,8 +1444,6 @@ function radix_chunk_size_heuristic(lo::Integer, hi::Integer, bits::Unsigned)
     UInt8(cld(bits, cld(bits, guess)))
 end
 
-maybe_unsigned(x::Integer) = x # this is necessary to avoid calling unsigned on BigInt
-maybe_unsigned(x::BitSigned) = unsigned(x)
 function _issorted(v::AbstractVector, lo::Integer, hi::Integer, o::Ordering)
     @boundscheck checkbounds(v, lo:hi)
     @inbounds for i in (lo+1):hi
@@ -2454,17 +2454,25 @@ function partition!(v::AbstractVector, lo::Integer, hi::Integer, o::Ordering)
 end
 
 function sort!(v::AbstractVector, lo::Integer, hi::Integer, a::QuickSortAlg, o::Ordering)
+    checkbounds(v, lo:hi)
+    _quicksort!(v, lo, hi, a, o)
+end
+
+function _quicksort!(v::AbstractVector, lo::Integer, hi::Integer, a::QuickSortAlg, o::Ordering)
     @inbounds while lo < hi
-        hi-lo <= SMALL_THRESHOLD && return sort!(v, lo, hi, SMALL_ALGORITHM, o)
+        if hi-lo <= SMALL_THRESHOLD
+            _sort!(v, SMALL_ALGORITHM, o, (; lo, hi, scratch=nothing))
+            return v
+        end
         j = partition!(v, lo, hi, o)
         if j-lo < hi-j
             # recurse on the smaller chunk
             # this is necessary to preserve O(log(n))
             # stack space in the worst case (rather than O(n))
-            lo < (j-1) && sort!(v, lo, j-1, a, o)
+            lo < (j-1) && _quicksort!(v, lo, j-1, a, o)
             lo = j+1
         else
-            j+1 < hi && sort!(v, j+1, hi, a, o)
+            j+1 < hi && _quicksort!(v, j+1, hi, a, o)
             hi = j-1
         end
     end
@@ -2475,8 +2483,17 @@ sort!(v::AbstractVector{T}, lo::Integer, hi::Integer, a::MergeSortAlg, o::Orderi
     invoke(sort!, Tuple{typeof.((v, lo, hi, a, o))..., AbstractVector{T}}, v, lo, hi, a, o, t0) # For disambiguation
 function sort!(v::AbstractVector{T}, lo::Integer, hi::Integer, a::MergeSortAlg, o::Ordering,
         t0::Union{AbstractVector{T}, Nothing}=nothing) where T
+    checkbounds(v, lo:hi)
+    _mergesort!(v, lo, hi, a, o, t0)
+end
+
+function _mergesort!(v::AbstractVector{T}, lo::Integer, hi::Integer, a::MergeSortAlg, o::Ordering,
+        t0::Union{AbstractVector{T}, Nothing}) where T
     @inbounds if lo < hi
-        hi-lo <= SMALL_THRESHOLD && return sort!(v, lo, hi, SMALL_ALGORITHM, o)
+        if hi-lo <= SMALL_THRESHOLD
+            _sort!(v, SMALL_ALGORITHM, o, (; lo, hi, scratch=nothing))
+            return v
+        end
 
         m = midpoint(lo, hi)
 
@@ -2484,8 +2501,8 @@ function sort!(v::AbstractVector{T}, lo::Integer, hi::Integer, a::MergeSortAlg, 
         length(t) < m-lo+1 && resize!(t, m-lo+1)
         Base.require_one_based_indexing(t)
 
-        sort!(v, lo,  m,  a, o, t)
-        sort!(v, m+1, hi, a, o, t)
+        _mergesort!(v, lo,  m,  a, o, t)
+        _mergesort!(v, m+1, hi, a, o, t)
 
         i, j = 1, lo
         while j <= m
@@ -2517,8 +2534,17 @@ end
 
 function sort!(v::AbstractVector, lo::Integer, hi::Integer, a::PartialQuickSort,
                o::Ordering)
+    checkbounds(v, lo:hi)
+    _partialquicksort!(v, lo, hi, a, o)
+end
+
+function _partialquicksort!(v::AbstractVector, lo::Integer, hi::Integer, a::PartialQuickSort,
+                            o::Ordering)
     @inbounds while lo < hi
-        hi-lo <= SMALL_THRESHOLD && return sort!(v, lo, hi, SMALL_ALGORITHM, o)
+        if hi-lo <= SMALL_THRESHOLD
+            _sort!(v, SMALL_ALGORITHM, o, (; lo, hi, scratch=nothing))
+            return v
+        end
         j = partition!(v, lo, hi, o)
 
         if j <= first(a.k)
@@ -2530,10 +2556,10 @@ function sort!(v::AbstractVector, lo::Integer, hi::Integer, a::PartialQuickSort,
             # this is necessary to preserve O(log(n))
             # stack space in the worst case (rather than O(n))
             if j-lo < hi-j
-                lo < (j-1) && sort!(v, lo, j-1, a, o)
+                lo < (j-1) && _partialquicksort!(v, lo, j-1, a, o)
                 lo = j+1
             else
-                hi > (j+1) && sort!(v, j+1, hi, a, o)
+                hi > (j+1) && _partialquicksort!(v, j+1, hi, a, o)
                 hi = j-1
             end
         end
@@ -2546,11 +2572,13 @@ end
 # Support 3-, 5-, and 6-argument versions of sort! for calling into the internals in the old way
 sort!(v::AbstractVector, a::Algorithm, o::Ordering) = sort!(v, firstindex(v), lastindex(v), a, o)
 function sort!(v::AbstractVector, lo::Integer, hi::Integer, a::Algorithm, o::Ordering)
+    checkbounds(v, lo:hi)
     _sort!(v, a, o, (; lo, hi, legacy_dispatch_entry=a))
     v
 end
 sort!(v::AbstractVector, lo::Integer, hi::Integer, a::Algorithm, o::Ordering, _) = sort!(v, lo, hi, a, o)
 function sort!(v::AbstractVector, lo::Integer, hi::Integer, a::Algorithm, o::Ordering, scratch::Vector)
+    checkbounds(v, lo:hi)
     _sort!(v, a, o, (; lo, hi, scratch, legacy_dispatch_entry=a))
     v
 end

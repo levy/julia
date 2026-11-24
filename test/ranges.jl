@@ -461,6 +461,17 @@ end
         @test findfirst(iszero, 5:-2:-5) === nothing
         @test findfirst(iszero, 6:-2:-6) == 4
         @test findfirst(==(Int128(2)), Int128(1):Int128(1):Int128(4)) === 2
+        # ranges spanning more than half their element type
+        for r in (Int8(-100):Int8(100), Int8(-100):Int8(3):Int8(100), Int8(100):Int8(-3):Int8(-100),
+                  typemin(Int8):typemax(Int8), StepRange(Int8(-100), Int16(3), Int8(100)),
+                  typemin(Int64):Int64(2)^62:typemax(Int64))
+            v = collect(r)
+            for x in unique([typemin(eltype(r)), typemax(eltype(r)), v..., (v .+ one(eltype(r)))...])
+                @test findfirst(==(x), r) === findfirst(==(x), v)
+            end
+        end
+        # indices that do not fit in `Int` throw rather than wrap
+        @test_throws InexactError findfirst(==(Int128(typemax(Int)) + 1), Int128(0):Int128(typemax(Int)) + 2)
     end
     @testset "findlast" begin
         @test findlast(==(1), Base.IdentityUnitRange(-1:1)) == 1
@@ -1688,6 +1699,17 @@ end
     r = range(Float16(0.1094), stop=Float16(0.9697), length=300)
     @test r[1] == Float16(0.1094)
     @test r[end] == Float16(0.9697)
+end
+@testset "Float16 ranges start at their start value" begin
+    a, st, b = Float16(-0.31), Float16(0.18), Float16(2.932)
+    @test first(a:st:b) === a
+    @test first(range(a, step=st, length=10)) === a
+    @test first(StepRangeLen{Float16}(a:st:b)) === a
+    for i in -999:7:999, j in 1:13:300
+        a, st = Float16(i / 100), Float16(j / 100)
+        @test first(a:st:Float16(a + 5st)) === a
+        @test first(range(a, step=st, length=5)) === a
+    end
 end
 
 # issue #20382

@@ -1,6 +1,7 @@
 # Test that various constructs support trimming
 
 using Sockets
+using Dates: Date, DateTime, @dateformat_str
 
 world::String = "world!"
 const str = OncePerProcess{String}() do
@@ -169,6 +170,14 @@ end
 # keeps in a merged union: each `print` must still resolve statically.
 @noinline interpolate_many(r, x, s, c) = "got $(r) vs $(first(r)) with $(x) and $(s) and $(c)"
 
+# Parsing with a `DateFormat`, whose error path prints the directive that failed:
+# that `print` must resolve statically too.
+function _test_dates()
+    day = Date("2026-03-08")
+    time = DateTime("2026-03-08 16:00:00.5", dateformat"yyyy-mm-dd HH:MM:SS.s")
+    println(Core.stdout, "dates: ", day, " ", time)
+end
+
 # A `compile=min` module with an `__init__` (as JLLWrappers emits into every generated
 # JLL). Under `--trim`, the entrypoint list is the only thing keeping `__init__` alive,
 # but `jl_module_run_initializer` calls it at startup regardless of the module's compile
@@ -183,6 +192,18 @@ function __init__()
     initialized[] = true
 end
 
+end
+
+function _test_threads()
+    v = zeros(Int, 64)
+    Threads.@threads for i in eachindex(v)
+        v[i] = 2i
+    end
+    w = zeros(Int, 8)
+    Threads.@threads :static for i in eachindex(w)
+        w[i] = i^2
+    end
+    println(Core.stdout, "threads: ", sum(v), " ", sum(w))
 end
 
 function @main(args::Vector{String})::Cint
@@ -227,6 +248,8 @@ function @main(args::Vector{String})::Cint
 
     println(Core.stdout, "initialized: ", MinInitDep.initialized[])
 
+    _test_threads()
+
     try
         sock = connect("localhost", 4900)
         if isopen(sock)
@@ -236,6 +259,8 @@ function @main(args::Vector{String})::Cint
         end
     catch
     end
+
+    _test_dates()
 
     Base.donotdelete(reshape([1,2,3],:,1,1))
 

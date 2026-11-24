@@ -112,8 +112,10 @@ function finish!(interp::AbstractInterpreter, caller::InferenceState, validation
         ci = result.ci
         mi = result.linfo
         # if we aren't cached, we don't need this edge
-        # but our caller might, so let's just make it anyways
-        if last(result.valid_worlds) >= validation_world
+        # but our caller might, so let's just make it anyways.
+        # A tombstoned result is the exception: each new caller infers it again, so its
+        # backedges would pile up. Its callers depend on its edges directly instead.
+        if last(result.valid_worlds) >= validation_world && !result.tombstone
             # if we can record all of the backedges in the global reverse-cache,
             # we can now widen our applicability in the global cache too
             store_backedges(ci, edges)
@@ -286,6 +288,7 @@ function finish_cycle(::AbstractInterpreter, frames::Vector{AbsIntState}, cyclei
         caller.time_caches = 0.0
     end
     empty!(opt_cache)
+    share_tombstoned_cycle_edges!(frames, cycleid)
     cycletop = frames[cycleid]::InferenceState
     time_start = cycletop.time_start
     validation_world = get_world_counter()
@@ -310,6 +313,32 @@ function finish_cycle(::AbstractInterpreter, frames::Vector{AbsIntState}, cyclei
     # validity.
     ccall(:jl_promote_cis_to_current, Cvoid, (Ptr{CodeInstance}, Csize_t, UInt), cis, length(cis), validation_world)
     resize!(frames, cycleid - 1)
+    return nothing
+end
+
+# Members of a cycle consume each other's results through `MethodInstance` edges. A
+# tombstoned member has no backedges (see `finish!`), so it and every member that consumed
+# it depend on the edges of the whole cycle directly. Other members reach those through
+# the backedges of the members they consumed.
+function share_tombstoned_cycle_edges!(frames::Vector{AbsIntState}, cycleid::Int)
+    sharers = IdSet{InferenceState}()
+    for frameid = cycleid:length(frames)
+        member = frames[frameid]::InferenceState
+        member.result.tombstone || continue
+        push!(sharers, member)
+        for (consumer, _) in member.cycle_backedges
+            push!(sharers, consumer)
+        end
+    end
+    isempty(sharers) && return nothing
+    cycle_edges = Any[]
+    for frameid = cycleid:length(frames)
+        append_edges!(cycle_edges, (frames[frameid]::InferenceState).edges)
+    end
+    for sharer in sharers
+        # `opt.inlining.edges` is this same vector, so this also reaches optimized members
+        append_edges!(sharer.edges, cycle_edges)
+    end
     return nothing
 end
 
@@ -433,12 +462,18 @@ function transform_result_for_cache(interp::AbstractInterpreter, result::Inferen
     return src
 end
 
-function discard_optimized_result(interp::AbstractInterpreter, _#=::OptimizationState=#, inlining_cost#=::InlineCostType=#)
+function discard_optimized_result(interp::AbstractInterpreter, opt#=::OptimizationState=#, inlining_cost#=::InlineCostType=#)
     may_discard_trees(interp) || return false
     inlining_cost == MAX_INLINE_COST || return false
     precompile_keep_ir(interp) && return false
+    keep_source_for_output(opt.linfo) && return false
     return true
 end
+
+# A cache without native code needs the source of every compileable signature, or
+# loading it means inferring them all again. Caches with native code drop it on save.
+keep_source_for_output(mi::MethodInstance) =
+    ccall(:jl_generating_output, Cint, ()) != 0 && JLOptions().outputo == C_NULL && isa_compileable_sig(mi)
 
 function maybe_compress_codeinfo(interp::AbstractInterpreter, mi::MethodInstance, ci::CodeInfo)
     def = mi.def
@@ -450,7 +485,7 @@ function maybe_compress_codeinfo(interp::AbstractInterpreter, mi::MethodInstance
         # irgen's typeinf_ext can reuse it instead of re-inferring.
         # jl_finalize_precompile_inferred nulls it before save.
         precompile_keep_ir(interp) && return ci
-        return nothing
+        keep_source_for_output(mi) || return nothing
     end
     may_compress(interp) && return ccall(:jl_compress_ir, String, (Any, Any), def, ci)
     return ci
@@ -799,6 +834,45 @@ function compute_edges!(sv::InferenceState)
     nothing
 end
 
+# Number of entries of the edge record starting at `edges[i]`, see `ForwardToBackedgeIterator`
+function edge_record_length(edges, i::Int)
+    item = edges[i]
+    item isa Int && return 2 + abs(item) # nmatches, atype, matches...
+    item isa Union{MethodInstance,CodeInstance,Core.Binding,Method} && return 1
+    return 2 # invokesig or atype, followed by its target or `Core.methodtable`
+end
+
+# Append the edge records of `from` that `edges` does not have yet.
+function append_edges!(edges::Vector{Any}, from)
+    singles = IdSet{Any}()
+    multis = Int[]
+    i = 1
+    while i <= length(edges)
+        n = edge_record_length(edges, i)
+        n == 1 ? push!(singles, edges[i]) : push!(multis, i)
+        i += n
+    end
+    i = 1
+    while i <= length(from)
+        n = edge_record_length(from, i)
+        if n == 1
+            if !(from[i] in singles)
+                push!(singles, from[i])
+                push!(edges, from[i])
+            end
+        elseif !any(multis) do j
+                    edge_record_length(edges, j) == n && all(k -> edges[j+k] === from[i+k], 0:n-1)
+                end
+            push!(multis, length(edges) + 1)
+            for k = 0:n-1
+                push!(edges, from[i+k])
+            end
+        end
+        i += n
+    end
+    return edges
+end
+
 function record_slot_assign!(sv::InferenceState)
     # look at all assignments to slots
     # and union the set of types stored there
@@ -902,17 +976,10 @@ function type_annotate!(::AbstractInterpreter, sv::InferenceState)
 end
 
 function merge_call_chain!(::AbstractInterpreter, parent::InferenceState, child::InferenceState)
-    # add backedge of parent <- child
-    # then add all backedges of parent <- parent.parent
+    # update all cycleid to be in the same group
     frames = parent.callstack::Vector{AbsIntState}
     @assert child.callstack === frames
     ancestorid = child.cycleid
-    while true
-        add_cycle_backedge!(parent, child)
-        parent.cycleid === ancestorid && break
-        child = parent
-        parent = cycle_parent(child)::InferenceState
-    end
     # ensure that walking the callstack has the same cycleid (DAG)
     for frameid = reverse(ancestorid:length(frames))
         frame = frames[frameid]::InferenceState
@@ -923,7 +990,6 @@ function merge_call_chain!(::AbstractInterpreter, parent::InferenceState, child:
 end
 
 function add_cycle_backedge!(caller::InferenceState, frame::InferenceState)
-    update_valid_age!(caller, frame.world.valid_worlds)
     backedge = (caller, caller.currpc)
     contains_is(frame.cycle_backedges, backedge) || push!(frame.cycle_backedges, backedge)
     return frame
@@ -942,9 +1008,8 @@ end
 # frame matching `mi` is encountered, then there is a cycle in the call graph
 # (i.e. `mi` is a descendant callee of itself). Upon encountering this cycle,
 # we "resolve" it by merging the call chain, which entails updating each intermediary
-# frame's `cycleid` field and adding the appropriate backedges. Finally,
-# we return `mi`'s pre-existing frame. If no cycles are found, `nothing` is
-# returned instead.
+# frame's `cycleid` field. Finally, we return `mi`'s pre-existing frame.
+# If no cycles are found, `nothing` is returned instead.
 function resolve_call_cycle!(interp::AbstractInterpreter, mi::MethodInstance, parent::AbsIntState)
     # TODO (#48913) implement a proper recursion handling for irinterp:
     # This works most of the time currently just because the irinterp code doesn't get used much with
@@ -1117,6 +1182,8 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
             push!(caller.tasks, function get_infer_result(interp, caller)
                 update_valid_age!(caller, frame.world.valid_worlds)
                 local isinferred = is_inferred(frame)
+                # a tombstoned callee has no backedges, see `finish!`
+                isinferred && result.tombstone && append_edges!(caller.edges, frame.edges)
                 local edge = isinferred ? edge_ci : nothing
                 local effects = isinferred ? frame.result.ipo_effects : # effects are adjusted already within `finish` for ipo_effects
                     adjust_effects(effects_for_cycle(frame.ipo_effects), method)
@@ -1128,6 +1195,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
                     result.ci_as_edge = edge_ci # set the edge for the inliner usage
                     VolatileInferenceResult(result)
                 end
+                isinferred || add_cycle_backedge!(caller, frame)
                 mresult[] = MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects,
                     edge, edgecycle, edgelimited, volatile_inf_result)
                 return true
@@ -1145,6 +1213,7 @@ function typeinf_edge(interp::AbstractInterpreter, method::Method, @nospecialize
     effects = adjust_effects(effects_for_cycle(frame.ipo_effects), method)
     bestguess = frame.bestguess
     exc_bestguess = refine_exception_type(frame.exc_bestguess, effects)
+    add_cycle_backedge!(caller, frame)
     return Future(MethodCallResult(interp, caller, method, bestguess, exc_bestguess, effects, nothing, edgecycle, edgelimited))
 end
 
@@ -1480,6 +1549,29 @@ markinspected!(queue::CompilationQueue, item) = push!(queue.inspected, item)
 isinspected(queue::CompilationQueue, item) = item in queue.inspected
 Base.isempty(queue::CompilationQueue) = isempty(queue.tocompile)
 
+# The runner of a `Threads.@threads` loop is not specialized on the loop body, so its tasks
+# call the body through a dynamic dispatch, which `--trim` cannot follow. So at each call of
+# the runner, where the body type is known, return the signature of that body call for the
+# trim compiler to compile and verify. Return `nothing` for any other invoke.
+function threads_deferred_call_type(stmt::Expr, ci::CodeInfo, sptypes::Vector{VarState})
+    length(stmt.args) == 4 || return nothing
+    edge = stmt.args[1]
+    def = edge isa CodeInstance ? get_ci_mi(edge).def : edge isa MethodInstance ? edge.def : nothing
+    def isa Method || return nothing
+    is_base_threads_method(def, :threading_run) || return nothing
+    ft = argextype(stmt.args[3], ci, sptypes)
+    return argtypes_to_type(Any[ft, Int])
+end
+
+# Identified by name rather than through the `Base.Threads` binding, which does not exist
+# in the world this code is compiled in.
+function is_base_threads_method(def::Method, name::Symbol)
+    m = def.module
+    return def.name === name && nameof(m) === :Threads && parentmodule(m) === Base
+end
+
+is_threads_call_def(@nospecialize def) = def isa Method && is_base_threads_method(def, :_threads_call)
+
 # collect a list of all code that is needed along with CodeInstance to codegen it fully
 function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vector{VarState};
                          invokelatest_queue::Union{CompilationQueue,Nothing} = nothing,
@@ -1497,6 +1589,13 @@ function collectinvokes!(workqueue::CompilationQueue, ci::CodeInfo, sptypes::Vec
                     (isexpr(stmt, :invoke_modify) ||
                      !(external_linkage && ci_from_image(edge) && ci_has_invoke(edge)))
                 push!(workqueue, edge)
+            end
+        end
+        if invokelatest_queue !== nothing && isexpr(stmt, :invoke)
+            atype = threads_deferred_call_type(stmt, ci, sptypes)
+            if atype !== nothing
+                mi = compileable_specialization_for_call(invokelatest_queue.interp, atype)
+                mi === nothing || push!(invokelatest_queue, mi)
             end
         end
 
@@ -2127,7 +2226,7 @@ function reactive_delta_report(codeinfos::Vector{Any}, methods::Vector{Any}, wor
 end
 
 const _verify_trim_world_age = RefValue{UInt}(typemax(UInt))
-verify_typeinf_trim(codeinfos::Vector{Any}, onlywarn::Bool) = Core._call_in_world(_verify_trim_world_age[], verify_typeinf_trim, stdout, codeinfos, onlywarn)
+verify_typeinf_trim(codeinfos::Vector{Any}, onlywarn::Bool) = Core._call_in_world(_verify_trim_world_age[], verify_typeinf_trim, Base.stderr, codeinfos, onlywarn)
 
 function return_type(@nospecialize(f), t::DataType) # this method has a special tfunc
     world = tls_world_age()

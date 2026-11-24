@@ -800,6 +800,10 @@ end
         @test sort!(copy(v)) == sort!(copy(v); scratch)
         @test sortperm(v) == sortperm(v; scratch=[4])
         @test sortperm!(Vector{Int}(undef, n), v) == sortperm!(Vector{Int}(undef, n), v; scratch=[4])
+        for T in (Float32, Int32)
+            w = Union{Missing,T}[missing; rand(T, n)]
+            @test isequal(sort!(copy(w); scratch=similar(w)), sort(w))
+        end
 
         n > 100 && continue
         M = rand(n, n)
@@ -983,6 +987,18 @@ end
         @test !issorted(v[1:2000])
         @test !issorted(v[2001:4000])
         @test !issorted(v)
+    end
+
+    # out-of-range lo/hi must throw rather than silently corrupt memory (#63215)
+    for alg in [MergeSort, QuickSort, InsertionSort, PartialQuickSort(1:5),
+                Base.DEFAULT_STABLE, Base.DEFAULT_UNSTABLE]
+        w = rand(10)
+        @test_throws BoundsError sort!(w, 1, 11, alg, Base.Forward)
+        @test_throws BoundsError sort!(w, 0, 10, alg, Base.Forward)
+        @test_throws BoundsError sort!(w, 1, 2000, alg, Base.Forward)
+        @test_throws BoundsError sort!(w, 1, 2000, alg, Base.Forward, similar(w))
+        @test sort!(w, 11, 10, alg, Base.Forward) === w # empty range is fine
+        @test issorted(sort!(w, 1, 10, alg, Base.Forward))
     end
 end
 

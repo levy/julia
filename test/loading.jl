@@ -81,6 +81,17 @@ mktempdir() do dir
             @test Base.isfile_casesensitive(true_filename)
             @test !Base.isfile_casesensitive(lowered_filename)
 
+            # check that case-sensitivity is preserved for relative paths with ghost directories.
+            # Windows resolves `..` before looking at the disk, so there the file exists; elsewhere it does not.
+            ghost_path = joinpath("nonexistent", "..", true_filename)
+            @test Base.isfile_casesensitive(ghost_path) == isfile(ghost_path) == Sys.iswindows()
+            @test !Base.isfile_casesensitive(joinpath("nonexistent", "..", lowered_filename))
+
+            # check that case-sensitivity is preserved for relative paths with real directories:
+            mkdir("realdir")
+            @test Base.isfile_casesensitive(joinpath("realdir", "..", true_filename))
+            @test !Base.isfile_casesensitive(joinpath("realdir", "..", lowered_filename))
+
             # check that case-sensitivity only applies to basename of a path:
             if isfile(lowered_filename) # case-insensitive filesystem
                 mkdir("cAsEtEsT")
@@ -1288,6 +1299,16 @@ end
             merge!(Base.COMPILETIME_PREFERENCES, old_compiletime_prefs)
         end
     end
+
+    # a package adding a broad `!=` method must not invalidate the loading code
+    script = """
+        log = ccall(:jl_debug_method_invalidation, Any, (Cint,), 1)
+        struct NotEq end
+        Base.:(!=)(::NotEq, ::Any) = true
+        ccall(:jl_debug_method_invalidation, Any, (Cint,), 0)
+        print(any(x -> x isa Core.MethodInstance && x.def isa Method && x.def.name === :stale_prefs, log))
+        """
+    @test readchomp(`$(Base.julia_cmd()) --startup-file=no -e $script`) == "false"
 end
 
 @testset "Loading with incomplete manifest/depot #45977" begin
@@ -1762,6 +1783,57 @@ end
             "JULIA_DEPOT_PATH" => string(depot * Base.Filesystem.pathsep(), s),
         ))
     end
+    mkdepottempdir() do depot
+        # This manifest has a LibGit2 entry that is missing LibGit2_jll, and a LibGit2_jll entry
+        # with a git-tree-sha1, emulating an old manifest resolved when LibGit2_jll was a regular
+        # package. A copy of the stdlib is installed at that depot path so it is what gets loaded,
+        # which invalidates the bundled LibGit2 cache. The parallel precompiler then has to know
+        # that LibGit2 depends on LibGit2_jll although the manifest does not say so, otherwise
+        # its strict worker for LibGit2 fails (#63099)
+        badmanifest_test_dir3 = joinpath(@__DIR__, "project", "deps", "BadStdlibDeps3")
+        jll_uuid = Base.UUID("e37daf67-58a4-590a-8e99-b0245dd2ffc5")
+        jll_copy = joinpath(depot, "packages", "LibGit2_jll", Base.version_slug(jll_uuid, Base.SHA1("1"^40)))
+        mkpath(dirname(jll_copy))
+        cp(joinpath(Sys.STDLIB, "LibGit2_jll"), jll_copy)
+        @test success(addenv(
+            `$(Base.julia_cmd()) --project=$badmanifest_test_dir3 --startup-file=no -e 'using LibGit2'`,
+            "JULIA_DEPOT_PATH" => string(depot * Base.Filesystem.pathsep(), s),
+        ))
+    end
+    mkdepottempdir() do depot
+        # Same for a dependency that is missing from the manifest altogether. Without the
+        # bundled stdlib caches in the depot path every stdlib in the chain has to be
+        # precompiled by the parallel precompiler, so its dependency graph has to include
+        # the stdlib deps the manifest does not list (#63099)
+        badmanifest_test_dir = joinpath(@__DIR__, "project", "deps", "BadStdlibDeps")
+        @test success(addenv(
+            `$(Base.julia_cmd()) --project=$badmanifest_test_dir --startup-file=no -e 'using LibGit2'`,
+            "JULIA_DEPOT_PATH" => depot,
+        ))
+        # and for the git-tree-sha1 entry that is not installed, so the stdlib gets loaded
+        badmanifest_test_dir2 = joinpath(@__DIR__, "project", "deps", "BadStdlibDeps2")
+        @test success(addenv(
+            `$(Base.julia_cmd()) --project=$badmanifest_test_dir2 --startup-file=no -e 'using LibGit2'`,
+            "JULIA_DEPOT_PATH" => depot,
+        ))
+    end
+    mkdepottempdir() do depot
+        # This manifest has a Statistics entry without its weakdeps and extensions, emulating
+        # a manifest from a version where SparseArraysExt did not exist yet. The extension
+        # has to be found from the stdlib Project.toml, both when loading and when building
+        # the precompilation dependency graph
+        badmanifest_test_dir4 = joinpath(@__DIR__, "project", "deps", "BadStdlibDeps4")
+        @test success(addenv(
+            `$(Base.julia_cmd()) --project=$badmanifest_test_dir4 --startup-file=no -e 'using Statistics, SparseArrays; exit(Base.get_extension(Statistics, :SparseArraysExt) === nothing ? 1 : 0)'`,
+            "JULIA_DEPOT_PATH" => string(depot * Base.Filesystem.pathsep(), s),
+        ))
+        @test success(addenv(
+            `$(Base.julia_cmd()) --project=$badmanifest_test_dir4 --startup-file=no -e 'Base.Precompilation.precompilepkgs(; io=devnull)'`,
+            "JULIA_DEPOT_PATH" => depot,
+        ))
+        ext_cache_dir = joinpath(depot, "compiled", "v$(VERSION.major).$(VERSION.minor)", "SparseArraysExt")
+        @test isdir(ext_cache_dir) && !isempty(filter(endswith(".ji"), readdir(ext_cache_dir)))
+    end
 end
 
 @testset "code coverage disabled during precompilation" begin
@@ -2067,6 +2139,44 @@ end
     finally
         oldBase64 === nothing || Base.register_root_module(oldBase64)
         copy!(DEPOT_PATH, original_depot_path)
+    end
+end
+
+@testset "extension triggered by a dependency loaded with require_stdlib" begin
+    # The REPL loads Printf this way (through Dates) before any user code runs.
+    # Loading a package that depends on Printf must still trigger extensions on Printf.
+    depot_path = mkdepottempdir()
+    dir = mktempdir()
+    printf_uuid = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+    for (name, uuid, extra, src) in (
+            ("A", "11111111-1111-1111-1111-111111111111",
+             "[deps]\nPrintf = \"$printf_uuid\"\n",
+             "module A\nusing Printf\nend\n"),
+            ("B", "22222222-2222-2222-2222-222222222222",
+             "[weakdeps]\nPrintf = \"$printf_uuid\"\n[extensions]\nBPrintfExt = \"Printf\"\n",
+             "module B\nend\n"))
+        mkpath(joinpath(dir, name, "src"))
+        write(joinpath(dir, name, "Project.toml"), "name = \"$name\"\nuuid = \"$uuid\"\nversion = \"0.1.0\"\n$extra")
+        write(joinpath(dir, name, "src", "$name.jl"), src)
+    end
+    mkpath(joinpath(dir, "B", "ext"))
+    write(joinpath(dir, "B", "ext", "BPrintfExt.jl"), "module BPrintfExt\nusing B, Printf\nend\n")
+    script = """
+    using Test
+    pushfirst!(LOAD_PATH, $(repr(dir)))
+    Printf_key = Base.PkgId(Base.UUID($(repr(printf_uuid))), "Printf")
+    Printf = Base.require_stdlib(Printf_key)
+    @test !haskey(Base.loaded_modules, Printf_key)
+    using B, A
+    @test get(Base.loaded_modules, Printf_key, nothing) === Printf
+    @test Base.get_extension(B, :BPrintfExt) isa Module
+    """
+    sep = Sys.iswindows() ? ';' : ':'
+    cmd = addenv(`$(Base.julia_cmd()) --check-bounds=auto --startup-file=no -e $script`,
+                 "JULIA_DEPOT_PATH" => depot_path * sep)
+    # The first run loads A right after compiling it, and the second run loads it from the cache.
+    for _ in 1:2
+        @test success(pipeline(cmd; stdout, stderr))
     end
 end
 

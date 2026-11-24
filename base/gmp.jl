@@ -10,7 +10,7 @@ import .Base: *, +, -, /, <, <<, >>, >>>, <=, ==, >, >=, ^, (~), (&), (|), xor, 
              trailing_zeros, trailing_ones, count_ones, count_zeros, tryparse_internal,
              bin, oct, dec, hex, isequal, invmod, _prevpow2, _nextpow2, ndigits0zpb,
              widen, signed, unsafe_trunc, trunc, iszero, isone, big, flipsign, signbit,
-             sign, isodd, iseven, digits!, hash, hash_integer, top_set_bit,
+             sign, isodd, iseven, digits!, hash, hash_integer, top_set_bit, exponent,
              ispositive, isnegative, clamp, unsafe_takestring
 
 import Core: Signed, Float16, Float32, Float64
@@ -389,7 +389,11 @@ function (::Type{T})(x::BigInt) where T<:Base.BitSigned
 end
 
 
-Float64(n::BigInt, ::RoundingMode{:ToZero}) = MPZ.get_d(n)
+function Float64(n::BigInt, ::RoundingMode{:ToZero})
+    x = MPZ.get_d(n)
+    # get_d returns Inf when n is too large, but rounding toward zero never overflows
+    return isinf(x) ? copysign(floatmax(Float64), x) : x
+end
 
 function (::Type{T})(n::BigInt, ::RoundingMode{:ToZero}) where T<:Union{Float16,Float32}
     T(Float64(n,RoundToZero),RoundToZero)

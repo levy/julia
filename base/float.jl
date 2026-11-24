@@ -753,7 +753,7 @@ function decompose(x::Float16)::NTuple{3,Int}
     e = ((n & 0x7c00) >> 10) % Int
     s |= Int16(e != 0) << 10
     d = ifelse(signbit(x), -1, 1)
-    s, e - 25 + (e == 0), d
+    s%Int, e - 25 + (e == 0), d
 end
 
 function decompose(x::Float32)::NTuple{3,Int}
@@ -764,7 +764,7 @@ function decompose(x::Float32)::NTuple{3,Int}
     e = ((n & 0x7f800000) >> 23) % Int
     s |= Int32(e != 0) << 23
     d = ifelse(signbit(x), -1, 1)
-    s, e - 150 + (e == 0), d
+    s%Int, e - 150 + (e == 0), d
 end
 
 function decompose(x::Float64)::Tuple{Int64, Int, Int}
@@ -906,11 +906,13 @@ for Ti in (Int8, Int16, Int32, Int64, Int128, UInt8, UInt16, UInt32, UInt64, UIn
         else
             # Here `eps(Tf(typemin(Ti))) > 1`, so the only value which can be truncated to
             # `Tf(typemin(Ti)` is itself. Similarly, `Tf(typemax(Ti))` is inexact and will
-            # be rounded up. This assumes that `Tf(typemin(Ti)) > -Inf`, which is true for
-            # these types, but not for `Float16` or larger integer types.
+            # be rounded up. For `Float16` and larger integer types, `Tf(typemin(Ti))` is
+            # `-Inf`, so the lower bound is made strict to exclude it.
+            lo = Tf(typemin(Ti))
+            lo_cmp = lo === Tf(-Inf) ? :(<) : :(<=)
             @eval begin
                 function round(::Type{$Ti},x::$Tf,::RoundingMode{:ToZero})
-                    if $(Tf(typemin(Ti))) <= x < $(Tf(typemax(Ti)))
+                    if $lo_cmp($lo, x) && x < $(Tf(typemax(Ti)))
                         return unsafe_trunc($Ti,x)
                     else
                         throw(InexactError(:round, $Ti, x, RoundToZero))

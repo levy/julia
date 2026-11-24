@@ -4,7 +4,7 @@ This branch is the merge of the feature branches of this fork onto a release of
 Julia. It carries no work of its own: everything here belongs to a topic branch,
 and this branch exists so that one compiler holds all of them.
 
-Base: `v1.13.0-rc4`.
+Base: `v1.13.4`. The branch started from `v1.13.0-rc4`, and `v1.13.4` was merged into it.
 
 | topic | branch |
 | --- | --- |

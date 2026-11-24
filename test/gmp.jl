@@ -650,6 +650,13 @@ end
         @test T(big"2"^(n+1)) === T(Inf)
         @test T(big"2"^(n+1) - big"2"^(n-precision(T))) === T(Inf)
         @test T(big"2"^(n+1) - big"2"^(n-precision(T)) - 1) === floatmax(T)
+        # rounding toward zero never overflows
+        for s in (1, -1)
+            x = s * big"2"^(n+1)
+            @test T(x, RoundToZero) === copysign(floatmax(T), s)
+            @test T(x, RoundDown) === (s > 0 ? floatmax(T) : -T(Inf))
+            @test T(x, RoundUp) === (s > 0 ? T(Inf) : -floatmax(T))
+        end
     end
 end
 
@@ -815,7 +822,7 @@ t = Rational{BigInt}(0, 1)
 end
 
 @testset "hashing" begin
-    for i in 1:10:100
+    for i in vcat(0, 1:10:100)
         for shift in vcat(0:8, 9:8:81)
             for sgn in (1, -1)
                 bint = sgn * (big(11)^i << shift)
@@ -825,6 +832,15 @@ end
                     @invoke(hash(bint::Real, Base.HASH_SEED))
                 @test Base.hash_integer(bint, Base.HASH_SEED) ==
                     @invoke(Base.hash_integer(bint::Integer, Base.HASH_SEED))
+
+                brat = bint // 3
+                for T in Base.BitInteger_types
+                    typemin(T) <= bint <= typemax(T) || continue
+                    rat = Rational{T}(brat)
+                    for h in (zero(UInt), Base.HASH_SEED, typemax(UInt))
+                        @test hash(rat, h) == hash(brat, h)
+                    end
+                end
             end
         end
     end

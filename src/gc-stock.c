@@ -695,6 +695,9 @@ STATIC_INLINE jl_taggedvalue_t *gc_reset_page(jl_ptls_t ptls2, const jl_gc_pool_
 }
 
 jl_gc_page_stack_t global_page_pool_lazily_freed;
+// approximate (relaxed) length of global_page_pool_lazily_freed; only used to
+// decide how much of the warm cache gc_free_pages reclaims
+_Atomic(size_t) global_page_pool_lazily_freed_n;
 jl_gc_page_stack_t global_page_pool_clean;
 jl_gc_page_stack_t global_page_pool_freed;
 pagetable_t alloc_map;
@@ -972,6 +975,7 @@ done:
         jl_atomic_fetch_add_relaxed(&gc_heap_stats.heap_size, -GC_PAGE_SZ);
         gc_alloc_map_set(pg->data, GC_PAGE_LAZILY_FREED);
         push_lf_back(&global_page_pool_lazily_freed, pg);
+        jl_atomic_fetch_add_relaxed(&global_page_pool_lazily_freed_n, 1);
     }
     gc_page_profile_write_to_file(s);
     gc_time_count_page(freedall, pg_skpd);
@@ -1316,41 +1320,26 @@ void gc_sweep_pool_parallel(jl_ptls_t ptls) JL_NOTSAFEPOINT
     jl_atomic_fetch_add(&gc_n_threads_sweeping_pools, -1);
 }
 
-// free all pages (i.e. through `madvise` on Linux) that were lazily freed
+// free all but a `default_collect_interval`-sized warm cache of the pages that
+// were lazily freed (i.e. through `madvise` on Linux)
 void gc_free_pages(void) JL_NOTSAFEPOINT
 {
-    size_t n_pages_seen = 0;
-    jl_gc_page_stack_t tmp;
-    memset(&tmp, 0, sizeof(tmp));
-    while (1) {
+    // Keep roughly a `default_collect_interval`-sized set of already-mapped pages.
+    size_t keep = default_collect_interval / GC_PAGE_SZ;
+    size_t n_present = jl_atomic_load_relaxed(&global_page_pool_lazily_freed_n);
+    size_t n_to_free = n_present > keep ? n_present - keep : 0;
+    size_t n_freed = 0;
+    while (n_freed < n_to_free) {
         jl_gc_pagemeta_t *pg = pop_lf_back(&global_page_pool_lazily_freed);
         if (pg == NULL) {
             break;
         }
-        n_pages_seen++;
-        // keep the last few pages around for a while
-        if (n_pages_seen * GC_PAGE_SZ <= default_collect_interval) {
-            push_lf_back(&tmp, pg);
-            continue;
-        }
         jl_gc_free_page(pg);
         push_lf_back(&global_page_pool_freed, pg);
+        n_freed++;
     }
-    // If concurrent page sweeping is disabled, then `gc_free_pages` will be called in the stop-the-world
-    // phase. We can guarantee, therefore, that there won't be any concurrent modifications to
-    // `global_page_pool_lazily_freed`, so it's safe to assign `tmp` back to `global_page_pool_lazily_freed`.
-    // Otherwise, we need to use the thread-safe push_lf_back/pop_lf_back functions.
-    if (jl_n_sweepthreads == 0) {
-        global_page_pool_lazily_freed = tmp;
-    }
-    else {
-        while (1) {
-            jl_gc_pagemeta_t *pg = pop_lf_back(&tmp);
-            if (pg == NULL) {
-                break;
-            }
-            push_lf_back(&global_page_pool_lazily_freed, pg);
-        }
+    if (n_freed != 0) {
+        jl_atomic_fetch_add_relaxed(&global_page_pool_lazily_freed_n, -(ssize_t)n_freed);
     }
 }
 
@@ -3092,6 +3081,8 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
     uint64_t mutator_time = gc_end_time == 0 ? old_mut_time : gc_start_time - gc_end_time;
     uint64_t before_free_heap_size = jl_atomic_load_relaxed(&gc_heap_stats.heap_size);
     uint64_t start_mark_time = jl_hrtime();
+    int64_t perm_scanned_before_mark = perm_scanned_bytes;
+    int64_t promoted_now = 0;
     JL_PROBE_GC_MARK_BEGIN();
     gc_mark_image_subgraph = gc_heap_snapshot_enabled && prev_sweep_full;
     {
@@ -3179,6 +3170,12 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         // "Flush" the mark stack before flipping the reset_age bit
         // so that the objects are not incorrectly reset.
         gc_mark_loop_serial(ptls);
+        // Objects only reachable from `to_finalize` are usually dead once
+        // their finalizers run; don't count them as promoted. The rare one
+        // that outlives its finalizer is then never counted, but it still
+        // counts towards heap growth.
+        gc_sync_all_caches(ptls);
+        promoted_now = perm_scanned_bytes - perm_scanned_before_mark;
         // Conservative marking relies on age to tell allocated objects
         // and freelist entries apart.
         mark_reset_age = !jl_gc_conservative_gc_support_enabled();
@@ -3189,6 +3186,7 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
         gc_mark_finlist(mq, &to_finalize, 0);
         gc_mark_loop_serial(ptls);
         mark_reset_age = 0;
+        gc_sync_all_caches(ptls);
     }
     gc_mark_image_subgraph = 0;
 
@@ -3210,8 +3208,14 @@ static int _jl_gc_collect(jl_ptls_t ptls, jl_gc_collection_t collection) JL_NOTS
     gc_stats_all_pool();
     gc_stats_big_obj();
     gc_num.total_allocd += gc_num.allocd;
-    // promoted_bytes are all the new bytes scanned that got promoted to old but that have never seen a full GC as old
-    promoted_bytes += scanned_bytes;
+    // promoted_bytes are the bytes that reached the oldest generation, which only a full
+    // sweep frees, since the last full sweep. A quick collection marks old only the objects
+    // that already survived one collection (`GC_OLD` -> `GC_OLD_MARKED`), so its old-marked
+    // bytes are exactly those. Objects that survive only once are still freed by quick
+    // sweeps and are not counted. Right after a full sweep every live old object is
+    // re-marked, so that collection says nothing about promotion.
+    if (!prev_sweep_full)
+        promoted_bytes += promoted_now;
     scanned_bytes = 0;
     // 4. next collection decision
     int remset_nptr = 0;

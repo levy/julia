@@ -318,8 +318,7 @@ if bc_opt == bc_default
     for T in [Memory] # This requires changing the pointer_from_objref to something llvm sees through
         for ET in [Int, Float32, Union{Int, Float64}]
             no_allocate(T{ET}) #compile
-            # allocations aren't removed for Union eltypes which they theoretically could be eventually
-            test_alloc(T{ET}, broken=(ET==Union{Int, Float64}))
+            test_alloc(T{ET})
         end
     end
     function f() # this was causing a bug on an in progress version of #55913.
@@ -368,6 +367,12 @@ end
 
         @test !contains(sprint(code_llvm, iterate, (Base.CodeUnits{UInt8,String}, Int)), "unreachable")
     end
+end
+
+@testset "nonscalar setindex! checks the shape under @inbounds" begin
+    inbounds_setindex!(A, X, I) = (@inbounds A[I] = X; A)
+    @test_throws DimensionMismatch view(zeros(6), 2:5)[1:4] = [1]
+    @test_throws DimensionMismatch inbounds_setindex!(zeros(6), [1.0], 1:4)
 end
 
 end
