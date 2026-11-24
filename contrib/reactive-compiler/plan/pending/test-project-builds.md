@@ -1684,12 +1684,89 @@ Each measure runs on the generated project, for stock and for our build, in
             `docs/julia-changes.md`).
             - NOT done: a scenario of the harness (`bench/run.jl`) for the
               file of changes.
+      The apply, cheaper (the owner, 2026-11-24, to the question "Do I make
+      the apply cheaper next?": "Good, continue"). Its parts (CompilerServer.jl
+      `e6e6c5d`):
+      - [x] D1. The measure. A trace of the compiles of one build of the
+            process of the changes (the edit of the body of a leaf function,
+            4.4 s): 614 functions, 2.36 s. Of that: 1.17 s for 240 closures
+            of top-level statements of the project, which each evaluation of
+            a candidate of the trial makes again with new names; 0.52 s for
+            94 specializations with stale code of the image (the work that
+            must be done); 0.29 s for code of Base, of which 0.19 s was the
+            print of the result; 0.21 s for other code of the project (the
+            generated functions that the apply evaluated again); 0.17 s for
+            66 functions of CompilerServer.jl that the image does not hold.
+      - [x] D2. A generated function is evaluated again only when its
+            generator gives another body. Before, each generated function at
+            or after the first change in the load order was a change of each
+            edit (8, 16 or 24 of the 24 here), because its generator can run
+            code that the edit changed.
+            - Julia runs the generator of a method in the world in which the
+              method was defined. So the method itself always gives the body
+              of then, and a first form of the rule that asked the method
+              (`get_staged`) saw no difference: the new test showed it. The
+              trial runs the generator function itself in the world of now
+              (`rc_staged_print`), for each specialization that the method
+              has, and prints the expression that it answers.
+            - The pass is at the end of the trial, in the program of after
+              all changes, for each generated function of the ledger: a
+              generator runs at a call, so its body has no place in the load
+              order. (The rule before did not look at a generated function
+              before the first change in the load order.)
+            - A generator that gives a new body at each run is a change each
+              time, as before.
+            - The test: `test/packages/GenDepApp` (an edit of a function that
+              a generator runs evaluates that generated function again, and
+              not the other one; an edit of another function evaluates none).
+      - [x] D3. The copy of the process that does the trial or a check runs
+            code that has no machine code in the interpreter (`rc_in_fork`
+            sets `compile_enabled` of `jl_options` to 3). It evaluates only
+            to compare, and it ends after its answer. The trial: 0.5 to 1.1 s
+            (before: 2.3 to 2.4 s).
+            - A fault found: with the interpreter, the check of the items
+              that the apply evaluates again refused the edit of the type of
+              a field. A method that a process defines while it interprets
+              keeps its code as one object, and each read answers that
+              object; a method of an image keeps it packed, and each read
+              unpacks a copy. The print of the methods reads the code of a
+              method two times in one walk, and it prints an object that it
+              saw before as seen. Now it reads a copy each time
+              (`rc_method_code`).
+      - [x] D4. The entry of the process (`changes_main`) prints its result
+            with plain values and is compiled in the first build; the fork
+            function does not compile again for each closure that it gets
+            (`@nospecialize`). The measure, by the gate (the second pass over
+            the edits on one first image; small test project, 8 cores, load
+            average 4):
+
+            | edit | from the start of the process to the linked file | of that: the apply | compile again | the file |
+            |---|---|---|---|---|
+            | a comment | 0.35 s (nothing changed: no file) | 0.17 s | | |
+            | lines that move | 0.55 s | 0.26 s | 0.04 s | 10 KB |
+            | a new method of a function of the package below | 0.75 s | 0.46 s | 0.04 s | 10 KB |
+            | a new function | 0.90 s | 0.61 s | 0.04 s | 10 KB |
+            | a file with a new name | 0.90 s | 0.62 s | 0.03 s | 10 KB |
+            | the value of a constant | 1.18 s | 0.77 s | 0.07 s | 48 KB |
+            | the body of a function that callers inline | 1.25 s | 0.82 s | 0.08 s | 53 KB |
+            | the bottom of a chain of inlined functions | 1.33 s | 0.83 s | 0.09 s | 64 KB |
+            | the body of a leaf function | 1.53 s | 0.92 s | 0.13 s | 79 KB |
+            | the type of a field of a struct | 1.78 s | 1.10 s | 0.12 s | 95 KB |
+            | two edits together | 1.55 s | 0.94 s | 0.12 s | 79 KB |
+
+            Before these parts: 0.6 to 5.4 s, and files of 10 to 315 KB. One
+            build now compiles 140 functions in 0.33 s. A run of the
+            executable takes 0.56 to 0.58 s with a file, and 0.561 s with the
+            first image alone. The gate passes two times; the tests (187),
+            the gate of the 55 edit cases and the hazard gate pass.
       What is open after these parts, for the file of changes:
-      - The apply is most of the time of a build (0.3 to 3.2 s of 0.6 to
-        5.4 s): its trial takes about 2 s, and each edit evaluates again the
-        8 generated functions of the project with their helpers (24 changes
-        of the id A6). So each file holds 49 to 81 methods and 300 to 1,000
-        code instances, where the edit needs some tens.
+      - The apply is still 50 to 60 % of a build. Its trial evaluates each
+        candidate that comes after the first change in the load order, before
+        and after the edit (97 here: about 0.5 s). It does not know which
+        candidates the edit can reach. This grows with the project.
+      - 57 functions of CompilerServer.jl compile in each build (0.15 s): the
+        loaded process of the first build never ran an apply, so its image
+        does not hold their code.
       - The command that writes the whole image when a file can not carry
         the edit, and that makes a new base when the file is large.
       - A server that stays and writes the file in a fork: it would apply
