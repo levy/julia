@@ -1793,6 +1793,31 @@ Each measure runs on the generated project, for stock and for our build, in
         201 MB), and the first build needs the normal build before it (for
         the app folder and the store).
       - A large project is not measured.
+      The trial compares only the candidates that the edit can reach (the
+      owner, 2026-11-24, to the question "Do I make the trial compare only the
+      candidates that the edit can reach?": "Yes"). Its parts, fixed before the
+      work:
+      - [ ] R1. The measure: where the time of one candidate goes, in a build
+            of the medium project.
+      - [ ] R2. The rule (`rc_reach`). An item names the names of its text, and
+            it gives names: its own name, the names of its methods, and the
+            names that its evaluation can write. A name is touched when a
+            changed item gives it, or when an item that names a touched name
+            gives it. The trial compares a candidate only when its evaluation
+            reads a touched name. Where names do not bound what an evaluation
+            reads (a method of a function of another package for no type of
+            the project, an expression that is no plain definition, a function
+            that looks a name up at run time, a value that load-time code can
+            write), the rule takes the wider set, up to each candidate as
+            before.
+      - [ ] R3. The check of the rule: an option of the apply with which the
+            trial compares each candidate as before, and reports each candidate
+            that differs and that the rule left out. The gates run with it.
+      - [ ] R4. The gates with the rule and its check: the tests, the gate of
+            the 55 edit cases, the hazard gate, the gate of the file of changes
+            (small, two passes; medium), the harness guard.
+      - [ ] R5. The measure with the rule, and the documents (the architecture
+            document, the status file).
       Proposed decisions of this part (mine):
       - The image of the first build stays until a whole build: the binary of
         an edit is that image and the file. A whole build makes the base
