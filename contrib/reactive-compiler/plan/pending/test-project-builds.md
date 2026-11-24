@@ -1763,7 +1763,15 @@ Each measure runs on the generated project, for stock and for our build, in
       - The apply is still 50 to 60 % of a build. Its trial evaluates each
         candidate that comes after the first change in the load order, before
         and after the edit (97 here: about 0.5 s). It does not know which
-        candidates the edit can reach. This grows with the project.
+        candidates the edit can reach. This grows with the project: measured
+        with the medium size of the generated project (36 units in each file
+        group and not 8; `test/gates/changes.jl <work dir> medium`, one pass):
+        433 candidates, about 6 ms for each one that the trial compares (2.7 s
+        for an edit in the first file, 1.0 s when 145 are compared). An apply
+        takes 0.5 to 4.9 s there, and a build 0.9 to 5.7 s; the gate passes,
+        the files have 10 to 184 KB, and a run of the executable takes 0.66 to
+        0.69 s with a file and 0.66 s with the first image alone (286 MB). The
+        first build there: the normal build 196 s, the loaded process 87 s.
       - 57 functions of CompilerServer.jl compile in each build (0.15 s): the
         loaded process of the first build never ran an apply, so its image
         does not hold their code.
